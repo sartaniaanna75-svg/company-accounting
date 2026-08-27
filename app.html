@@ -1,0 +1,4573 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Табель учёта рабочего времени: магазин, офис, склад, водители и общая сводка">
+    <title>Табель сотрудников</title>
+
+    <style>
+        /* =========================================================
+           Базовые переменные и сброс
+        ========================================================= */
+        * { box-sizing: border-box; }
+
+        :root {
+            --bg: #f4f6f8;
+            --card: #ffffff;
+            --border: #e5e7eb;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #d97706;
+            --sidebar: #111827;
+            --sidebar-w: 240px;
+        }
+
+        html, body { margin: 0; min-height: 100%; }
+
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        button, input, select, textarea { font: inherit; }
+        button { cursor: pointer; }
+
+        /* =========================================================
+           Экран входа: 4 отдела + Общая
+        ========================================================= */
+        .login-screen {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .login-home {
+            text-align: center;
+            margin-bottom: 18px;
+        }
+
+        .login-home a {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 13px;
+        }
+
+        .login-home a:hover { color: var(--primary); }
+
+        .login-title {
+            text-align: center;
+            font-size: 30px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .login-subtitle {
+            text-align: center;
+            color: var(--muted);
+            margin-bottom: 28px;
+            line-height: 1.5;
+        }
+
+        .login-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+        }
+
+        .login-card.summary-card {
+            grid-column: 1 / -1;
+            max-width: 420px;
+            justify-self: center;
+            width: 100%;
+        }
+
+        .login-card {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, .05);
+            transition: transform .15s ease, box-shadow .15s ease;
+        }
+
+        .login-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 24px rgba(0, 0, 0, .08);
+        }
+
+        .login-card.summary-card {
+            border-color: #86efac;
+            background: #f0fdf4;
+        }
+
+        .login-card h3 { margin: 0 0 6px; }
+
+        .login-card input,
+        .login-card select {
+            width: 100%;
+            margin: 10px 0 12px;
+        }
+
+        .login-card.error input {
+            border-color: var(--danger);
+            animation: shake .28s ease;
+        }
+
+        .login-error {
+            min-height: 18px;
+            color: var(--danger);
+            font-size: 12px;
+            margin: 0 0 8px;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-4px); }
+            75% { transform: translateX(4px); }
+        }
+
+        /* =========================================================
+           Оболочка приложения
+        ========================================================= */
+        .app { display: none; min-height: 100vh; }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(17, 24, 39, .45);
+            z-index: 150;
+        }
+
+        .sidebar {
+            width: var(--sidebar-w);
+            background: var(--sidebar);
+            position: fixed;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            color: white;
+            padding: 20px 14px;
+            overflow-y: auto;
+            z-index: 200;
+        }
+
+        .logo {
+            font-size: 20px;
+            font-weight: 700;
+            padding: 10px;
+            margin-bottom: 18px;
+        }
+
+        .logo span { color: #60a5fa; }
+
+        .workspace-name {
+            display: none;
+        }
+
+        .dept-now {
+            background: #1f2937;
+            padding: 12px 10px;
+            border-radius: 10px;
+            margin-bottom: 18px;
+        }
+
+        .dept-now-label {
+            font-size: 11px;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+            margin-bottom: 8px;
+            padding: 0 4px;
+        }
+
+        .dept-now-current {
+            font-size: 20px;
+            font-weight: 700;
+            line-height: 1.2;
+            padding: 12px 12px 10px;
+            border-radius: 8px;
+            color: #fff;
+        }
+
+        .dept-now-current.shop { background: #b45309; }
+        .dept-now-current.office { background: #1d4ed8; }
+        .dept-now-current.warehouse { background: #0f766e; }
+        .dept-now-current.drivers { background: #7e22ce; }
+        .dept-now-current.summary { background: #15803d; }
+
+        .dept-now-hint {
+            margin-top: 8px;
+            padding: 0 4px;
+            font-size: 12px;
+            color: #9ca3af;
+            line-height: 1.4;
+        }
+
+        .login-card.shop { border-top: 5px solid #f59e0b; }
+        .login-card.office { border-top: 5px solid #3b82f6; }
+        .login-card.warehouse { border-top: 5px solid #14b8a6; }
+        .login-card.drivers { border-top: 5px solid #a855f7; }
+        .login-card.summary, .login-card.summary-card { border-top: 5px solid #22c55e; }
+
+        .menu-title {
+            font-size: 11px;
+            color: #9ca3af;
+            padding: 12px 10px 7px;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+        }
+
+        .nav-btn {
+            width: 100%;
+            border: 0;
+            background: transparent;
+            color: #d1d5db;
+            text-align: left;
+            padding: 11px;
+            border-radius: 8px;
+            margin-bottom: 4px;
+            transition: background .15s ease, color .15s ease;
+        }
+
+        .nav-btn.active,
+        .nav-btn:hover {
+            background: #1f2937;
+            color: white;
+        }
+
+        .main {
+            margin-left: var(--sidebar-w);
+            width: calc(100% - var(--sidebar-w));
+            min-height: 100vh;
+        }
+
+        .topbar {
+            min-height: 68px;
+            background: white;
+            border-bottom: 1px solid var(--border);
+            padding: 12px 22px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .menu-toggle {
+            display: none;
+            width: 40px;
+            height: 40px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: white;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .page-title { font-size: 22px; font-weight: 700; }
+
+        .page-subtitle {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 3px;
+        }
+
+        .clock {
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* =========================================================
+           Закладки месяцев
+        ========================================================= */
+        .month-bar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 22px;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 68px;
+            z-index: 40;
+        }
+
+        .year-switch {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-right: 8px;
+        }
+
+        .year-switch strong {
+            min-width: 48px;
+            text-align: center;
+        }
+
+        .year-btn {
+            width: 32px;
+            height: 32px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: white;
+        }
+
+        .month-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .month-tab {
+            border: 1px solid var(--border);
+            background: white;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+
+        .month-tab.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        .content { padding: 20px; }
+        .section { display: none; }
+        .section.active { display: block; }
+
+        /* =========================================================
+           Карточки, кнопки, формы
+        ========================================================= */
+        .card {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 18px;
+            margin-bottom: 18px;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+
+        .card-title { font-size: 18px; font-weight: 700; }
+
+        .note {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 5px;
+            line-height: 1.5;
+        }
+
+        .btn {
+            border: 0;
+            border-radius: 8px;
+            padding: 9px 14px;
+            transition: filter .15s ease, transform .1s ease;
+        }
+
+        .btn:hover { filter: brightness(0.94); }
+        .btn:active { transform: scale(0.98); }
+        .btn-primary { background: var(--primary); color: white; }
+        .btn-success { background: var(--success); color: white; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-secondary { background: #e5e7eb; color: #374151; }
+        .btn-small { padding: 6px 8px; font-size: 11px; }
+
+        input, select, textarea {
+            border: 1px solid #d1d5db;
+            border-radius: 7px;
+            padding: 8px 9px;
+            background: white;
+            outline: none;
+        }
+
+        input:focus, select:focus, textarea:focus { border-color: var(--primary); }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .form-group label {
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: end;
+        }
+
+        /* =========================================================
+           Статистика и таблицы
+        ========================================================= */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(6, minmax(140px, 1fr));
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+
+        .stats.stats-3 { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
+
+        .stat {
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 11px;
+            padding: 15px;
+        }
+
+        .stat-label { font-size: 11px; color: var(--muted); }
+
+        .stat-value {
+            margin-top: 6px;
+            font-size: 22px;
+            font-weight: 700;
+        }
+
+        .table-wrapper {
+            overflow: auto;
+            max-height: calc(100vh - 330px);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+        }
+
+        table { width: 100%; border-collapse: collapse; }
+
+        th, td {
+            padding: 8px;
+            border-bottom: 1px solid #eef0f2;
+            font-size: 12px;
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        th {
+            background: #f9fafb;
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            white-space: nowrap;
+        }
+
+        .month-table { min-width: 2100px; }
+
+        .employee-col {
+            position: sticky;
+            left: 0;
+            background: white;
+            z-index: 5;
+            width: 210px;
+            min-width: 210px;
+        }
+
+        th.employee-col { background: #f9fafb; z-index: 7; }
+
+        .employee-pick {
+            width: 100%;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .day-head {
+            min-width: 100px;
+            text-align: center;
+            line-height: 1.25;
+        }
+
+        .weekend-head { background: #fff7ed; }
+        .today-head { background: #dbeafe; color: var(--primary-dark); }
+        .day-cell { min-width: 100px; padding: 4px; }
+        .today-cell { box-shadow: inset 0 0 0 1px #93c5fd; }
+
+        .day-box {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .day-box select,
+        .day-box input {
+            width: 100%;
+            font-size: 11px;
+            padding: 5px 3px;
+            text-align: center;
+            text-align-last: center;
+        }
+
+        .early730-check {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            font-size: 10px;
+            font-weight: 700;
+            color: #166534;
+            white-space: nowrap;
+            cursor: pointer;
+            user-select: none;
+            line-height: 1.2;
+        }
+
+        .day-box .early730-check input {
+            width: auto;
+            margin: 0;
+            padding: 0;
+            flex: 0 0 auto;
+        }
+
+        .cell-ya { background: #dcfce7; }
+        .cell-o  { background: #fef3c7; }
+        .cell-b  { background: #dbeafe; }
+        .cell-ot { background: #ede9fe; }
+        .cell-v  { background: #f3f4f6; }
+        .cell-p  { background: #fecaca; }
+        .cell-l  { background: #ffedd5; }
+
+        .summary-cell {
+            min-width: 95px;
+            white-space: nowrap;
+        }
+
+        .empty-row {
+            padding: 28px;
+            text-align: center;
+            color: var(--muted);
+        }
+
+        .salary-table { min-width: 1320px; }
+        .salary-table input[type="number"] {
+            display: block;
+            margin: 0 auto;
+            text-align: center;
+        }
+        .days-col,
+        .late-col {
+            width: 1%;
+            white-space: nowrap;
+            text-align: center;
+            padding-left: 4px;
+            padding-right: 4px;
+        }
+        .hold-col {
+            width: 1%;
+            white-space: nowrap;
+            text-align: center;
+            padding-left: 6px;
+            padding-right: 6px;
+        }
+        .money-input {
+            width: 4.8em;
+            max-width: 5.2em;
+            text-align: center;
+            padding-left: 4px;
+            padding-right: 4px;
+        }
+        .product-input {
+            width: 4.2em;
+            max-width: 4.6em;
+            text-align: center;
+            padding-left: 4px;
+            padding-right: 4px;
+            background: #eff6ff;
+        }
+        .no-spin {
+            appearance: textfield;
+            -moz-appearance: textfield;
+        }
+        .no-spin::-webkit-outer-spin-button,
+        .no-spin::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .taxi-input {
+            width: 110px;
+            text-align: center;
+            background: #fef9c3;
+        }
+        .issued-check {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            white-space: nowrap;
+            font-size: 12px;
+        }
+        .issued-row td { background: #86efac; }
+        .pay { font-weight: 700; font-size: 14px; }
+        .totals-row td { background: #f8fafc; font-weight: 700; }
+
+        .dept-badge {
+            display: inline-block;
+            background: #eff6ff;
+            color: #1d4ed8;
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 11px;
+            margin: 0 3px 3px 0;
+        }
+
+        .dept-group-row td {
+            font-weight: 700;
+            font-size: 13px;
+            color: #fff;
+            letter-spacing: .02em;
+            padding: 10px 12px;
+        }
+
+        .dept-group-row.shop td { background: #b45309; }
+        .dept-group-row.office td { background: #1d4ed8; }
+        .dept-group-row.warehouse td { background: #0f766e; }
+        .dept-group-row.drivers td { background: #7e22ce; }
+        .dept-group-row.other td { background: #374151; }
+
+        .dept-subtotal-row td {
+            background: #f1f5f9;
+            font-weight: 700;
+        }
+
+        /* =========================================================
+           Сотрудники: подбор и справочник
+        ========================================================= */
+        .employee-row {
+            display: grid;
+            grid-template-columns: 1.8fr 1.2fr 1.1fr .8fr .8fr .95fr auto;
+            gap: 8px;
+            margin-bottom: 10px;
+            border: 1px solid var(--border);
+            padding: 10px;
+            border-radius: 9px;
+            align-items: end;
+        }
+
+        .summary-staff-row {
+            display: grid;
+            grid-template-columns: 1.8fr 1.2fr .9fr .9fr 1fr auto;
+            gap: 8px;
+            margin-bottom: 10px;
+            border: 1px solid var(--border);
+            padding: 10px;
+            border-radius: 9px;
+            align-items: end;
+        }
+
+        .summary-staff-row.drivers-staff {
+            grid-template-columns: 1.45fr 1fr .75fr 1.15fr .7fr .7fr .8fr auto;
+        }
+
+        .rep-table { min-width: 2680px; }
+        .rep-table th,
+        .rep-table td {
+            font-size: 11px;
+            padding: 6px 4px;
+        }
+        .rep-input {
+            width: 6.4em;
+            max-width: 7.2em;
+            text-align: center;
+            margin: 0 auto;
+            display: block;
+        }
+        .rep-calc {
+            background: #f1f5f9;
+            font-variant-numeric: tabular-nums;
+        }
+        .rep-warn {
+            color: #b91c1c;
+            font-size: 10px;
+            margin-top: 4px;
+        }
+
+        .staff-fired { opacity: .62; }
+        tr.staff-fired td { background: #f3f4f6; }
+
+        .analysis-table th,
+        .analysis-table td {
+            text-align: center;
+            vertical-align: middle;
+        }
+        .analysis-table .subhead th {
+            font-weight: 600;
+            font-size: 11px;
+            color: var(--muted);
+            top: 33px;
+        }
+
+        .pick-row {
+            display: grid;
+            grid-template-columns: auto 1.6fr .9fr .8fr auto;
+            gap: 10px;
+            align-items: end;
+            border: 1px solid var(--border);
+            padding: 10px 12px;
+            border-radius: 9px;
+            margin-bottom: 8px;
+        }
+
+        .pick-row.off { opacity: .55; background: #f9fafb; }
+
+        .pick-row label.check {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+
+        .settings-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        /* =========================================================
+           Уведомления
+        ========================================================= */
+        .toast-wrap {
+            position: fixed;
+            right: 18px;
+            bottom: 18px;
+            z-index: 400;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            min-width: 220px;
+            max-width: 360px;
+            background: #111827;
+            color: white;
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-size: 13px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, .2);
+            animation: toast-in .18s ease;
+        }
+
+        .toast.error { background: #991b1b; }
+        .toast.success { background: #166534; }
+
+        @keyframes toast-in {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* =========================================================
+           Адаптив
+        ========================================================= */
+        @media (max-width: 1200px) {
+            .login-grid { grid-template-columns: repeat(2, 1fr); }
+            .login-card.summary-card { max-width: none; }
+        }
+
+        @media (max-width: 1000px) {
+            .login-grid { grid-template-columns: 1fr; }
+            .login-card.summary-card { grid-column: auto; max-width: none; }
+            .stats, .stats.stats-3 { grid-template-columns: repeat(2, 1fr); }
+            .employee-row, .settings-grid, .pick-row, .summary-staff-row {
+                grid-template-columns: 1fr 1fr;
+            }
+            .menu-toggle {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform .2s ease;
+            }
+            .sidebar.open { transform: translateX(0); }
+            .sidebar-overlay.show { display: block; }
+            .main { margin-left: 0; width: 100%; }
+            .month-bar { top: 60px; }
+        }
+
+        @media (max-width: 640px) {
+            .employee-row, .settings-grid, .pick-row, .summary-staff-row { grid-template-columns: 1fr; }
+            .page-title { font-size: 18px; }
+        }
+
+        @media print {
+            .login-screen, .sidebar, .sidebar-overlay, .menu-toggle,
+            .toolbar button, .toast-wrap, .month-bar { display: none !important; }
+            .main { margin: 0; width: 100%; }
+            .table-wrapper { max-height: none; overflow: visible; }
+        }
+    </style>
+</head>
+
+<body>
+
+<!-- =========================================================
+     ЭКРАН ВХОДА: четыре отдела и общая сводка
+========================================================= -->
+<div id="loginScreen" class="login-screen">
+    <div class="login-box">
+        <div class="login-home">
+            <a href="index.html">← На главную</a>
+        </div>
+        <div class="login-title">⏱ Табель сотрудников</div>
+        <div class="login-subtitle">
+            Четыре отдельных отдела и общая таблица. В общей выберите, кто входит.
+            <span id="defaultPinHint"></span>
+        </div>
+        <div class="login-grid" id="loginGrid"></div>
+    </div>
+</div>
+
+
+<!-- =========================================================
+     ОСНОВНОЕ ПРИЛОЖЕНИЕ
+========================================================= -->
+<div id="app" class="app">
+
+    <div id="sidebarOverlay" class="sidebar-overlay" onclick="closeSidebar()"></div>
+
+    <!-- Левое меню: набор кнопок зависит от отдела или Общей -->
+    <aside id="sidebar" class="sidebar">
+        <div class="logo">⏱ <span>WorkTime</span></div>
+
+        <div class="dept-now" id="deptNow"></div>
+
+        <div class="menu-title">Работа</div>
+
+        <button type="button" class="nav-btn" data-for="dept" data-section="timesheet" onclick="showSection('timesheet', this)">
+            📅 Табель месяца
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="timesheet" onclick="showSection('timesheet', this)">
+            📊 Сводка
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="salary" onclick="showSection('salary', this)">
+            💰 Зарплата
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="repSalary" onclick="showSection('repSalary', this)">
+            📦 Зарплата ТП
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="summaryStaff" onclick="showSection('summaryStaff', this)">
+            👤 Сотрудники
+        </button>
+        <button type="button" class="nav-btn" data-for="both" data-section="discipline" onclick="showSection('discipline', this)">
+            ⚠️ Дисциплина
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="analysis" onclick="showSection('analysis', this)">
+            📈 Анализ
+        </button>
+        <button type="button" class="nav-btn" data-for="dept" data-section="fio" onclick="showSection('fio', this)">
+            👤 ФИО сотрудника
+        </button>
+        <button type="button" class="nav-btn" data-for="dept" data-section="employees" onclick="showSection('employees', this)">
+            📋 В табель
+        </button>
+        <button type="button" class="nav-btn" data-for="both" data-section="settings" onclick="showSection('settings', this)">
+            ⚙️ Настройки
+        </button>
+
+        <div class="menu-title">Вход</div>
+        <button type="button" class="nav-btn" onclick="window.location.href='index.html'">
+            🏠 На главную
+        </button>
+        <button type="button" class="nav-btn" onclick="logout()">
+            🚪 Выйти
+        </button>
+    </aside>
+
+
+    <main class="main">
+
+        <header class="topbar">
+            <div class="topbar-left">
+                <button type="button" class="menu-toggle" onclick="toggleSidebar()" aria-label="Открыть меню">☰</button>
+                <div>
+                    <div id="pageTitle" class="page-title">Табель месяца</div>
+                    <div id="currentDate" class="page-subtitle"></div>
+                </div>
+            </div>
+            <strong id="clock" class="clock"></strong>
+        </header>
+
+        <!-- Закладки месяцев для всех разделов -->
+        <div class="month-bar">
+            <div class="year-switch">
+                <button type="button" class="year-btn" onclick="shiftYear(-1)" aria-label="Предыдущий год">‹</button>
+                <strong id="yearLabel">2026</strong>
+                <button type="button" class="year-btn" onclick="shiftYear(1)" aria-label="Следующий год">›</button>
+            </div>
+            <div id="monthTabs" class="month-tabs"></div>
+        </div>
+
+
+        <div class="content">
+
+            <!-- =================================================
+                 ТАБЕЛЬ ОТДЕЛА / СВОДКА ОБЩЕЙ
+            ================================================== -->
+            <section id="timesheet" class="section active">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title" id="timesheetTitle">Табель отдела</div>
+                            <div class="note" id="timesheetNote"></div>
+                        </div>
+
+                        <div class="toolbar">
+                            <div class="form-group" data-for="dept">
+                                <label for="employeeFilter">Поиск</label>
+                                <input type="search" id="employeeFilter" placeholder="ФИО сотрудника" oninput="renderTimesheet()">
+                            </div>
+                            <div class="form-group" data-for="summary">
+                                <label for="summaryDeptFilter">Отдел</label>
+                                <select id="summaryDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
+                                    <option value="">Все отделы</option>
+                                    <option value="shop">Магазин</option>
+                                    <option value="office">Офис</option>
+                                    <option value="warehouse">Склад</option>
+                                    <option value="drivers">Водители</option>
+                                </select>
+                            </div>
+                            <div class="form-group" data-for="summary">
+                                <label for="summarySortMode">Сортировка</label>
+                                <select id="summarySortMode" onchange="changeSummarySortMode(this.value)">
+                                    <option value="dept">По отделам</option>
+                                    <option value="name">По ФИО</option>
+                                </select>
+                            </div>
+                            <button type="button" class="btn btn-primary" data-for="dept" onclick="fillMonth()">
+                                Заполнить месяц
+                            </button>
+                            <button type="button" class="btn btn-success" onclick="exportTimesheet()">
+                                Скачать
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="note" data-for="dept">
+                        <strong>Я</strong> — явка,
+                        <strong>О</strong> — опоздание,
+                        <strong>Б</strong> — больничный,
+                        <strong>ОТ</strong> — отпуск,
+                        <strong>В</strong> — выходной,
+                        <strong>П</strong> — прогул (штраф 1500 ₽ за день),
+                        <strong>Л</strong> — личные обстоятельства.
+                        Для опоздания: 10–60 минут. Уже заполненные дни кнопка «Заполнить месяц» не меняет.
+                    </div>
+                </div>
+
+                <div class="stats" id="timesheetStats">
+                    <div class="stat">
+                        <div class="stat-label">Сотрудников</div>
+                        <div class="stat-value" id="statEmployees">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Часов</div>
+                        <div class="stat-value" id="statHours">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Опозданий</div>
+                        <div class="stat-value" id="statLate">0</div>
+                    </div>
+                    <div class="stat" data-for="summary">
+                        <div class="stat-label">Сумма продуктов</div>
+                        <div class="stat-value" id="statProducts">0 ₽</div>
+                    </div>
+                    <div class="stat" data-for="summary">
+                        <div class="stat-label">Начислено</div>
+                        <div class="stat-value" id="statAccrued">0 ₽</div>
+                    </div>
+                    <div class="stat" data-for="summary">
+                        <div class="stat-label">К выплате</div>
+                        <div class="stat-value" id="statPay">0 ₽</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="table-wrapper" id="timesheetWrap">
+                        <table class="month-table" id="timesheetTable">
+                            <thead id="timesheetHead"></thead>
+                            <tbody id="timesheetBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 ЗАРПЛАТА — только Общая: штрафы, премии, авансы, продукты
+            ================================================== -->
+            <section id="salary" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Зарплата по всем отделам</div>
+                            <div class="note" id="salaryFormulaNote">
+                                К выплате = начислено − удержание за опоздание − штрафы − прогул − продукты − аванс + такси + премии + отпускные − налоги.
+                                У торговых представителей начисление считается во вкладке «Зарплата ТП».
+                            </div>
+                        </div>
+                        <div class="toolbar">
+                            <div class="form-group">
+                                <label for="salaryDeptFilter">Отдел</label>
+                                <select id="salaryDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
+                                    <option value="">Все отделы</option>
+                                    <option value="shop">Магазин</option>
+                                    <option value="office">Офис</option>
+                                    <option value="warehouse">Склад</option>
+                                    <option value="drivers">Водители</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="salarySortMode">Сортировка</label>
+                                <select id="salarySortMode" onchange="changeSummarySortMode(this.value)">
+                                    <option value="dept">По отделам</option>
+                                    <option value="name">По ФИО</option>
+                                </select>
+                            </div>
+                            <button type="button" class="btn btn-success" id="exportSalaryBtn" onclick="exportSalary()">
+                                Скачать сверку
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="table-wrapper" id="salaryWrap">
+                        <table class="salary-table">
+                            <thead>
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th class="days-col" title="Отработано дней">Дни</th>
+                                    <th>Начислено</th>
+                                    <th>Штрафы</th>
+                                    <th>Прогул</th>
+                                    <th title="Сумма продуктов">Продукты</th>
+                                    <th>Аванс</th>
+                                    <th>Налоги</th>
+                                    <th>Такси итого</th>
+                                    <th>Премии</th>
+                                    <th class="late-col" title="Опоздания">Опозд.</th>
+                                    <th class="hold-col" title="Удержание за опоздание">Удерж.</th>
+                                    <th>Отпускные</th>
+                                    <th>К выплате</th>
+                                    <th>Выдано</th>
+                                </tr>
+                            </thead>
+                            <tbody id="salaryBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 ЗАРПЛАТА ТОРГОВЫХ ПРЕДСТАВИТЕЛЕЙ
+            ================================================== -->
+            <section id="repSalary" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Зарплата торговых представителей</div>
+                            <div class="note" id="repSalaryNote">
+                                Сотрудники отдела «Водители» с должностью «Торговый представитель».
+                                Продажи вводит админ. Неотработанные будни (пн–пт) берутся из табеля и уменьшают начисление.
+                                Итог после удержания за дни попадает в колонку «Начислено» общей зарплаты.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="table-wrapper" id="repSalaryWrap">
+                        <table class="rep-table">
+                            <thead>
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th title="Общие продажи">Продажи</th>
+                                    <th>Крупный опт</th>
+                                    <th>Спеццена</th>
+                                    <th>Сахар</th>
+                                    <th>Мешки</th>
+                                    <th>%</th>
+                                    <th class="rep-calc">База</th>
+                                    <th class="rep-calc">Оплата опта</th>
+                                    <th class="rep-calc">Оплата спец.</th>
+                                    <th class="rep-calc">Оплата мешков</th>
+                                    <th class="rep-calc">С основной базы</th>
+                                    <th class="rep-calc">Начислено всего</th>
+                                    <th>Топливо</th>
+                                    <th class="rep-calc">Предварительная</th>
+                                    <th class="rep-calc" title="Будни пн–пт в месяце">Раб. дней</th>
+                                    <th class="rep-calc" title="Я или О в будни">Отработано</th>
+                                    <th class="rep-calc">Не отраб.</th>
+                                    <th class="rep-calc" title="Отпуск ОТ в будни">Отпуск</th>
+                                    <th class="rep-calc" title="Прочие неотработанные будни">Прочие</th>
+                                    <th class="rep-calc">Удерж. за дни</th>
+                                    <th class="rep-calc">После удержания</th>
+                                </tr>
+                            </thead>
+                            <tbody id="repSalaryBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 СОТРУДНИКИ — только Общая: отдел, ставка, такси
+            ================================================== -->
+            <section id="summaryStaff" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Все сотрудники</div>
+                            <div class="note">
+                                Здесь сотрудники всех отделов. Ставка — за день, плюс такси на день.
+                                Если человек работает и ставка с такси не менялись, на каждый месяц подставляется то же.
+                                Изменение действует с выбранного месяца и дальше.
+                            </div>
+                        </div>
+                        <div class="toolbar">
+                            <div class="form-group">
+                                <label for="staffDeptFilter">Отдел</label>
+                                <select id="staffDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
+                                    <option value="">Все отделы</option>
+                                    <option value="shop">Магазин</option>
+                                    <option value="office">Офис</option>
+                                    <option value="warehouse">Склад</option>
+                                    <option value="drivers">Водители</option>
+                                </select>
+                            </div>
+                            <button type="button" class="btn btn-primary" id="addSummaryEmployeeBtn" onclick="addSummaryEmployee()">+ Добавить сотрудника</button>
+                        </div>
+                    </div>
+                    <div id="summaryStaffList"></div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 ДИСЦИПЛИНА — отдел или Общая (админ)
+            ================================================== -->
+            <section id="discipline" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Контроль дисциплины</div>
+                            <div class="note" id="disciplineNote">Оценка строится по числу опозданий за выбранный месяц в этом отделе.</div>
+                        </div>
+                    </div>
+
+                    <div class="table-wrapper">
+                        <table class="analysis-table">
+                            <thead id="disciplineHead">
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th>Явки</th>
+                                    <th>Опоздания</th>
+                                    <th>Минут опоздания</th>
+                                    <th>Больничные</th>
+                                    <th>Отпуск</th>
+                                    <th>Прогул</th>
+                                    <th>Личные обст.</th>
+                                    <th>Выходные</th>
+                                    <th>Часы</th>
+                                    <th>Оценка</th>
+                                </tr>
+                            </thead>
+                            <tbody id="disciplineBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 АНАЛИЗ — только Общая, закладки месяцев сверху
+            ================================================== -->
+            <section id="analysis" class="section">
+                <div class="card">
+                    <div class="card-title">Анализ по месяцам</div>
+                    <div class="note" style="margin-top:8px;">
+                        Сравнение соседних месяцев и итоги по отделам. Месяц меняется закладками сверху.
+                    </div>
+                </div>
+
+                <div class="stats" id="analysisMonthStats"></div>
+
+                <div class="card">
+                    <div class="card-title" style="margin-bottom:12px;">Отделы за выбранный месяц</div>
+                    <div class="table-wrapper">
+                        <table class="analysis-table">
+                            <thead>
+                                <tr>
+                                    <th>Отдел</th>
+                                    <th>Сотрудников</th>
+                                    <th>Часы</th>
+                                    <th>Опоздания</th>
+                                    <th>Начислено</th>
+                                    <th>К выплате</th>
+                                </tr>
+                            </thead>
+                            <tbody id="analysisDeptBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title" style="margin-bottom:12px;">Сравнение с соседними месяцами</div>
+                    <div class="table-wrapper">
+                        <table class="analysis-table">
+                            <thead id="analysisCompareHead"></thead>
+                            <tbody id="analysisCompareBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 ФИО СОТРУДНИКА — заведение в справочник (только отдел)
+                 В Общую попадают сами, после выбора в табель
+            ================================================== -->
+            <section id="fio" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">ФИО сотрудника</div>
+                            <div class="note">
+                                Здесь заводятся только сотрудники этого отдела. Они не видны в других отделах.
+                                После выбора в табеле человек автоматически появится в общей сводке.
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-primary" onclick="addEmployee()">+ Добавить ФИО</button>
+                    </div>
+                    <div id="fioList"></div>
+                </div>
+                <div class="card">
+                    <div class="card-title">Должности этого отдела</div>
+                    <div class="note" style="margin-top:8px;">
+                        Если появилась новая должность, внесите её — потом её можно выбрать в карточке сотрудника.
+                    </div>
+                    <div class="toolbar" style="margin-top:12px;align-items:end;">
+                        <div class="form-group">
+                            <label for="newPositionInput">Новая должность</label>
+                            <input id="newPositionInput" maxlength="80" placeholder="Например: Курьер" onkeydown="if(event.key==='Enter'){addCustomPosition();}">
+                        </div>
+                        <button type="button" class="btn btn-secondary" onclick="addCustomPosition()">Добавить должность</button>
+                    </div>
+                    <div id="positionList" style="margin-top:12px;"></div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 ПОДБОР В ТАБЕЛЬ — только отдел
+            ================================================== -->
+            <section id="employees" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Выбор в табель</div>
+                            <div class="note">
+                                Отметьте, кого показать в табеле этого отдела.
+                                Список только из ФИО текущего отдела.
+                            </div>
+                        </div>
+                    </div>
+                    <div id="employeeList"></div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 НАСТРОЙКИ
+            ================================================== -->
+            <section id="settings" class="section">
+                <div class="card">
+                    <div class="card-title">Настройки текущей таблицы</div>
+
+                    <div class="settings-grid" style="margin-top:15px;">
+                        <div class="form-group">
+                            <label for="workspaceNameSetting">Название</label>
+                            <input type="text" id="workspaceNameSetting" maxlength="80" readonly>
+                            <div class="note" style="margin-top:6px;">Имя отдела фиксировано. PIN можно сменить.</div>
+                        </div>
+                        <div class="form-group" id="deptPinBox">
+                            <label for="workspacePinSetting">PIN-код</label>
+                            <input type="password" id="workspacePinSetting" maxlength="12" autocomplete="off">
+                        </div>
+                        <div class="form-group" id="summaryPinAdminBox" style="display:none;">
+                            <label for="pinAdminSetting">PIN Анны Владимировны (админ)</label>
+                            <input type="password" id="pinAdminSetting" maxlength="12" autocomplete="off">
+                        </div>
+                        <div class="form-group" id="summaryPinAdjustBox" style="display:none;">
+                            <label for="pinAdjustSetting">PIN Ольги (удержания)</label>
+                            <input type="password" id="pinAdjustSetting" maxlength="12" autocomplete="off">
+                        </div>
+                        <div class="form-group" id="summaryPinPayBox" style="display:none;">
+                            <label for="pinPaySetting">PIN Натальи (выдача)</label>
+                            <input type="password" id="pinPaySetting" maxlength="12" autocomplete="off">
+                        </div>
+                        <div class="form-group" data-for="dept">
+                            <label for="defaultHoursSetting">Рабочих часов по умолчанию</label>
+                            <input type="number" min="0" max="24" step="0.5" id="defaultHoursSetting">
+                        </div>
+                    </div>
+
+                    <div class="settings-actions">
+                        <button type="button" class="btn btn-primary" onclick="saveWorkspaceSettings()">
+                            Сохранить настройки
+                        </button>
+                    </div>
+                </div>
+
+                <div class="card" id="positionsSettingsCard" style="display:none;">
+                    <div class="card-title">Должности</div>
+                    <div class="note" style="margin-top:8px;">
+                        Базовый список плюс должности, которые добавили в этом отделе.
+                    </div>
+                    <div class="toolbar" style="margin-top:12px;align-items:end;">
+                        <div class="form-group">
+                            <label for="newPositionSetting">Новая должность</label>
+                            <input id="newPositionSetting" maxlength="80" placeholder="Название должности" onkeydown="if(event.key==='Enter'){addCustomPosition('newPositionSetting');}">
+                        </div>
+                        <button type="button" class="btn btn-secondary" onclick="addCustomPosition('newPositionSetting')">Добавить</button>
+                    </div>
+                    <div id="positionSettingsList" style="margin-top:12px;"></div>
+                </div>
+
+                <div class="card">
+                    <div class="card-title">Резервная копия</div>
+                    <div class="note" style="margin-top:12px;">
+                        Данные хранятся в этом браузере. Скачайте копию, чтобы не потерять табель.
+                    </div>
+                    <div class="settings-actions">
+                        <button type="button" class="btn btn-success" onclick="exportBackup()">
+                            Скачать копию JSON
+                        </button>
+                        <label class="btn btn-secondary">
+                            Загрузить копию
+                            <input type="file" accept="application/json,.json" hidden onchange="importBackup(this)">
+                        </label>
+                    </div>
+                </div>
+
+                <div class="card" data-for="summary">
+                    <div class="card-title">Интеграция с 1С УТ</div>
+                    <div class="note" style="margin-top:12px;">
+                        «Сумма продуктов» заполняется вручную на вкладке «Зарплата» общей таблицы.
+                        Позже можно подключить API 1С УТ.
+                    </div>
+                </div>
+            </section>
+
+        </div>
+    </main>
+</div>
+
+
+<div id="toastWrap" class="toast-wrap" aria-live="polite"></div>
+
+
+<script>
+/* ============================================================
+   КОНСТАНТЫ
+   Ключ хранилища прежний — старые данные мигрируют.
+============================================================ */
+const STORAGE_KEY = "worktime_three_tables_v1";
+const SESSION_KEY = "worktime_session_v3";
+const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+const MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const MONTH_FULL = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+const DEPT_DEFAULTS = [
+    { code: "shop", name: "Магазин", pin: "1111" },
+    { code: "office", name: "Офис", pin: "2222" },
+    { code: "warehouse", name: "Склад", pin: "3333" },
+    { code: "drivers", name: "Водители", pin: "4444" }
+];
+const SUMMARY_DEFAULT = { code: "summary", name: "Общая", pin: "5555" };
+const SUMMARY_ROLES = [
+    { role: "admin", name: "Анна Владимировна", title: "Админ", pin: "5555", note: "Ставка за день и такси" },
+    { role: "adjust", name: "Ольга", title: "Удержания", pin: "6666", note: "Штрафы, прогулы, продукты, аванс, налоги" },
+    { role: "pay", name: "Наталья", title: "Выдача", pin: "7777", note: "Только галочка «Выдано»" }
+];
+const SKIP_FINE_PER_DAY = 1500;
+const EARLY_730_PAY = 125;
+const SALES_REP_POSITION = "Торговый представитель";
+const REP_BAG_PAY = 5;
+const DEPT_POSITIONS = {
+    shop: [
+        "Директор",
+        "Руководитель",
+        "Кладовщик",
+        "Кассир",
+        "Товаросборщик",
+        "Тех. служащий",
+        "Охранник"
+    ],
+    office: [
+        "Бухгалтер",
+        "Директор",
+        "Кассир",
+        "Менеджер",
+        "HR",
+        "Начальник ОПС",
+        "Торговый представитель",
+        "Руководитель"
+    ],
+    warehouse: [
+        "Руководитель",
+        "Кладовщик",
+        "Товаросборщик",
+        "Тех. служащий",
+        "Охранник"
+    ],
+    drivers: [
+        "Водитель-экспедитор",
+        "Торговый представитель",
+        "Сторож",
+        "Механик"
+    ]
+};
+
+let appData = null;
+let currentWorkspaceIndex = null;
+let currentWorkspaceCode = null;
+let currentWorkspaceId = null;
+let selectedMonth = currentMonthValue();
+let currentSection = "timesheet";
+let summaryDeptFilter = "";
+let summarySortMode = "dept";
+let currentSummaryRole = null;
+let currentDeptRole = null;
+
+
+/* ============================================================
+   ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+============================================================ */
+function currentMonthValue() {
+    const d = new Date();
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+
+function generateId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return Date.now().toString(36) + Math.random().toString(16).slice(2);
+}
+
+function escapeHtml(value) {
+    return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+function escapeAttribute(value) {
+    return escapeHtml(value);
+}
+
+function money(value) {
+    return Math.round(Number(value || 0)).toLocaleString("ru-RU") + " ₽";
+}
+
+function roundMoney2(value) {
+    return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function parseDecimal(value, fallback) {
+    if (value === "" || value === null || value === undefined) return fallback;
+    const n = Number(String(value).replace(/\s/g, "").replace(",", "."));
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function parseMoney2(value, fallback) {
+    return roundMoney2(parseDecimal(value, fallback));
+}
+
+function money2(value) {
+    return roundMoney2(value).toLocaleString("ru-RU", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    }) + " ₽";
+}
+
+function moneyFlex(value) {
+    const n = Number(value || 0);
+    if (Math.abs(n - Math.round(n)) < 0.001) return money(n);
+    return money2(n);
+}
+
+function normalizeRepPercent(value) {
+    const n = Number(String(value == null ? "" : value).replace(",", "."));
+    return n === 4.5 ? 4.5 : 3.5;
+}
+
+function parseMoney(value, fallback) {
+    return Math.round(parseHours(value, fallback));
+}
+
+function parseHours(value, fallback) {
+    if (value === "" || value === null || value === undefined) return fallback;
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function toast(message, type) {
+    const wrap = document.getElementById("toastWrap");
+    const el = document.createElement("div");
+    el.className = "toast " + (type || "success");
+    el.textContent = message;
+    wrap.appendChild(el);
+    setTimeout(function () { el.remove(); }, 2800);
+}
+
+function findWorkspaceByCode(code) {
+    return ((appData && appData.workspaces) || []).find(function (w) { return w.code === code; }) || null;
+}
+
+function catalogEntry(w) {
+    if (!w) return null;
+    if (w.type === "summary" || w.code === "summary") return SUMMARY_DEFAULT;
+    return DEPT_DEFAULTS.find(function (d) { return d.code === w.code; }) || null;
+}
+
+function officialName(w) {
+    const d = catalogEntry(w);
+    return d ? d.name : ((w && w.name) || "");
+}
+
+function setCurrentWorkspace(w) {
+    if (!w) {
+        currentWorkspaceIndex = null;
+        currentWorkspaceCode = null;
+        currentWorkspaceId = null;
+        return;
+    }
+    currentWorkspaceId = w.id || "";
+    currentWorkspaceCode = w.code || "";
+    currentWorkspaceIndex = appData.workspaces.indexOf(w);
+    if (currentWorkspaceIndex < 0) {
+        currentWorkspaceIndex = appData.workspaces.findIndex(function (x) {
+            return currentWorkspaceId && x.id === currentWorkspaceId;
+        });
+    }
+}
+
+function workspace() {
+    if (!appData || !appData.workspaces) return null;
+    if (currentWorkspaceId) {
+        const byId = appData.workspaces.find(function (w) { return w.id === currentWorkspaceId; });
+        if (byId) return byId;
+    }
+    if (currentWorkspaceIndex !== null && appData.workspaces[currentWorkspaceIndex]) {
+        return appData.workspaces[currentWorkspaceIndex];
+    }
+    if (currentWorkspaceCode) {
+        return findWorkspaceByCode(currentWorkspaceCode);
+    }
+    return null;
+}
+
+function isSummary() {
+    const w = workspace();
+    return !!(w && (w.type === "summary" || w.code === "summary"));
+}
+
+function deptWorkspaces() {
+    return appData.workspaces.filter(function (w) {
+        return w.type !== "summary";
+    });
+}
+
+function orderedDeptWorkspaces() {
+    const list = deptWorkspaces();
+    const used = {};
+    const ordered = [];
+    DEPT_DEFAULTS.forEach(function (d) {
+        const w = list.find(function (x) { return x.code === d.code; });
+        if (w) {
+            ordered.push(w);
+            used[w.id] = true;
+        }
+    });
+    list.forEach(function (w) {
+        if (!used[w.id]) ordered.push(w);
+    });
+    return ordered;
+}
+
+function compareEmployeeNames(a, b) {
+    return String(a.name || "").localeCompare(String(b.name || ""), "ru", { sensitivity: "base" });
+}
+
+function compareEmployeesByStatusThenName(a, b) {
+    const af = isWorking(a) ? 0 : 1;
+    const bf = isWorking(b) ? 0 : 1;
+    if (af !== bf) return af - bf;
+    return compareEmployeeNames(a, b);
+}
+
+function jobStatusSelect(employee, disabled) {
+    const fired = !isWorking(employee);
+    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'jobStatus\',this.value)"'
+        + (disabled ? " disabled" : "") + ">"
+        + '<option value="working"' + (fired ? "" : " selected") + ">Работает</option>"
+        + '<option value="fired"' + (fired ? " selected" : "") + ">Уволен</option>"
+        + "</select>";
+}
+
+function isWorking(employee) {
+    return !employee || employee.jobStatus !== "fired";
+}
+
+function employeeHasMonthActivity(employeeId) {
+    const acc = emptyTotals();
+    (employeeDepartments(employeeId) || []).forEach(function (w) {
+        addTimesheetTotals(employeeId, w, acc);
+    });
+    if (acc.ya + acc.lateCount + acc.sick + acc.vacation + acc.weekend + acc.skip + acc.personal > 0) return true;
+    const sales = peekRepSales(employeeId);
+    return !!(sales.totalSales || sales.wholesale || sales.specialPrice || sales.sugar || sales.bags || sales.fuel);
+}
+
+function includeInMonthPayroll(employee) {
+    if (isWorking(employee)) return true;
+    return employeeHasMonthActivity(employee.id);
+}
+
+function getEmployeeTerms(employee, monthValue) {
+    const month = monthValue || selectedMonth;
+    const map = (employee && employee.terms) || {};
+    let cursor = month;
+    for (let i = 0; i < 240; i++) {
+        const rec = map[cursor];
+        if (rec && typeof rec === "object") {
+            return {
+                rate: parseMoney(rec.rate != null ? rec.rate : (employee.rate || 0), 0),
+                taxiDaily: parseMoney(rec.taxiDaily != null ? rec.taxiDaily : (employee.taxiDaily || 0), 0),
+                salesPercent: normalizeRepPercent(
+                    rec.salesPercent != null ? rec.salesPercent : (employee.salesPercent != null ? employee.salesPercent : 3.5)
+                )
+            };
+        }
+        const prev = shiftMonth(cursor, -1);
+        if (prev === cursor) break;
+        cursor = prev;
+    }
+    return {
+        rate: parseMoney(employee && employee.rate, 0),
+        taxiDaily: parseMoney(employee && employee.taxiDaily, 0),
+        salesPercent: normalizeRepPercent(employee && employee.salesPercent)
+    };
+}
+
+function summaryRoleInfo(role) {
+    return SUMMARY_ROLES.find(function (r) { return r.role === role; }) || SUMMARY_ROLES[0];
+}
+
+function canEditStaff() {
+    return isTableAdmin() && isSummary();
+}
+
+function isTableAdmin() {
+    if (isSummary()) return currentSummaryRole === "admin";
+    return currentDeptRole === "admin";
+}
+
+function adminPin() {
+    const summary = findWorkspaceByCode("summary");
+    if (summary) {
+        ensureSummaryPins(summary);
+        return summary.rolePins.admin || "5555";
+    }
+    return "5555";
+}
+
+function canEditSalaryField(field) {
+    if (currentSummaryRole !== "adjust") return false;
+    return ["fines", "skipFine", "products", "advance", "taxes", "bonus", "vacationPay"].indexOf(field) !== -1;
+}
+
+function canMarkIssued() {
+    return currentSummaryRole === "pay";
+}
+
+function summaryEmployeeGroups() {
+    const groups = [];
+    orderedDeptWorkspaces().forEach(function (w) {
+        if (summaryDeptFilter && w.code !== summaryDeptFilter) return;
+        const people = [];
+        assignedIds(w).forEach(function (id) {
+            const e = findEmployeeIn(w, id);
+            if (e && includeInMonthPayroll(e)) people.push(e);
+        });
+        if (w.code === "drivers") {
+            (w.employees || []).forEach(function (e) {
+                if (!isSalesRep(e) || !includeInMonthPayroll(e)) return;
+                if (people.some(function (p) { return p.id === e.id; })) return;
+                people.push(e);
+            });
+        }
+        people.sort(compareEmployeesByStatusThenName);
+        if (people.length) groups.push({ dept: w, employees: people });
+    });
+    return groups;
+}
+
+function departmentGroupClass(w) {
+    const code = w && w.code;
+    if (code === "shop" || code === "office" || code === "warehouse" || code === "drivers") return code;
+    return "other";
+}
+
+function allowsEarly730(w) {
+    const code = w && w.code;
+    return code === "shop" || code === "office" || code === "warehouse";
+}
+
+function changeSummaryDeptFilter(value) {
+    summaryDeptFilter = value || "";
+    syncSummarySortControls();
+    if (isSummary()) {
+        renderTimesheet();
+        renderSalary();
+        renderRepSalary();
+        renderSummaryStaff();
+        updateStats();
+    }
+}
+
+function changeSummarySortMode(value) {
+    summarySortMode = value === "name" ? "name" : "dept";
+    syncSummarySortControls();
+    if (isSummary()) {
+        renderTimesheet();
+        renderSalary();
+        renderRepSalary();
+        renderSummaryStaff();
+        updateStats();
+    }
+}
+
+function syncSummarySortControls() {
+    ["summaryDeptFilter", "salaryDeptFilter", "staffDeptFilter"].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.value = summaryDeptFilter;
+    });
+    ["summarySortMode", "salarySortMode"].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.value = summarySortMode;
+    });
+}
+
+function loginWorkspaces() {
+    return deptWorkspaces().concat(appData.workspaces.filter(function (w) {
+        return w.type === "summary";
+    }));
+}
+
+
+/* ============================================================
+   ХРАНИЛИЩЕ И МИГРАЦИЯ СО СТАРОЙ ВЕРСИИ
+============================================================ */
+function createWorkspace(name, pin, type, code) {
+    return {
+        id: generateId(),
+        code: code || "",
+        name: name,
+        pin: pin,
+        type: type || "dept",
+        defaultHours: 8,
+        employees: [],
+        employeeIds: [],
+        timesheet: {},
+        customPositions: []
+    };
+}
+
+function createDefaultData() {
+    return {
+        salary: {},
+        repSales: {},
+        workspaces: DEPT_DEFAULTS.map(function (d) {
+            return createWorkspace(d.name, d.pin, "dept", d.code);
+        }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
+    };
+}
+
+function normalizeEmployee(e) {
+    if (!e.id) e.id = generateId();
+    if (!e.name) e.name = "Сотрудник";
+    e.rate = parseHours(e.rate, 0);
+    if (!e.start) e.start = "08:00";
+    if (!e.end) e.end = "17:00";
+    if (!e.position) e.position = "";
+    if (!e.department) e.department = "";
+    e.taxiDaily = parseHours(e.taxiDaily, 0);
+    if (e.jobStatus !== "fired") e.jobStatus = "working";
+    if (!e.terms || typeof e.terms !== "object") e.terms = {};
+}
+
+function normalizeWorkspace(w) {
+    if (!w.id) w.id = generateId();
+    if (!w.name) w.name = "Таблица";
+    if (typeof w.pin !== "string") w.pin = String(w.pin || "0000");
+    w.defaultHours = parseHours(w.defaultHours, 8);
+    if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
+    if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
+    if (!Array.isArray(w.employees)) w.employees = [];
+    if (!Array.isArray(w.customPositions)) w.customPositions = [];
+    if (!w.type) w.type = "dept";
+    if (w.type === "summary" || w.code === "summary") ensureSummaryPins(w);
+    w.employees.forEach(normalizeEmployee);
+}
+
+function ensureSummaryPins(w) {
+    if (!w) return;
+    if (!w.rolePins || typeof w.rolePins !== "object") w.rolePins = {};
+    if (!w.rolePins.admin) w.rolePins.admin = (w.pin && w.pin !== "1111") ? w.pin : "5555";
+    if (!w.rolePins.adjust) w.rolePins.adjust = "6666";
+    if (!w.rolePins.pay) w.rolePins.pay = "7777";
+    w.pin = w.rolePins.admin;
+}
+
+function mergeSalaryRecord(dst, src) {
+    dst.fines = Number(dst.fines || 0) + Number(src.fines || 0);
+    dst.bonus = Number(dst.bonus || 0) + Number(src.bonus || 0);
+    dst.advance = Number(dst.advance || 0) + Number(src.advance || 0);
+    dst.products = Number(dst.products || 0) + Number(src.products || 0);
+    if (src.skipFine != null) {
+        dst.skipFine = Number(dst.skipFine || 0) + Number(src.skipFine || 0);
+    }
+    dst.taxiDaily = Number(dst.taxiDaily || 0) + Number(src.taxiDaily || 0);
+    dst.vacationPay = Number(dst.vacationPay || 0) + Number(src.vacationPay || 0);
+    dst.taxes = Number(dst.taxes || 0) + Number(src.taxes || 0);
+    dst.issued = !!(dst.issued || src.issued);
+}
+
+function emptySalaryRecord() {
+    return {
+        fines: 0, bonus: 0, advance: 0, products: 0, skipFine: null,
+        taxiDaily: 0, vacationPay: 0, taxes: 0, issued: false
+    };
+}
+
+function normalizeSalaryRecord(rec) {
+    const next = emptySalaryRecord();
+    if (!rec || typeof rec !== "object") return next;
+    next.fines = Number(rec.fines || 0);
+    next.bonus = Number(rec.bonus || 0);
+    next.advance = Number(rec.advance || 0);
+    next.products = Number(rec.products || 0);
+    next.taxiDaily = Number(rec.taxiDaily || 0);
+    next.vacationPay = Number(rec.vacationPay || 0);
+    next.taxes = Number(rec.taxes || 0);
+    next.issued = !!rec.issued;
+    next.skipFine = rec.skipFine === null || rec.skipFine === undefined || rec.skipFine === ""
+        ? null
+        : Number(rec.skipFine);
+    return next;
+}
+
+function cloneEmployeeRecord(src) {
+    return {
+        id: generateId(),
+        name: src.name,
+        position: src.position || "",
+        department: src.department || "",
+        start: src.start || "08:00",
+        end: src.end || "17:00",
+        rate: parseHours(src.rate, 0),
+        taxiDaily: parseHours(src.taxiDaily, 0),
+        jobStatus: src.jobStatus === "fired" ? "fired" : "working",
+        terms: src.terms && typeof src.terms === "object" ? Object.assign({}, src.terms) : {}
+    };
+}
+
+function timesheetFillCount(w, empId) {
+    let n = 0;
+    Object.keys(w.timesheet || {}).forEach(function (month) {
+        const days = w.timesheet[month] && w.timesheet[month][empId];
+        if (!days) return;
+        Object.keys(days).forEach(function (day) {
+            if (days[day] && days[day].status) n++;
+        });
+    });
+    return n;
+}
+
+function removeEmployeeFromWorkspace(w, employeeId) {
+    w.employees = (w.employees || []).filter(function (e) { return e.id !== employeeId; });
+    w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employeeId; });
+    Object.keys(w.timesheet || {}).forEach(function (month) {
+        if (w.timesheet[month]) delete w.timesheet[month][employeeId];
+    });
+}
+
+function employeeFingerprint(e) {
+    const name = String(e.name || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!name || name === "новый сотрудник") return "";
+    return [
+        name,
+        String(e.position || "").replace(/\s+/g, " ").trim().toLowerCase(),
+        String(e.rate || 0),
+        e.start || "",
+        e.end || ""
+    ].join("|");
+}
+
+function belongsToWorkspace(w, employeeId) {
+    return (w.employees || []).some(function (e) { return e.id === employeeId; });
+}
+
+function distributeEmployeesPerDepartment(data) {
+    const owned = {};
+
+    data.workspaces.forEach(function (w) {
+        if (w.type === "summary") {
+            w.employees = [];
+            w.employeeIds = [];
+            return;
+        }
+
+        const unique = [];
+        const localIds = {};
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id || localIds[e.id]) return;
+            if (owned[e.id] && owned[e.id] !== w) return;
+            localIds[e.id] = true;
+            owned[e.id] = w;
+            unique.push(e);
+        });
+        w.employees = unique;
+
+        const nextIds = [];
+        (w.employeeIds || []).forEach(function (id) {
+            if (!id || nextIds.indexOf(id) !== -1) return;
+            if (owned[id] && owned[id] !== w) return;
+
+            if (!belongsToWorkspace(w, id)) {
+                const src = (data.employees || []).find(function (e) { return e.id === id; });
+                if (!src) return;
+                if (owned[id] && owned[id] !== w) return;
+                const copy = cloneEmployeeRecord(src);
+                copy.id = src.id;
+                w.employees.push(copy);
+                owned[id] = w;
+            }
+            nextIds.push(id);
+        });
+        w.employeeIds = nextIds.filter(function (id) {
+            return belongsToWorkspace(w, id);
+        });
+    });
+
+    data.employees = [];
+    dedupeClonedEmployees(data);
+}
+
+function dedupeClonedEmployees(data) {
+    const depts = data.workspaces.filter(function (w) { return w.type !== "summary"; });
+    const groups = {};
+
+    depts.forEach(function (w) {
+        (w.employees || []).forEach(function (e) {
+            const key = employeeFingerprint(e);
+            if (!key) return;
+            if (!groups[key]) groups[key] = [];
+            groups[key].push({ w: w, e: e });
+        });
+    });
+
+    Object.keys(groups).forEach(function (key) {
+        const items = groups[key];
+        if (items.length < 2) return;
+
+        let best = items[0];
+        let bestScore = timesheetFillCount(best.w, best.e.id);
+        items.forEach(function (item, index) {
+            if (index === 0) return;
+            const score = timesheetFillCount(item.w, item.e.id);
+            if (score > bestScore) {
+                best = item;
+                bestScore = score;
+            }
+        });
+
+        items.forEach(function (item) {
+            if (item.w === best.w && item.e.id === best.e.id) return;
+            removeEmployeeFromWorkspace(item.w, item.e.id);
+        });
+    });
+}
+
+function ensureUniqueWorkspaceIds(data) {
+    const seen = {};
+    data.workspaces.forEach(function (w) {
+        if (!w.id || seen[w.id]) w.id = generateId();
+        seen[w.id] = true;
+    });
+}
+
+function splitDuplicateWorkspaceRefs(data) {
+    const seen = [];
+    data.workspaces = (data.workspaces || []).map(function (w) {
+        if (!w) return createWorkspace("Таблица", "0000", "dept", "");
+        if (seen.indexOf(w) !== -1) {
+            return createWorkspace(w.name || "Таблица", w.pin || "0000", w.type || "dept", w.code || "");
+        }
+        seen.push(w);
+        return w;
+    });
+}
+
+function assignUniqueDeptCodes(data) {
+    const depts = data.workspaces.filter(function (w) { return w.type !== "summary"; });
+    const assigned = {};
+
+    function isTaken(w) {
+        return DEPT_DEFAULTS.some(function (d) { return assigned[d.code] === w; });
+    }
+
+    DEPT_DEFAULTS.forEach(function (def) {
+        const hit = depts.find(function (w) {
+            return w.code === def.code && !isTaken(w);
+        });
+        if (hit) assigned[def.code] = hit;
+    });
+
+    depts.forEach(function (w) {
+        if (isTaken(w)) return;
+        const def = DEPT_DEFAULTS.find(function (d) { return !assigned[d.code]; });
+        if (!def) {
+            w._extraDept = true;
+            return;
+        }
+        w.code = def.code;
+        assigned[def.code] = w;
+    });
+
+    DEPT_DEFAULTS.forEach(function (def) {
+        const w = assigned[def.code];
+        if (w) {
+            w.code = def.code;
+            w.type = "dept";
+        }
+    });
+
+    data.workspaces = data.workspaces.filter(function (w) { return !w._extraDept; });
+}
+
+function isolateSharedCollections(data) {
+    const seenEmp = [];
+    const seenIds = [];
+    const seenTs = [];
+
+    data.workspaces.forEach(function (w) {
+        if (w.type === "summary") {
+            w.employees = [];
+            w.employeeIds = [];
+            return;
+        }
+        if (!Array.isArray(w.employees)) w.employees = [];
+        if (seenEmp.indexOf(w.employees) !== -1) w.employees = [];
+        else seenEmp.push(w.employees);
+
+        if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
+        if (seenIds.indexOf(w.employeeIds) !== -1) w.employeeIds = [];
+        else seenIds.push(w.employeeIds);
+
+        if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
+        if (seenTs.indexOf(w.timesheet) !== -1) w.timesheet = {};
+        else seenTs.push(w.timesheet);
+    });
+
+    const seenPeople = [];
+    data.workspaces.forEach(function (w) {
+        if (w.type === "summary") return;
+        w.employees = (w.employees || []).filter(function (e) {
+            if (!e) return false;
+            if (seenPeople.indexOf(e) !== -1) return false;
+            seenPeople.push(e);
+            return true;
+        });
+        w.employeeIds = (w.employeeIds || []).filter(function (id) {
+            return (w.employees || []).some(function (e) { return e.id === id; });
+        });
+    });
+}
+
+function repairFourDepartments(data) {
+    splitDuplicateWorkspaceRefs(data);
+    ensureUniqueWorkspaceIds(data);
+    isolateSharedCollections(data);
+
+    data.workspaces.forEach(function (w) {
+        if (!w.type) w.type = "dept";
+    });
+
+    assignUniqueDeptCodes(data);
+
+    DEPT_DEFAULTS.forEach(function (def) {
+        let w = data.workspaces.find(function (x) {
+            return x.type !== "summary" && x.code === def.code;
+        });
+        if (!w) {
+            w = createWorkspace(def.name, def.pin, "dept", def.code);
+            data.workspaces.push(w);
+            return;
+        }
+        w.type = "dept";
+        w.code = def.code;
+        w.name = def.name;
+        if (!w.pin || (def.code !== "shop" && w.pin === "1111")) w.pin = def.pin;
+        if (!Array.isArray(w.employees)) w.employees = [];
+        if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
+        if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
+        w.employees.forEach(function (e) {
+            if (!e) return;
+            const names = DEPT_DEFAULTS.map(function (d) { return d.name; });
+            if (!e.department || names.indexOf(e.department) !== -1) e.department = def.name;
+        });
+    });
+
+    let summary = data.workspaces.find(function (w) { return w.type === "summary"; });
+    if (!summary) {
+        summary = createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code);
+        data.workspaces.push(summary);
+    }
+    summary.type = "summary";
+    summary.code = SUMMARY_DEFAULT.code;
+    summary.name = SUMMARY_DEFAULT.name;
+    if (!summary.pin || summary.pin === "1111") summary.pin = SUMMARY_DEFAULT.pin;
+    ensureSummaryPins(summary);
+    summary.employees = [];
+    summary.employeeIds = [];
+
+    const byCode = {};
+    data.workspaces.forEach(function (w) { if (w.code) byCode[w.code] = w; });
+    const ordered = [];
+    DEPT_DEFAULTS.forEach(function (d) {
+        if (byCode[d.code]) ordered.push(byCode[d.code]);
+    });
+    if (byCode.summary) ordered.push(byCode.summary);
+    data.workspaces.forEach(function (w) {
+        if (ordered.indexOf(w) === -1) ordered.push(w);
+    });
+    data.workspaces = ordered;
+    isolateSharedCollections(data);
+}
+
+function workspaceTitle(w) {
+    if (!w) return "";
+    if (w.type === "summary" || w.code === "summary") return "Общая сводка";
+    return officialName(w);
+}
+
+function loginCatalog() {
+    return DEPT_DEFAULTS.concat([SUMMARY_DEFAULT]);
+}
+
+function renderDeptNow() {
+    const box = document.getElementById("deptNow");
+    if (!box) return;
+    const current = workspace();
+    if (!current) {
+        box.innerHTML = "";
+        return;
+    }
+
+    const code = current.code || (isSummary() ? "summary" : "");
+    const hint = isSummary()
+        ? (currentSummaryRole === "admin"
+            ? "Анна Владимировна · ставка за день и такси"
+            : currentSummaryRole === "adjust"
+                ? "Ольга · штрафы, прогулы, продукты, аванс и налоги"
+                : currentSummaryRole === "pay"
+                    ? "Наталья · только отметка «Выдано»"
+                    : "Сводка по Магазину, Офису, Складу и Водителям")
+        : (currentDeptRole === "admin"
+            ? "Анна Владимировна · админ. Настройки доступны."
+            : "Свои сотрудники. Другие отделы сюда не входят.");
+
+    const title = isSummary() ? "Общая" : officialName(current);
+
+    box.innerHTML = ""
+        + '<div class="dept-now-label">Сейчас открыт</div>'
+        + '<div class="dept-now-current ' + escapeHtml(code) + '">' + escapeHtml(title) + "</div>"
+        + '<div class="dept-now-hint">' + hint + "</div>";
+}
+
+function migrateAppData(data) {
+    if (!Array.isArray(data.employees)) data.employees = [];
+    if (!data.salary || typeof data.salary !== "object") data.salary = {};
+    if (!data.repSales || typeof data.repSales !== "object") data.repSales = {};
+    if (!Array.isArray(data.workspaces)) data.workspaces = [];
+
+    data.workspaces.forEach(function (w) {
+        normalizeWorkspace(w);
+
+        if (w.salary && typeof w.salary === "object") {
+            Object.keys(w.salary).forEach(function (month) {
+                if (!data.salary[month]) data.salary[month] = {};
+                Object.keys(w.salary[month] || {}).forEach(function (empId) {
+                    const src = w.salary[month][empId] || {};
+                    if (!data.salary[month][empId]) {
+                        data.salary[month][empId] = normalizeSalaryRecord(src);
+                    } else {
+                        mergeSalaryRecord(data.salary[month][empId], src);
+                    }
+                });
+            });
+            delete w.salary;
+        }
+    });
+
+    (data.employees || []).forEach(normalizeEmployee);
+    Object.keys(data.salary).forEach(function (month) {
+        Object.keys(data.salary[month] || {}).forEach(function (empId) {
+            data.salary[month][empId] = normalizeSalaryRecord(data.salary[month][empId]);
+        });
+    });
+    repairFourDepartments(data);
+    data.workspaces.forEach(normalizeWorkspace);
+    distributeEmployeesPerDepartment(data);
+    repairFourDepartments(data);
+    data.workspaces.forEach(function (w) {
+        (w.employees || []).forEach(function (e) {
+            if (Number(e.taxiDaily || 0)) return;
+            Object.keys(data.salary || {}).forEach(function (month) {
+                const rec = data.salary[month] && data.salary[month][e.id];
+                if (rec && Number(rec.taxiDaily || 0) > Number(e.taxiDaily || 0)) {
+                    e.taxiDaily = Number(rec.taxiDaily);
+                }
+            });
+        });
+    });
+    return data;
+}
+
+function loadAppData() {
+    try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) {
+            const fresh = createDefaultData();
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+            return fresh;
+        }
+        const parsed = JSON.parse(raw);
+        if (!parsed || !Array.isArray(parsed.workspaces) || !parsed.workspaces.length) {
+            throw new Error("bad structure");
+        }
+        const migrated = migrateAppData(parsed);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+        return migrated;
+    } catch (err) {
+        console.error(err);
+        toast("Не удалось прочитать сохранённые данные. Открыта пустая копия.", "error");
+        return createDefaultData();
+    }
+}
+
+function saveApp() {
+    try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+    } catch (err) {
+        console.error(err);
+        toast("Не удалось сохранить данные.", "error");
+    }
+}
+
+
+/* ============================================================
+   МЕСЯЦ, ДНИ, ЗАКЛАДКИ
+============================================================ */
+function daysInMonthValue(monthValue) {
+    const parts = String(monthValue).split("-").map(Number);
+    return new Date(parts[0], parts[1], 0).getDate();
+}
+
+function daysInMonth() {
+    return daysInMonthValue(selectedMonth);
+}
+
+function dateOfDay(day) {
+    const parts = selectedMonth.split("-").map(Number);
+    return new Date(parts[0], parts[1] - 1, day);
+}
+
+function isWeekend(day) {
+    const wd = dateOfDay(day).getDay();
+    return wd === 0 || wd === 6;
+}
+
+function weekdayName(day) {
+    return WEEKDAYS[dateOfDay(day).getDay()];
+}
+
+function isToday(day) {
+    const now = new Date();
+    return selectedMonth === currentMonthValue() && day === now.getDate();
+}
+
+function monthLabel(monthValue) {
+    const parts = String(monthValue || "").split("-").map(Number);
+    if (parts.length < 2 || !parts[0] || !parts[1]) return "";
+    return MONTH_FULL[parts[1] - 1] + " " + parts[0];
+}
+
+function shiftMonth(monthValue, delta) {
+    const parts = String(monthValue).split("-").map(Number);
+    const d = new Date(parts[0], parts[1] - 1 + delta, 1);
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+
+function renderMonthTabs() {
+    const parts = selectedMonth.split("-").map(Number);
+    const year = parts[0];
+    const month = parts[1];
+    document.getElementById("yearLabel").textContent = year;
+
+    document.getElementById("monthTabs").innerHTML = MONTH_SHORT.map(function (name, i) {
+        const value = year + "-" + String(i + 1).padStart(2, "0");
+        const active = (i + 1) === month ? " active" : "";
+        return '<button type="button" class="month-tab' + active + '" onclick="changeMonth(\'' + value + '\')">' + name + "</button>";
+    }).join("");
+}
+
+function shiftYear(delta) {
+    const parts = selectedMonth.split("-").map(Number);
+    changeMonth((parts[0] + delta) + "-" + String(parts[1]).padStart(2, "0"));
+}
+
+
+/* ============================================================
+   СОТРУДНИКИ И ОТДЕЛЫ
+============================================================ */
+function findEmployeeIn(w, id) {
+    return (w.employees || []).find(function (e) { return e.id === id; });
+}
+
+function getEmployee(id) {
+    if (currentWorkspaceIndex !== null && workspace() && workspace().type !== "summary") {
+        const local = findEmployeeIn(workspace(), id);
+        if (local) return local;
+    }
+    let found = null;
+    appData.workspaces.forEach(function (w) {
+        if (found) return;
+        const e = findEmployeeIn(w, id);
+        if (e) found = e;
+    });
+    return found;
+}
+
+function directoryEmployees(w) {
+    return ((w || workspace()).employees || []).slice().sort(compareEmployeesByStatusThenName);
+}
+
+function assignedIds(w) {
+    return (w || workspace()).employeeIds || [];
+}
+
+function isAssignedTo(w, employeeId) {
+    return assignedIds(w).indexOf(employeeId) !== -1;
+}
+
+function visibleEmployees() {
+    if (isSummary()) {
+        const groups = summaryEmployeeGroups();
+        const list = [];
+        groups.forEach(function (g) {
+            g.employees.forEach(function (e) { list.push(e); });
+        });
+        if (summarySortMode === "name") list.sort(compareEmployeesByStatusThenName);
+        return list;
+    }
+    const ids = assignedIds();
+    return directoryEmployees().filter(function (e) {
+        return ids.indexOf(e.id) !== -1;
+    });
+}
+
+function employeeHome(employeeId) {
+    return deptWorkspaces().find(function (w) {
+        return (w.employees || []).some(function (e) { return e.id === employeeId; });
+    }) || null;
+}
+
+function employeeDepartments(employeeId) {
+    const home = employeeHome(employeeId);
+    return home ? [home] : [];
+}
+
+function departmentBadges(employeeId) {
+    const home = employeeHome(employeeId);
+    if (!home) return '<span class="note">нет отдела</span>';
+    return '<span class="dept-badge">' + escapeHtml(officialName(home)) + "</span>";
+}
+
+function isSalesRep(employee) {
+    if (!employee) return false;
+    const home = employeeHome(employee.id);
+    const pos = String(employee.position || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return !!(home && home.code === "drivers" && pos === SALES_REP_POSITION.toLowerCase());
+}
+
+function emptyRepSales() {
+    return { totalSales: 0, wholesale: 0, specialPrice: 0, sugar: 0, bags: 0, fuel: 0 };
+}
+
+function normalizeRepSales(rec) {
+    const next = emptyRepSales();
+    if (!rec || typeof rec !== "object") return next;
+    next.totalSales = parseMoney2(rec.totalSales, 0);
+    next.wholesale = parseMoney2(rec.wholesale, 0);
+    next.specialPrice = parseMoney2(rec.specialPrice, 0);
+    next.sugar = parseMoney2(rec.sugar, 0);
+    next.bags = parseDecimal(rec.bags, 0);
+    next.fuel = parseMoney2(rec.fuel, 0);
+    return next;
+}
+
+function peekRepSales(employeeId, monthValue) {
+    const month = monthValue || selectedMonth;
+    const rec = appData && appData.repSales && appData.repSales[month] && appData.repSales[month][employeeId];
+    return normalizeRepSales(rec);
+}
+
+function ensureRepSales(employeeId) {
+    if (!appData.repSales || typeof appData.repSales !== "object") appData.repSales = {};
+    if (!appData.repSales[selectedMonth]) appData.repSales[selectedMonth] = {};
+    appData.repSales[selectedMonth][employeeId] = normalizeRepSales(appData.repSales[selectedMonth][employeeId]);
+    return appData.repSales[selectedMonth][employeeId];
+}
+
+function canEditRepSales() {
+    return isSummary() && currentSummaryRole === "admin";
+}
+
+function calculateRepPay(input) {
+    const totalSales = parseMoney2(input.totalSales, 0);
+    const wholesale = parseMoney2(input.wholesale, 0);
+    const specialPrice = parseMoney2(input.specialPrice, 0);
+    const sugar = parseMoney2(input.sugar, 0);
+    const bags = parseDecimal(input.bags, 0);
+    const fuel = parseMoney2(input.fuel, 0);
+    const percent = normalizeRepPercent(input.percent);
+    const excluded = roundMoney2(wholesale + specialPrice + sugar);
+    const baseOverflow = excluded > totalSales;
+    let base = roundMoney2(totalSales - wholesale - specialPrice - sugar);
+    if (base < 0) base = 0;
+    const wholesalePay = roundMoney2(wholesale * 0.02);
+    const specialPay = roundMoney2(specialPrice * 0.01);
+    const bagsPay = roundMoney2(bags * REP_BAG_PAY);
+    const mainPay = roundMoney2(base * (percent / 100));
+    const accruedTotal = roundMoney2(mainPay + wholesalePay + specialPay + bagsPay);
+    const prelim = roundMoney2(accruedTotal - fuel);
+    return {
+        totalSales: totalSales,
+        wholesale: wholesale,
+        specialPrice: specialPrice,
+        sugar: sugar,
+        bags: bags,
+        fuel: fuel,
+        percent: percent,
+        base: base,
+        baseOverflow: baseOverflow,
+        wholesalePay: wholesalePay,
+        specialPay: specialPay,
+        bagsPay: bagsPay,
+        mainPay: mainPay,
+        accruedTotal: accruedTotal,
+        prelim: prelim
+    };
+}
+
+function scheduledWeekdaysInMonth() {
+    const days = daysInMonth();
+    let n = 0;
+    for (let day = 1; day <= days; day++) {
+        if (!isWeekend(day)) n++;
+    }
+    return n;
+}
+
+function repTimesheetDays(employeeId) {
+    const home = employeeHome(employeeId) || findWorkspaceByCode("drivers");
+    const scheduled = scheduledWeekdaysInMonth();
+    let worked = 0;
+    let vacation = 0;
+    let otherUnpaid = 0;
+    const days = daysInMonth();
+    for (let day = 1; day <= days; day++) {
+        if (isWeekend(day)) continue;
+        const status = home ? (peekDayRecordIn(home, employeeId, day).status || "") : "";
+        if (status === "Я" || status === "О") worked++;
+        else if (status === "ОТ") vacation++;
+        else otherUnpaid++;
+    }
+    return {
+        scheduled: scheduled,
+        worked: worked,
+        unworked: scheduled - worked,
+        vacation: vacation,
+        otherUnpaid: otherUnpaid
+    };
+}
+
+function calculateSalesRep(employee, monthOverride) {
+    const monthKeep = selectedMonth;
+    if (monthOverride) selectedMonth = monthOverride;
+    const terms = getEmployeeTerms(employee);
+    const sales = peekRepSales(employee.id);
+    const pay = calculateRepPay({
+        totalSales: sales.totalSales,
+        wholesale: sales.wholesale,
+        specialPrice: sales.specialPrice,
+        sugar: sales.sugar,
+        bags: sales.bags,
+        fuel: sales.fuel,
+        percent: terms.salesPercent
+    });
+    const days = repTimesheetDays(employee.id);
+    const dayCost = days.scheduled > 0 ? roundMoney2(pay.prelim / days.scheduled) : 0;
+    const dayHold = roundMoney2(dayCost * days.unworked);
+    const afterDays = roundMoney2(pay.prelim - dayHold);
+    if (monthOverride) selectedMonth = monthKeep;
+    return Object.assign({}, pay, days, {
+        dayCost: dayCost,
+        dayHold: dayHold,
+        afterDays: afterDays
+    });
+}
+
+function listSalesReps() {
+    const w = findWorkspaceByCode("drivers");
+    if (!w) return [];
+    return (w.employees || []).filter(function (e) {
+        return isSalesRep(e) && includeInMonthPayroll(e);
+    }).sort(compareEmployeesByStatusThenName);
+}
+
+
+/* ============================================================
+   ЗАПИСИ ТАБЕЛЯ И ОБЩЕЙ ЗАРПЛАТЫ
+============================================================ */
+function ensureMonthIn(w) {
+    if (!w.timesheet[selectedMonth]) w.timesheet[selectedMonth] = {};
+}
+
+function ensureEmployeeTimesheet(w, employeeId) {
+    ensureMonthIn(w);
+    if (!w.timesheet[selectedMonth][employeeId]) {
+        w.timesheet[selectedMonth][employeeId] = {};
+    }
+}
+
+function peekDayRecordIn(w, employeeId, day) {
+    const rec = w.timesheet[selectedMonth]
+        && w.timesheet[selectedMonth][employeeId]
+        && w.timesheet[selectedMonth][employeeId][day];
+    return rec || { status: "", hours: "", lateMinutes: 0 };
+}
+
+function getDayRecord(employeeId, day) {
+    const w = workspace();
+    if (w.type === "summary" || !belongsToWorkspace(w, employeeId)) return { status: "", hours: "", lateMinutes: 0 };
+    ensureEmployeeTimesheet(w, employeeId);
+    const days = w.timesheet[selectedMonth][employeeId];
+    if (!days[day]) days[day] = { status: "", hours: "", lateMinutes: 0 };
+    return days[day];
+}
+
+function ensureSalary(employeeId) {
+    if (!appData.salary[selectedMonth]) appData.salary[selectedMonth] = {};
+    appData.salary[selectedMonth][employeeId] = normalizeSalaryRecord(
+        appData.salary[selectedMonth][employeeId]
+    );
+    return appData.salary[selectedMonth][employeeId];
+}
+
+function emptyTotals() {
+    return {
+        hours: 0, ya: 0, lateCount: 0, lateMinutes: 0,
+        sick: 0, vacation: 0, weekend: 0, skip: 0, personal: 0,
+        earlyDays: 0
+    };
+}
+
+function addTimesheetTotals(employeeId, w, acc) {
+    const days = daysInMonth();
+    for (let day = 1; day <= days; day++) {
+        const record = peekDayRecordIn(w, employeeId, day);
+        if (record.status === "Я") {
+            acc.ya++;
+            acc.hours += Number(record.hours || 0);
+            if (allowsEarly730(w) && record.early730) acc.earlyDays++;
+        }
+        if (record.status === "О") {
+            acc.lateCount++;
+            acc.lateMinutes += Number(record.lateMinutes || 0);
+            acc.hours += Number(record.hours || 0);
+        }
+        if (record.status === "Б") acc.sick++;
+        if (record.status === "ОТ") acc.vacation++;
+        if (record.status === "В") acc.weekend++;
+        if (record.status === "П") acc.skip++;
+        if (record.status === "Л") acc.personal++;
+    }
+}
+
+function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
+    const monthKeep = selectedMonth;
+    if (monthOverride) selectedMonth = monthOverride;
+
+    const employee = getEmployee(employeeId);
+    const scopes = workspacesOverride || (isSummary()
+        ? employeeDepartments(employeeId)
+        : [workspace()]);
+
+    const acc = emptyTotals();
+    scopes.forEach(function (w) {
+        addTimesheetTotals(employeeId, w, acc);
+    });
+
+    const workedDays = acc.ya + acc.lateCount;
+    const terms = getEmployeeTerms(employee);
+    const rate = terms.rate;
+    const sales = isSalesRep(employee) ? calculateSalesRep(employee) : null;
+    const accrued = sales ? sales.afterDays : Math.round(workedDays * rate);
+    const lateAmount = Math.round(rate * acc.lateMinutes / 480);
+    const adj = normalizeSalaryRecord(appData.salary[selectedMonth] && appData.salary[selectedMonth][employeeId]);
+    const fines = parseMoney(adj.fines, 0);
+    const bonus = parseMoney(adj.bonus, 0);
+    const advance = parseMoney(adj.advance, 0);
+    const products = parseMoney(adj.products, 0);
+    const taxiDaily = terms.taxiDaily;
+    const vacationPay = parseMoney(adj.vacationPay, 0);
+    const taxes = parseMoney(adj.taxes, 0);
+    const taxiTotal = Math.round(taxiDaily * workedDays);
+    const skipFine = adj.skipFine == null ? acc.skip * SKIP_FINE_PER_DAY : parseMoney(adj.skipFine, 0);
+    const earlyPay = acc.earlyDays * EARLY_730_PAY;
+    const bonusTotal = bonus + earlyPay;
+    const pay = accrued - lateAmount - fines - skipFine - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
+
+    if (monthOverride) selectedMonth = monthKeep;
+
+    return {
+        hours: acc.hours,
+        ya: acc.ya,
+        lateCount: acc.lateCount,
+        lateMinutes: acc.lateMinutes,
+        sick: acc.sick,
+        vacation: acc.vacation,
+        weekend: acc.weekend,
+        skip: acc.skip,
+        personal: acc.personal,
+        workedDays: workedDays,
+        rate: rate,
+        accrued: accrued,
+        salesRep: !!sales,
+        lateAmount: lateAmount,
+        fines: fines,
+        skipFine: skipFine,
+        bonus: bonus,
+        earlyDays: acc.earlyDays,
+        earlyPay: earlyPay,
+        bonusTotal: bonusTotal,
+        advance: advance,
+        products: products,
+        taxiDaily: taxiDaily,
+        taxiTotal: taxiTotal,
+        vacationPay: vacationPay,
+        taxes: taxes,
+        issued: !!adj.issued,
+        pay: pay
+    };
+}
+
+function departmentMonthTotals(w, monthValue) {
+    const keep = selectedMonth;
+    selectedMonth = monthValue;
+    let hours = 0;
+    let late = 0;
+    let accrued = 0;
+    let pay = 0;
+    const ids = assignedIds(w).slice();
+    if (w.code === "drivers") {
+        (w.employees || []).forEach(function (e) {
+            if (isSalesRep(e) && ids.indexOf(e.id) === -1) ids.push(e.id);
+        });
+    }
+    ids.forEach(function (id) {
+        const data = calculateEmployee(id, monthValue, [w]);
+        hours += data.hours;
+        late += data.lateCount;
+        accrued += data.accrued;
+        pay += data.pay;
+    });
+    selectedMonth = keep;
+    return { count: ids.length, hours: hours, late: late, accrued: accrued, pay: pay };
+}
+
+function uniqueAssignedEmployees() {
+    const list = [];
+    const seen = {};
+    deptWorkspaces().forEach(function (w) {
+        assignedIds(w).forEach(function (id) {
+            const e = findEmployeeIn(w, id);
+            if (!e || seen[e.id]) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+        if (w.code === "drivers") {
+            (w.employees || []).forEach(function (e) {
+                if (!isSalesRep(e) || !includeInMonthPayroll(e) || seen[e.id]) return;
+                seen[e.id] = true;
+                list.push(e);
+            });
+        }
+    });
+    return list;
+}
+
+function summaryMonthMoney(monthValue) {
+    let hours = 0;
+    let late = 0;
+    let accrued = 0;
+    let pay = 0;
+    uniqueAssignedEmployees().forEach(function (employee) {
+        const data = calculateEmployee(employee.id, monthValue, employeeDepartments(employee.id));
+        hours += data.hours;
+        late += data.lateCount;
+        accrued += data.accrued;
+        pay += data.pay;
+    });
+    return { count: uniqueAssignedEmployees().length, hours: hours, late: late, accrued: accrued, pay: pay };
+}
+
+
+/* ============================================================
+   ВХОД И СЕССИЯ
+============================================================ */
+function renderLogin() {
+    const defs = DEPT_DEFAULTS;
+    const summary = findWorkspaceByCode("summary");
+    if (summary) ensureSummaryPins(summary);
+    const showHint = defs.every(function (d) {
+        const w = findWorkspaceByCode(d.code);
+        return w && w.pin === d.pin;
+    }) && summary && summary.rolePins
+        && summary.rolePins.admin === "5555"
+        && summary.rolePins.adjust === "6666"
+        && summary.rolePins.pay === "7777";
+
+    document.getElementById("defaultPinHint").textContent = showHint
+        ? " Отделы: сотрудник — PIN отдела, админ — 5555. Общая: 5555 / 6666 / 7777."
+        : "";
+
+    let html = defs.map(function (d) {
+        return ""
+            + '<div class="login-card ' + d.code + '" id="loginCard_' + d.code + '">'
+            +   "<h3>" + escapeHtml(d.name) + "</h3>"
+            +   '<div class="note">Выберите, кто входит</div>'
+            +   '<select id="loginWho_' + d.code + '">'
+            +     '<option value="staff">Сотрудник отдела</option>'
+            +     '<option value="admin">Анна Владимировна — админ</option>'
+            +   "</select>"
+            +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="12" autocomplete="off"'
+            +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
+            +   '<div class="login-error" id="loginError_' + d.code + '"></div>'
+            +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginByCode(\'' + d.code + '\')">Войти</button>'
+            + "</div>";
+    }).join("");
+
+    html += ""
+        + '<div class="login-card summary summary-card" id="loginCard_summary">'
+        +   "<h3>Общая</h3>"
+        +   '<div class="note">Выберите, кто входит, и введите PIN</div>'
+        +   '<select id="loginSummaryWho">'
+        +     '<option value="admin">Анна Владимировна — админ</option>'
+        +     '<option value="adjust">Ольга — удержания</option>'
+        +     '<option value="pay">Наталья — выдача</option>'
+        +   "</select>"
+        +   '<input type="password" id="loginPin_summary" placeholder="PIN" maxlength="12" autocomplete="off"'
+        +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginSummary()}">'
+        +   '<div class="login-error" id="loginError_summary"></div>'
+        +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginSummary()">Войти</button>'
+        + "</div>";
+    document.getElementById("loginGrid").innerHTML = html;
+}
+
+function loginByCode(code) {
+    const input = document.getElementById("loginPin_" + code);
+    const error = document.getElementById("loginError_" + code);
+    const card = document.getElementById("loginCard_" + code);
+    const who = document.getElementById("loginWho_" + code);
+    const role = (who && who.value) || "staff";
+    const entered = ((input && input.value) || "").trim();
+    const w = findWorkspaceByCode(code);
+
+    if (card) card.classList.remove("error");
+    if (error) error.textContent = "";
+
+    const expected = role === "admin" ? adminPin() : (w && w.pin);
+    if (!w || entered !== expected) {
+        if (card) card.classList.add("error");
+        if (error) error.textContent = "Неверный PIN-код.";
+        if (input) {
+            input.focus();
+            input.select();
+        }
+        return;
+    }
+
+    w.code = code;
+    if (code === "summary") {
+        loginSummary();
+        return;
+    }
+    w.type = "dept";
+    const def = DEPT_DEFAULTS.find(function (d) { return d.code === code; });
+    if (def) w.name = def.name;
+    setCurrentWorkspace(w);
+    currentSummaryRole = null;
+    currentDeptRole = role === "admin" ? "admin" : "staff";
+    selectedMonth = currentMonthValue();
+    currentSection = "timesheet";
+    saveSession();
+    openApp();
+}
+
+function loginSummary() {
+    const who = document.getElementById("loginSummaryWho");
+    const role = (who && who.value) || "admin";
+    const info = summaryRoleInfo(role);
+    const input = document.getElementById("loginPin_summary");
+    const error = document.getElementById("loginError_summary");
+    const card = document.getElementById("loginCard_summary");
+    const entered = ((input && input.value) || "").trim();
+    const w = findWorkspaceByCode("summary");
+    if (w) ensureSummaryPins(w);
+    const expected = w && w.rolePins ? w.rolePins[info.role] : info.pin;
+
+    if (card) card.classList.remove("error");
+    if (error) error.textContent = "";
+
+    if (!w || entered !== expected) {
+        if (card) card.classList.add("error");
+        if (error) error.textContent = "Неверный PIN-код.";
+        if (input) {
+            input.focus();
+            input.select();
+        }
+        return;
+    }
+
+    w.code = "summary";
+    w.type = "summary";
+    w.name = SUMMARY_DEFAULT.name;
+    setCurrentWorkspace(w);
+    currentSummaryRole = info.role;
+    currentDeptRole = null;
+    selectedMonth = currentMonthValue();
+    currentSection = info.role === "pay" ? "salary" : (info.role === "adjust" ? "salary" : "summaryStaff");
+    saveSession();
+    openApp();
+}
+
+function loginById(id) {
+    const w = ((appData && appData.workspaces) || []).find(function (x) { return x.id === id; });
+    if (!w) return;
+    setCurrentWorkspace(w);
+    if (w.type === "summary") {
+        currentSummaryRole = currentSummaryRole || "admin";
+        currentDeptRole = null;
+        currentSection = currentSummaryRole === "admin" ? "summaryStaff" : "timesheet";
+    } else {
+        currentSummaryRole = null;
+        currentDeptRole = currentDeptRole || "staff";
+        currentSection = "timesheet";
+    }
+    selectedMonth = currentMonthValue();
+    saveSession();
+    openApp();
+}
+
+function login(index) {
+    const d = loginCatalog()[index];
+    if (d) loginByCode(d.code);
+}
+
+function openApp() {
+    document.getElementById("loginScreen").style.display = "none";
+    document.getElementById("app").style.display = "flex";
+    loadWorkspace();
+}
+
+function saveSession() {
+    if (!workspace()) return;
+    try {
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({
+            code: workspace().code,
+            id: workspace().id,
+            month: selectedMonth,
+            section: currentSection,
+            summaryRole: currentSummaryRole,
+            deptRole: currentDeptRole
+        }));
+    } catch (err) {}
+}
+
+function logout() {
+    setCurrentWorkspace(null);
+    currentSummaryRole = null;
+    currentDeptRole = null;
+    currentSection = "timesheet";
+    selectedMonth = currentMonthValue();
+    try { sessionStorage.removeItem(SESSION_KEY); } catch (err) {}
+    closeSidebar();
+    document.getElementById("app").style.display = "none";
+    document.getElementById("loginScreen").style.display = "flex";
+    renderLogin();
+}
+
+function tryRestoreSession() {
+    try {
+        const raw = sessionStorage.getItem(SESSION_KEY);
+        if (raw === null) return;
+        let code = null;
+        let id = null;
+        if (raw.charAt(0) === "{") {
+            const saved = JSON.parse(raw);
+            code = saved.code || null;
+            id = saved.id;
+            if (saved.month) selectedMonth = saved.month;
+            if (saved.section) currentSection = saved.section;
+            if (saved.summaryRole) currentSummaryRole = saved.summaryRole;
+            if (saved.deptRole) currentDeptRole = saved.deptRole;
+            if (saved.index !== undefined && !id && !code) {
+                currentWorkspaceIndex = Number(saved.index);
+            }
+        } else {
+            currentWorkspaceIndex = Number(raw);
+        }
+        let w = null;
+        if (id) {
+            w = ((appData && appData.workspaces) || []).find(function (x) { return x.id === id; }) || null;
+        }
+        if (!w && code) w = findWorkspaceByCode(code);
+        if (!w && currentWorkspaceIndex !== null) w = appData.workspaces[currentWorkspaceIndex] || null;
+        if (!w) return;
+        setCurrentWorkspace(w);
+        if (w.type === "summary" && !currentSummaryRole) currentSummaryRole = "admin";
+        if (w.type !== "summary") {
+            currentSummaryRole = null;
+            if (!currentDeptRole) currentDeptRole = "staff";
+        }
+        openApp();
+    } catch (err) {}
+}
+
+
+/* ============================================================
+   МЕНЮ ОТДЕЛА / ОБЩЕЙ
+============================================================ */
+function applyModeUI() {
+    const summary = isSummary();
+    const allowed = allowedSections();
+    document.querySelectorAll("[data-for]").forEach(function (el) {
+        const mode = el.getAttribute("data-for");
+        let show = mode === "both" || (summary && mode === "summary") || (!summary && mode === "dept");
+        if (el.classList.contains("nav-btn")) {
+            const sec = el.getAttribute("data-section");
+            if (sec && allowed.indexOf(sec) === -1) show = false;
+        }
+        el.style.display = show ? "" : "none";
+    });
+
+    const stats = document.getElementById("timesheetStats");
+    stats.classList.toggle("stats-3", !summary);
+
+    document.getElementById("timesheetTitle").textContent = summary
+        ? "Сводка по отделам"
+        : "Табель: " + officialName(workspace());
+    document.getElementById("timesheetNote").textContent = summary
+        ? "Сотрудники собраны по отделам: Магазин, Офис, Склад, Водители. Можно показать один отдел или выстроить всех по ФИО."
+        : allowsEarly730(workspace())
+            ? "В ячейке явки можно отметить «с 7:30» — за каждый такой день в Общей в премию добавится 125 ₽."
+            : "В графе «Сотрудник» выберите человека из списка этого отдела. Списки отделов не пересекаются.";
+
+    const table = document.getElementById("timesheetTable");
+    if (table) table.classList.toggle("month-table", !summary);
+
+    const exportBtn = document.getElementById("exportSalaryBtn");
+    if (exportBtn) exportBtn.style.display = currentSummaryRole === "pay" ? "none" : "";
+
+    const addStaffBtn = document.getElementById("addSummaryEmployeeBtn");
+    if (addStaffBtn) addStaffBtn.style.display = canEditStaff() ? "" : "none";
+
+    const salaryNote = document.getElementById("salaryFormulaNote");
+    if (salaryNote) {
+        if (currentSummaryRole === "adjust") {
+            salaryNote.textContent = "Заполните штрафы, прогулы, сумму продуктов, аванс и налоги. Остальные суммы только для просмотра.";
+        } else if (currentSummaryRole === "pay") {
+            salaryNote.textContent = "Можно только поставить галочку «Выдано». Суммы менять нельзя.";
+        } else {
+            salaryNote.textContent = "К выплате = начислено − удержание за опоздание − штрафы − прогул − продукты − аванс + такси + премии + отпускные − налоги. У торговых представителей «Начислено» приходит из вкладки «Зарплата ТП».";
+        }
+    }
+}
+
+function toggleSidebar() {
+    const sidebar = document.getElementById("sidebar");
+    const overlay = document.getElementById("sidebarOverlay");
+    const open = !sidebar.classList.contains("open");
+    sidebar.classList.toggle("open", open);
+    overlay.classList.toggle("show", open);
+}
+
+function closeSidebar() {
+    document.getElementById("sidebar").classList.remove("open");
+    document.getElementById("sidebarOverlay").classList.remove("show");
+}
+
+function allowedSections() {
+    if (!isSummary()) {
+        return currentDeptRole === "admin"
+            ? ["timesheet", "discipline", "fio", "employees", "settings"]
+            : ["timesheet", "discipline", "fio", "employees"];
+    }
+    if (currentSummaryRole === "pay") return ["salary"];
+    if (currentSummaryRole === "admin") {
+        return ["timesheet", "salary", "repSalary", "summaryStaff", "discipline", "analysis", "settings"];
+    }
+    return ["timesheet", "salary", "repSalary", "summaryStaff", "analysis"];
+}
+
+function defaultSection() {
+    return allowedSections()[0] || "timesheet";
+}
+
+function sectionTitle(id) {
+    const titles = {
+        timesheet: isSummary() ? "Сводка" : "Табель — " + officialName(workspace()),
+        salary: "Зарплата",
+        repSalary: "Зарплата ТП",
+        summaryStaff: "Сотрудники",
+        discipline: "Контроль дисциплины",
+        analysis: "Анализ",
+        fio: "ФИО сотрудника",
+        employees: "В табель",
+        settings: "Настройки"
+    };
+    return titles[id] || "";
+}
+
+function loadWorkspace() {
+    if (!selectedMonth) selectedMonth = currentMonthValue();
+    if (allowedSections().indexOf(currentSection) === -1) currentSection = defaultSection();
+
+    renderDeptNow();
+    applyModeUI();
+    syncSummarySortControls();
+    renderMonthTabs();
+    showSection(currentSection);
+    refreshAll();
+    renderFio();
+    renderEmployees();
+    renderSummaryStaff();
+    loadWorkspaceSettings();
+}
+
+function showSection(id, button) {
+    if (allowedSections().indexOf(id) === -1) id = defaultSection();
+    currentSection = id;
+    saveSession();
+
+    document.querySelectorAll(".section").forEach(function (section) {
+        section.classList.remove("active");
+    });
+    document.getElementById(id).classList.add("active");
+
+    document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
+        const visible = btn.style.display !== "none";
+        btn.classList.toggle("active", visible && btn.getAttribute("data-section") === id);
+    });
+    if (button) button.classList.add("active");
+
+    document.getElementById("pageTitle").textContent = sectionTitle(id);
+    closeSidebar();
+
+    if (id === "timesheet") renderTimesheet();
+    if (id === "salary") renderSalary();
+    if (id === "repSalary") renderRepSalary();
+    if (id === "summaryStaff") renderSummaryStaff();
+    if (id === "discipline") renderDiscipline();
+    if (id === "analysis") renderAnalysis();
+    if (id === "fio") renderFio();
+    if (id === "employees") renderEmployees();
+    if (id === "settings") loadWorkspaceSettings();
+}
+
+function changeMonth(month) {
+    if (!month) return;
+    selectedMonth = month;
+    saveSession();
+    renderMonthTabs();
+    refreshAll();
+}
+
+function refreshAll() {
+    renderTimesheet();
+    if (isSummary()) {
+        renderSalary();
+        renderRepSalary();
+        renderSummaryStaff();
+        renderAnalysis();
+    }
+    renderDiscipline();
+    updateStats();
+}
+
+
+/* ============================================================
+   ИЗМЕНЕНИЕ ЯЧЕЙКИ ТАБЕЛЯ (только отдел)
+============================================================ */
+function setStatus(employeeId, day, status) {
+    if (!isWorking(getEmployee(employeeId))) return;
+    const record = getDayRecord(employeeId, day);
+    const defaults = workspace().defaultHours;
+    record.status = status;
+
+    if (status === "Я") {
+        if (record.hours === "" || record.hours === null) record.hours = defaults;
+        record.lateMinutes = 0;
+    } else {
+        record.early730 = false;
+    }
+    if (status === "О") {
+        if (record.hours === "" || record.hours === null) record.hours = defaults;
+        if (!record.lateMinutes) record.lateMinutes = 10;
+    }
+    if (status === "Б" || status === "ОТ" || status === "В" || status === "П" || status === "Л" || status === "") {
+        record.hours = "";
+        record.lateMinutes = 0;
+    }
+
+    saveApp();
+    refreshAll();
+}
+
+function setHours(employeeId, day, value) {
+    if (!isWorking(getEmployee(employeeId))) return;
+    const record = getDayRecord(employeeId, day);
+    record.hours = value === "" ? "" : parseHours(value, "");
+    if (value !== "" && !record.status) record.status = "Я";
+    saveApp();
+    refreshAll();
+}
+
+function setLateMinutes(employeeId, day, value) {
+    if (!isWorking(getEmployee(employeeId))) return;
+    const record = getDayRecord(employeeId, day);
+    record.lateMinutes = Number(value || 0);
+    if (record.lateMinutes > 0) {
+        record.status = "О";
+        record.early730 = false;
+        if (record.hours === "" || record.hours === null) record.hours = workspace().defaultHours;
+    } else if (record.status === "О") {
+        record.status = "Я";
+    }
+    saveApp();
+    refreshAll();
+}
+
+function setEarlyArrival(employeeId, day, checked) {
+    if (!isWorking(getEmployee(employeeId))) return;
+    if (!allowsEarly730(workspace())) return;
+    const record = getDayRecord(employeeId, day);
+    if (record.status !== "Я") return;
+    record.early730 = !!checked;
+    saveApp();
+    refreshAll();
+}
+
+function cellClass(status) {
+    if (status === "Я") return "cell-ya";
+    if (status === "О") return "cell-o";
+    if (status === "Б") return "cell-b";
+    if (status === "ОТ") return "cell-ot";
+    if (status === "В") return "cell-v";
+    if (status === "П") return "cell-p";
+    if (status === "Л") return "cell-l";
+    return "";
+}
+
+function lateOptions(selected) {
+    return [0, 10, 20, 30, 40, 50, 60].map(function (value) {
+        const isSelected = Number(selected) === value ? " selected" : "";
+        return '<option value="' + value + '"' + isSelected + ">" + (value === 0 ? "0 мин" : value + " мин") + "</option>";
+    }).join("");
+}
+
+function statusSelect(employeeId, day, status, disabled) {
+    const options = [
+        { value: "", label: "—" },
+        { value: "Я", label: "Я" },
+        { value: "О", label: "О" },
+        { value: "Б", label: "Б" },
+        { value: "ОТ", label: "ОТ" },
+        { value: "В", label: "В" },
+        { value: "П", label: "П" },
+        { value: "Л", label: "Л" }
+    ];
+    return '<select onchange="setStatus(\'' + employeeId + '\',' + day + ',this.value)"'
+        + (disabled ? " disabled" : "") + ">"
+        + options.map(function (opt) {
+            return '<option value="' + opt.value + '"' + (status === opt.value ? " selected" : "") + ">" + opt.label + "</option>";
+        }).join("")
+        + "</select>";
+}
+
+
+function employeePicker(selectedId) {
+    const used = assignedIds();
+    let html = '<select class="employee-pick" onchange="setTimesheetEmployee(\''
+        + (selectedId || "") + '\', this.value)" title="Подбор сотрудника">';
+    html += '<option value="">— выбрать сотрудника —</option>';
+
+    directoryEmployees().forEach(function (e) {
+        if (!isWorking(e) && e.id !== selectedId) return;
+        const taken = used.indexOf(e.id) !== -1 && e.id !== selectedId;
+        html += '<option value="' + e.id + '"'
+            + (e.id === selectedId ? " selected" : "")
+            + (taken ? " disabled" : "")
+            + ">"
+            + escapeHtml(e.name)
+            + (!isWorking(e) ? " (уволен)" : (taken ? " (уже в табеле)" : ""))
+            + "</option>";
+    });
+
+    html += "</select>";
+    return html;
+}
+
+function setTimesheetEmployee(fromId, toId) {
+    if (fromId === toId) return;
+
+    if (toId && !belongsToWorkspace(workspace(), toId)) {
+        toast("Можно выбрать только сотрудника этого отдела.", "error");
+        renderTimesheet();
+        return;
+    }
+
+    if (toId && !isWorking(getEmployee(toId))) {
+        toast("Уволенный сотрудник неактивен и в табель не ставится.", "error");
+        renderTimesheet();
+        return;
+    }
+
+    const ids = workspace().employeeIds || [];
+    if (toId && ids.indexOf(toId) !== -1 && toId !== fromId) {
+        toast("Этот сотрудник уже выбран в табеле.", "error");
+        renderTimesheet();
+        return;
+    }
+
+    if (fromId) {
+        workspace().employeeIds = ids.filter(function (id) { return id !== fromId; });
+    }
+    if (toId && workspace().employeeIds.indexOf(toId) === -1) {
+        workspace().employeeIds.push(toId);
+    }
+
+    saveApp();
+    renderFio();
+    renderEmployees();
+    refreshAll();
+}
+
+function renderTimesheet() {
+    if (currentWorkspaceIndex === null) return;
+    if (isSummary()) {
+        renderSummaryOverview();
+        return;
+    }
+
+    ensureMonthIn(workspace());
+    const wrap = document.getElementById("timesheetWrap");
+    const scrollLeft = wrap ? wrap.scrollLeft : 0;
+    const scrollTop = wrap ? wrap.scrollTop : 0;
+    const days = daysInMonth();
+    const filter = (document.getElementById("employeeFilter").value || "").trim().toLowerCase();
+    const employees = visibleEmployees().filter(function (e) {
+        if (!filter) return true;
+        return String(e.name || "").toLowerCase().indexOf(filter) !== -1;
+    });
+
+    let head = "<tr>"
+        + '<th class="employee-col">Сотрудник</th>';
+    for (let day = 1; day <= days; day++) {
+        const cls = ["day-head", isWeekend(day) ? "weekend-head" : "", isToday(day) ? "today-head" : ""].filter(Boolean).join(" ");
+        head += '<th class="' + cls + '">' + day + "<br><small>" + weekdayName(day) + "</small></th>";
+    }
+    head += '<th class="summary-cell">Часы</th><th class="summary-cell">Опоздания</th><th class="summary-cell">Минуты</th></tr>';
+    document.getElementById("timesheetHead").innerHTML = head;
+
+    let body = "";
+    employees.forEach(function (employee) {
+        const total = calculateEmployee(employee.id, null, [workspace()]);
+        const fired = !isWorking(employee);
+        body += '<tr class="' + (fired ? "staff-fired" : "") + '">'
+            + '<td class="employee-col">' + employeePicker(employee.id)
+            + '<div class="note">' + escapeHtml(employee.position || "") + (fired ? " · уволен" : "") + "</div></td>";
+
+        for (let day = 1; day <= days; day++) {
+            const record = peekDayRecordIn(workspace(), employee.id, day);
+            const cls = ["day-cell", cellClass(record.status), isToday(day) ? "today-cell" : ""].filter(Boolean).join(" ");
+            let extra = "";
+            if (!fired && (record.status === "Я" || record.status === "О")) {
+                extra += '<input type="number" min="0" max="24" step="0.5" value="' + record.hours + '" placeholder="часы" '
+                    + 'onchange="setHours(\'' + employee.id + '\',' + day + ',this.value)">';
+            }
+            if (!fired && record.status === "О") {
+                extra += '<select onchange="setLateMinutes(\'' + employee.id + '\',' + day + ',this.value)">'
+                    + lateOptions(record.lateMinutes) + "</select>";
+            }
+            if (!fired && allowsEarly730(workspace()) && record.status === "Я") {
+                extra += '<label class="early730-check"><input type="checkbox"'
+                    + (record.early730 ? " checked" : "")
+                    + ' onchange="setEarlyArrival(\'' + employee.id + '\',' + day + ',this.checked)"> с 7:30</label>';
+            }
+            body += '<td class="' + cls + '"><div class="day-box">' + statusSelect(employee.id, day, record.status, fired) + extra + "</div></td>";
+        }
+
+        body += '<td class="summary-cell"><strong>' + total.hours.toFixed(1) + "</strong></td>"
+            + '<td class="summary-cell">' + total.lateCount + "</td>"
+            + '<td class="summary-cell">' + total.lateMinutes + "</td></tr>";
+    });
+
+    const assigned = visibleEmployees();
+    const pool = directoryEmployees();
+    const hasFree = pool.some(function (e) {
+        return isWorking(e) && !isAssignedTo(workspace(), e.id);
+    });
+
+    if (filter && assigned.length && !employees.length) {
+        body += '<tr><td colspan="' + (days + 4) + '"><div class="empty-row">По поиску никого не найдено.</div></td></tr>';
+    }
+
+    if (hasFree || !assigned.length) {
+        const hint = pool.length
+            ? "Выберите сотрудника этого отдела — строка табеля откроется автоматически."
+            : "Сначала заведите ФИО во вкладке «ФИО сотрудника» этого отдела.";
+        body += "<tr>"
+            + '<td class="employee-col">' + (pool.length ? employeePicker("") : "<strong>—</strong>")
+            + '<div class="note">Новая строка</div></td>'
+            + '<td colspan="' + (days + 3) + '"><div class="note" style="padding:8px 0;">'
+            + hint + "</div></td></tr>";
+    }
+
+    if (!body) {
+        body = '<tr><td colspan="' + (days + 4) + '"><div class="empty-row">Нет сотрудников для табеля.</div></td></tr>';
+    }
+
+    document.getElementById("timesheetBody").innerHTML = body;
+    if (wrap) {
+        wrap.scrollLeft = scrollLeft;
+        wrap.scrollTop = scrollTop;
+    }
+}
+
+function renderSummaryOverview() {
+    const groups = summaryEmployeeGroups();
+    const byName = summarySortMode === "name";
+    document.getElementById("timesheetHead").innerHTML = "<tr>"
+        + "<th>Сотрудник</th><th>Отдел</th><th>Явки</th><th>Опоздания</th>"
+        + "<th>Минуты</th><th>Больничные</th><th>Отпуск</th><th>Прогул</th><th>Личные обст.</th><th>Выходные</th><th>Часы</th>"
+        + "</tr>";
+
+    if (!groups.length) {
+        document.getElementById("timesheetBody").innerHTML =
+            '<tr><td colspan="11"><div class="empty-row">В отделах никто не выбран в табель — в общую сводку переносить некого.</div></td></tr>';
+        return;
+    }
+
+    function personRow(employee) {
+        const data = calculateEmployee(employee.id);
+        return "<tr>"
+            + "<td><strong>" + escapeHtml(employee.name) + "</strong></td>"
+            + "<td>" + departmentBadges(employee.id) + "</td>"
+            + "<td>" + data.ya + "</td>"
+            + "<td>" + data.lateCount + "</td>"
+            + "<td>" + data.lateMinutes + "</td>"
+            + "<td>" + data.sick + "</td>"
+            + "<td>" + data.vacation + "</td>"
+            + "<td>" + data.skip + "</td>"
+            + "<td>" + data.personal + "</td>"
+            + "<td>" + data.weekend + "</td>"
+            + "<td><strong>" + data.hours.toFixed(1) + "</strong></td>"
+            + "</tr>";
+    }
+
+    let html = "";
+    if (byName) {
+        const list = visibleEmployees();
+        list.forEach(function (employee) { html += personRow(employee); });
+    } else {
+        groups.forEach(function (g) {
+            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="11">'
+                + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + " "
+                + (g.employees.length === 1 ? "сотрудник" : "сотрудников")
+                + "</td></tr>";
+            g.employees.forEach(function (employee) { html += personRow(employee); });
+        });
+    }
+
+    document.getElementById("timesheetBody").innerHTML = html;
+}
+
+function fillMonth() {
+    const w = workspace();
+    const list = visibleEmployees();
+    if (!list.length) {
+        toast("Сначала выберите сотрудников в графе «Сотрудник» или во вкладке «В табель».", "error");
+        return;
+    }
+    if (!confirm("Заполнить пустые дни месяца?\nБудни — явка, суббота и воскресенье — выходной.\nУже отмеченные дни не изменятся.")) return;
+
+    const days = daysInMonth();
+    let filled = 0;
+    list.forEach(function (employee) {
+        if (!isWorking(employee)) return;
+        for (let day = 1; day <= days; day++) {
+            const record = getDayRecord(employee.id, day);
+            if (record.status) continue;
+            if (isWeekend(day)) {
+                record.status = "В";
+                record.hours = "";
+                record.lateMinutes = 0;
+            } else {
+                record.status = "Я";
+                record.hours = w.defaultHours;
+                record.lateMinutes = 0;
+            }
+            filled++;
+        }
+    });
+    saveApp();
+    refreshAll();
+    toast(filled ? "Заполнено пустых дней: " + filled : "Пустых дней не осталось.");
+}
+
+
+/* ============================================================
+   ЗАРПЛАТА ТОРГОВЫХ ПРЕДСТАВИТЕЛЕЙ
+============================================================ */
+function setRepSalesField(employeeId, field, value) {
+    if (!canEditRepSales()) return;
+    const rec = ensureRepSales(employeeId);
+    if (field === "bags") rec.bags = parseDecimal(value, 0);
+    else rec[field] = parseMoney2(value, 0);
+    saveApp();
+    refreshAll();
+}
+
+function renderRepSalary() {
+    if (currentWorkspaceIndex === null || !isSummary()) return;
+    if (currentSummaryRole === "pay") return;
+    const body = document.getElementById("repSalaryBody");
+    if (!body) return;
+
+    const wrap = document.getElementById("repSalaryWrap");
+    const scrollLeft = wrap ? wrap.scrollLeft : 0;
+    const scrollTop = wrap ? wrap.scrollTop : 0;
+    const list = listSalesReps();
+    const editable = canEditRepSales();
+
+    if (!list.length) {
+        body.innerHTML = '<tr><td colspan="22"><div class="empty-row">Нет торговых представителей. В отделе «Водители» поставьте должность «Торговый представитель».</div></td></tr>';
+        return;
+    }
+
+    function numInput(id, field, value, step) {
+        if (!editable) {
+            return field === "bags" ? String(value).replace(".", ",") : money2(value);
+        }
+        return '<input class="rep-input no-spin" type="number" min="0" step="' + step + '" inputmode="decimal" value="'
+            + value + "\" onchange=\"setRepSalesField('" + id + "','" + field + "',this.value)\">";
+    }
+
+    let html = "";
+    list.forEach(function (employee) {
+        const data = calculateSalesRep(employee);
+        const warn = data.baseOverflow
+            ? '<div class="rep-warn">Опт + спеццена + сахар больше продаж. База = 0.</div>'
+            : "";
+        html += '<tr class="' + (isWorking(employee) ? "" : "staff-fired") + '">'
+            + "<td><strong>" + escapeHtml(employee.name) + "</strong>"
+            + (isWorking(employee) ? "" : '<div class="note">уволен</div>') + "</td>"
+            + "<td>" + numInput(employee.id, "totalSales", data.totalSales, "0.01") + "</td>"
+            + "<td>" + numInput(employee.id, "wholesale", data.wholesale, "0.01") + "</td>"
+            + "<td>" + numInput(employee.id, "specialPrice", data.specialPrice, "0.01") + "</td>"
+            + "<td>" + numInput(employee.id, "sugar", data.sugar, "0.01") + "</td>"
+            + "<td>" + numInput(employee.id, "bags", data.bags, "0.1") + "</td>"
+            + "<td>" + String(data.percent).replace(".", ",") + "%</td>"
+            + '<td class="rep-calc">' + money2(data.base) + warn + "</td>"
+            + '<td class="rep-calc">' + money2(data.wholesalePay) + "</td>"
+            + '<td class="rep-calc">' + money2(data.specialPay) + "</td>"
+            + '<td class="rep-calc">' + money2(data.bagsPay) + "</td>"
+            + '<td class="rep-calc">' + money2(data.mainPay) + "</td>"
+            + '<td class="rep-calc">' + money2(data.accruedTotal) + "</td>"
+            + "<td>" + numInput(employee.id, "fuel", data.fuel, "0.01") + "</td>"
+            + '<td class="rep-calc">' + money2(data.prelim) + "</td>"
+            + '<td class="rep-calc">' + data.scheduled + "</td>"
+            + '<td class="rep-calc">' + data.worked + "</td>"
+            + '<td class="rep-calc">' + data.unworked + "</td>"
+            + '<td class="rep-calc">' + data.vacation + "</td>"
+            + '<td class="rep-calc">' + data.otherUnpaid + "</td>"
+            + '<td class="rep-calc">' + money2(data.dayHold) + "</td>"
+            + '<td class="rep-calc pay">' + money2(data.afterDays) + "</td>"
+            + "</tr>";
+    });
+
+    body.innerHTML = html;
+    if (wrap) {
+        wrap.scrollLeft = scrollLeft;
+        wrap.scrollTop = scrollTop;
+    }
+}
+
+
+/* ============================================================
+   ЗАРПЛАТА ОБЩЕЙ ТАБЛИЦЫ
+============================================================ */
+function renderSalary() {
+    if (currentWorkspaceIndex === null || !isSummary()) return;
+
+    const wrap = document.getElementById("salaryWrap");
+    const scrollLeft = wrap ? wrap.scrollLeft : 0;
+    const scrollTop = wrap ? wrap.scrollTop : 0;
+    const groups = summaryEmployeeGroups();
+    const byName = summarySortMode === "name";
+
+    if (!groups.length) {
+        document.getElementById("salaryBody").innerHTML =
+            '<tr><td colspan="15"><div class="empty-row">В отделах никто не выбран в табель — в общую зарплату переносить некого.</div></td></tr>';
+        return;
+    }
+
+    let html = "";
+    const sums = emptySalarySums();
+
+    function moneyCell(employeeId, field, value, extraClass) {
+        if (!canEditSalaryField(field)) {
+            return "<td>" + money(value) + "</td>";
+        }
+        const cls = (extraClass || "money-input") + " no-spin";
+        return "<td><input class=\"" + cls + "\" type=\"number\" min=\"0\" step=\"1\" inputmode=\"numeric\" value=\""
+            + Math.round(Number(value || 0)) + "\" onchange=\"setAdjustment('" + employeeId + "','" + field + "',this.value)\"></td>";
+    }
+
+    function bonusCell(employeeId, data) {
+        const hint = data.earlyPay
+            ? '<div class="note">в т.ч. 7:30: ' + money(data.earlyPay) + "</div>"
+            : "";
+        if (!canEditSalaryField("bonus")) {
+            return "<td>" + money(data.bonusTotal) + hint + "</td>";
+        }
+        const totalNote = data.earlyPay
+            ? '<div class="note">всего: ' + money(data.bonusTotal) + "</div>"
+            : "";
+        return "<td><input class=\"money-input no-spin\" type=\"number\" min=\"0\" step=\"1\" inputmode=\"numeric\" value=\""
+            + Math.round(Number(data.bonus || 0)) + "\" onchange=\"setAdjustment('" + employeeId + "','bonus',this.value)\">"
+            + totalNote + hint + "</td>";
+    }
+
+    function salaryRow(employee) {
+        ensureSalary(employee.id);
+        const data = calculateEmployee(employee.id);
+        addSalarySums(sums, data);
+        const issuedCell = canMarkIssued()
+            ? '<td><label class="issued-check"><input type="checkbox"' + (data.issued ? " checked" : "")
+                + " onchange=\"setIssued('" + employee.id + "', this.checked)\"> Выдано</label></td>"
+            : "<td>" + (data.issued ? "да" : "") + "</td>";
+        return '<tr class="' + (data.issued ? "issued-row" : "") + '">'
+            + "<td><strong>" + escapeHtml(employee.name) + "</strong></td>"
+            + '<td class="days-col">' + data.workedDays + "</td>"
+            + "<td>" + moneyFlex(data.accrued) + "</td>"
+            + moneyCell(employee.id, "fines", data.fines)
+            + moneyCell(employee.id, "skipFine", data.skipFine)
+            + moneyCell(employee.id, "products", data.products, "product-input")
+            + moneyCell(employee.id, "advance", data.advance)
+            + moneyCell(employee.id, "taxes", data.taxes)
+            + "<td>" + money(data.taxiTotal) + "</td>"
+            + bonusCell(employee.id, data)
+            + '<td class="late-col">' + data.lateCount + "</td>"
+            + '<td class="hold-col">' + money(data.lateAmount) + "</td>"
+            + moneyCell(employee.id, "vacationPay", data.vacationPay)
+            + '<td class="pay">' + moneyFlex(data.pay) + "</td>"
+            + issuedCell
+            + "</tr>";
+    }
+
+    function subtotalRow(title, s) {
+        return '<tr class="dept-subtotal-row"><td>' + escapeHtml(title) + "</td>"
+            + '<td class="days-col">' + s.workedDays + "</td><td>"
+            + moneyFlex(s.accrued) + "</td><td>"
+            + money(s.fines) + "</td><td>" + money(s.skipFine) + "</td><td>"
+            + money(s.products) + "</td><td>" + money(s.advance) + "</td><td>"
+            + money(s.taxes) + "</td><td>" + money(s.taxiTotal) + "</td><td>"
+            + money(s.bonus) + "</td>"
+            + '<td class="late-col"></td>'
+            + '<td class="hold-col">' + money(s.lateAmount) + "</td><td>"
+            + money(s.vacationPay) + "</td><td class=\"pay\">" + moneyFlex(s.pay) + "</td><td></td></tr>";
+    }
+
+    if (byName) {
+        visibleEmployees().forEach(function (employee) { html += salaryRow(employee); });
+    } else {
+        groups.forEach(function (g) {
+            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="15">'
+                + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + " "
+                + (g.employees.length === 1 ? "сотрудник" : "сотрудников")
+                + "</td></tr>";
+            const before = copySalarySums(sums);
+            g.employees.forEach(function (employee) { html += salaryRow(employee); });
+            html += subtotalRow("Итого: " + officialName(g.dept), diffSalarySums(sums, before));
+        });
+    }
+
+    html += subtotalRow(
+        byName || groups.length === 1 ? "Итого" : "Итого по выбранным отделам",
+        sums
+    );
+
+    document.getElementById("salaryBody").innerHTML = html;
+    if (wrap) {
+        wrap.scrollLeft = scrollLeft;
+        wrap.scrollTop = scrollTop;
+    }
+}
+
+function emptySalarySums() {
+    return {
+        hours: 0, accrued: 0, lateAmount: 0, fines: 0, skipFine: 0, bonus: 0, advance: 0,
+        products: 0, workedDays: 0, taxiTotal: 0, vacationPay: 0, taxes: 0, pay: 0
+    };
+}
+
+function addSalarySums(dst, data) {
+    dst.hours += data.hours;
+    dst.accrued += data.accrued;
+    dst.lateAmount += data.lateAmount;
+    dst.fines += data.fines;
+    dst.skipFine += data.skipFine;
+    dst.bonus += data.bonusTotal;
+    dst.advance += data.advance;
+    dst.products += data.products;
+    dst.workedDays += data.workedDays;
+    dst.taxiTotal += data.taxiTotal;
+    dst.vacationPay += data.vacationPay;
+    dst.taxes += data.taxes;
+    dst.pay += data.pay;
+}
+
+function copySalarySums(src) {
+    const next = emptySalarySums();
+    Object.keys(next).forEach(function (key) { next[key] = src[key]; });
+    return next;
+}
+
+function diffSalarySums(now, before) {
+    const next = emptySalarySums();
+    Object.keys(next).forEach(function (key) { next[key] = now[key] - before[key]; });
+    return next;
+}
+
+function setAdjustment(employeeId, field, value) {
+    if (!canEditSalaryField(field)) return;
+    ensureSalary(employeeId)[field] = parseMoney(value, 0);
+    saveApp();
+    refreshAll();
+}
+
+function setIssued(employeeId, checked) {
+    if (!canMarkIssued()) return;
+    ensureSalary(employeeId).issued = !!checked;
+    saveApp();
+    refreshAll();
+}
+
+
+/* ============================================================
+   ДИСЦИПЛИНА ОТДЕЛА
+============================================================ */
+function renderDiscipline() {
+    if (currentWorkspaceIndex === null) return;
+    if (isSummary() && currentSummaryRole !== "admin") return;
+
+    const extraDept = isSummary();
+    const note = document.getElementById("disciplineNote");
+    if (note) {
+        note.textContent = extraDept
+            ? "Дисциплина по всем сотрудникам отделов за выбранный месяц. Уволенные внизу и неактивны."
+            : "Оценка строится по числу опозданий за выбранный месяц в этом отделе. Уволенные опускаются вниз.";
+    }
+
+    const head = document.getElementById("disciplineHead");
+    if (head) {
+        head.innerHTML = "<tr><th>Сотрудник</th>"
+            + (extraDept ? "<th>Отдел</th>" : "")
+            + "<th>Явки</th><th>Опоздания</th><th>Минут опоздания</th>"
+            + "<th>Больничные</th><th>Отпуск</th><th>Прогул</th><th>Личные обст.</th>"
+            + "<th>Выходные</th><th>Часы</th><th>Оценка</th></tr>";
+    }
+
+    function ratingOf(data) {
+        let rating = "🟢 Хорошо";
+        if (data.lateCount > 0 && data.lateCount <= 2) rating = "🟡 Внимание";
+        if (data.lateCount > 2 || data.skip > 0) rating = "🔴 Контроль";
+        return rating;
+    }
+
+    function personCells(employee, deptName) {
+        const data = extraDept
+            ? calculateEmployee(employee.id)
+            : calculateEmployee(employee.id, null, [workspace()]);
+        const fired = !isWorking(employee);
+        return '<tr class="' + (fired ? "staff-fired" : "") + '">'
+            + "<td><strong>" + escapeHtml(employee.name) + "</strong>"
+            + (fired ? '<div class="note">уволен</div>' : "") + "</td>"
+            + (extraDept ? "<td>" + escapeHtml(deptName || "") + "</td>" : "")
+            + "<td>" + data.ya + "</td><td>" + data.lateCount + "</td><td>" + data.lateMinutes + "</td>"
+            + "<td>" + data.sick + "</td><td>" + data.vacation + "</td>"
+            + "<td>" + data.skip + "</td><td>" + data.personal + "</td>"
+            + "<td>" + data.weekend + "</td>"
+            + "<td>" + data.hours.toFixed(1) + "</td><td>" + ratingOf(data) + "</td></tr>";
+    }
+
+    if (extraDept) {
+        const groups = summaryDirectoryGroups();
+        if (!groups.length) {
+            document.getElementById("disciplineBody").innerHTML =
+                '<tr><td colspan="12"><div class="empty-row">Сотрудников пока нет.</div></td></tr>';
+            return;
+        }
+        let html = "";
+        groups.forEach(function (g) {
+            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="12">'
+                + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + "</td></tr>";
+            g.employees.forEach(function (employee) {
+                html += personCells(employee, officialName(g.dept));
+            });
+        });
+        document.getElementById("disciplineBody").innerHTML = html;
+        return;
+    }
+
+    const list = directoryEmployees();
+    if (!list.length) {
+        document.getElementById("disciplineBody").innerHTML =
+            '<tr><td colspan="11"><div class="empty-row">Сначала заведите сотрудников во вкладке «ФИО сотрудника».</div></td></tr>';
+        return;
+    }
+
+    document.getElementById("disciplineBody").innerHTML = list.map(function (employee) {
+        return personCells(employee, "");
+    }).join("");
+}
+
+
+/* ============================================================
+   АНАЛИЗ ОБЩЕЙ ТАБЛИЦЫ
+============================================================ */
+function renderAnalysis() {
+    if (currentWorkspaceIndex === null || !isSummary()) return;
+
+    const prev = shiftMonth(selectedMonth, -1);
+    const next = shiftMonth(selectedMonth, 1);
+    const months = [prev, selectedMonth, next];
+
+    const totals = summaryMonthMoney(selectedMonth);
+
+    document.getElementById("analysisMonthStats").innerHTML = [
+        ["Месяц", monthLabel(selectedMonth)],
+        ["Сотрудников в отделах", String(totals.count)],
+        ["Часов", totals.hours.toFixed(1)],
+        ["Опозданий", String(totals.late)],
+        ["Начислено", money(totals.accrued)],
+        ["К выплате", money(totals.pay)]
+    ].map(function (item) {
+        return '<div class="stat"><div class="stat-label">' + item[0] + '</div><div class="stat-value">' + item[1] + "</div></div>";
+    }).join("");
+
+    let deptHtml = "";
+    deptWorkspaces().forEach(function (w) {
+        const t = departmentMonthTotals(w, selectedMonth);
+        deptHtml += "<tr><td><strong>" + escapeHtml(officialName(w)) + "</strong></td><td>" + t.count + "</td><td>"
+            + t.hours.toFixed(1) + "</td><td>" + t.late + "</td><td>" + money(t.accrued) + "</td><td>"
+            + money(t.pay) + "</td></tr>";
+    });
+    deptHtml += '<tr class="totals-row"><td>Итого</td><td>' + totals.count + "</td><td>" + totals.hours.toFixed(1)
+        + "</td><td>" + totals.late + "</td><td>" + money(totals.accrued) + "</td><td>" + money(totals.pay) + "</td></tr>";
+    document.getElementById("analysisDeptBody").innerHTML = deptHtml;
+
+    document.getElementById("analysisCompareHead").innerHTML = "<tr><th rowspan=\"2\">Отдел</th>"
+        + months.map(function (m) {
+            return '<th colspan="3">' + escapeHtml(monthLabel(m)) + "</th>";
+        }).join("") + "</tr><tr class=\"subhead\">"
+        + months.map(function () {
+            return "<th>Часы</th><th>Опозд.</th><th>Выплата</th>";
+        }).join("") + "</tr>";
+
+    document.getElementById("analysisCompareBody").innerHTML = deptWorkspaces().map(function (w) {
+        return "<tr><td><strong>" + escapeHtml(officialName(w)) + "</strong></td>"
+            + months.map(function (m) {
+                const t = departmentMonthTotals(w, m);
+                return "<td>" + t.hours.toFixed(1) + "</td><td>" + t.late + "</td><td>" + money(t.pay) + "</td>";
+            }).join("") + "</tr>";
+    }).join("") + '<tr class="totals-row"><td>Все отделы</td>'
+        + months.map(function (m) {
+            const t = summaryMonthMoney(m);
+            return "<td>" + t.hours.toFixed(1) + "</td><td>" + t.late + "</td><td>" + money(t.pay) + "</td>";
+        }).join("") + "</tr>";
+}
+
+
+/* ============================================================
+   ФИО (справочник) И ВЫБОР В ТАБЕЛЬ
+   В Общую список не заводят — он собирается сам из отделов.
+============================================================ */
+function renderFio() {
+    if (currentWorkspaceIndex === null || isSummary()) return;
+
+    const pool = directoryEmployees();
+    const list = document.getElementById("fioList");
+    if (!pool.length) {
+        list.innerHTML = '<div class="empty-row">В этом отделе пока нет сотрудников. Нажмите «Добавить ФИО».</div>';
+        renderPositionList();
+        return;
+    }
+
+    list.innerHTML = pool.map(function (employee) {
+        const inTimesheet = isAssignedTo(workspace(), employee.id);
+        const fired = !isWorking(employee);
+        return '<div class="employee-row' + (fired ? " staff-fired" : "") + '">'
+            + fieldBlock("ФИО", '<input value="' + escapeAttribute(employee.name) + '" onchange="updateEmployee(\'' + employee.id + '\',\'name\',this.value)">')
+            + fieldBlock("Должность", positionSelect(employee))
+            + fieldBlock("Отдел в карточке", '<input value="' + escapeAttribute(employee.department || "") + '" onchange="updateEmployee(\'' + employee.id + '\',\'department\',this.value)">')
+            + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value)">')
+            + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value)">')
+            + fieldBlock("Статус", jobStatusSelect(employee, false))
+            + '<div><div class="note" style="margin-bottom:6px;">'
+            + (fired ? "Уволен — неактивен" : (inTimesheet ? "Уже в табеле этого отдела" : "Ещё не выбран в табель"))
+            + "</div>"
+            + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>'
+            + "</div>";
+    }).join("");
+    renderPositionList();
+}
+
+function renderEmployees() {
+    if (currentWorkspaceIndex === null || isSummary()) return;
+
+    const pool = directoryEmployees();
+    if (!pool.length) {
+        document.getElementById("employeeList").innerHTML =
+            '<div class="empty-row">Сначала заведите сотрудников во вкладке «ФИО сотрудника» этого отдела.</div>';
+        return;
+    }
+
+    document.getElementById("employeeList").innerHTML = pool.map(function (employee) {
+        const on = isAssignedTo(workspace(), employee.id);
+        const fired = !isWorking(employee);
+        return '<div class="pick-row' + (fired ? " staff-fired" : (on ? "" : " off")) + '">'
+            + '<label class="check"><input type="checkbox"' + (on ? " checked" : "") + (fired ? " disabled" : "")
+            + ' onchange="toggleAssign(\'' + employee.id + '\', this.checked)"> В табель</label>'
+            + "<div><strong>" + escapeHtml(employee.name) + "</strong>"
+            + '<div class="note">' + escapeHtml(employee.position || "") + "</div></div>"
+            + fieldBlock("Статус", jobStatusSelect(employee, false))
+            + "<div class=\"note\">" + escapeHtml(employee.start || "08:00") + "–" + escapeHtml(employee.end || "17:00") + "</div>"
+            + (on && !fired
+                ? '<button type="button" class="btn btn-secondary btn-small" onclick="toggleAssign(\'' + employee.id + '\', false)">Убрать из табеля</button>'
+                : (fired ? '<div class="note">неактивен</div>' : ""))
+            + "</div>";
+    }).join("");
+}
+
+function fieldBlock(label, control) {
+    return '<div class="form-group"><label>' + label + "</label>" + control + "</div>";
+}
+
+function positionsForWorkspace(w) {
+    w = w || workspace() || {};
+    const code = w.code;
+    const base = DEPT_POSITIONS[code] ? DEPT_POSITIONS[code].slice() : [];
+    const extra = Array.isArray(w.customPositions) ? w.customPositions : [];
+    extra.forEach(function (title) {
+        const t = String(title || "").replace(/\s+/g, " ").trim();
+        if (!t) return;
+        const exists = base.some(function (x) { return x.toLowerCase() === t.toLowerCase(); });
+        if (!exists) base.push(t);
+    });
+    return base;
+}
+
+function renderPositionList() {
+    const boxes = ["positionList", "positionSettingsList"];
+    const w = workspace();
+    if (!w || isSummary()) {
+        boxes.forEach(function (id) {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = "";
+        });
+        return;
+    }
+    const custom = Array.isArray(w.customPositions) ? w.customPositions : [];
+    const html = custom.length
+        ? '<div class="note" style="margin-bottom:6px;">Добавленные должности:</div>' + custom.map(function (title, i) {
+            return '<div class="pick-row" style="margin-bottom:6px;">'
+                + "<div><strong>" + escapeHtml(title) + "</strong></div>"
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="removeCustomPosition(' + i + ')">Убрать</button>'
+                + "</div>";
+        }).join("")
+        : '<div class="note">Пока добавленных должностей нет — используются стандартные.</div>';
+    boxes.forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = html;
+    });
+}
+
+function addCustomPosition(inputId) {
+    if (isSummary()) return;
+    const w = workspace();
+    if (!w) return;
+    const input = document.getElementById(inputId || "newPositionInput");
+    const title = String((input && input.value) || "").replace(/\s+/g, " ").trim();
+    if (!title) {
+        toast("Введите название должности.", "error");
+        return;
+    }
+    const list = positionsForWorkspace(w);
+    const exists = list.some(function (x) { return x.toLowerCase() === title.toLowerCase(); });
+    if (exists) {
+        toast("Такая должность уже есть в списке.", "error");
+        return;
+    }
+    if (!Array.isArray(w.customPositions)) w.customPositions = [];
+    w.customPositions.push(title);
+    if (input) input.value = "";
+    saveApp();
+    renderFio();
+    renderPositionList();
+    toast("Должность «" + title + "» добавлена. Её можно выбрать в карточке.");
+}
+
+function removeCustomPosition(index) {
+    if (isSummary()) return;
+    const w = workspace();
+    if (!w || !Array.isArray(w.customPositions)) return;
+    w.customPositions.splice(index, 1);
+    saveApp();
+    renderFio();
+    renderPositionList();
+}
+
+function positionSelect(employee, dept) {
+    const list = positionsForWorkspace(dept || workspace());
+    const raw = String(employee.position || "").replace(/\s+/g, " ").trim();
+    const aliases = { "товаросбощик": "Товаросборщик" };
+    let current = raw;
+    const lower = raw.toLowerCase();
+    if (aliases[lower]) current = aliases[lower];
+    else {
+        const hit = list.find(function (title) { return title.toLowerCase() === lower; });
+        if (hit) current = hit;
+    }
+    const seen = {};
+    let options = '<option value="">Выберите должность</option>';
+    list.forEach(function (title) {
+        seen[title] = true;
+        options += '<option value="' + escapeAttribute(title) + '"'
+            + (current === title ? " selected" : "") + ">"
+            + escapeHtml(title) + "</option>";
+    });
+    if (current && !seen[current]) {
+        options += '<option value="' + escapeAttribute(current) + '" selected>'
+            + escapeHtml(current) + "</option>";
+    }
+    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'position\',this.value)">'
+        + options + "</select>";
+}
+
+function toggleAssign(employeeId, checked) {
+    if (checked && !isWorking(getEmployee(employeeId))) {
+        toast("Уволенный сотрудник неактивен и в табель не ставится.", "error");
+        renderEmployees();
+        return;
+    }
+    if (!belongsToWorkspace(workspace(), employeeId)) {
+        toast("Этот сотрудник из другого отдела.", "error");
+        return;
+    }
+    const ids = workspace().employeeIds;
+    const has = ids.indexOf(employeeId) !== -1;
+    if (checked && !has) ids.push(employeeId);
+    if (!checked && has) workspace().employeeIds = ids.filter(function (id) { return id !== employeeId; });
+    saveApp();
+    renderFio();
+    renderEmployees();
+    refreshAll();
+}
+
+function addEmployee() {
+    const employee = {
+        id: generateId(),
+        name: "Новый сотрудник",
+        position: "",
+        department: officialName(workspace()),
+        start: "08:00",
+        end: "17:00",
+        rate: 0,
+        taxiDaily: 0,
+        jobStatus: "working",
+        terms: {}
+    };
+    if (!Array.isArray(workspace().employees)) workspace().employees = [];
+    workspace().employees.push(employee);
+    saveApp();
+    renderFio();
+    renderEmployees();
+    refreshAll();
+    toast("ФИО добавлено. Выберите сотрудника в графе «Сотрудник» в табеле.");
+}
+
+function updateEmployee(employeeId, field, value) {
+    if (isSummary() && !canEditStaff()) return;
+    const employee = getEmployee(employeeId);
+    if (!employee) return;
+    if (field === "rate" || field === "taxiDaily" || field === "salesPercent") {
+        setEmployeeTermsField(employeeId, field, value);
+        return;
+    }
+    if (field === "jobStatus") {
+        employee.jobStatus = value === "fired" ? "fired" : "working";
+    } else {
+        employee[field] = value;
+    }
+    saveApp();
+    if (isSummary()) renderSummaryStaff();
+    refreshAll();
+}
+
+function setEmployeeTermsField(employeeId, field, value) {
+    const employee = getEmployee(employeeId);
+    if (!employee) return;
+    if (currentSummaryRole && currentSummaryRole !== "admin") return;
+    const current = getEmployeeTerms(employee, selectedMonth);
+    if (!employee.terms || typeof employee.terms !== "object") employee.terms = {};
+    const rec = employee.terms[selectedMonth] || {
+        rate: current.rate,
+        taxiDaily: current.taxiDaily,
+        salesPercent: current.salesPercent
+    };
+    if (field === "salesPercent") {
+        rec.salesPercent = normalizeRepPercent(value);
+        employee.salesPercent = rec.salesPercent;
+    } else {
+        const amount = parseMoney(value, 0);
+        rec[field] = amount;
+        employee[field] = amount;
+    }
+    employee.terms[selectedMonth] = rec;
+    saveApp();
+    if (isSummary()) renderSummaryStaff();
+    refreshAll();
+}
+
+function deleteEmployee(employeeId) {
+    if (isSummary() && !canEditStaff()) return;
+    const e = getEmployee(employeeId);
+    if (!e) return;
+    if (!confirm('Удалить сотрудника "' + e.name + '"?')) return;
+
+    const w = employeeHome(employeeId) || workspace();
+    if (!w || w.type === "summary") return;
+    w.employees = (w.employees || []).filter(function (x) { return x.id !== employeeId; });
+    w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employeeId; });
+    Object.keys(w.timesheet || {}).forEach(function (month) {
+        if (w.timesheet[month]) delete w.timesheet[month][employeeId];
+    });
+    Object.keys(appData.salary || {}).forEach(function (month) {
+        if (appData.salary[month]) delete appData.salary[month][employeeId];
+    });
+    Object.keys(appData.repSales || {}).forEach(function (month) {
+        if (appData.repSales[month]) delete appData.repSales[month][employeeId];
+    });
+
+    saveApp();
+    renderFio();
+    renderEmployees();
+    renderSummaryStaff();
+    refreshAll();
+    toast("Сотрудник удалён.");
+}
+
+function summaryDirectoryGroups() {
+    const groups = [];
+    orderedDeptWorkspaces().forEach(function (w) {
+        if (summaryDeptFilter && w.code !== summaryDeptFilter) return;
+        const people = (w.employees || []).slice().sort(compareEmployeesByStatusThenName);
+        if (people.length) groups.push({ dept: w, employees: people });
+    });
+    return groups;
+}
+
+function workplaceSelect(employee, dept) {
+    let html = '<select onchange="moveEmployeeToDepartment(\'' + employee.id + '\', this.value)">';
+    DEPT_DEFAULTS.forEach(function (d) {
+        html += '<option value="' + d.code + '"' + (dept && dept.code === d.code ? " selected" : "") + ">"
+            + escapeHtml(d.name) + "</option>";
+    });
+    return html + "</select>";
+}
+
+function renderSummaryStaff() {
+    const box = document.getElementById("summaryStaffList");
+    if (!box || currentWorkspaceIndex === null || !isSummary()) return;
+
+    const groups = summaryDirectoryGroups();
+    if (!groups.length) {
+        box.innerHTML = '<div class="empty-row">Сотрудников пока нет. Добавьте человека здесь или во вкладке «ФИО» отдела.</div>';
+        return;
+    }
+
+    let html = "";
+    groups.forEach(function (g) {
+        html += '<div class="note" style="margin:12px 0 8px;font-weight:700;">' + escapeHtml(officialName(g.dept)) + "</div>";
+        g.employees.forEach(function (employee) {
+            const terms = getEmployeeTerms(employee);
+            const fired = employee.jobStatus === "fired";
+            const locked = !canEditStaff();
+            const dis = locked || fired ? " disabled" : "";
+            const statusSel = jobStatusSelect(employee, locked);
+            const isDrivers = g.dept.code === "drivers";
+            const isRep = isSalesRep(employee);
+            const place = locked
+                ? '<input value="' + escapeAttribute(officialName(g.dept)) + '" disabled>'
+                : workplaceSelect(employee, g.dept);
+            const percentSel = '<select onchange="updateEmployee(\'' + employee.id + '\',\'salesPercent\',this.value)"' + dis + ">"
+                + '<option value="3.5"' + (terms.salesPercent === 3.5 ? " selected" : "") + ">3,5%</option>"
+                + '<option value="4.5"' + (terms.salesPercent === 4.5 ? " selected" : "") + ">4,5%</option>"
+                + "</select>";
+            html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired ? " staff-fired" : "") + '">'
+                + fieldBlock("ФИО", '<input value="' + escapeAttribute(employee.name) + '" onchange="updateEmployee(\'' + employee.id + '\',\'name\',this.value)"' + (locked ? " disabled" : "") + ">")
+                + fieldBlock("Где работает", place)
+                + fieldBlock("Статус", statusSel)
+                + (isDrivers
+                    ? fieldBlock("Должность", locked
+                        ? '<input value="' + escapeAttribute(employee.position || "") + '" disabled>'
+                        : positionSelect(employee, g.dept))
+                    : "")
+                + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + terms.rate + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">")
+                + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + terms.taxiDaily + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">")
+                + (isDrivers ? (isRep ? fieldBlock("Процент ТП", percentSel) : "<div></div>") : "")
+                + (locked
+                    ? "<div></div>"
+                    : '<div><button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>')
+                + "</div>";
+        });
+    });
+    box.innerHTML = html;
+}
+
+function addSummaryEmployee() {
+    if (!canEditStaff()) return;
+    const code = summaryDeptFilter || "shop";
+    const target = findWorkspaceByCode(code) || orderedDeptWorkspaces()[0];
+    if (!target) return;
+    const employee = {
+        id: generateId(),
+        name: "Новый сотрудник",
+        position: "",
+        department: officialName(target),
+        start: "08:00",
+        end: "17:00",
+        rate: 0,
+        taxiDaily: 0,
+        jobStatus: "working",
+        terms: {}
+    };
+    if (!Array.isArray(target.employees)) target.employees = [];
+    target.employees.push(employee);
+    saveApp();
+    renderSummaryStaff();
+    refreshAll();
+    toast("Сотрудник добавлен в отдел «" + officialName(target) + "».");
+}
+
+function moveEmployeeToDepartment(employeeId, deptCode) {
+    const from = employeeHome(employeeId);
+    const to = findWorkspaceByCode(deptCode);
+    const employee = from ? findEmployeeIn(from, employeeId) : null;
+    if (!from || !to || !employee || from === to) return;
+
+    const wasAssigned = isAssignedTo(from, employeeId);
+    from.employees = (from.employees || []).filter(function (x) { return x.id !== employeeId; });
+    from.employeeIds = (from.employeeIds || []).filter(function (id) { return id !== employeeId; });
+    Object.keys(from.timesheet || {}).forEach(function (month) {
+        if (!from.timesheet[month] || !from.timesheet[month][employeeId]) return;
+        if (!to.timesheet) to.timesheet = {};
+        if (!to.timesheet[month]) to.timesheet[month] = {};
+        to.timesheet[month][employeeId] = from.timesheet[month][employeeId];
+        delete from.timesheet[month][employeeId];
+    });
+    if (!Array.isArray(to.employees)) to.employees = [];
+    if (!Array.isArray(to.employeeIds)) to.employeeIds = [];
+    employee.department = officialName(to);
+    to.employees.push(employee);
+    if (wasAssigned) to.employeeIds.push(employeeId);
+
+    saveApp();
+    renderSummaryStaff();
+    refreshAll();
+    toast(employee.name + " переведён в «" + officialName(to) + "».");
+}
+
+
+/* ============================================================
+   СТАТИСТИКА
+============================================================ */
+function updateStats() {
+    if (currentWorkspaceIndex === null) return;
+
+    const list = visibleEmployees();
+    let hours = 0, late = 0, products = 0, accrued = 0, pay = 0;
+
+    list.forEach(function (employee) {
+        const data = isSummary()
+            ? calculateEmployee(employee.id)
+            : calculateEmployee(employee.id, null, [workspace()]);
+        hours += data.hours;
+        late += data.lateCount;
+        products += data.products;
+        accrued += data.accrued;
+        pay += data.pay;
+    });
+
+    document.getElementById("statEmployees").textContent = list.length;
+    document.getElementById("statHours").textContent = hours.toFixed(1);
+    document.getElementById("statLate").textContent = late;
+    document.getElementById("statProducts").textContent = money(products);
+    document.getElementById("statAccrued").textContent = money(accrued);
+    document.getElementById("statPay").textContent = money(pay);
+}
+
+
+/* ============================================================
+   НАСТРОЙКИ
+============================================================ */
+function loadWorkspaceSettings() {
+    if (!workspace()) return;
+    const w = workspace();
+    document.getElementById("workspaceNameSetting").value = officialName(w);
+    document.getElementById("workspacePinSetting").value = w.pin;
+    document.getElementById("defaultHoursSetting").value = w.defaultHours;
+    const summary = isSummary();
+    document.getElementById("deptPinBox").style.display = summary ? "none" : "";
+    document.getElementById("summaryPinAdminBox").style.display = summary ? "" : "none";
+    document.getElementById("summaryPinAdjustBox").style.display = summary ? "" : "none";
+    document.getElementById("summaryPinPayBox").style.display = summary ? "" : "none";
+    if (summary) {
+        ensureSummaryPins(w);
+        document.getElementById("pinAdminSetting").value = w.rolePins.admin;
+        document.getElementById("pinAdjustSetting").value = w.rolePins.adjust;
+        document.getElementById("pinPaySetting").value = w.rolePins.pay;
+    }
+    const posCard = document.getElementById("positionsSettingsCard");
+    if (posCard) posCard.style.display = (!summary && isTableAdmin()) ? "" : "none";
+    if (!summary) renderPositionList();
+}
+
+function saveWorkspaceSettings() {
+    const w = workspace();
+    const hours = parseHours(document.getElementById("defaultHoursSetting").value, 8);
+
+    const def = DEPT_DEFAULTS.find(function (d) { return d.code === w.code; });
+    if (w.type === "summary") w.name = SUMMARY_DEFAULT.name;
+    else if (def) w.name = def.name;
+
+    if (isSummary()) {
+        ensureSummaryPins(w);
+        const adminPin = document.getElementById("pinAdminSetting").value.trim();
+        const adjustPin = document.getElementById("pinAdjustSetting").value.trim();
+        const payPin = document.getElementById("pinPaySetting").value.trim();
+        if (!adminPin || !adjustPin || !payPin) {
+            toast("PIN-код не может быть пустым.", "error");
+            return;
+        }
+        w.rolePins.admin = adminPin;
+        w.rolePins.adjust = adjustPin;
+        w.rolePins.pay = payPin;
+        w.pin = adminPin;
+    } else {
+        const pin = document.getElementById("workspacePinSetting").value.trim();
+        if (!pin) { toast("PIN-код не может быть пустым.", "error"); return; }
+        w.pin = pin;
+        w.defaultHours = hours;
+    }
+
+    saveApp();
+    document.getElementById("workspaceNameSetting").value = officialName(w);
+    renderDeptNow();
+    toast("Настройки сохранены.");
+}
+
+
+/* ============================================================
+   РЕЗЕРВНАЯ КОПИЯ
+============================================================ */
+function exportBackup() {
+    const blob = new Blob([JSON.stringify(appData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "worktime-backup-" + currentMonthValue() + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("Копия скачана.");
+}
+
+function importBackup(input) {
+    const file = input.files && input.files[0];
+    input.value = "";
+    if (!file) return;
+    if (!confirm("Заменить все текущие таблицы данными из файла?")) return;
+
+    const reader = new FileReader();
+    reader.onload = function () {
+        try {
+            const parsed = JSON.parse(String(reader.result || ""));
+            if (!parsed || !Array.isArray(parsed.workspaces) || !parsed.workspaces.length) {
+                throw new Error("bad file");
+            }
+            appData = migrateAppData(parsed);
+            saveApp();
+            logout();
+            toast("Резервная копия загружена. Войдите в таблицу.");
+        } catch (err) {
+            toast("Файл копии повреждён или имеет неверный формат.", "error");
+        }
+    };
+    reader.readAsText(file, "utf-8");
+}
+
+
+/* ============================================================
+   ЭКСПОРТ CSV
+============================================================ */
+function exportTimesheet() {
+    if (isSummary()) {
+        exportSummaryCsv();
+        return;
+    }
+
+    const days = daysInMonth();
+    const header = ["Сотрудник"];
+    for (let day = 1; day <= days; day++) {
+        header.push(day + " статус", day + " часы", day + " опоздание мин.");
+    }
+    header.push("Итого часов", "Опозданий", "Минут опоздания");
+    const rows = [header];
+
+    visibleEmployees().forEach(function (employee) {
+        const row = [employee.name];
+        for (let day = 1; day <= days; day++) {
+            const r = peekDayRecordIn(workspace(), employee.id, day);
+            row.push(r.status || "", r.hours || "", r.lateMinutes || 0);
+        }
+        const data = calculateEmployee(employee.id, null, [workspace()]);
+        row.push(data.hours.toFixed(1), data.lateCount, data.lateMinutes);
+        rows.push(row);
+    });
+
+    downloadCSV(rows, workspace().name + "_табель_" + selectedMonth + ".csv");
+}
+
+function exportSummaryCsv() {
+    const rows = [["Сотрудник", "Отдел", "Явки", "Опоздания", "Минут", "Больничные", "Отпуск", "Прогул", "Личные обст.", "Выходные", "Часы"]];
+    const groups = summaryEmployeeGroups();
+    function pushOverview(employee, deptName) {
+        const data = calculateEmployee(employee.id);
+        rows.push([
+            employee.name,
+            deptName,
+            data.ya, data.lateCount, data.lateMinutes, data.sick, data.vacation,
+            data.skip, data.personal, data.weekend,
+            data.hours.toFixed(1)
+        ]);
+    }
+    if (summarySortMode === "name") {
+        visibleEmployees().forEach(function (employee) {
+            const home = employeeHome(employee.id);
+            pushOverview(employee, home ? officialName(home) : "");
+        });
+    } else {
+        groups.forEach(function (g) {
+            rows.push([officialName(g.dept)]);
+            g.employees.forEach(function (employee) {
+                pushOverview(employee, officialName(g.dept));
+            });
+        });
+    }
+    downloadCSV(rows, "Общая_сводка_" + selectedMonth + ".csv");
+}
+
+function exportSalary() {
+    const rows = [[
+        "Сотрудник", "Дни", "Начислено", "Штрафы", "Прогул", "Продукты", "Аванс", "Налоги",
+        "Такси итого", "Премии", "Опозданий", "Удержание",
+        "Отпускные", "К выплате", "Выдано"
+    ]];
+    function pushEmp(employee, deptName) {
+        const d = calculateEmployee(employee.id);
+        rows.push([
+            employee.name,
+            d.workedDays,
+            d.salesRep ? roundMoney2(d.accrued) : Math.round(d.accrued),
+            Math.round(d.fines), Math.round(d.skipFine), Math.round(d.products),
+            Math.round(d.advance), Math.round(d.taxes), Math.round(d.taxiTotal), Math.round(d.bonusTotal),
+            d.lateCount, Math.round(d.lateAmount),
+            Math.round(d.vacationPay),
+            d.salesRep ? roundMoney2(d.pay) : Math.round(d.pay),
+            d.issued ? "да" : "нет"
+        ]);
+    }
+    const groups = summaryEmployeeGroups();
+    if (summarySortMode === "name") {
+        visibleEmployees().forEach(function (employee) {
+            const home = employeeHome(employee.id);
+            pushEmp(employee, home ? officialName(home) : "");
+        });
+    } else {
+        groups.forEach(function (g) {
+            rows.push([officialName(g.dept)]);
+            g.employees.forEach(function (employee) {
+                pushEmp(employee, officialName(g.dept));
+            });
+        });
+    }
+    downloadCSV(rows, "Общая_зарплата_" + selectedMonth + ".csv");
+}
+
+function downloadCSV(rows, filename) {
+    const csv = rows.map(function (row) {
+        return row.map(function (value) {
+            return '"' + String(value).replace(/"/g, '""') + '"';
+        }).join(";");
+    }).join("\n");
+
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+
+/* ============================================================
+   ЧАСЫ И ЗАПУСК
+============================================================ */
+function updateClock() {
+    const now = new Date();
+    document.getElementById("clock").textContent = now.toLocaleTimeString("ru-RU");
+    let subtitle = now.toLocaleDateString("ru-RU", {
+        weekday: "long", year: "numeric", month: "long", day: "numeric"
+    });
+    if (currentWorkspaceIndex !== null) subtitle += " · " + workspaceTitle(workspace()) + " · " + monthLabel(selectedMonth);
+    document.getElementById("currentDate").textContent = subtitle;
+}
+
+function verifyRepPayExample() {
+    const p = calculateRepPay({
+        totalSales: 3661246.29,
+        wholesale: 50349.30,
+        specialPrice: 8050,
+        sugar: 81310,
+        bags: 28.5,
+        fuel: 22500,
+        percent: 4.5
+    });
+    const dayCost = roundMoney2(p.prelim / 23);
+    const after = roundMoney2(p.prelim - dayCost);
+    if (p.base !== 3521536.99 || p.wholesalePay !== 1006.99 || p.specialPay !== 80.5
+        || p.bagsPay !== 142.5 || p.mainPay !== 158469.16 || p.accruedTotal !== 159699.15
+        || p.prelim !== 137199.15 || dayCost !== 5965.18 || after !== 131233.97) {
+        console.warn("Расчёт ТП не совпал с контрольным примером", p, dayCost, after);
+    }
+}
+
+function init() {
+    verifyRepPayExample();
+    appData = loadAppData();
+    renderLogin();
+    updateClock();
+    setInterval(updateClock, 1000);
+    document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") closeSidebar();
+    });
+    tryRestoreSession();
+}
+
+init();
+</script>
+
+</body>
+</html>
