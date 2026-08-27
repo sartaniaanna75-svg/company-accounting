@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Табель учёта рабочего времени: магазин, офис, склад, водители и общая сводка">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta name="description" content="Табель учёта рабочего времени: Магазин Володарского, Территория и общая сводка">
     <title>Табель сотрудников</title>
 
     <style>
@@ -39,7 +41,7 @@
         button { cursor: pointer; }
 
         /* =========================================================
-           Экран входа: 4 отдела + Общая
+           Экран входа: Магазин Володарского + Территория + Общая
         ========================================================= */
         .login-screen {
             min-height: 100vh;
@@ -49,18 +51,26 @@
             padding: 20px;
         }
 
+        .login-box { width: min(980px, 100%); }
+
         .login-home {
             text-align: center;
             margin-bottom: 18px;
         }
 
-        .login-home a {
+        .login-home a,
+        .login-home button {
             color: var(--muted);
             text-decoration: none;
             font-size: 13px;
+            background: none;
+            border: 0;
+            padding: 0;
+            cursor: pointer;
         }
 
-        .login-home a:hover { color: var(--primary); }
+        .login-home a:hover,
+        .login-home button:hover { color: var(--primary); }
 
         .login-title {
             text-align: center;
@@ -78,8 +88,12 @@
 
         .login-grid {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(2, 1fr);
             gap: 16px;
+        }
+
+        .login-grid.territory-view {
+            grid-template-columns: repeat(3, 1fr);
         }
 
         .login-card.summary-card {
@@ -216,7 +230,17 @@
         .login-card.office { border-top: 5px solid #3b82f6; }
         .login-card.warehouse { border-top: 5px solid #14b8a6; }
         .login-card.drivers { border-top: 5px solid #a855f7; }
+        .login-card.territory-folder { border-top: 5px solid #0284c7; cursor: pointer; }
         .login-card.summary, .login-card.summary-card { border-top: 5px solid #22c55e; }
+
+        .territory-preview {
+            list-style: none;
+            margin: 12px 0 16px;
+            padding: 0;
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.8;
+        }
 
         .menu-title {
             font-size: 11px;
@@ -795,12 +819,14 @@
            Адаптив
         ========================================================= */
         @media (max-width: 1200px) {
-            .login-grid { grid-template-columns: repeat(2, 1fr); }
+            .login-grid,
+            .login-grid.territory-view { grid-template-columns: repeat(2, 1fr); }
             .login-card.summary-card { max-width: none; }
         }
 
         @media (max-width: 1000px) {
-            .login-grid { grid-template-columns: 1fr; }
+            .login-grid,
+            .login-grid.territory-view { grid-template-columns: 1fr; }
             .login-card.summary-card { grid-column: auto; max-width: none; }
             .stats, .stats.stats-3 { grid-template-columns: repeat(2, 1fr); }
             .employee-row, .settings-grid, .pick-row, .summary-staff-row {
@@ -838,19 +864,53 @@
 <body>
 
 <!-- =========================================================
-     ЭКРАН ВХОДА: четыре отдела и общая сводка
+     ЭКРАН ВХОДА: Магазин Володарского, Территория и общая сводка
 ========================================================= -->
 <div id="loginScreen" class="login-screen">
     <div class="login-box">
-        <div class="login-home">
+        <div class="login-home" id="loginHomeLink">
             <a href="index.html">← На главную</a>
         </div>
-        <div class="login-title">⏱ Табель сотрудников</div>
-        <div class="login-subtitle">
-            Четыре отдельных отдела и общая таблица. В общей выберите, кто входит.
+        <div class="login-title" id="loginTitle">⏱ Табель сотрудников</div>
+        <div class="login-subtitle" id="loginSubtitle">
+            Магазин Володарского, Территория и общая таблица. В общей выберите, кто входит.
             <span id="defaultPinHint"></span>
         </div>
-        <div class="login-grid" id="loginGrid"></div>
+        <div class="login-grid" id="loginGrid">
+            <div class="login-card shop" id="loginCard_shop">
+                <h3>Магазин Володарского</h3>
+                <div class="note">Выберите, кто входит</div>
+                <select id="loginWho_shop">
+                    <option value="staff">Сотрудник отдела</option>
+                    <option value="admin">Анна Владимировна — админ</option>
+                </select>
+                <input type="password" id="loginPin_shop" placeholder="PIN" maxlength="12" autocomplete="off" inputmode="numeric" onkeydown="if(event.key==='Enter'){loginByCode('shop')}">
+                <div class="login-error" id="loginError_shop"></div>
+                <button type="button" class="btn btn-primary" style="width:100%;" onclick="loginByCode('shop')">Войти</button>
+            </div>
+            <div class="login-card territory-folder" id="loginCard_territory" role="button" tabindex="0" onclick="renderLogin('territory')">
+                <h3>Территория</h3>
+                <div class="note">Общая папка подразделений. Табели не смешиваются.</div>
+                <ul class="territory-preview">
+                    <li>Офис</li>
+                    <li>Склад</li>
+                    <li>Логистика + Торговая</li>
+                </ul>
+                <button type="button" class="btn btn-primary" style="width:100%;" onclick="event.stopPropagation();renderLogin('territory')">Открыть</button>
+            </div>
+            <div class="login-card summary summary-card" id="loginCard_summary">
+                <h3>Общая</h3>
+                <div class="note">Выберите, кто входит, и введите PIN</div>
+                <select id="loginSummaryWho">
+                    <option value="admin">Анна Владимировна — админ</option>
+                    <option value="adjust">Ольга — удержания</option>
+                    <option value="pay">Наталья — выдача</option>
+                </select>
+                <input type="password" id="loginPin_summary" placeholder="PIN" maxlength="12" autocomplete="off" inputmode="numeric" onkeydown="if(event.key==='Enter'){loginSummary()}">
+                <div class="login-error" id="loginError_summary"></div>
+                <button type="button" class="btn btn-primary" style="width:100%;" onclick="loginSummary()">Войти</button>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -902,6 +962,9 @@
         </button>
 
         <div class="menu-title">Вход</div>
+        <button type="button" class="nav-btn" id="backToTerritoryBtn" onclick="backToTerritory()" style="display:none;">
+            ← Назад в Территорию
+        </button>
         <button type="button" class="nav-btn" onclick="window.location.href='index.html'">
             🏠 На главную
         </button>
@@ -957,10 +1020,10 @@
                                 <label for="summaryDeptFilter">Отдел</label>
                                 <select id="summaryDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
                                     <option value="">Все отделы</option>
-                                    <option value="shop">Магазин</option>
+                                    <option value="shop">Магазин Володарского</option>
                                     <option value="office">Офис</option>
                                     <option value="warehouse">Склад</option>
-                                    <option value="drivers">Водители</option>
+                                    <option value="drivers">Логистика + Торговая</option>
                                 </select>
                             </div>
                             <div class="form-group" data-for="summary">
@@ -1047,10 +1110,10 @@
                                 <label for="salaryDeptFilter">Отдел</label>
                                 <select id="salaryDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
                                     <option value="">Все отделы</option>
-                                    <option value="shop">Магазин</option>
+                                    <option value="shop">Магазин Володарского</option>
                                     <option value="office">Офис</option>
                                     <option value="warehouse">Склад</option>
-                                    <option value="drivers">Водители</option>
+                                    <option value="drivers">Логистика + Торговая</option>
                                 </select>
                             </div>
                             <div class="form-group">
@@ -1105,7 +1168,7 @@
                         <div>
                             <div class="card-title">Зарплата торговых представителей</div>
                             <div class="note" id="repSalaryNote">
-                                Сотрудники отдела «Водители» с должностью «Торговый представитель».
+                                Сотрудники отдела «Логистика + Торговая» с должностью «Торговый представитель».
                                 Продажи вводит админ. Неотработанные будни (пн–пт) берутся из табеля и уменьшают начисление.
                                 Итог после удержания за дни попадает в колонку «Начислено» общей зарплаты.
                             </div>
@@ -1167,10 +1230,10 @@
                                 <label for="staffDeptFilter">Отдел</label>
                                 <select id="staffDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
                                     <option value="">Все отделы</option>
-                                    <option value="shop">Магазин</option>
+                                    <option value="shop">Магазин Володарского</option>
                                     <option value="office">Офис</option>
                                     <option value="warehouse">Склад</option>
-                                    <option value="drivers">Водители</option>
+                                    <option value="drivers">Логистика + Торговая</option>
                                 </select>
                             </div>
                             <button type="button" class="btn btn-primary" id="addSummaryEmployeeBtn" onclick="addSummaryEmployee()">+ Добавить сотрудника</button>
@@ -1411,16 +1474,18 @@
    Ключ хранилища прежний — старые данные мигрируют.
 ============================================================ */
 const STORAGE_KEY = "worktime_three_tables_v1";
-const SESSION_KEY = "worktime_session_v3";
+const SESSION_KEY = "worktime_session_v4";
 const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
 const MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 const MONTH_FULL = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
 const DEPT_DEFAULTS = [
-    { code: "shop", name: "Магазин", pin: "1111" },
+    { code: "shop", name: "Магазин Володарского", pin: "1111" },
     { code: "office", name: "Офис", pin: "2222" },
     { code: "warehouse", name: "Склад", pin: "3333" },
-    { code: "drivers", name: "Водители", pin: "4444" }
+    { code: "drivers", name: "Логистика + Торговая", pin: "4444" }
 ];
+const TERRITORY_DEPT_CODES = ["office", "warehouse", "drivers"];
+const LEGACY_DEPT_NAMES = ["Магазин", "Водители"];
 const SUMMARY_DEFAULT = { code: "summary", name: "Общая", pin: "5555" };
 const SUMMARY_ROLES = [
     { role: "admin", name: "Анна Владимировна", title: "Админ", pin: "5555", note: "Ставка за день и такси" },
@@ -1476,6 +1541,7 @@ let summaryDeptFilter = "";
 let summarySortMode = "dept";
 let currentSummaryRole = null;
 let currentDeptRole = null;
+let loginView = "home";
 
 
 /* ============================================================
@@ -1572,6 +1638,10 @@ function catalogEntry(w) {
 function officialName(w) {
     const d = catalogEntry(w);
     return d ? d.name : ((w && w.name) || "");
+}
+
+function isTerritoryCode(code) {
+    return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
 }
 
 function setCurrentWorkspace(w) {
@@ -2164,7 +2234,7 @@ function repairFourDepartments(data) {
         if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
         w.employees.forEach(function (e) {
             if (!e) return;
-            const names = DEPT_DEFAULTS.map(function (d) { return d.name; });
+            const names = DEPT_DEFAULTS.map(function (d) { return d.name; }).concat(LEGACY_DEPT_NAMES);
             if (!e.department || names.indexOf(e.department) !== -1) e.department = def.name;
         });
     });
@@ -2223,7 +2293,7 @@ function renderDeptNow() {
                 ? "Ольга · штрафы, прогулы, продукты, аванс и налоги"
                 : currentSummaryRole === "pay"
                     ? "Наталья · только отметка «Выдано»"
-                    : "Сводка по Магазину, Офису, Складу и Водителям")
+                    : "Сводка по Магазину Володарского, Офису, Складу и Логистике + Торговая")
         : (currentDeptRole === "admin"
             ? "Анна Владимировна · админ. Настройки доступны."
             : "Свои сотрудники. Другие отделы сюда не входят.");
@@ -2789,7 +2859,9 @@ function summaryMonthMoney(monthValue) {
 /* ============================================================
    ВХОД И СЕССИЯ
 ============================================================ */
-function renderLogin() {
+function renderLogin(view) {
+    if (view === "home" || view === "territory") loginView = view;
+
     const defs = DEPT_DEFAULTS;
     const summary = findWorkspaceByCode("summary");
     if (summary) ensureSummaryPins(summary);
@@ -2801,27 +2873,83 @@ function renderLogin() {
         && summary.rolePins.adjust === "6666"
         && summary.rolePins.pay === "7777";
 
-    document.getElementById("defaultPinHint").textContent = showHint
-        ? " Отделы: сотрудник — PIN отдела, админ — 5555. Общая: 5555 / 6666 / 7777."
-        : "";
+    const homeLink = document.getElementById("loginHomeLink");
+    const title = document.getElementById("loginTitle");
+    const subtitle = document.getElementById("loginSubtitle");
+    const grid = document.getElementById("loginGrid");
 
-    let html = defs.map(function (d) {
-        return ""
-            + '<div class="login-card ' + d.code + '" id="loginCard_' + d.code + '">'
-            +   "<h3>" + escapeHtml(d.name) + "</h3>"
-            +   '<div class="note">Выберите, кто входит</div>'
-            +   '<select id="loginWho_' + d.code + '">'
-            +     '<option value="staff">Сотрудник отдела</option>'
-            +     '<option value="admin">Анна Владимировна — админ</option>'
-            +   "</select>"
-            +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="12" autocomplete="off"'
-            +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
-            +   '<div class="login-error" id="loginError_' + d.code + '"></div>'
-            +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginByCode(\'' + d.code + '\')">Войти</button>'
-            + "</div>";
-    }).join("");
+    if (loginView === "territory") {
+        if (homeLink) {
+            homeLink.innerHTML = '<button type="button" onclick="renderLogin(\'home\')">← Назад на главную</button>';
+        }
+        if (title) title.textContent = "ТЕРРИТОРИЯ";
+        if (subtitle) {
+            subtitle.innerHTML = "Офис, Склад и Логистика + Торговая — отдельные табели."
+                + ' <span id="defaultPinHint"></span>';
+        }
+        grid.className = "login-grid territory-view";
+        grid.innerHTML = defs.filter(function (d) {
+            return isTerritoryCode(d.code);
+        }).map(deptLoginCardHtml).join("");
+    } else {
+        if (homeLink) {
+            homeLink.innerHTML = '<a href="index.html">← На главную</a>';
+        }
+        if (title) title.textContent = "⏱ Табель сотрудников";
+        if (subtitle) {
+            subtitle.innerHTML = "Магазин Володарского, Территория и общая таблица. В общей выберите, кто входит."
+                + ' <span id="defaultPinHint"></span>';
+        }
+        grid.className = "login-grid";
+        const shop = defs.find(function (d) { return d.code === "shop"; });
+        grid.innerHTML = deptLoginCardHtml(shop) + territoryFolderCardHtml() + summaryLoginCardHtml();
+    }
 
-    html += ""
+    const hint = document.getElementById("defaultPinHint");
+    if (hint) {
+        hint.textContent = showHint
+            ? (loginView === "territory"
+                ? " Отделы: сотрудник — PIN отдела, админ — 5555."
+                : " Отделы: сотрудник — PIN отдела, админ — 5555. Общая: 5555 / 6666 / 7777.")
+            : "";
+    }
+}
+
+function deptLoginCardHtml(d) {
+    if (!d) return "";
+    return ""
+        + '<div class="login-card ' + d.code + '" id="loginCard_' + d.code + '">'
+        +   "<h3>" + escapeHtml(d.name) + "</h3>"
+        +   '<div class="note">Выберите, кто входит</div>'
+        +   '<select id="loginWho_' + d.code + '">'
+        +     '<option value="staff">Сотрудник отдела</option>'
+        +     '<option value="admin">Анна Владимировна — админ</option>'
+        +   "</select>"
+        +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="12" autocomplete="off"'
+        +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
+        +   '<div class="login-error" id="loginError_' + d.code + '"></div>'
+        +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginByCode(\'' + d.code + '\')">Войти</button>'
+        + "</div>";
+}
+
+function territoryFolderCardHtml() {
+    return ""
+        + '<div class="login-card territory-folder" id="loginCard_territory" role="button" tabindex="0"'
+        + ' onclick="renderLogin(\'territory\')"'
+        + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){renderLogin(\'territory\');event.preventDefault();}">'
+        +   "<h3>Территория</h3>"
+        +   '<div class="note">Общая папка подразделений. Табели не смешиваются.</div>'
+        +   '<ul class="territory-preview">'
+        +     "<li>Офис</li>"
+        +     "<li>Склад</li>"
+        +     "<li>Логистика + Торговая</li>"
+        +   "</ul>"
+        +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="event.stopPropagation();renderLogin(\'territory\')">Открыть</button>'
+        + "</div>";
+}
+
+function summaryLoginCardHtml() {
+    return ""
         + '<div class="login-card summary summary-card" id="loginCard_summary">'
         +   "<h3>Общая</h3>"
         +   '<div class="note">Выберите, кто входит, и введите PIN</div>'
@@ -2835,7 +2963,6 @@ function renderLogin() {
         +   '<div class="login-error" id="loginError_summary"></div>'
         +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginSummary()">Войти</button>'
         + "</div>";
-    document.getElementById("loginGrid").innerHTML = html;
 }
 
 function loginByCode(code) {
@@ -2958,7 +3085,7 @@ function saveSession() {
     } catch (err) {}
 }
 
-function logout() {
+function leaveWorkspace() {
     setCurrentWorkspace(null);
     currentSummaryRole = null;
     currentDeptRole = null;
@@ -2968,7 +3095,16 @@ function logout() {
     closeSidebar();
     document.getElementById("app").style.display = "none";
     document.getElementById("loginScreen").style.display = "flex";
-    renderLogin();
+}
+
+function logout() {
+    leaveWorkspace();
+    renderLogin("home");
+}
+
+function backToTerritory() {
+    leaveWorkspace();
+    renderLogin("territory");
 }
 
 function tryRestoreSession() {
@@ -3025,6 +3161,12 @@ function applyModeUI() {
         el.style.display = show ? "" : "none";
     });
 
+    const backBtn = document.getElementById("backToTerritoryBtn");
+    if (backBtn) {
+        const current = workspace();
+        backBtn.style.display = (!summary && current && isTerritoryCode(current.code)) ? "" : "none";
+    }
+
     const stats = document.getElementById("timesheetStats");
     stats.classList.toggle("stats-3", !summary);
 
@@ -3032,7 +3174,7 @@ function applyModeUI() {
         ? "Сводка по отделам"
         : "Табель: " + officialName(workspace());
     document.getElementById("timesheetNote").textContent = summary
-        ? "Сотрудники собраны по отделам: Магазин, Офис, Склад, Водители. Можно показать один отдел или выстроить всех по ФИО."
+        ? "Сотрудники собраны по отделам: " + DEPT_DEFAULTS.map(function (d) { return d.name; }).join(", ") + ". Можно показать один отдел или выстроить всех по ФИО."
         : allowsEarly730(workspace())
             ? "В ячейке явки можно отметить «с 7:30» — за каждый такой день в Общей в премию добавится 125 ₽."
             : "В графе «Сотрудник» выберите человека из списка этого отдела. Списки отделов не пересекаются.";
@@ -3526,7 +3668,7 @@ function renderRepSalary() {
     const editable = canEditRepSales();
 
     if (!list.length) {
-        body.innerHTML = '<tr><td colspan="22"><div class="empty-row">Нет торговых представителей. В отделе «Водители» поставьте должность «Торговый представитель».</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="22"><div class="empty-row">Нет торговых представителей. В отделе «Логистика + Торговая» поставьте должность «Торговый представитель».</div></td></tr>';
         return;
     }
 
