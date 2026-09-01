@@ -456,7 +456,7 @@
         ========================================================= */
         .stats {
             display: grid;
-            grid-template-columns: repeat(6, minmax(140px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             gap: 12px;
             margin-bottom: 18px;
         }
@@ -638,13 +638,41 @@
             flex: 0 0 auto;
         }
 
-        .cell-ya { background: #dcfce7; }
-        .cell-o  { background: #fef3c7; }
-        .cell-b  { background: #dbeafe; }
-        .cell-ot { background: #ede9fe; }
-        .cell-v  { background: #f3f4f6; }
-        .cell-p  { background: #fecaca; }
-        .cell-l  { background: #ffedd5; }
+        .cell-ya, .cell-ya select, .cell-ya input {
+            background: #c9e8d1;
+            color: #14532d;
+        }
+        .cell-ya .early730-check { color: #14532d; }
+        .cell-v, .cell-v select {
+            background: #b7ccf0;
+            color: #1e3a8a;
+        }
+        .cell-o, .cell-o select, .cell-o input {
+            background: #efc7a9;
+            color: #7c2d12;
+        }
+        .cell-b, .cell-b select {
+            background: #d2c7f0;
+            color: #4c1d95;
+        }
+        .cell-ot, .cell-ot select {
+            background: #a7d9d6;
+            color: #134e4a;
+        }
+        .cell-p, .cell-p select {
+            background: #e8b7b9;
+            color: #7f1d1d;
+        }
+        .cell-l, .cell-l select {
+            background: #e2cab1;
+            color: #78350f;
+        }
+        .cell-ya select, .cell-v select, .cell-o select,
+        .cell-b select, .cell-ot select, .cell-p select, .cell-l select,
+        .cell-ya input, .cell-o input {
+            font-weight: 700;
+            border-color: rgba(15, 23, 42, .18);
+        }
 
         .summary-cell {
             min-width: 95px;
@@ -794,6 +822,33 @@
         .summary-staff-row > .form-group:nth-child(5),
         .summary-staff-row > .form-group:nth-child(6) { width: 120px; }
         .summary-staff-row > .form-group:nth-child(7) { width: 110px; }
+        .summary-staff-row > .form-group.rep-accrual {
+            width: 230px;
+            align-self: flex-start;
+        }
+        .rep-accrual-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 4px;
+        }
+        .rep-accrual-row span.rep-accrual-name {
+            flex: 1;
+            min-width: 0;
+            font-size: 12px;
+            color: var(--muted, #64748b);
+            line-height: 1.2;
+        }
+        .summary-staff-row .rep-accrual-row input {
+            width: 4.6em;
+            flex: 0 0 auto;
+            text-align: right;
+        }
+        .rep-accrual-row .rep-accrual-unit {
+            flex: 0 0 auto;
+            font-size: 12px;
+            color: var(--muted, #64748b);
+        }
 
         .employee-row input,
         .employee-row select,
@@ -816,6 +871,16 @@
             font-size: 11px;
             padding: 6px 4px;
         }
+        .rep-pct-line {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            margin: 2px 0;
+            white-space: nowrap;
+        }
+        .rep-pct-line span { font-size: 10px; color: var(--muted); min-width: 3.4em; text-align: left; }
+        .rep-pct-line input { width: 4.2em; }
         .rep-input {
             width: 6.4em;
             max-width: 7.2em;
@@ -876,12 +941,30 @@
             gap: 15px;
         }
 
-        .settings-actions {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-top: 16px;
+        input.name-missing {
+            background: #fee2e2;
+            border-color: #dc2626;
         }
+        input.name-missing:focus {
+            border-color: #b91c1c;
+            box-shadow: 0 0 0 3px rgba(220, 38, 38, .18);
+        }
+
+        .users-table { min-width: 640px; }
+        .users-table td { text-align: left; }
+        .users-edit {
+            display: grid;
+            grid-template-columns: 1fr 1fr auto;
+            gap: 10px;
+            align-items: end;
+            margin-top: 8px;
+        }
+        .pin-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+        .pin-row input { flex: 1; min-width: 0; }
 
         /* =========================================================
            Уведомления
@@ -1137,10 +1220,10 @@
 
                     <div class="note" data-for="dept">
                         <strong>Я</strong> — явка,
+                        <strong>В</strong> — выходной,
                         <strong>О</strong> — опоздание,
                         <strong>Б</strong> — больничный,
                         <strong>ОТ</strong> — отпуск,
-                        <strong>В</strong> — выходной,
                         <strong>П</strong> — прогул (штраф 1500 ₽ за день),
                         <strong>Л</strong> — личные обстоятельства.
                         Для опоздания: 10–60 минут. Уже заполненные дни кнопка «Заполнить месяц» не меняет.
@@ -1155,6 +1238,10 @@
                     <div class="stat">
                         <div class="stat-label">Часов</div>
                         <div class="stat-value" id="statHours">0</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Отработано дней</div>
+                        <div class="stat-value" id="statWorkedDays">0</div>
                     </div>
                     <div class="stat">
                         <div class="stat-label">Опозданий</div>
@@ -1304,14 +1391,14 @@
                                     <th>Спеццена</th>
                                     <th>Сахар</th>
                                     <th>Мешки</th>
-                                    <th>%</th>
+                                    <th>Топливо торговых</th>
+                                    <th title="Опт / Крупный опт / Спеццена">%</th>
                                     <th class="rep-calc">База</th>
                                     <th class="rep-calc">Оплата опта</th>
                                     <th class="rep-calc">Оплата спец.</th>
                                     <th class="rep-calc">Оплата мешков</th>
                                     <th class="rep-calc">С основной базы</th>
                                     <th class="rep-calc">Начислено всего</th>
-                                    <th>Топливо</th>
                                     <th class="rep-calc">Предварительная</th>
                                     <th class="rep-calc" title="Будни пн–пт в месяце">Раб. дней</th>
                                     <th class="rep-calc" title="Я или О в будни">Отработано</th>
@@ -1517,18 +1604,6 @@
                             <label for="workspacePinSetting">PIN-код</label>
                             <input type="password" id="workspacePinSetting" maxlength="12" autocomplete="off">
                         </div>
-                        <div class="form-group" id="summaryPinAdminBox" style="display:none;">
-                            <label for="pinAdminSetting">PIN Анны Владимировны (админ)</label>
-                            <input type="password" id="pinAdminSetting" maxlength="12" autocomplete="off">
-                        </div>
-                        <div class="form-group" id="summaryPinAdjustBox" style="display:none;">
-                            <label for="pinAdjustSetting">PIN Ольги (удержания)</label>
-                            <input type="password" id="pinAdjustSetting" maxlength="12" autocomplete="off">
-                        </div>
-                        <div class="form-group" id="summaryPinPayBox" style="display:none;">
-                            <label for="pinPaySetting">PIN Натальи (выдача)</label>
-                            <input type="password" id="pinPaySetting" maxlength="12" autocomplete="off">
-                        </div>
                         <div class="form-group" data-for="dept">
                             <label for="defaultHoursSetting">Рабочих часов по умолчанию</label>
                             <input type="number" min="0" max="24" step="0.5" id="defaultHoursSetting">
@@ -1539,6 +1614,26 @@
                         <button type="button" class="btn btn-primary" onclick="saveWorkspaceSettings()">
                             Сохранить настройки
                         </button>
+                    </div>
+                </div>
+
+                <div class="card" id="summaryUsersCard" style="display:none;">
+                    <div class="card-title">Пользователи</div>
+                    <div class="note" style="margin-top:8px;">
+                        Можно изменить отображаемое имя и PIN. Права привязаны к внутреннему ID, а не к имени.
+                    </div>
+                    <div class="table-wrapper" style="margin-top:12px;">
+                        <table class="users-table">
+                            <thead>
+                                <tr>
+                                    <th>Пользователь</th>
+                                    <th>Имя</th>
+                                    <th>PIN-код</th>
+                                    <th>Действие</th>
+                                </tr>
+                            </thead>
+                            <tbody id="summaryUsersBody"></tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -1666,6 +1761,8 @@ let currentDeptRole = null;
 let loginView = "home";
 let shopMetricCategory = "pickers";
 let justAddedEmployeeId = null;
+let editingSummaryUserRole = null;
+let summaryUserPinVisible = {};
 
 const SHOP_METRIC_CATEGORIES = [
     {
@@ -1764,9 +1861,24 @@ function moneyFlex(value) {
     return money2(n);
 }
 
-function normalizeRepPercent(value) {
-    const n = Number(String(value == null ? "" : value).replace(",", "."));
-    return n === 4.5 ? 4.5 : 3.5;
+function parseRepPercent(value, fallback) {
+    if (value === "" || value === null || value === undefined) {
+        return fallback == null ? 0 : fallback;
+    }
+    const n = Number(String(value).replace(/\s/g, "").replace("%", "").replace(",", "."));
+    if (!Number.isFinite(n) || n < 0) return fallback == null ? 0 : fallback;
+    return Math.round(n * 10000) / 10000;
+}
+
+function formatRepPercent(value) {
+    const n = parseRepPercent(value, 0);
+    return String(n).replace(".", ",");
+}
+
+function pickStoredRepPercent(rec, employee, key, fallback) {
+    if (rec && rec[key] != null && rec[key] !== "") return parseRepPercent(rec[key], fallback);
+    if (employee && employee[key] != null && employee[key] !== "") return parseRepPercent(employee[key], fallback);
+    return fallback;
 }
 
 function blankZero(value) {
@@ -1787,6 +1899,16 @@ function parseHours(value, fallback) {
     if (value === "" || value === null || value === undefined) return fallback;
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function timesheetDaysFromHours(hours) {
+    return Math.round((Number(hours || 0) / 8) * 100) / 100;
+}
+
+function formatTimesheetDays(hours) {
+    const n = timesheetDaysFromHours(hours);
+    if (Math.abs(n - Math.round(n)) < 0.001) return String(Math.round(n));
+    return String(n).replace(".", ",");
 }
 
 function toast(message, type) {
@@ -1923,27 +2045,49 @@ function getEmployeeTerms(employee, monthValue) {
     for (let i = 0; i < 240; i++) {
         const rec = map[cursor];
         if (rec && typeof rec === "object") {
+            const salesPercentOpt = pickStoredRepPercent(
+                rec,
+                employee,
+                "salesPercentOpt",
+                pickStoredRepPercent(rec, employee, "salesPercent", 0)
+            );
             return {
                 rate: parseMoney(rec.rate != null ? rec.rate : (employee.rate || 0), 0),
                 taxiDaily: parseMoney(rec.taxiDaily != null ? rec.taxiDaily : (employee.taxiDaily || 0), 0),
-                salesPercent: normalizeRepPercent(
-                    rec.salesPercent != null ? rec.salesPercent : (employee.salesPercent != null ? employee.salesPercent : 3.5)
-                )
+                salesPercent: salesPercentOpt,
+                salesPercentOpt: salesPercentOpt,
+                salesPercentWholesale: pickStoredRepPercent(rec, employee, "salesPercentWholesale", 2),
+                salesPercentSpecial: pickStoredRepPercent(rec, employee, "salesPercentSpecial", 1)
             };
         }
         const prev = shiftMonth(cursor, -1);
         if (prev === cursor) break;
         cursor = prev;
     }
+    const salesPercentOpt = pickStoredRepPercent(null, employee, "salesPercentOpt", pickStoredRepPercent(null, employee, "salesPercent", 0));
     return {
         rate: parseMoney(employee && employee.rate, 0),
         taxiDaily: parseMoney(employee && employee.taxiDaily, 0),
-        salesPercent: normalizeRepPercent(employee && employee.salesPercent)
+        salesPercent: salesPercentOpt,
+        salesPercentOpt: salesPercentOpt,
+        salesPercentWholesale: pickStoredRepPercent(null, employee, "salesPercentWholesale", 2),
+        salesPercentSpecial: pickStoredRepPercent(null, employee, "salesPercentSpecial", 1)
     };
 }
 
 function summaryRoleInfo(role) {
-    return SUMMARY_ROLES.find(function (r) { return r.role === role; }) || SUMMARY_ROLES[0];
+    const base = SUMMARY_ROLES.find(function (r) { return r.role === role; }) || SUMMARY_ROLES[0];
+    const w = findWorkspaceByCode("summary");
+    if (w) ensureSummaryUsers(w);
+    const stored = w && w.roleUsers && w.roleUsers[role];
+    return {
+        role: base.role,
+        id: base.role,
+        name: (stored && stored.name) || base.name,
+        title: base.title,
+        pin: (stored && stored.pin) || (w && w.rolePins && w.rolePins[role]) || base.pin,
+        note: base.note
+    };
 }
 
 function canEditStaff() {
@@ -2110,6 +2254,23 @@ function ensureSummaryPins(w) {
     if (!w.rolePins.admin) w.rolePins.admin = (w.pin && w.pin !== "1111") ? w.pin : "5555";
     if (!w.rolePins.adjust) w.rolePins.adjust = "6666";
     if (!w.rolePins.pay) w.rolePins.pay = "7777";
+    w.pin = w.rolePins.admin;
+    ensureSummaryUsers(w);
+}
+
+function ensureSummaryUsers(w) {
+    if (!w) return;
+    if (!w.rolePins || typeof w.rolePins !== "object") {
+        w.rolePins = { admin: "5555", adjust: "6666", pay: "7777" };
+    }
+    if (!w.roleUsers || typeof w.roleUsers !== "object") w.roleUsers = {};
+    SUMMARY_ROLES.forEach(function (r) {
+        const prev = w.roleUsers[r.role] && typeof w.roleUsers[r.role] === "object" ? w.roleUsers[r.role] : {};
+        const name = String(prev.name || r.name).replace(/\s+/g, " ").trim() || r.name;
+        const pin = String(prev.pin || w.rolePins[r.role] || r.pin || "").trim() || r.pin;
+        w.roleUsers[r.role] = { id: r.role, name: name, pin: pin };
+        w.rolePins[r.role] = pin;
+    });
     w.pin = w.rolePins.admin;
 }
 
@@ -2462,14 +2623,14 @@ function renderDeptNow() {
     const code = current.code || (isSummary() ? "summary" : "");
     const hint = isSummary()
         ? (currentSummaryRole === "admin"
-            ? "Анна Владимировна · ставка за день и такси"
+            ? summaryRoleInfo("admin").name + " · ставка за день и такси"
             : currentSummaryRole === "adjust"
-                ? "Ольга · штрафы, прогулы, продукты, аванс и налоги"
+                ? summaryRoleInfo("adjust").name + " · штрафы, прогулы, продукты, аванс и налоги"
                 : currentSummaryRole === "pay"
-                    ? "Наталья · только отметка «Выдано»"
+                    ? summaryRoleInfo("pay").name + " · только отметка «Выдано»"
                     : "Сводка по Магазину Володарского, Офису, Складу и Логистике + Торговые")
         : (currentDeptRole === "admin"
-            ? "Анна Владимировна · админ. Настройки доступны."
+            ? summaryRoleInfo("admin").name + " · админ. Настройки доступны."
             : "Свои сотрудники. Другие отделы сюда не входят.");
 
     const title = isSummary() ? "Общая" : officialName(current);
@@ -2730,7 +2891,31 @@ function ensureRepSales(employeeId) {
 }
 
 function canEditRepSales() {
-    return isSummary() && currentSummaryRole === "admin";
+    return isSummary() && (currentSummaryRole === "admin" || currentSummaryRole === "adjust");
+}
+
+function isRepPercentField(field) {
+    return field === "salesPercent" || field === "salesPercentOpt"
+        || field === "salesPercentWholesale" || field === "salesPercentSpecial";
+}
+
+function isBlankName(name) {
+    return !String(name || "").replace(/\s+/g, " ").trim();
+}
+
+function syncNameFieldState(el) {
+    if (!el) return;
+    el.classList.toggle("name-missing", isBlankName(el.value));
+}
+
+function nameInputHtml(employee, disabled) {
+    const empty = isBlankName(employee && employee.name);
+    return '<input' + (empty ? ' class="name-missing"' : "")
+        + ' placeholder="Введите фамилию"'
+        + ' value="' + escapeAttribute(employee && employee.name ? employee.name : "") + '"'
+        + ' oninput="syncNameFieldState(this)"'
+        + " onchange=\"updateEmployee('" + employee.id + "','name',this.value)\""
+        + (disabled ? " disabled" : "") + ">";
 }
 
 function calculateRepPay(input) {
@@ -2740,15 +2925,17 @@ function calculateRepPay(input) {
     const sugar = parseMoney2(input.sugar, 0);
     const bags = parseDecimal(input.bags, 0);
     const fuel = parseMoney2(input.fuel, 0);
-    const percent = normalizeRepPercent(input.percent);
+    const percentOpt = parseRepPercent(input.percentOpt != null ? input.percentOpt : input.percent, 0);
+    const percentWholesale = parseRepPercent(input.percentWholesale, 0);
+    const percentSpecial = parseRepPercent(input.percentSpecial, 0);
     const excluded = roundMoney2(wholesale + specialPrice + sugar);
     const baseOverflow = excluded > totalSales;
     let base = roundMoney2(totalSales - wholesale - specialPrice - sugar);
     if (base < 0) base = 0;
-    const wholesalePay = roundMoney2(wholesale * 0.02);
-    const specialPay = roundMoney2(specialPrice * 0.01);
+    const wholesalePay = roundMoney2(wholesale * (percentWholesale / 100));
+    const specialPay = roundMoney2(specialPrice * (percentSpecial / 100));
     const bagsPay = roundMoney2(bags * REP_BAG_PAY);
-    const mainPay = roundMoney2(base * (percent / 100));
+    const mainPay = roundMoney2(base * (percentOpt / 100));
     const accruedTotal = roundMoney2(mainPay + wholesalePay + specialPay + bagsPay);
     const prelim = roundMoney2(accruedTotal - fuel);
     return {
@@ -2758,7 +2945,10 @@ function calculateRepPay(input) {
         sugar: sugar,
         bags: bags,
         fuel: fuel,
-        percent: percent,
+        percent: percentOpt,
+        percentOpt: percentOpt,
+        percentWholesale: percentWholesale,
+        percentSpecial: percentSpecial,
         base: base,
         baseOverflow: baseOverflow,
         wholesalePay: wholesalePay,
@@ -2814,7 +3004,9 @@ function calculateSalesRep(employee, monthOverride) {
         sugar: sales.sugar,
         bags: sales.bags,
         fuel: sales.fuel,
-        percent: terms.salesPercent
+        percentOpt: terms.salesPercentOpt,
+        percentWholesale: terms.salesPercentWholesale,
+        percentSpecial: terms.salesPercentSpecial
     });
     const days = repTimesheetDays(employee.id);
     const dayCost = days.scheduled > 0 ? roundMoney2(pay.prelim / days.scheduled) : 0;
@@ -3124,7 +3316,7 @@ function deptLoginCardHtml(d) {
         +   '<div class="note">Выберите, кто входит</div>'
         +   '<select id="loginWho_' + d.code + '">'
         +     '<option value="staff">Сотрудник отдела</option>'
-        +     '<option value="admin">Анна Владимировна — админ</option>'
+        +     '<option value="admin">' + escapeHtml(summaryRoleInfo("admin").name) + " — админ</option>"
         +   "</select>"
         +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="12" autocomplete="off"'
         +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
@@ -3160,7 +3352,13 @@ function territoryFolderCardHtml() {
 }
 
 function summaryFolderCardHtml() {
-    return folderCardHtml("summary-folder", "summary", "Общая", "Анна Владимировна · Ольга · Наталья", "");
+    return folderCardHtml(
+        "summary-folder",
+        "summary",
+        "Общая",
+        summaryRoleInfo("admin").name + " · " + summaryRoleInfo("adjust").name + " · " + summaryRoleInfo("pay").name,
+        ""
+    );
 }
 
 function summaryLoginCardHtml() {
@@ -3169,9 +3367,9 @@ function summaryLoginCardHtml() {
         +   "<h3>Общая</h3>"
         +   '<div class="note">Выберите, кто входит, и введите PIN</div>'
         +   '<select id="loginSummaryWho">'
-        +     '<option value="admin">Анна Владимировна — админ</option>'
-        +     '<option value="adjust">Ольга — удержания</option>'
-        +     '<option value="pay">Наталья — выдача</option>'
+        +     '<option value="admin">' + escapeHtml(summaryRoleInfo("admin").name) + " — админ</option>"
+        +     '<option value="adjust">' + escapeHtml(summaryRoleInfo("adjust").name) + " — удержания</option>"
+        +     '<option value="pay">' + escapeHtml(summaryRoleInfo("pay").name) + " — выдача</option>"
         +   "</select>"
         +   '<input type="password" id="loginPin_summary" placeholder="PIN" maxlength="12" autocomplete="off"'
         +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginSummary()}">'
@@ -3949,10 +4147,10 @@ function statusSelect(employeeId, day, status, disabled) {
     const options = [
         { value: "", label: "—" },
         { value: "Я", label: "Я" },
+        { value: "В", label: "В" },
         { value: "О", label: "О" },
         { value: "Б", label: "Б" },
         { value: "ОТ", label: "ОТ" },
-        { value: "В", label: "В" },
         { value: "П", label: "П" },
         { value: "Л", label: "Л" }
     ];
@@ -3989,6 +4187,12 @@ function employeePicker(selectedId) {
 
 function setTimesheetEmployee(fromId, toId) {
     if (fromId === toId) return;
+
+    if (toId && isBlankName((getEmployee(toId) || {}).name)) {
+        toast("Введите фамилию или ФИО сотрудника", "error");
+        renderTimesheet();
+        return;
+    }
 
     if (toId && !belongsToWorkspace(workspace(), toId)) {
         toast("Можно выбрать только сотрудника этого отдела.", "error");
@@ -4052,7 +4256,7 @@ function renderTimesheet() {
         const cls = ["day-head", isWeekend(day) ? "weekend-head" : "", isToday(day) ? "today-head" : ""].filter(Boolean).join(" ");
         head += '<th class="' + cls + '">' + day + "<br><small>" + weekdayName(day) + "</small></th>";
     }
-    head += '<th class="summary-cell">Часы</th><th class="summary-cell">Опоздания</th><th class="summary-cell">Минуты</th></tr>';
+    head += '<th class="summary-cell">Часы</th><th class="summary-cell">Отработано дней</th><th class="summary-cell">Опоздания</th><th class="summary-cell">Минуты</th></tr>';
     document.getElementById("timesheetHead").innerHTML = head;
 
     let body = "";
@@ -4084,6 +4288,7 @@ function renderTimesheet() {
         }
 
         body += '<td class="summary-cell"><strong>' + total.hours.toFixed(1) + "</strong></td>"
+            + '<td class="summary-cell">' + formatTimesheetDays(total.hours) + "</td>"
             + '<td class="summary-cell">' + total.lateCount + "</td>"
             + '<td class="summary-cell">' + total.lateMinutes + "</td></tr>";
     });
@@ -4095,7 +4300,7 @@ function renderTimesheet() {
     });
 
     if (filter && assigned.length && !employees.length) {
-        body += '<tr><td colspan="' + (days + 4) + '"><div class="empty-row">По поиску никого не найдено.</div></td></tr>';
+        body += '<tr><td colspan="' + (days + 5) + '"><div class="empty-row">По поиску никого не найдено.</div></td></tr>';
     }
 
     if (hasFree || !assigned.length) {
@@ -4105,12 +4310,12 @@ function renderTimesheet() {
         body += "<tr>"
             + '<td class="employee-col">' + (pool.length ? employeePicker("") : "<strong>—</strong>")
             + '<div class="note">Новая строка</div></td>'
-            + '<td colspan="' + (days + 3) + '"><div class="note" style="padding:8px 0;">'
+            + '<td colspan="' + (days + 4) + '"><div class="note" style="padding:8px 0;">'
             + hint + "</div></td></tr>";
     }
 
     if (!body) {
-        body = '<tr><td colspan="' + (days + 4) + '"><div class="empty-row">Нет сотрудников для табеля.</div></td></tr>';
+        body = '<tr><td colspan="' + (days + 5) + '"><div class="empty-row">Нет сотрудников для табеля.</div></td></tr>';
     }
 
     document.getElementById("timesheetBody").innerHTML = body;
@@ -4125,12 +4330,12 @@ function renderSummaryOverview() {
     const byName = summarySortMode === "name";
     document.getElementById("timesheetHead").innerHTML = "<tr>"
         + "<th>Сотрудник</th><th>Отдел</th><th>Явки</th><th>Опоздания</th>"
-        + "<th>Минуты</th><th>Больничные</th><th>Отпуск</th><th>Прогул</th><th>Личные обст.</th><th>Выходные</th><th>Часы</th>"
+        + "<th>Минуты</th><th>Больничные</th><th>Отпуск</th><th>Прогул</th><th>Личные обст.</th><th>Выходные</th><th>Часы</th><th>Отработано дней</th>"
         + "</tr>";
 
     if (!groups.length) {
         document.getElementById("timesheetBody").innerHTML =
-            '<tr><td colspan="11"><div class="empty-row">В отделах никто не выбран в табель — в общую сводку переносить некого.</div></td></tr>';
+            '<tr><td colspan="12"><div class="empty-row">В отделах никто не выбран в табель — в общую сводку переносить некого.</div></td></tr>';
         return;
     }
 
@@ -4148,6 +4353,7 @@ function renderSummaryOverview() {
             + "<td>" + data.personal + "</td>"
             + "<td>" + data.weekend + "</td>"
             + "<td><strong>" + data.hours.toFixed(1) + "</strong></td>"
+            + "<td>" + formatTimesheetDays(data.hours) + "</td>"
             + "</tr>";
     }
 
@@ -4157,7 +4363,7 @@ function renderSummaryOverview() {
         list.forEach(function (employee) { html += personRow(employee); });
     } else {
         groups.forEach(function (g) {
-            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="11">'
+            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="12">'
                 + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + " "
                 + (g.employees.length === 1 ? "сотрудник" : "сотрудников")
                 + "</td></tr>";
@@ -4253,14 +4459,25 @@ function renderRepSalary() {
             + "<td>" + numInput(employee.id, "specialPrice", data.specialPrice, "0.01") + "</td>"
             + "<td>" + numInput(employee.id, "sugar", data.sugar, "0.01") + "</td>"
             + "<td>" + numInput(employee.id, "bags", data.bags, "0.1") + "</td>"
-            + "<td>" + String(data.percent).replace(".", ",") + "%</td>"
+            + "<td>" + numInput(employee.id, "fuel", data.fuel, "0.01") + "</td>"
+            + "<td title=\"Опт / Крупный опт / Спеццена\">"
+            + (editable
+                ? '<div class="rep-pct-line"><span>Опт</span><input class="rep-input no-spin" type="text" inputmode="decimal" value="'
+                    + formatRepPercent(data.percentOpt) + "\" onchange=\"updateEmployee('" + employee.id + "','salesPercentOpt',this.value)\">%</div>"
+                    + '<div class="rep-pct-line"><span>Кр.опт</span><input class="rep-input no-spin" type="text" inputmode="decimal" value="'
+                    + formatRepPercent(data.percentWholesale) + "\" onchange=\"updateEmployee('" + employee.id + "','salesPercentWholesale',this.value)\">%</div>"
+                    + '<div class="rep-pct-line"><span>Спец</span><input class="rep-input no-spin" type="text" inputmode="decimal" value="'
+                    + formatRepPercent(data.percentSpecial) + "\" onchange=\"updateEmployee('" + employee.id + "','salesPercentSpecial',this.value)\">%</div>"
+                : formatRepPercent(data.percentOpt) + "% / "
+                    + formatRepPercent(data.percentWholesale) + "% / "
+                    + formatRepPercent(data.percentSpecial) + "%")
+            + "</td>"
             + '<td class="rep-calc">' + money2(data.base) + warn + "</td>"
             + '<td class="rep-calc">' + money2(data.wholesalePay) + "</td>"
             + '<td class="rep-calc">' + money2(data.specialPay) + "</td>"
             + '<td class="rep-calc">' + money2(data.bagsPay) + "</td>"
             + '<td class="rep-calc">' + money2(data.mainPay) + "</td>"
             + '<td class="rep-calc">' + money2(data.accruedTotal) + "</td>"
-            + "<td>" + numInput(employee.id, "fuel", data.fuel, "0.01") + "</td>"
             + '<td class="rep-calc">' + money2(data.prelim) + "</td>"
             + '<td class="rep-calc">' + data.scheduled + "</td>"
             + '<td class="rep-calc">' + data.worked + "</td>"
@@ -4595,7 +4812,7 @@ function renderFio() {
         const fired = !isWorking(employee);
         const added = employee.id === justAddedEmployeeId;
         return '<div class="employee-row' + (fired ? " staff-fired" : "") + (added ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-            + fieldBlock("ФИО", '<input value="' + escapeAttribute(employee.name) + '" onchange="updateEmployee(\'' + employee.id + '\',\'name\',this.value)">')
+            + fieldBlock("ФИО", nameInputHtml(employee, false))
             + fieldBlock("Должность", positionSelect(employee))
             + fieldBlock("Отдел в карточке", '<input value="' + escapeAttribute(employee.department || "") + '" onchange="updateEmployee(\'' + employee.id + '\',\'department\',this.value)">')
             + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value)">')
@@ -4744,7 +4961,13 @@ function positionSelect(employee, dept) {
 }
 
 function toggleAssign(employeeId, checked) {
-    if (checked && !isWorking(getEmployee(employeeId))) {
+    const employee = getEmployee(employeeId);
+    if (checked && employee && isBlankName(employee.name)) {
+        toast("Введите фамилию или ФИО сотрудника", "error");
+        renderEmployees();
+        return;
+    }
+    if (checked && !isWorking(employee)) {
         toast("Уволенный сотрудник неактивен и в табель не ставится.", "error");
         renderEmployees();
         return;
@@ -4779,7 +5002,7 @@ function focusNewEmployeeCard(employeeId) {
 function addEmployee() {
     const employee = {
         id: generateId(),
-        name: "Новый сотрудник",
+        name: "",
         position: "",
         department: officialName(workspace()),
         start: "08:00",
@@ -4792,19 +5015,34 @@ function addEmployee() {
     if (!Array.isArray(workspace().employees)) workspace().employees = [];
     workspace().employees.push(employee);
     justAddedEmployeeId = employee.id;
-    saveApp();
     renderFio();
     renderEmployees();
     refreshAll();
     focusNewEmployeeCard(employee.id);
-    toast("ФИО добавлено внизу списка. Выберите сотрудника в графе «Сотрудник» в табеле.");
+    toast("Введите фамилию или ФИО сотрудника", "error");
 }
 
 function updateEmployee(employeeId, field, value) {
-    if (isSummary() && !canEditStaff()) return;
+    if (isSummary() && !canEditStaff() && !(isRepPercentField(field) && canEditRepSales())) return;
     const employee = getEmployee(employeeId);
     if (!employee) return;
-    if (field === "rate" || field === "taxiDaily" || field === "salesPercent") {
+    if (field === "name") {
+        if (isBlankName(value)) {
+            employee.name = "";
+            toast("Введите фамилию или ФИО сотрудника", "error");
+            if (isSummary()) renderSummaryStaff();
+            else renderFio();
+            return;
+        }
+        employee.name = String(value).replace(/\s+/g, " ").trim();
+        saveApp();
+        if (isSummary()) renderSummaryStaff();
+        renderFio();
+        renderEmployees();
+        refreshAll();
+        return;
+    }
+    if (field === "rate" || field === "taxiDaily" || isRepPercentField(field)) {
         setEmployeeTermsField(employeeId, field, value);
         return;
     }
@@ -4812,6 +5050,15 @@ function updateEmployee(employeeId, field, value) {
         employee.jobStatus = value === "fired" ? "fired" : "working";
     } else {
         employee[field] = value;
+    }
+    if (isBlankName(employee.name)) {
+        if (isSummary()) renderSummaryStaff();
+        else {
+            renderFio();
+            renderEmployees();
+        }
+        refreshAll();
+        return;
     }
     saveApp();
     if (isSummary()) renderSummaryStaff();
@@ -4821,17 +5068,32 @@ function updateEmployee(employeeId, field, value) {
 function setEmployeeTermsField(employeeId, field, value) {
     const employee = getEmployee(employeeId);
     if (!employee) return;
-    if (currentSummaryRole && currentSummaryRole !== "admin") return;
+    if (isRepPercentField(field)) {
+        if (!canEditRepSales()) return;
+    } else if (currentSummaryRole && currentSummaryRole !== "admin") {
+        return;
+    }
     const current = getEmployeeTerms(employee, selectedMonth);
     if (!employee.terms || typeof employee.terms !== "object") employee.terms = {};
     const rec = employee.terms[selectedMonth] || {
         rate: current.rate,
         taxiDaily: current.taxiDaily,
-        salesPercent: current.salesPercent
+        salesPercent: current.salesPercentOpt,
+        salesPercentOpt: current.salesPercentOpt,
+        salesPercentWholesale: current.salesPercentWholesale,
+        salesPercentSpecial: current.salesPercentSpecial
     };
-    if (field === "salesPercent") {
-        rec.salesPercent = normalizeRepPercent(value);
-        employee.salesPercent = rec.salesPercent;
+    if (field === "salesPercent" || field === "salesPercentOpt"
+        || field === "salesPercentWholesale" || field === "salesPercentSpecial") {
+        const pct = parseRepPercent(value, 0);
+        rec[field] = pct;
+        employee[field] = pct;
+        if (field === "salesPercent" || field === "salesPercentOpt") {
+            rec.salesPercent = pct;
+            rec.salesPercentOpt = pct;
+            employee.salesPercent = pct;
+            employee.salesPercentOpt = pct;
+        }
     } else {
         const amount = parseMoney(value, 0);
         rec[field] = amount;
@@ -4914,12 +5176,19 @@ function renderSummaryStaff() {
             const place = locked
                 ? '<input value="' + escapeAttribute(officialName(g.dept)) + '" disabled>'
                 : workplaceSelect(employee, g.dept);
-            const percentSel = '<select onchange="updateEmployee(\'' + employee.id + '\',\'salesPercent\',this.value)"' + dis + ">"
-                + '<option value="3.5"' + (terms.salesPercent === 3.5 ? " selected" : "") + ">3,5%</option>"
-                + '<option value="4.5"' + (terms.salesPercent === 4.5 ? " selected" : "") + ">4,5%</option>"
-                + "</select>";
+            const percentBlock = '<div class="form-group rep-accrual"><label>Начисление</label>'
+                + '<div class="rep-accrual-row"><span class="rep-accrual-name">Опт</span>'
+                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentOpt) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentOpt\',this.value)"' + dis + ">"
+                + '<span class="rep-accrual-unit">%</span></div>'
+                + '<div class="rep-accrual-row"><span class="rep-accrual-name">Крупный опт</span>'
+                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentWholesale) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentWholesale\',this.value)"' + dis + ">"
+                + '<span class="rep-accrual-unit">%</span></div>'
+                + '<div class="rep-accrual-row"><span class="rep-accrual-name">Спеццена</span>'
+                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentSpecial) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentSpecial\',this.value)"' + dis + ">"
+                + '<span class="rep-accrual-unit">%</span></div>'
+                + "</div>";
             html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-                + fieldBlock("ФИО", '<input value="' + escapeAttribute(employee.name) + '" onchange="updateEmployee(\'' + employee.id + '\',\'name\',this.value)"' + (locked ? " disabled" : "") + ">")
+                + fieldBlock("ФИО", nameInputHtml(employee, locked))
                 + fieldBlock("Где работает", place)
                 + fieldBlock("Статус", statusSel)
                 + (isDrivers
@@ -4929,7 +5198,7 @@ function renderSummaryStaff() {
                     : "")
                 + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">")
                 + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">")
-                + (isDrivers && isRep ? fieldBlock("Процент ТП", percentSel) : "")
+                + (isDrivers && isRep ? percentBlock : "")
                 + (locked
                     ? ""
                     : '<div class="emp-actions"><button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>')
@@ -4946,7 +5215,7 @@ function addSummaryEmployee() {
     if (!target) return;
     const employee = {
         id: generateId(),
-        name: "Новый сотрудник",
+        name: "",
         position: "",
         department: officialName(target),
         start: "08:00",
@@ -4959,11 +5228,10 @@ function addSummaryEmployee() {
     if (!Array.isArray(target.employees)) target.employees = [];
     target.employees.push(employee);
     justAddedEmployeeId = employee.id;
-    saveApp();
     renderSummaryStaff();
     refreshAll();
     focusNewEmployeeCard(employee.id);
-    toast("Сотрудник добавлен внизу списка отдела «" + officialName(target) + "».");
+    toast("Введите фамилию или ФИО сотрудника", "error");
 }
 
 function moveEmployeeToDepartment(employeeId, deptCode) {
@@ -5017,6 +5285,8 @@ function updateStats() {
 
     document.getElementById("statEmployees").textContent = list.length;
     document.getElementById("statHours").textContent = hours.toFixed(1);
+    const statDays = document.getElementById("statWorkedDays");
+    if (statDays) statDays.textContent = formatTimesheetDays(hours);
     document.getElementById("statLate").textContent = late;
     document.getElementById("statProducts").textContent = money(products);
     document.getElementById("statAccrued").textContent = money(accrued);
@@ -5035,14 +5305,11 @@ function loadWorkspaceSettings() {
     document.getElementById("defaultHoursSetting").value = w.defaultHours;
     const summary = isSummary();
     document.getElementById("deptPinBox").style.display = summary ? "none" : "";
-    document.getElementById("summaryPinAdminBox").style.display = summary ? "" : "none";
-    document.getElementById("summaryPinAdjustBox").style.display = summary ? "" : "none";
-    document.getElementById("summaryPinPayBox").style.display = summary ? "" : "none";
-    if (summary) {
-        ensureSummaryPins(w);
-        document.getElementById("pinAdminSetting").value = w.rolePins.admin;
-        document.getElementById("pinAdjustSetting").value = w.rolePins.adjust;
-        document.getElementById("pinPaySetting").value = w.rolePins.pay;
+    const usersCard = document.getElementById("summaryUsersCard");
+    if (usersCard) usersCard.style.display = (summary && currentSummaryRole === "admin") ? "" : "none";
+    if (summary && currentSummaryRole === "admin") {
+        ensureSummaryUsers(w);
+        renderSummaryUsers();
     }
     const posCard = document.getElementById("positionsSettingsCard");
     if (posCard) posCard.style.display = (!summary && isTableAdmin()) ? "" : "none";
@@ -5057,20 +5324,7 @@ function saveWorkspaceSettings() {
     if (w.type === "summary") w.name = SUMMARY_DEFAULT.name;
     else if (def) w.name = def.name;
 
-    if (isSummary()) {
-        ensureSummaryPins(w);
-        const adminPin = document.getElementById("pinAdminSetting").value.trim();
-        const adjustPin = document.getElementById("pinAdjustSetting").value.trim();
-        const payPin = document.getElementById("pinPaySetting").value.trim();
-        if (!adminPin || !adjustPin || !payPin) {
-            toast("PIN-код не может быть пустым.", "error");
-            return;
-        }
-        w.rolePins.admin = adminPin;
-        w.rolePins.adjust = adjustPin;
-        w.rolePins.pay = payPin;
-        w.pin = adminPin;
-    } else {
+    if (!isSummary()) {
         const pin = document.getElementById("workspacePinSetting").value.trim();
         if (!pin) { toast("PIN-код не может быть пустым.", "error"); return; }
         w.pin = pin;
@@ -5081,6 +5335,92 @@ function saveWorkspaceSettings() {
     document.getElementById("workspaceNameSetting").value = officialName(w);
     renderDeptNow();
     toast("Настройки сохранены.");
+}
+
+function renderSummaryUsers() {
+    const body = document.getElementById("summaryUsersBody");
+    const w = findWorkspaceByCode("summary");
+    if (!body || !w) return;
+    ensureSummaryUsers(w);
+    let html = "";
+    SUMMARY_ROLES.forEach(function (r) {
+        const user = w.roleUsers[r.role];
+        const editing = editingSummaryUserRole === r.role;
+        const shown = !!summaryUserPinVisible[r.role];
+        html += "<tr><td><code>" + escapeHtml(user.id) + "</code></td>";
+        if (editing) {
+            html += "<td colspan=\"3\"><div class=\"users-edit\">"
+                + '<div class="form-group"><label>Имя пользователя</label>'
+                + '<input id="editUserName_' + r.role + '" maxlength="80" value="' + escapeAttribute(user.name) + '"></div>'
+                + '<div class="form-group"><label>PIN-код</label><div class="pin-row">'
+                + '<input id="editUserPin_' + r.role + '" maxlength="12" autocomplete="off" value="' + escapeAttribute(user.pin) + '" type="' + (shown ? "text" : "password") + '">'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="toggleSummaryUserPin(\'' + r.role + '\')">'
+                + (shown ? "Скрыть" : "Показать") + "</button></div></div>"
+                + '<div class="form-group"><label>&nbsp;</label>'
+                + '<button type="button" class="btn btn-primary btn-small" onclick="saveSummaryUser(\'' + r.role + '\')">Сохранить</button> '
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="cancelEditSummaryUser()">Отмена</button>'
+                + "</div></div></td>";
+        } else {
+            html += "<td>" + escapeHtml(user.name) + "</td>"
+                + "<td>••••</td>"
+                + '<td><button type="button" class="btn btn-secondary btn-small" onclick="startEditSummaryUser(\'' + r.role + '\')">Изменить</button></td>';
+        }
+        html += "</tr>";
+    });
+    body.innerHTML = html;
+}
+
+function startEditSummaryUser(role) {
+    editingSummaryUserRole = role;
+    summaryUserPinVisible[role] = false;
+    renderSummaryUsers();
+}
+
+function cancelEditSummaryUser() {
+    editingSummaryUserRole = null;
+    renderSummaryUsers();
+}
+
+function toggleSummaryUserPin(role) {
+    summaryUserPinVisible[role] = !summaryUserPinVisible[role];
+    const nameEl = document.getElementById("editUserName_" + role);
+    const pinEl = document.getElementById("editUserPin_" + role);
+    const name = nameEl ? nameEl.value : "";
+    const pin = pinEl ? pinEl.value : "";
+    renderSummaryUsers();
+    const name2 = document.getElementById("editUserName_" + role);
+    const pin2 = document.getElementById("editUserPin_" + role);
+    if (name2) name2.value = name;
+    if (pin2) pin2.value = pin;
+}
+
+function saveSummaryUser(role) {
+    const w = findWorkspaceByCode("summary");
+    if (!w || currentSummaryRole !== "admin") return;
+    ensureSummaryUsers(w);
+    const nameEl = document.getElementById("editUserName_" + role);
+    const pinEl = document.getElementById("editUserPin_" + role);
+    const name = String((nameEl && nameEl.value) || "").replace(/\s+/g, " ").trim();
+    const pin = String((pinEl && pinEl.value) || "").trim();
+    if (!name) {
+        toast("Введите имя пользователя.", "error");
+        return;
+    }
+    if (!pin) {
+        toast("PIN-код не может быть пустым.", "error");
+        return;
+    }
+    if (!w.roleUsers[role]) w.roleUsers[role] = { id: role, name: name, pin: pin };
+    w.roleUsers[role].id = role;
+    w.roleUsers[role].name = name;
+    w.roleUsers[role].pin = pin;
+    w.rolePins[role] = pin;
+    if (role === "admin") w.pin = pin;
+    editingSummaryUserRole = null;
+    saveApp();
+    renderSummaryUsers();
+    renderDeptNow();
+    toast("Пользователь сохранён. Новый вход — по обновлённым данным.");
 }
 
 
@@ -5139,7 +5479,7 @@ function exportTimesheet() {
     for (let day = 1; day <= days; day++) {
         header.push(day + " статус", day + " часы", day + " опоздание мин.");
     }
-    header.push("Итого часов", "Опозданий", "Минут опоздания");
+    header.push("Итого часов", "Отработано дней", "Опозданий", "Минут опоздания");
     const rows = [header];
 
     visibleEmployees().forEach(function (employee) {
@@ -5149,7 +5489,7 @@ function exportTimesheet() {
             row.push(r.status || "", r.hours || "", r.lateMinutes || 0);
         }
         const data = calculateEmployee(employee.id, null, [workspace()]);
-        row.push(data.hours.toFixed(1), data.lateCount, data.lateMinutes);
+        row.push(data.hours.toFixed(1), formatTimesheetDays(data.hours), data.lateCount, data.lateMinutes);
         rows.push(row);
     });
 
@@ -5157,7 +5497,7 @@ function exportTimesheet() {
 }
 
 function exportSummaryCsv() {
-    const rows = [["Сотрудник", "Отдел", "Явки", "Опоздания", "Минут", "Больничные", "Отпуск", "Прогул", "Личные обст.", "Выходные", "Часы"]];
+    const rows = [["Сотрудник", "Отдел", "Явки", "Опоздания", "Минут", "Больничные", "Отпуск", "Прогул", "Личные обст.", "Выходные", "Часы", "Отработано дней"]];
     const groups = summaryEmployeeGroups();
     function pushOverview(employee, deptName) {
         const data = calculateEmployee(employee.id);
@@ -5166,7 +5506,7 @@ function exportSummaryCsv() {
             deptName,
             data.ya, data.lateCount, data.lateMinutes, data.sick, data.vacation,
             data.skip, data.personal, data.weekend,
-            data.hours.toFixed(1)
+            data.hours.toFixed(1), formatTimesheetDays(data.hours)
         ]);
     }
     if (summarySortMode === "name") {
@@ -5262,7 +5602,9 @@ function verifyRepPayExample() {
         sugar: 81310,
         bags: 28.5,
         fuel: 22500,
-        percent: 4.5
+        percentOpt: 4.5,
+        percentWholesale: 2,
+        percentSpecial: 1
     });
     const dayCost = roundMoney2(p.prelim / 23);
     const after = roundMoney2(p.prelim - dayCost);
