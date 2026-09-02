@@ -732,7 +732,7 @@
         .cashier-summary-table th:first-child { text-align: left; }
         .cashier-channel-row td { background: #f3f4f6; }
 
-        .shop-pay-table { min-width: 980px; }
+        .shop-pay-table { min-width: 1180px; }
         .shop-pay-table th:not(:first-child),
         .shop-pay-table td:not(:first-child) { text-align: right; }
         .shop-pay-table td:first-child,
@@ -754,6 +754,27 @@
             font-size: 12px;
         }
         .shop-pay-metrics td:not(:first-child) { text-align: right; }
+        .shop-kpi-card {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 10px;
+            background: #fff;
+        }
+        .shop-kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .shop-kpi-tiers { margin-top: 8px; }
+        .shop-kpi-tier-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+        .shop-kpi-tier-row input { width: 120px; }
         .shop-pay-rule {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -1979,21 +2000,26 @@
                         <div>
                             <div class="card-title">Зарплата Володарского</div>
                             <div class="note" id="shopSalaryNote">
-                                Оклад + бонус по метрикам + премия − штраф − аванс. Бонус считается по индивидуальной карте сотрудника, а не по должности.
-                                Факт берётся из метрик и ревизии магазина. Касса самообслуживания в зарплату не входит.
+                                База = отработанные дни из табеля × стоимость рабочего дня. Бонус — только по личным KPI сотрудника.
+                                Факт берётся из табеля, метрик или ревизии, без повторного ввода. Касса самообслуживания в зарплату не входит.
                             </div>
+                        </div>
+                        <div class="toolbar" id="shopSalaryTabs">
+                            <button type="button" class="metrics-tab active" data-shop-pay="table" onclick="setShopSalaryPanel('table')">Таблица</button>
+                            <button type="button" class="metrics-tab" data-shop-pay="settings" id="shopSalarySettingsTab" onclick="setShopSalaryPanel('settings')">Настройки сотрудников</button>
                         </div>
                     </div>
                 </div>
-                <div class="card">
+                <div class="card" id="shopSalaryTableCard">
                     <div class="table-wrapper" id="shopSalaryWrap">
                         <table class="shop-pay-table" id="shopSalaryTable">
                             <thead>
                                 <tr>
                                     <th>Сотрудник</th>
                                     <th>Отработано дней</th>
-                                    <th>Оклад</th>
-                                    <th>Бонус по метрикам</th>
+                                    <th>Стоимость дня</th>
+                                    <th>Базовая зарплата</th>
+                                    <th>Бонус по KPI</th>
                                     <th>Премия</th>
                                     <th>Штраф</th>
                                     <th>Аванс</th>
@@ -2003,6 +2029,21 @@
                             <tbody id="shopSalaryBody"></tbody>
                         </table>
                     </div>
+                </div>
+                <div class="card" id="shopSalarySettingsCard" style="display:none;">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Настройки зарплаты сотрудников</div>
+                            <div class="note">Правила действуют с выбранного месяца. Старые месяцы не пересчитываются.</div>
+                        </div>
+                        <div class="toolbar">
+                            <div class="form-group">
+                                <label for="shopSalaryEmployeeSel">Сотрудник</label>
+                                <select id="shopSalaryEmployeeSel" onchange="setShopSalaryEditEmployee(this.value)"></select>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="shopSalarySettingsBody"></div>
                 </div>
             </section>
 
@@ -2360,6 +2401,8 @@ let loginView = "home";
 let shopMetricCategory = "pickers";
 let revisionPanel = "schedule";
 let revisionEscBound = false;
+let shopSalaryPanel = "table";
+let shopSalaryEditEmployeeId = "";
 let justAddedEmployeeId = null;
 let editingSummaryUserRole = null;
 let summaryUserPinVisible = {};
@@ -2414,24 +2457,33 @@ const SHOP_SELF_CHECKOUT = {
     isSalesChannel: true
 };
 const SHOP_BONUS_METRICS = [
-    { id: "display", name: "Позиции выкладки", source: "shop_metrics", category: "pickers", field: "display" },
-    { id: "recount", name: "Позиций пересчёта", source: "shop_metrics", category: "pickers", field: "recount" },
-    { id: "invoices", name: "Сборка накладных", source: "shop_metrics", category: "pickers", field: "invoices" },
-    { id: "sugar", name: "Фасовка сахара", source: "shop_metrics", category: "pickers", field: "sugar" },
-    { id: "walks", name: "Проходы", source: "shop_metrics", category: "pickers", field: "walks" },
-    { id: "receiving", name: "Приёмка", source: "shop_metrics", category: "pickers", field: "receiving" },
-    { id: "revision", name: "Ревизия", source: "revision" },
-    { id: "sales", name: "Сумма продаж", source: "shop_metrics", category: "cashiers", field: "sales" },
-    { id: "receipts", name: "Количество чеков", source: "shop_metrics", category: "cashiers", field: "receipts" },
-    { id: "avgCheck", name: "Средний чек", source: "shop_metrics", category: "cashiers", field: "avgCheck" },
-    { id: "visitors", name: "Покупатели магазина", source: "store_metric", field: "visitors", shopLevel: true }
+    { id: "early730", name: "Приход к 7:30", source: "timesheet", calcType: "timesheet_730" },
+    { id: "display", name: "Выкладка товара", source: "shop_metrics", category: "pickers", field: "display", calcType: "quantity" },
+    { id: "recount", name: "Позиций пересчёта", source: "shop_metrics", category: "pickers", field: "recount", calcType: "quantity" },
+    { id: "invoices", name: "Сборка накладных", source: "shop_metrics", category: "pickers", field: "invoices", calcType: "quantity" },
+    { id: "sugar", name: "Фасовка сахара", source: "shop_metrics", category: "pickers", field: "sugar", calcType: "quantity" },
+    { id: "walks", name: "Проходы", source: "shop_metrics", category: "pickers", field: "walks", calcType: "checklist" },
+    { id: "receiving", name: "Приёмка товара", source: "shop_metrics", category: "pickers", field: "receiving", calcType: "quantity" },
+    { id: "revision", name: "Ревизия", source: "revision", calcType: "percent" },
+    { id: "sales", name: "Сумма продаж", source: "shop_metrics", category: "cashiers", field: "sales", calcType: "quantity" },
+    { id: "receipts", name: "Количество чеков", source: "shop_metrics", category: "cashiers", field: "receipts", calcType: "quantity" },
+    { id: "avgCheck", name: "Средний чек", source: "shop_metrics", category: "cashiers", field: "avgCheck", calcType: "quantity" },
+    { id: "cashierErrors", name: "Отсутствие кассовых ошибок", source: "manual", calcType: "checklist" },
+    { id: "salesPlan", name: "Выполнение плана продаж", source: "shop_metrics", category: "cashiers", field: "sales", calcType: "percent" }
 ];
-const SHOP_BONUS_RULE_TYPES = [
-    { id: "fixed", label: "Фикс за выполнение" },
-    { id: "per_unit", label: "Сумма за единицу" },
-    { id: "plan", label: "Бонус за план" },
-    { id: "percent", label: "Процент" },
-    { id: "manual", label: "Ручное начисление" }
+const SHOP_KPI_CALC_TYPES = [
+    { id: "quantity", label: "Количество" },
+    { id: "percent", label: "Процент выполнения" },
+    { id: "checklist", label: "Чек-лист" },
+    { id: "manual", label: "Ручной показатель" },
+    { id: "timesheet_730", label: "Контроль по табелю (7:30)" }
+];
+const SHOP_KPI_SOURCES = [
+    { id: "timesheet", label: "Табель" },
+    { id: "shop_metrics", label: "Метрики Володарского" },
+    { id: "revision", label: "Ревизия" },
+    { id: "manual", label: "Ручной ввод" },
+    { id: "api_1c", label: "В будущем: 1С API" }
 ];
 
 
@@ -2538,6 +2590,12 @@ function timesheetDaysFromHours(hours) {
 
 function formatTimesheetDays(hours) {
     const n = timesheetDaysFromHours(hours);
+    if (Math.abs(n - Math.round(n)) < 0.001) return String(Math.round(n));
+    return String(n).replace(".", ",");
+}
+
+function formatShopDays(days) {
+    const n = Math.round(Number(days || 0) * 100) / 100;
     if (Math.abs(n - Math.round(n)) < 0.001) return String(Math.round(n));
     return String(n).replace(".", ",");
 }
@@ -6537,85 +6595,196 @@ function shopSalaryEmployees() {
     return list;
 }
 
-function shopBonusMetricFact(metric, employeeId, month) {
+function shopKpiTemplate(id) {
+    return SHOP_BONUS_METRICS.find(function (m) { return m.id === id; }) || null;
+}
+
+function shopKpiCalcType(rule) {
+    if (rule && rule.calcType) return rule.calcType;
+    const t = rule && rule.type;
+    if (t === "percent") return "percent";
+    if (t === "manual") return "manual";
+    if (t === "per_unit") return "quantity";
+    if (t === "fixed") return "checklist";
+    const tpl = shopKpiTemplate(rule && rule.metricId);
+    return (tpl && tpl.calcType) || "quantity";
+}
+
+function shopKpiSourceType(rule) {
+    if (rule && rule.sourceType) return rule.sourceType;
+    const tpl = shopKpiTemplate(rule && rule.metricId);
+    if (tpl && tpl.source === "timesheet") return "timesheet";
+    if (tpl && tpl.source === "revision") return "revision";
+    if (tpl && tpl.source === "store_metric") return "shop_metrics";
+    if (tpl && tpl.source === "shop_metrics") return "shop_metrics";
+    if (shopKpiCalcType(rule) === "timesheet_730" || (rule && rule.metricId === "early730")) return "timesheet";
+    if (shopKpiCalcType(rule) === "manual") return "manual";
+    return "shop_metrics";
+}
+
+function shopKpiName(rule) {
+    if (rule && rule.name) return rule.name;
+    const tpl = shopKpiTemplate(rule && rule.metricId);
+    return tpl ? tpl.name : "KPI";
+}
+
+function shopTimesheet730Fact(employeeId, month) {
+    const shop = findWorkspaceByCode("shop");
+    const data = calculateEmployee(employeeId, month, shop ? [shop] : undefined);
+    const work = Number(data.ya || 0) + Number(data.lateCount || 0);
+    const early = Number(data.earlyDays || 0);
+    const percent = work ? Math.round(early * 100 / work) : 0;
+    return { fact: percent, planAuto: 100, label: early + " из " + work };
+}
+
+function shopBonusMetricFact(rule, employeeId, month) {
     const m = month || selectedMonth;
     const keep = selectedMonth;
     selectedMonth = m;
+    const calc = shopKpiCalcType(rule);
+    const source = shopKpiSourceType(rule);
+    const tpl = shopKpiTemplate(rule && rule.metricId);
+    const field = rule.sourceKey || (tpl && tpl.field) || "";
+    const category = rule.sourceCategory || (tpl && tpl.category) || "";
     let fact = 0;
     let planAuto = 0;
-    if (metric.source === "revision") {
+    let label = "";
+    if (calc === "timesheet_730" || source === "timesheet" || (rule && rule.metricId === "early730")) {
+        const st = shopTimesheet730Fact(employeeId, m);
+        fact = st.fact;
+        planAuto = st.planAuto;
+        label = st.label;
+    } else if (source === "revision" || (rule && rule.metricId === "revision")) {
         const st = shopRevisionEmployeeMetrics(employeeId, m);
-        fact = st.done;
-        planAuto = st.assigned;
-    } else if (metric.source === "store_metric") {
-        fact = shopStoreVisitorsTotal(m);
-    } else if (metric.category) {
-        const tot = shopMetricEmployeeTotals(shopMetricCategoryById(metric.category), employeeId);
-        fact = metric.field === "avgCheck" ? Number(tot.avgCheck || 0) : Number(tot[metric.field] || 0);
+        fact = st.percent;
+        planAuto = 100;
+        label = st.done + " из " + st.assigned;
+    } else if (source === "manual") {
+        const rec = ensureShopPayroll().manual[m] && ensureShopPayroll().manual[m][employeeId];
+        fact = rec && rec[rule.metricId] != null ? Number(rec[rule.metricId] || 0) : 0;
+    } else {
+        let cat = category;
+        if (!cat && field) {
+            if (["display", "recount", "invoices", "sugar", "walks", "receiving"].indexOf(field) !== -1) cat = "pickers";
+            else if (["sales", "receipts", "avgCheck"].indexOf(field) !== -1) cat = "cashiers";
+        }
+        if (cat) {
+            const tot = shopMetricEmployeeTotals(shopMetricCategoryById(cat), employeeId);
+            fact = field === "avgCheck" ? Number(tot.avgCheck || 0) : Number(tot[field] || 0);
+        }
     }
     selectedMonth = keep;
-    return { fact: fact, planAuto: planAuto };
+    return { fact: fact, planAuto: planAuto, label: label };
+}
+
+function shopKpiBonusAmount(rule, fact, plan, employeeId, month) {
+    if (rule && rule.paysBonus === false) return 0;
+    const calc = shopKpiCalcType(rule);
+    const tiers = Array.isArray(rule.tiers) ? rule.tiers.filter(function (t) { return t && t.threshold != null; }) : [];
+    if (tiers.length) {
+        tiers.sort(function (a, b) { return Number(a.threshold) - Number(b.threshold); });
+        let amt = 0;
+        tiers.forEach(function (t) {
+            if (Number(fact) + 1e-9 >= Number(t.threshold)) amt = Math.round(Number(t.amount || 0));
+        });
+        return amt;
+    }
+    if (calc === "manual" || rule.type === "manual") {
+        const rec = ensureShopPayroll().manual[month] && ensureShopPayroll().manual[month][employeeId];
+        return Math.round(Number((rec && rec[rule.metricId]) || 0));
+    }
+    if (calc === "quantity" && rule.type === "per_unit") {
+        return Math.round(Number(rule.amount || 0) * Number(fact || 0));
+    }
+    if (calc === "percent" || calc === "timesheet_730") {
+        const need = Number(plan || 0);
+        return need && Number(fact) + 1e-9 >= need ? Math.round(Number(rule.amount || 0)) : 0;
+    }
+    if (calc === "checklist") {
+        const need = Number(plan || 0);
+        if (need) return Number(fact) + 1e-9 >= need ? Math.round(Number(rule.amount || 0)) : 0;
+        return Number(fact) > 0 ? Math.round(Number(rule.amount || 0)) : 0;
+    }
+    return plan && Number(fact) + 1e-9 >= Number(plan) ? Math.round(Number(rule.amount || 0)) : 0;
+}
+
+function shopEmployeeActiveRules(employeeId, month) {
+    const m = month || selectedMonth;
+    const map = {};
+    (ensureShopPayroll().rules || []).forEach(function (r) {
+        if (!r || r.employeeId !== employeeId) return;
+        if (r.enabled === false) return;
+        if (!shopPeriodApplies(r.validFrom, r.validTo, m)) return;
+        const key = r.metricId || r.id;
+        const prev = map[key];
+        if (!prev || String(r.validFrom || "") > String(prev.validFrom || "")) map[key] = r;
+    });
+    return Object.keys(map).map(function (k) { return map[k]; });
 }
 
 function shopEmployeeBonusLines(employeeId, month) {
     const m = month || selectedMonth;
-    const payroll = ensureShopPayroll();
-    const lines = [];
-    SHOP_BONUS_METRICS.forEach(function (metric) {
-        const rule = shopPickPeriodRecord(
-            payroll.rules.filter(function (r) { return r.metricId === metric.id; }),
-            employeeId,
-            m
-        );
-        if (!rule) return;
-        const src = shopBonusMetricFact(metric, employeeId, m);
+    return shopEmployeeActiveRules(employeeId, m).map(function (rule) {
+        const src = shopBonusMetricFact(rule, employeeId, m);
         const plan = Number(rule.plan || 0) || Number(src.planAuto || 0);
         const fact = Number(src.fact || 0);
         const percent = plan ? Math.round(fact * 100 / plan) : (fact ? 100 : 0);
-        let amount = 0;
-        if (rule.type === "per_unit") amount = Math.round(Number(rule.amount || 0) * fact);
-        else if (rule.type === "percent") amount = Math.round(fact * Number(rule.percent || 0) / 100);
-        else if (rule.type === "manual") {
-            const rec = payroll.manual[m] && payroll.manual[m][employeeId] && payroll.manual[m][employeeId][metric.id];
-            amount = Math.round(Number(rec || 0));
-        } else if (rule.type === "plan") {
-            amount = plan && fact >= plan ? Math.round(Number(rule.amount || 0)) : 0;
-        } else {
-            amount = (plan ? fact >= plan : fact > 0) ? Math.round(Number(rule.amount || 0)) : 0;
-        }
-        lines.push({ metric: metric, rule: rule, plan: plan, fact: fact, percent: percent, amount: amount });
+        const amount = shopKpiBonusAmount(rule, fact, plan, employeeId, m);
+        return {
+            metric: { id: rule.metricId, name: shopKpiName(rule) },
+            rule: rule,
+            plan: plan,
+            fact: fact,
+            percent: percent,
+            amount: amount,
+            label: src.label || ""
+        };
     });
-    return lines;
 }
 
 function shopEmployeeBonusTotal(employeeId, month) {
     return shopEmployeeBonusLines(employeeId, month).reduce(function (s, line) { return s + line.amount; }, 0);
 }
 
-function shopEmployeeOklad(employee, month) {
+function shopEmployeeDayRate(employee, month) {
     const rec = shopPickPeriodRecord(ensureShopPayroll().salaries, employee.id, month || selectedMonth);
-    if (rec) return Math.round(Number(rec.amount || 0));
+    if (rec && rec.dayRate != null && rec.dayRate !== "") return Math.round(Number(rec.dayRate || 0));
+    if (rec && rec.amount != null && Number(rec.amount) > 0 && Number(rec.amount) < 20000) {
+        return Math.round(Number(rec.amount || 0));
+    }
     const shop = findWorkspaceByCode("shop");
-    const data = calculateEmployee(employee.id, month || selectedMonth, shop ? [shop] : undefined);
-    return Math.round(Number(data.accrued || 0));
+    const keep = selectedMonth;
+    if (month) selectedMonth = month;
+    const terms = getEmployeeTerms(employee, month || selectedMonth);
+    if (month) selectedMonth = keep;
+    return Math.round(Number(terms.rate || 0));
+}
+
+function shopEmployeeWorkedDays(employee, month) {
+    const shop = findWorkspaceByCode("shop");
+    const ts = calculateEmployee(employee.id, month || selectedMonth, shop ? [shop] : undefined);
+    return timesheetDaysFromHours(ts.hours);
 }
 
 function shopSalaryRowData(employee) {
     const shop = findWorkspaceByCode("shop");
     const ts = calculateEmployee(employee.id, selectedMonth, shop ? [shop] : undefined);
-    const oklad = shopEmployeeOklad(employee, selectedMonth);
+    const days = timesheetDaysFromHours(ts.hours);
+    const dayRate = shopEmployeeDayRate(employee, selectedMonth);
+    const base = Math.round(days * dayRate);
     const metricBonus = shopEmployeeBonusTotal(employee.id, selectedMonth);
     const premium = Number(ts.bonus || 0);
     const fine = Number(ts.fines || 0);
     const advance = Number(ts.advance || 0);
     return {
-        workedDays: ts.workedDays,
-        oklad: oklad,
+        workedDays: days,
+        dayRate: dayRate,
+        oklad: base,
         metricBonus: metricBonus,
         premium: premium,
         fine: fine,
         advance: advance,
-        total: oklad + metricBonus + premium - fine - advance
+        total: base + metricBonus + premium - fine - advance
     };
 }
 
@@ -6633,19 +6802,43 @@ function openShopPayModal(html) {
     back.classList.add("show");
 }
 
+function setShopSalaryPanel(id) {
+    shopSalaryPanel = id === "settings" ? "settings" : "table";
+    renderShopSalary();
+}
+
+function setShopSalaryEditEmployee(employeeId) {
+    shopSalaryEditEmployeeId = employeeId || "";
+    renderShopSalarySettings();
+}
+
 function renderShopSalary() {
     if (!isSummary()) return;
+    const canRules = canEditShopPayrollRules();
+    const settingsTab = document.getElementById("shopSalarySettingsTab");
+    if (settingsTab) settingsTab.style.display = canRules ? "" : "none";
+    if (!canRules && shopSalaryPanel === "settings") shopSalaryPanel = "table";
+    document.querySelectorAll("[data-shop-pay]").forEach(function (btn) {
+        btn.classList.toggle("active", btn.getAttribute("data-shop-pay") === shopSalaryPanel);
+    });
+    const tableCard = document.getElementById("shopSalaryTableCard");
+    const settingsCard = document.getElementById("shopSalarySettingsCard");
+    if (tableCard) tableCard.style.display = shopSalaryPanel === "table" ? "" : "none";
+    if (settingsCard) settingsCard.style.display = shopSalaryPanel === "settings" && canRules ? "" : "none";
+    if (shopSalaryPanel === "settings") {
+        renderShopSalarySettings();
+        return;
+    }
     const body = document.getElementById("shopSalaryBody");
     if (!body) return;
     const employees = shopSalaryEmployees();
     if (!employees.length) {
-        body.innerHTML = '<tr><td colspan="8"><div class="empty-row">В магазине Володарского нет сотрудников в табеле за этот месяц.</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="9"><div class="empty-row">В магазине Володарского нет сотрудников в табеле за этот месяц.</div></td></tr>';
         return;
     }
     const canAdj = canEditShopSalaryAdj();
-    const canRules = canEditShopPayrollRules();
     let html = "";
-    let sums = { days: 0, oklad: 0, bonus: 0, premium: 0, fine: 0, advance: 0, total: 0 };
+    let sums = { days: 0, rate: 0, oklad: 0, bonus: 0, premium: 0, fine: 0, advance: 0, total: 0 };
     employees.forEach(function (employee) {
         const row = shopSalaryRowData(employee);
         sums.days += row.workedDays;
@@ -6659,11 +6852,9 @@ function renderShopSalary() {
             + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusCard('" + employee.id + "')\">"
             + escapeHtml(employee.name) + "</button>"
             + (isWorking(employee) ? "" : ' <span class="note">уволен</span>') + "</td>"
-            + "<td>" + row.workedDays + "</td>"
-            + "<td>" + (canRules
-                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
-                    + blankZeroInt(row.oklad) + "\" onchange=\"setShopEmployeeOklad('" + employee.id + "',this.value)\">"
-                : money(row.oklad)) + "</td>"
+            + "<td>" + formatShopDays(row.workedDays) + "</td>"
+            + "<td>" + money(row.dayRate) + "</td>"
+            + "<td>" + money(row.oklad) + "</td>"
             + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusBreakdown('" + employee.id + "')\">"
             + money(row.metricBonus) + "</button></td>"
             + "<td>" + (canAdj
@@ -6680,11 +6871,124 @@ function renderShopSalary() {
                 : money(row.advance)) + "</td>"
             + '<td class="pay">' + money(row.total) + "</td></tr>";
     });
-    html += '<tr class="totals-row"><td>Итого</td><td>' + sums.days + "</td><td>"
+    html += '<tr class="totals-row"><td>Итого</td><td>' + formatShopDays(sums.days) + "</td><td></td><td>"
         + money(sums.oklad) + "</td><td>" + money(sums.bonus) + "</td><td>"
         + money(sums.premium) + "</td><td>" + money(sums.fine) + "</td><td>"
         + money(sums.advance) + "</td><td class=\"pay\">" + money(sums.total) + "</td></tr>";
     body.innerHTML = html;
+}
+
+function renderShopSalarySettings() {
+    const sel = document.getElementById("shopSalaryEmployeeSel");
+    const box = document.getElementById("shopSalarySettingsBody");
+    if (!sel || !box || !canEditShopPayrollRules()) return;
+    const employees = shopSalaryEmployees();
+    if (!employees.length) {
+        sel.innerHTML = "";
+        box.innerHTML = '<div class="empty-row">Нет сотрудников магазина для настройки.</div>';
+        return;
+    }
+    if (!shopSalaryEditEmployeeId || !employees.some(function (e) { return e.id === shopSalaryEditEmployeeId; })) {
+        shopSalaryEditEmployeeId = employees[0].id;
+    }
+    sel.innerHTML = employees.map(function (e) {
+        return '<option value="' + e.id + '"' + (e.id === shopSalaryEditEmployeeId ? " selected" : "") + ">"
+            + escapeHtml(e.name) + "</option>";
+    }).join("");
+    const employee = getEmployee(shopSalaryEditEmployeeId);
+    if (!employee) {
+        box.innerHTML = "";
+        return;
+    }
+    const dayRate = shopEmployeeDayRate(employee, selectedMonth);
+    const days = shopEmployeeWorkedDays(employee, selectedMonth);
+    const rules = shopEmployeeActiveRules(employee.id, selectedMonth);
+    let html = "<div class=\"shop-kpi-card\"><strong>Сотрудник:</strong> " + escapeHtml(employee.name)
+        + "<div class=\"note\">Должность: " + escapeHtml(employee.position || "не указана") + "</div>"
+        + '<div class="shop-kpi-grid">'
+        + '<div class="form-group"><label>Стоимость рабочего дня</label>'
+        + '<input type="number" min="0" step="1" value="' + blankZeroInt(dayRate)
+        + "\" onchange=\"setShopEmployeeDayRate('" + employee.id + "',this.value)\"></div>"
+        + '<div class="form-group"><label>Отработано дней (табель)</label><input value="'
+        + formatShopDays(days) + '" disabled></div>'
+        + '<div class="form-group"><label>Базовая зарплата</label><input value="'
+        + money(Math.round(days * dayRate)) + '" disabled></div>'
+        + "</div><div class=\"note\" style=\"margin-top:8px\">Дни берутся из табеля: часы / 8. Ставка действует с "
+        + monthLabel(selectedMonth) + ".</div></div>";
+    html += '<div class="toolbar" style="margin:8px 0 12px"><button type="button" class="btn btn-primary" onclick="addShopKpi(\''
+        + employee.id + "')\">+ Добавить KPI</button></div>";
+    if (!rules.length) {
+        html += '<div class="note">У сотрудника пока нет персональных KPI.</div>';
+    }
+    rules.forEach(function (rule) {
+        html += shopKpiEditorHtml(employee.id, rule);
+    });
+    box.innerHTML = html;
+}
+
+function shopKpiEditorHtml(employeeId, rule) {
+    const src = shopBonusMetricFact(rule, employeeId, selectedMonth);
+    const calc = shopKpiCalcType(rule);
+    const source = shopKpiSourceType(rule);
+    const pays = rule.paysBonus !== false;
+    const tpl = shopKpiTemplate(rule.metricId);
+    let html = '<div class="shop-kpi-card">'
+        + '<div class="shop-kpi-grid">'
+        + '<div class="form-group"><label>KPI</label><input value="' + escapeAttribute(shopKpiName(rule))
+        + "\" onchange=\"setShopKpiField('" + employeeId + "','" + rule.metricId + "','name',this.value)\"></div>"
+        + '<div class="form-group"><label>Источник факта</label><select onchange="setShopKpiField(\''
+        + employeeId + "','" + rule.metricId + "','sourceType',this.value)\">"
+        + SHOP_KPI_SOURCES.map(function (s) {
+            return '<option value="' + s.id + '"' + (source === s.id ? " selected" : "") + ">" + escapeHtml(s.label) + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Тип расчёта</label><select onchange="setShopKpiField(\''
+        + employeeId + "','" + rule.metricId + "','calcType',this.value)\">"
+        + SHOP_KPI_CALC_TYPES.map(function (s) {
+            return '<option value="' + s.id + '"' + (calc === s.id ? " selected" : "") + ">" + escapeHtml(s.label) + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>План</label><input type="number" min="0" step="0.01" value="'
+        + blankZero(rule.plan || src.planAuto)
+        + "\" onchange=\"setShopKpiField('" + employeeId + "','" + rule.metricId + "','plan',this.value)\"></div>"
+        + '<div class="form-group"><label>Бонус, ₽</label><input type="number" min="0" step="1" value="'
+        + blankZeroInt(rule.amount)
+        + "\" onchange=\"setShopKpiField('" + employeeId + "','" + rule.metricId + "','amount',this.value)\"></div>"
+        + '<div class="form-group"><label>Участвует в начислении</label><select onchange="setShopKpiField(\''
+        + employeeId + "','" + rule.metricId + "','paysBonus',this.value)\">"
+        + '<option value="yes"' + (pays ? " selected" : "") + ">Да</option>"
+        + '<option value="no"' + (pays ? "" : " selected") + ">Нет</option></select></div>"
+        + "</div>";
+    if (tpl && tpl.category) {
+        html += '<div class="note" style="margin-top:6px">Факт: ' + (src.label || String(Math.round(src.fact * 100) / 100))
+            + (calc === "timesheet_730" ? " · берётся из табеля, в метриках не вводится" : "") + "</div>";
+    } else if (calc === "timesheet_730" || source === "timesheet") {
+        html += '<div class="note" style="margin-top:6px">Факт из табеля: ' + escapeHtml(src.label || (src.fact + "%"))
+            + ". В метриках магазина это поле не заполняется.</div>";
+    } else if (source === "manual" || calc === "manual") {
+        html += '<div class="form-group" style="margin-top:8px"><label>Факт / сумма вручную за месяц</label>'
+            + '<input type="number" min="0" step="1" value="'
+            + blankZeroInt(ensureShopPayroll().manual[selectedMonth]
+                && ensureShopPayroll().manual[selectedMonth][employeeId]
+                && ensureShopPayroll().manual[selectedMonth][employeeId][rule.metricId])
+            + "\" onchange=\"setShopBonusManual('" + employeeId + "','" + rule.metricId + "',this.value)\"></div>";
+    } else {
+        html += '<div class="note" style="margin-top:6px">Факт: ' + (src.label || String(Math.round((src.fact || 0) * 100) / 100)) + "</div>";
+    }
+    const tiers = Array.isArray(rule.tiers) ? rule.tiers : [];
+    html += '<div class="shop-kpi-tiers"><div class="note">Ступени бонуса (факт ≥ уровень → сумма). Пустой список — бонус по плану.</div>';
+    tiers.forEach(function (t, i) {
+        html += '<div class="shop-kpi-tier-row">'
+            + '<input type="number" min="0" step="0.01" value="' + blankZero(t.threshold) + '" title="Уровень"'
+            + " onchange=\"setShopKpiTier('" + employeeId + "','" + rule.metricId + "'," + i + ",'threshold',this.value)\">"
+            + '<input type="number" min="0" step="1" value="' + blankZeroInt(t.amount) + '" title="Бонус"'
+            + " onchange=\"setShopKpiTier('" + employeeId + "','" + rule.metricId + "'," + i + ",'amount',this.value)\">"
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="removeShopKpiTier(\''
+            + employeeId + "','" + rule.metricId + "'," + i + ")\">Убрать</button></div>";
+    });
+    html += '<button type="button" class="btn btn-secondary btn-small" onclick="addShopKpiTier(\''
+        + employeeId + "','" + rule.metricId + "')\">+ Ступень</button></div>";
+    html += '<div class="toolbar" style="margin-top:10px"><button type="button" class="btn btn-danger btn-small" onclick="removeShopKpi(\''
+        + employeeId + "','" + rule.metricId + "')\">Удалить KPI</button></div></div>";
+    return html;
 }
 
 function setShopSalaryAdj(employeeId, field, value) {
@@ -6698,9 +7002,9 @@ function setShopSalaryAdj(employeeId, field, value) {
     setAdjustment(employeeId, field, value);
 }
 
-function setShopEmployeeOklad(employeeId, raw) {
+function setShopEmployeeDayRate(employeeId, raw) {
     if (!canEditShopPayrollRules()) return;
-    const amount = parseMoney(raw, 0);
+    const dayRate = parseMoney(raw, 0);
     const payroll = ensureShopPayroll();
     const month = selectedMonth;
     const current = shopPickPeriodRecord(payroll.salaries, employeeId, month);
@@ -6713,13 +7017,15 @@ function setShopEmployeeOklad(employeeId, raw) {
             id: generateId(),
             employeeId: employeeId,
             departmentId: "shop",
-            amount: amount,
+            dayRate: dayRate,
+            amount: dayRate,
             validFrom: month,
             validTo: null
         };
         payroll.salaries.push(rec);
     } else {
-        rec.amount = amount;
+        rec.dayRate = dayRate;
+        rec.amount = dayRate;
     }
     saveApp();
     renderShopSalary();
@@ -6733,80 +7039,148 @@ function shopRuleForCard(employeeId, metricId) {
     );
 }
 
+function shopCloneRuleFields(rule) {
+    return {
+        name: rule.name || "",
+        type: rule.type || "plan",
+        calcType: shopKpiCalcType(rule),
+        sourceType: shopKpiSourceType(rule),
+        sourceKey: rule.sourceKey || "",
+        sourceCategory: rule.sourceCategory || "",
+        amount: rule.amount || 0,
+        plan: rule.plan || 0,
+        percent: rule.percent || 0,
+        paysBonus: rule.paysBonus !== false,
+        tiers: Array.isArray(rule.tiers) ? rule.tiers.map(function (t) {
+            return { threshold: Number(t.threshold || 0), amount: Number(t.amount || 0) };
+        }) : []
+    };
+}
+
 function mutateShopBonusRule(employeeId, metricId, patch) {
     if (!canEditShopPayrollRules()) return;
     const payroll = ensureShopPayroll();
     const month = selectedMonth;
     let rule = shopRuleForCard(employeeId, metricId);
-    if (!rule) {
-        rule = {
-            id: generateId(),
-            employeeId: employeeId,
-            metricId: metricId,
-            departmentId: "shop",
-            type: "plan",
-            amount: 0,
-            plan: 0,
-            percent: 0,
-            validFrom: month,
-            validTo: null
-        };
-        payroll.rules.push(rule);
-    } else if (rule.validFrom !== month) {
+    if (!rule) return;
+    if (rule.validFrom !== month) {
         rule.validTo = shiftMonth(month, -1);
+        const copy = shopCloneRuleFields(rule);
         rule = {
             id: generateId(),
             employeeId: employeeId,
             metricId: metricId,
             departmentId: "shop",
-            type: rule.type,
-            amount: rule.amount,
-            plan: rule.plan,
-            percent: rule.percent,
             validFrom: month,
             validTo: null
         };
+        Object.keys(copy).forEach(function (key) { rule[key] = copy[key]; });
         payroll.rules.push(rule);
     }
     Object.keys(patch).forEach(function (key) { rule[key] = patch[key]; });
     saveApp();
 }
 
-function setShopBonusMetricEnabled(employeeId, metricId, on) {
-    if (!canEditShopPayrollRules()) return;
-    const payroll = ensureShopPayroll();
-    const month = selectedMonth;
-    const current = shopRuleForCard(employeeId, metricId);
-    if (on) {
-        if (!current || current.validFrom !== month) {
-            if (current) current.validTo = shiftMonth(month, -1);
-            payroll.rules.push({
-                id: generateId(),
-                employeeId: employeeId,
-                metricId: metricId,
-                departmentId: "shop",
-                type: "plan",
-                amount: 0,
-                plan: 0,
-                percent: 0,
-                validFrom: month,
-                validTo: null
-            });
-        }
-    } else if (current) {
-        current.validTo = shiftMonth(month, -1);
-    }
-    saveApp();
-    openShopBonusCard(employeeId);
+function setShopKpiField(employeeId, metricId, field, value) {
+    const patch = {};
+    if (field === "name") patch.name = String(value || "").replace(/\s+/g, " ").trim();
+    else if (field === "sourceType" || field === "calcType") patch[field] = value;
+    else if (field === "paysBonus") patch.paysBonus = value !== "no";
+    else if (field === "amount" || field === "plan") patch[field] = parseDecimal(value, 0);
+    mutateShopBonusRule(employeeId, metricId, patch);
+    renderShopSalarySettings();
 }
 
-function setShopBonusRuleField(employeeId, metricId, field, value) {
-    const patch = {};
-    if (field === "type") patch.type = value;
-    else if (field === "amount" || field === "plan") patch[field] = parseMoney(value, 0);
-    else if (field === "percent") patch.percent = parseDecimal(value, 0);
-    mutateShopBonusRule(employeeId, metricId, patch);
-    openShopBonusCard(employeeId);
+function addShopKpi(employeeId) {
+    if (!canEditShopPayrollRules()) return;
+    let html = "<h3>Добавить KPI</h3><div class=\"note\" style=\"margin-bottom:12px\">Выберите шаблон или создайте свою метрику. KPI не привязан к должности.</div>";
+    SHOP_BONUS_METRICS.forEach(function (metric) {
+        html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpi(\''
+            + employeeId + "','" + metric.id + "')\">" + escapeHtml(metric.name)
+            + ' <span class="note"> · ' + escapeHtml((SHOP_KPI_SOURCES.find(function (s) { return s.id === (metric.source === "shop_metrics" ? "shop_metrics" : metric.source === "timesheet" ? "timesheet" : metric.source === "revision" ? "revision" : "manual"); }) || { label: "" }).label)
+            + "</span></button></div>";
+    });
+    html += '<div class="rev-group-card"><button type="button" class="btn btn-primary" style="width:100%" onclick="createShopKpi(\''
+        + employeeId + "','')\">Своя метрика</button></div>";
+    html += '<div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="closeShopPayModal()">Отмена</button></div>';
+    openShopPayModal(html);
+}
+
+function createShopKpi(employeeId, templateId) {
+    if (!canEditShopPayrollRules()) return;
+    const tpl = shopKpiTemplate(templateId);
+    const metricId = tpl ? tpl.id : generateId();
+    if (tpl && shopRuleForCard(employeeId, metricId)) {
+        closeShopPayModal();
+        toast("Этот KPI уже есть у сотрудника.", "error");
+        return;
+    }
+    const source = tpl
+        ? (tpl.source === "timesheet" ? "timesheet" : tpl.source === "revision" ? "revision" : tpl.source === "manual" ? "manual" : "shop_metrics")
+        : "manual";
+    ensureShopPayroll().rules.push({
+        id: generateId(),
+        employeeId: employeeId,
+        metricId: metricId,
+        departmentId: "shop",
+        name: tpl ? tpl.name : "Новая метрика",
+        type: "plan",
+        calcType: (tpl && tpl.calcType) || "quantity",
+        sourceType: source,
+        sourceKey: (tpl && tpl.field) || "",
+        sourceCategory: (tpl && tpl.category) || "",
+        amount: 0,
+        plan: tpl && tpl.calcType === "timesheet_730" ? 100 : 0,
+        percent: 0,
+        paysBonus: true,
+        tiers: [],
+        validFrom: selectedMonth,
+        validTo: null
+    });
+    saveApp();
+    closeShopPayModal();
+    renderShopSalarySettings();
+}
+
+function removeShopKpi(employeeId, metricId) {
+    if (!canEditShopPayrollRules()) return;
+    const payroll = ensureShopPayroll();
+    const current = shopRuleForCard(employeeId, metricId);
+    if (!current) return;
+    if (current.validFrom === selectedMonth) {
+        payroll.rules = payroll.rules.filter(function (r) { return r !== current; });
+    } else {
+        current.validTo = shiftMonth(selectedMonth, -1);
+    }
+    saveApp();
+    renderShopSalarySettings();
+}
+
+function addShopKpiTier(employeeId, metricId) {
+    const rule = shopRuleForCard(employeeId, metricId);
+    const tiers = ((rule && rule.tiers) || []).slice();
+    tiers.push({ threshold: 0, amount: 0 });
+    mutateShopBonusRule(employeeId, metricId, { tiers: tiers });
+    renderShopSalarySettings();
+}
+
+function setShopKpiTier(employeeId, metricId, index, field, value) {
+    const rule = shopRuleForCard(employeeId, metricId);
+    const tiers = ((rule && rule.tiers) || []).map(function (t) {
+        return { threshold: Number(t.threshold || 0), amount: Number(t.amount || 0) };
+    });
+    if (!tiers[index]) return;
+    tiers[index][field] = field === "amount" ? parseMoney(value, 0) : parseDecimal(value, 0);
+    mutateShopBonusRule(employeeId, metricId, { tiers: tiers });
+    renderShopSalarySettings();
+}
+
+function removeShopKpiTier(employeeId, metricId, index) {
+    const rule = shopRuleForCard(employeeId, metricId);
+    const tiers = ((rule && rule.tiers) || []).slice();
+    tiers.splice(index, 1);
+    mutateShopBonusRule(employeeId, metricId, { tiers: tiers });
+    renderShopSalarySettings();
 }
 
 function setShopBonusManual(employeeId, metricId, value) {
@@ -6820,77 +7194,37 @@ function setShopBonusManual(employeeId, metricId, value) {
 }
 
 function openShopBonusCard(employeeId) {
-    const employee = getEmployee(employeeId);
-    if (!employee) return;
-    const canRules = canEditShopPayrollRules();
-    let html = "<h3>Карта бонусных метрик</h3>"
-        + "<div class=\"note\" style=\"margin-bottom:12px\">" + escapeHtml(employee.name)
-        + " · правила с " + monthLabel(selectedMonth)
-        + ". Не привязаны к должности. Старые месяцы не пересчитываются.</div>";
-    SHOP_BONUS_METRICS.forEach(function (metric) {
-        const rule = shopRuleForCard(employeeId, metric.id);
-        const on = !!rule;
-        const src = shopBonusMetricFact(metric, employeeId, selectedMonth);
-        html += '<div class="rev-group-card" style="margin-bottom:8px">'
-            + '<label class="check" style="display:flex;gap:8px;align-items:center;font-weight:700">'
-            + '<input type="checkbox"' + (on ? " checked" : "") + (canRules ? "" : " disabled")
-            + " onchange=\"setShopBonusMetricEnabled('" + employeeId + "','" + metric.id + "',this.checked)\">"
-            + escapeHtml(metric.name)
-            + (metric.shopLevel ? ' <span class="note">общий показатель магазина</span>' : "")
-            + "</label>";
-        if (on) {
-            html += '<div class="shop-pay-rule">'
-                + '<select ' + (canRules ? "" : "disabled ") + "onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','type',this.value)\">"
-                + SHOP_BONUS_RULE_TYPES.map(function (t) {
-                    return '<option value="' + t.id + '"' + (rule.type === t.id ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
-                }).join("") + "</select>"
-                + '<input type="number" min="0" step="1" placeholder="Сумма" title="Сумма" value="' + blankZeroInt(rule.amount) + '"'
-                + (canRules ? "" : " disabled")
-                + " onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','amount',this.value)\">"
-                + '<input type="number" min="0" step="1" placeholder="План" title="План" value="' + blankZeroInt(rule.plan || src.planAuto) + '"'
-                + (canRules ? "" : " disabled")
-                + " onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','plan',this.value)\">"
-                + '<input type="number" min="0" step="0.01" placeholder="%" title="Процент" value="' + blankZero(rule.percent) + '"'
-                + (canRules ? "" : " disabled")
-                + " onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','percent',this.value)\">"
-                + (rule.type === "manual"
-                    ? '<input type="number" min="0" step="1" placeholder="Вручную" value="'
-                        + blankZeroInt(ensureShopPayroll().manual[selectedMonth]
-                            && ensureShopPayroll().manual[selectedMonth][employeeId]
-                            && ensureShopPayroll().manual[selectedMonth][employeeId][metric.id]) + '"'
-                        + " onchange=\"setShopBonusManual('" + employeeId + "','" + metric.id + "',this.value)\">"
-                    : "<span class=\"note\">факт " + (Math.round(src.fact * 100) / 100) + "</span>")
-                + "</div>";
-        }
-        html += "</div>";
-    });
-    html += '<div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="closeShopPayModal();renderShopSalary()">Закрыть</button></div>';
-    openShopPayModal(html);
+    if (!canEditShopPayrollRules()) {
+        openShopBonusBreakdown(employeeId);
+        return;
+    }
+    shopSalaryEditEmployeeId = employeeId;
+    setShopSalaryPanel("settings");
 }
 
 function openShopBonusBreakdown(employeeId) {
     const employee = getEmployee(employeeId);
     if (!employee) return;
     const lines = shopEmployeeBonusLines(employeeId, selectedMonth);
-    let html = "<h3>Бонус по метрикам</h3>"
+    let html = "<h3>Бонус по KPI</h3>"
         + "<div class=\"note\" style=\"margin-bottom:12px\">" + escapeHtml(employee.name) + " · " + monthLabel(selectedMonth) + "</div>";
     if (!lines.length) {
-        html += '<div class="empty-row">Для сотрудника нет активных бонусных метрик в этом месяце.</div>';
+        html += '<div class="empty-row">Для сотрудника нет активных KPI в этом месяце.</div>';
     } else {
-        html += '<table class="shop-pay-metrics"><thead><tr><th>Метрика</th><th>План</th><th>Факт</th><th>Выполнение</th><th>Начислено</th></tr></thead><tbody>';
+        html += '<table class="shop-pay-metrics"><thead><tr><th>KPI</th><th>План</th><th>Факт</th><th>Начислено</th></tr></thead><tbody>';
         let sum = 0;
         lines.forEach(function (line) {
             sum += line.amount;
             html += "<tr><td>" + escapeHtml(line.metric.name) + "</td><td>"
                 + (line.plan ? line.plan.toLocaleString("ru-RU") : "—") + "</td><td>"
-                + (Math.round(line.fact * 100) / 100).toLocaleString("ru-RU") + "</td><td>"
-                + line.percent + "%</td><td>" + money(line.amount) + "</td></tr>";
+                + (line.label ? escapeHtml(line.label) : (Math.round(line.fact * 100) / 100).toLocaleString("ru-RU"))
+                + "</td><td>" + (line.rule && line.rule.paysBonus === false ? "контроль" : money(line.amount)) + "</td></tr>";
         });
-        html += '<tr><td><strong>ИТОГО</strong></td><td></td><td></td><td></td><td><strong>'
+        html += '<tr><td><strong>ИТОГО KPI</strong></td><td></td><td></td><td><strong>'
             + money(sum) + "</strong></td></tr></tbody></table>";
     }
     html += '<div class="rev-modal-actions" style="margin-top:12px">'
-        + (canEditShopPayrollRules() ? '<button type="button" class="btn btn-primary" onclick="openShopBonusCard(\'' + employeeId + "')\">Карта метрик</button>" : "")
+        + (canEditShopPayrollRules() ? '<button type="button" class="btn btn-primary" onclick="closeShopPayModal();openShopBonusCard(\'' + employeeId + "')\">Настройки сотрудника</button>" : "")
         + '<button type="button" class="btn btn-secondary" onclick="closeShopPayModal()">Закрыть</button></div>';
     openShopPayModal(html);
 }
