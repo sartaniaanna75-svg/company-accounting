@@ -693,6 +693,75 @@
             opacity: .7;
         }
 
+        .metrics-table col.metrics-col-visitors { width: 88px; }
+
+        .metrics-table .metrics-visitors-col {
+            position: sticky;
+            left: var(--metrics-date-w);
+            z-index: 6;
+            width: 88px;
+            min-width: 88px;
+            max-width: 88px;
+            background: #f7f3ea;
+            box-shadow: 2px 0 4px rgba(15, 23, 42, .06);
+        }
+
+        .metrics-table thead th.metrics-visitors-col {
+            top: 0;
+            z-index: 11;
+            background: #eee4d4;
+            color: #4a3b24;
+            height: calc(var(--metrics-h1) + var(--metrics-h2));
+            white-space: normal;
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+
+        .metrics-table tbody td.metrics-visitors-col { background: #fbf8f4; }
+        .metrics-table tbody tr.metrics-totals-row td.metrics-visitors-col { background: #f3eadc; }
+
+        .metrics-table thead th.metrics-channel-col,
+        .metrics-table tbody td.metrics-channel-col {
+            font-weight: 700;
+        }
+
+        .cashier-summary-table { min-width: 560px; }
+        .cashier-summary-table th:not(:first-child),
+        .cashier-summary-table td:not(:first-child) { text-align: right; }
+        .cashier-summary-table td:first-child,
+        .cashier-summary-table th:first-child { text-align: left; }
+        .cashier-channel-row td { background: #f3f4f6; }
+
+        .shop-pay-table { min-width: 980px; }
+        .shop-pay-table th:not(:first-child),
+        .shop-pay-table td:not(:first-child) { text-align: right; }
+        .shop-pay-table td:first-child,
+        .shop-pay-table th:first-child { text-align: left; }
+        .shop-pay-bonus {
+            border: 0;
+            background: transparent;
+            color: var(--primary-dark);
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .shop-pay-metrics { width: 100%; border-collapse: collapse; }
+        .shop-pay-metrics th,
+        .shop-pay-metrics td {
+            border-bottom: 1px solid #e5e7eb;
+            padding: 6px 4px;
+            text-align: left;
+            font-size: 12px;
+        }
+        .shop-pay-metrics td:not(:first-child) { text-align: right; }
+        .shop-pay-rule {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            align-items: center;
+            margin: 6px 0;
+        }
+
         .metrics-grand-box {
             margin-top: 16px;
             padding: 16px 18px;
@@ -1560,6 +1629,9 @@
         <button type="button" class="nav-btn" data-for="summary" data-section="repSalary" onclick="showSection('repSalary', this)">
             📦 Зарплата ТП
         </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="shopSalary" onclick="showSection('shopSalary', this)">
+            🏪 Зарплата Володарского
+        </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="summaryStaff" onclick="showSection('summaryStaff', this)">
             👤 Сотрудники
         </button>
@@ -1899,6 +1971,43 @@
 
 
             <!-- =================================================
+                 ЗАРПЛАТА ВОЛОДАРСКОГО — только Общая
+            ================================================== -->
+            <section id="shopSalary" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Зарплата Володарского</div>
+                            <div class="note" id="shopSalaryNote">
+                                Оклад + бонус по метрикам + премия − штраф − аванс. Бонус считается по индивидуальной карте сотрудника, а не по должности.
+                                Факт берётся из метрик и ревизии магазина. Касса самообслуживания в зарплату не входит.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="table-wrapper" id="shopSalaryWrap">
+                        <table class="shop-pay-table" id="shopSalaryTable">
+                            <thead>
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th>Отработано дней</th>
+                                    <th>Оклад</th>
+                                    <th>Бонус по метрикам</th>
+                                    <th>Премия</th>
+                                    <th>Штраф</th>
+                                    <th>Аванс</th>
+                                    <th>Итог</th>
+                                </tr>
+                            </thead>
+                            <tbody id="shopSalaryBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
                  СОТРУДНИКИ — только Общая: отдел, ставка, такси
             ================================================== -->
             <section id="summaryStaff" class="section">
@@ -2167,6 +2276,9 @@
 <div id="revisionModalBack" class="rev-modal-back" onclick="if (event.target === this) closeRevisionModal()">
     <div class="rev-modal" id="revisionModal" role="dialog" aria-modal="true"></div>
 </div>
+<div id="shopPayModalBack" class="rev-modal-back" onclick="if (event.target === this) closeShopPayModal()">
+    <div class="rev-modal" id="shopPayModal" role="dialog" aria-modal="true"></div>
+</div>
 
 <div id="toastWrap" class="toast-wrap" aria-live="polite"></div>
 
@@ -2261,13 +2373,17 @@ const SHOP_METRIC_CATEGORIES = [
             { key: "display", label: "Позиции выкладки", type: "number" },
             { key: "recount", label: "Позиций пересчёта", type: "number" },
             { key: "invoices", label: "Сборка накладных", type: "number" },
-            { key: "sugar", label: "Фасовка сахара", type: "number" }
+            { key: "sugar", label: "Фасовка сахара", type: "number" },
+            { key: "walks", label: "Проходы", type: "number" },
+            { key: "receiving", label: "Приёмка", type: "number" }
         ],
         cards: [
             { key: "display", label: "Выкладка" },
             { key: "recount", label: "Пересчёт" },
             { key: "invoices", label: "Накладные" },
-            { key: "sugar", label: "Фасовка сахара" }
+            { key: "sugar", label: "Фасовка сахара" },
+            { key: "walks", label: "Проходы" },
+            { key: "receiving", label: "Приёмка" }
         ],
         grandTitle: "Общий итог"
     },
@@ -2278,17 +2394,44 @@ const SHOP_METRIC_CATEGORIES = [
         fields: [
             { key: "sales", label: "Сумма продаж", type: "money" },
             { key: "receipts", label: "Количество чеков", type: "number" },
-            { key: "avgCheck", label: "Средний чек", type: "avgCheck" },
-            { key: "visitors", label: "Покупатели / посещения", type: "number" }
+            { key: "avgCheck", label: "Средний чек", type: "avgCheck" }
         ],
         cards: [
             { key: "sales", label: "Продажи", format: "money" },
             { key: "receipts", label: "Чеки" },
             { key: "avgCheck", label: "Средний чек", format: "money" },
-            { key: "visitors", label: "Посещения" }
+            { key: "visitors", label: "Покупатели" }
         ],
         grandTitle: "Общий итог магазина"
     }
+];
+
+const SHOP_SELF_CHECKOUT_ID = "self_checkout";
+const SHOP_SELF_CHECKOUT = {
+    id: SHOP_SELF_CHECKOUT_ID,
+    salesChannelId: SHOP_SELF_CHECKOUT_ID,
+    name: "Касса самообслуживания",
+    isSalesChannel: true
+};
+const SHOP_BONUS_METRICS = [
+    { id: "display", name: "Позиции выкладки", source: "shop_metrics", category: "pickers", field: "display" },
+    { id: "recount", name: "Позиций пересчёта", source: "shop_metrics", category: "pickers", field: "recount" },
+    { id: "invoices", name: "Сборка накладных", source: "shop_metrics", category: "pickers", field: "invoices" },
+    { id: "sugar", name: "Фасовка сахара", source: "shop_metrics", category: "pickers", field: "sugar" },
+    { id: "walks", name: "Проходы", source: "shop_metrics", category: "pickers", field: "walks" },
+    { id: "receiving", name: "Приёмка", source: "shop_metrics", category: "pickers", field: "receiving" },
+    { id: "revision", name: "Ревизия", source: "revision" },
+    { id: "sales", name: "Сумма продаж", source: "shop_metrics", category: "cashiers", field: "sales" },
+    { id: "receipts", name: "Количество чеков", source: "shop_metrics", category: "cashiers", field: "receipts" },
+    { id: "avgCheck", name: "Средний чек", source: "shop_metrics", category: "cashiers", field: "avgCheck" },
+    { id: "visitors", name: "Покупатели магазина", source: "store_metric", field: "visitors", shopLevel: true }
+];
+const SHOP_BONUS_RULE_TYPES = [
+    { id: "fixed", label: "Фикс за выполнение" },
+    { id: "per_unit", label: "Сумма за единицу" },
+    { id: "plan", label: "Бонус за план" },
+    { id: "percent", label: "Процент" },
+    { id: "manual", label: "Ручное начисление" }
 ];
 
 
@@ -2704,6 +2847,7 @@ function createDefaultData() {
         repSales: {},
         shopMetrics: {},
         shopRevision: { groups: [], folders: [], tasks: {}, ui: { collapsedGroups: {} } },
+        shopPayroll: { departmentId: "shop", salaries: [], rules: [], manual: {} },
         workspaces: DEPT_DEFAULTS.map(function (d) {
             return createWorkspace(d.name, d.pin, "dept", d.code);
         }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
@@ -3135,6 +3279,17 @@ function migrateAppData(data) {
     if (!data.salary || typeof data.salary !== "object") data.salary = {};
     if (!data.repSales || typeof data.repSales !== "object") data.repSales = {};
     if (!data.shopMetrics || typeof data.shopMetrics !== "object") data.shopMetrics = {};
+    if (!data.shopMetrics.store || typeof data.shopMetrics.store !== "object") data.shopMetrics.store = {};
+    if (!data.shopMetrics.channels || typeof data.shopMetrics.channels !== "object") data.shopMetrics.channels = {};
+    if (!data.shopMetrics.channelValues || typeof data.shopMetrics.channelValues !== "object") data.shopMetrics.channelValues = {};
+    if (!data.shopPayroll || typeof data.shopPayroll !== "object") {
+        data.shopPayroll = { departmentId: "shop", salaries: [], rules: [], manual: {} };
+    } else {
+        if (!Array.isArray(data.shopPayroll.salaries)) data.shopPayroll.salaries = [];
+        if (!Array.isArray(data.shopPayroll.rules)) data.shopPayroll.rules = [];
+        if (!data.shopPayroll.manual || typeof data.shopPayroll.manual !== "object") data.shopPayroll.manual = {};
+        if (!data.shopPayroll.departmentId) data.shopPayroll.departmentId = "shop";
+    }
     if (!data.shopRevision || typeof data.shopRevision !== "object") {
         data.shopRevision = { groups: [], folders: [], tasks: {}, ui: { collapsedGroups: {} } };
     } else {
@@ -4145,9 +4300,9 @@ function allowedSections() {
     }
     if (currentSummaryRole === "pay") return ["salary"];
     if (currentSummaryRole === "admin") {
-        return ["timesheet", "salary", "repSalary", "summaryStaff", "discipline", "analysis", "settings"];
+        return ["timesheet", "salary", "repSalary", "shopSalary", "summaryStaff", "discipline", "analysis", "settings"];
     }
-    return ["timesheet", "salary", "repSalary", "summaryStaff", "analysis"];
+    return ["timesheet", "salary", "repSalary", "shopSalary", "summaryStaff", "analysis"];
 }
 
 function defaultSection() {
@@ -4163,6 +4318,7 @@ function sectionTitle(id) {
         revision: "Ревизия — Магазин Володарского",
         salary: "Зарплата",
         repSalary: "Зарплата ТП",
+        shopSalary: "Зарплата Володарского",
         summaryStaff: "Сотрудники",
         discipline: "Контроль дисциплины",
         analysis: "Анализ",
@@ -4218,6 +4374,7 @@ function showSection(id, button) {
     if (id === "revision") renderShopRevision();
     if (id === "salary") renderSalary();
     if (id === "repSalary") renderRepSalary();
+    if (id === "shopSalary") renderShopSalary();
     if (id === "summaryStaff") renderSummaryStaff();
     if (id === "discipline") renderDiscipline();
     if (id === "analysis") renderAnalysis();
@@ -4239,6 +4396,7 @@ function refreshAll() {
     if (isSummary()) {
         renderSalary();
         renderRepSalary();
+        renderShopSalary();
         renderSummaryStaff();
         renderAnalysis();
     }
@@ -4268,7 +4426,21 @@ function shopMetricInputFields(category) {
 
 function ensureShopMetrics() {
     if (!appData.shopMetrics || typeof appData.shopMetrics !== "object") appData.shopMetrics = {};
-    return appData.shopMetrics;
+    const root = appData.shopMetrics;
+    if (!root.store || typeof root.store !== "object") root.store = {};
+    if (!root.channels || typeof root.channels !== "object") root.channels = {};
+    if (!root.channelValues || typeof root.channelValues !== "object") root.channelValues = {};
+    if (!root.channels[SHOP_SELF_CHECKOUT_ID]) {
+        root.channels[SHOP_SELF_CHECKOUT_ID] = {
+            id: SHOP_SELF_CHECKOUT_ID,
+            salesChannelId: SHOP_SELF_CHECKOUT_ID,
+            type: "sales_channel",
+            name: "Касса самообслуживания",
+            code: "self_checkout"
+        };
+    }
+    migrateCashiersVisitorsToStore(root);
+    return root;
 }
 
 function shopMetricMonthStore(categoryId, month) {
@@ -4276,6 +4448,130 @@ function shopMetricMonthStore(categoryId, month) {
     if (!root[categoryId] || typeof root[categoryId] !== "object") root[categoryId] = {};
     if (!root[categoryId][month] || typeof root[categoryId][month] !== "object") root[categoryId][month] = {};
     return root[categoryId][month];
+}
+
+function shopStoreMonth(month) {
+    const root = ensureShopMetrics();
+    const key = month || selectedMonth;
+    if (!root.store[key] || typeof root.store[key] !== "object") root.store[key] = {};
+    return root.store[key];
+}
+
+function shopChannelMonth(channelId, month) {
+    const root = ensureShopMetrics();
+    const key = month || selectedMonth;
+    if (!root.channelValues[key] || typeof root.channelValues[key] !== "object") root.channelValues[key] = {};
+    if (!root.channelValues[key][channelId] || typeof root.channelValues[key][channelId] !== "object") {
+        root.channelValues[key][channelId] = {};
+    }
+    return root.channelValues[key][channelId];
+}
+
+function getShopStoreValue(day, field, month) {
+    const rec = shopStoreMonth(month)[String(day)];
+    return rec && rec[field] != null ? Number(rec[field] || 0) : 0;
+}
+
+function setShopStoreValue(day, field, raw) {
+    const n = parseShopMetricNumber(raw);
+    const store = shopStoreMonth(selectedMonth);
+    const dayKey = String(day);
+    if (!store[dayKey] || typeof store[dayKey] !== "object") store[dayKey] = { source: "manual" };
+    if (!n) {
+        delete store[dayKey][field];
+        const keys = Object.keys(store[dayKey]).filter(function (k) { return k !== "source"; });
+        if (!keys.length) delete store[dayKey];
+    } else {
+        store[dayKey][field] = n;
+        store[dayKey].source = "manual";
+    }
+    saveApp();
+    const input = document.getElementById("mstore-" + day + "-" + field);
+    if (input) input.value = blankZero(n);
+    refreshShopMetricSummary();
+}
+
+function getShopChannelValue(channelId, day, field, month) {
+    const rec = shopChannelMonth(channelId, month)[String(day)];
+    return rec && rec[field] != null ? Number(rec[field] || 0) : 0;
+}
+
+function setShopChannelValue(channelId, day, field, raw) {
+    const n = parseShopMetricNumber(raw);
+    const store = shopChannelMonth(channelId, selectedMonth);
+    const dayKey = String(day);
+    if (!store[dayKey] || typeof store[dayKey] !== "object") store[dayKey] = { source: "manual" };
+    if (!n) {
+        delete store[dayKey][field];
+        const keys = Object.keys(store[dayKey]).filter(function (k) { return k !== "source"; });
+        if (!keys.length) delete store[dayKey];
+    } else {
+        store[dayKey][field] = field === "sales" ? Math.round(n) : n;
+        store[dayKey].source = "manual";
+    }
+    saveApp();
+    const input = document.getElementById("mchan-" + channelId + "-" + day + "-" + field);
+    if (input) {
+        input.value = field === "sales" ? formatShopMetricMoney(n) : blankZero(n);
+    }
+    refreshShopMetricSummary();
+}
+
+function shopChannelMonthTotals(channelId, month) {
+    const days = daysInMonthValue(month || selectedMonth);
+    const totals = { sales: 0, receipts: 0 };
+    for (let day = 1; day <= days; day++) {
+        totals.sales += getShopChannelValue(channelId, day, "sales", month);
+        totals.receipts += getShopChannelValue(channelId, day, "receipts", month);
+    }
+    totals.avgCheck = shopMetricAvgCheck(totals.sales, totals.receipts);
+    return totals;
+}
+
+function shopStoreVisitorsTotal(month) {
+    const days = daysInMonthValue(month || selectedMonth);
+    let sum = 0;
+    for (let day = 1; day <= days; day++) sum += getShopStoreValue(day, "visitors", month);
+    return sum;
+}
+
+function shopConversionPercent(receipts, visitors) {
+    const v = Number(visitors || 0);
+    return v ? Number(receipts || 0) * 100 / v : 0;
+}
+
+function migrateCashiersVisitorsToStore(root) {
+    if (root.storeMeta && root.storeMeta.visitorsMigrated) return;
+    const cashiers = root.cashiers;
+    if (cashiers && typeof cashiers === "object") {
+    Object.keys(cashiers).forEach(function (month) {
+        if (!/^\d{4}-\d{2}$/.test(month)) return;
+        const monthStore = cashiers[month];
+        if (!monthStore || typeof monthStore !== "object") return;
+        if (!root.store[month] || typeof root.store[month] !== "object") root.store[month] = {};
+        const store = root.store[month];
+        Object.keys(monthStore).forEach(function (empId) {
+            if (empId === SHOP_SELF_CHECKOUT_ID) return;
+            const days = monthStore[empId];
+            if (!days || typeof days !== "object") return;
+            Object.keys(days).forEach(function (day) {
+                const rec = days[day];
+                const vis = rec && Number(rec.visitors || 0);
+                if (!vis) return;
+                const cur = store[day] && Number(store[day].visitors || 0);
+                if (cur) {
+                    if (vis > cur) store[day].visitors = vis;
+                    return;
+                }
+                store[day] = store[day] && typeof store[day] === "object" ? store[day] : { source: "manual" };
+                store[day].visitors = vis;
+                if (!store[day].source) store[day].source = "manual";
+            });
+        });
+    });
+    }
+    root.storeMeta = root.storeMeta && typeof root.storeMeta === "object" ? root.storeMeta : {};
+    root.storeMeta.visitorsMigrated = true;
 }
 
 function shopMetricPositionKey(position) {
@@ -4317,10 +4613,12 @@ function shopMetricEmployees(category) {
         list.push(e);
     }
     ((w && w.employees) || []).forEach(function (e) {
+        if (!e || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (!employeeMatchesMetricCategory(e, category)) return;
         if (isWorking(e) || shopMetricEmployeeHasMonthData(category.id, e.id)) add(e);
     });
     Object.keys(shopMetricMonthStore(category.id, selectedMonth)).forEach(function (id) {
+        if (id === SHOP_SELF_CHECKOUT_ID) return;
         if (seen[id] || !shopMetricEmployeeHasMonthData(category.id, id)) return;
         add(getEmployee(id) || { id: id, name: "Сотрудник удалён", jobStatus: "fired", position: "" });
     });
@@ -4386,6 +4684,10 @@ function formatShopMetricField(field, value) {
 }
 
 function setShopMetricValue(categoryId, employeeId, day, field, raw) {
+    if (employeeId === SHOP_SELF_CHECKOUT_ID) {
+        setShopChannelValue(employeeId, day, field, raw);
+        return;
+    }
     const n = parseShopMetricNumber(raw);
     const store = shopMetricMonthStore(categoryId, selectedMonth);
     if (!store[employeeId] || typeof store[employeeId] !== "object") store[employeeId] = {};
@@ -4397,6 +4699,7 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         if (!Object.keys(store[employeeId]).length) delete store[employeeId];
     } else {
         store[employeeId][dayKey][field] = field === "sales" ? Math.round(n) : n;
+        store[employeeId][dayKey].source = "manual";
     }
     saveApp();
     const input = document.getElementById("mcell-" + categoryId + "-" + employeeId + "-" + day + "-" + field);
@@ -4474,10 +4777,222 @@ function renderShopMetricsColgroup(table, fields, employees) {
     table.insertAdjacentHTML("afterbegin", html);
 }
 
+function shopCashierPersons() {
+    return shopMetricEmployees(shopMetricCategoryById("cashiers")).concat([SHOP_SELF_CHECKOUT]);
+}
+
+function shopCashierDayValues(person, day) {
+    if (person && person.isSalesChannel) {
+        const sales = getShopChannelValue(person.id, day, "sales");
+        const receipts = getShopChannelValue(person.id, day, "receipts");
+        return { sales: sales, receipts: receipts, avgCheck: shopMetricAvgCheck(sales, receipts) };
+    }
+    return shopMetricDayValues(shopMetricCategoryById("cashiers"), person.id, day);
+}
+
+function shopCashierPersonTotals(person) {
+    if (person && person.isSalesChannel) return shopChannelMonthTotals(person.id, selectedMonth);
+    return shopMetricEmployeeTotals(shopMetricCategoryById("cashiers"), person.id);
+}
+
+function shopCashierShopTotals() {
+    const category = shopMetricCategoryById("cashiers");
+    const employees = shopMetricEmployees(category);
+    const emp = shopMetricGrandTotals(category, employees);
+    const channel = shopChannelMonthTotals(SHOP_SELF_CHECKOUT_ID, selectedMonth);
+    const sales = Number(emp.sales || 0) + Number(channel.sales || 0);
+    const receipts = Number(emp.receipts || 0) + Number(channel.receipts || 0);
+    const visitors = shopStoreVisitorsTotal(selectedMonth);
+    return {
+        sales: sales,
+        receipts: receipts,
+        avgCheck: shopMetricAvgCheck(sales, receipts),
+        visitors: visitors,
+        conversion: shopConversionPercent(receipts, visitors)
+    };
+}
+
+function shopCashierInputHtml(person, day, field, value) {
+    if (field.type === "avgCheck") {
+        const id = person.isSalesChannel
+            ? "mavg-ch-" + person.id + "-" + day
+            : "mavg-" + person.id + "-" + day;
+        return '<span class="metrics-avg" id="' + id + '">' + money(shopMetricAvgCheck(value.sales, value.receipts)) + "</span>";
+    }
+    const display = field.type === "money" ? formatShopMetricMoney(value[field.key]) : blankZero(value[field.key]);
+    const inputType = field.type === "money" ? "text" : "number";
+    if (person.isSalesChannel) {
+        const idAttr = "mchan-" + person.id + "-" + day + "-" + field.key;
+        return '<input class="metrics-input no-spin" id="' + idAttr + '" type="' + inputType + '" min="0" step="1"'
+            + ' inputmode="decimal" value="' + display + '" autocomplete="off"'
+            + ' onkeydown="onShopMetricNav(event)" onfocus="this.select()"'
+            + " onchange=\"setShopChannelValue('" + person.id + "'," + day + ",'" + field.key + "',this.value)\">";
+    }
+    return shopMetricInputHtml(shopMetricCategoryById("cashiers"), person.id, day, field, value);
+}
+
+function renderShopCashierMetrics() {
+    const category = shopMetricCategoryById("cashiers");
+    const employees = shopMetricEmployees(category);
+    const persons = employees.concat([SHOP_SELF_CHECKOUT]);
+    const fields = category.fields || [];
+    const wrap = document.getElementById("metricsWrap");
+    const scrollLeft = wrap ? wrap.scrollLeft : 0;
+    const scrollTop = wrap ? wrap.scrollTop : 0;
+    const table = document.getElementById("metricsTable");
+    const days = daysInMonth();
+    const inputCols = 1 + persons.length * shopMetricInputFields(category).length;
+
+    const monthNote = document.getElementById("metricsMonthNote");
+    if (monthNote) {
+        monthNote.textContent = monthLabel(selectedMonth)
+            + ". Продажи и чеки — по кассирам и кассе самообслуживания. Покупатели — один общий показатель магазина на дату.";
+    }
+    const pageTitle = document.getElementById("metricsPageTitle");
+    if (pageTitle) pageTitle.textContent = "Кассиры и касса самообслуживания";
+
+    if (table) {
+        table.setAttribute("data-metric-cols", String(inputCols));
+        const prev = table.querySelector("colgroup");
+        if (prev) prev.remove();
+        let cols = '<colgroup><col class="metrics-col-date"><col class="metrics-col-visitors">';
+        fields.forEach(function (field) {
+            const wide = field.type === "money" || field.type === "avgCheck";
+            persons.forEach(function () {
+                cols += '<col class="metrics-col-emp' + (wide ? " metrics-col-money" : "") + '">';
+            });
+        });
+        cols += "</colgroup>";
+        table.insertAdjacentHTML("afterbegin", cols);
+    }
+
+    const head = document.getElementById("metricsHead");
+    if (head) {
+        let headHtml = '<tr class="metrics-head-metrics">'
+            + '<th class="metrics-date-col" rowspan="2">Дата</th>'
+            + '<th class="metrics-visitors-col" rowspan="2">Покупатели</th>';
+        fields.forEach(function (field, fi) {
+            headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
+                + ' metrics-group-start" colspan="' + persons.length
+                + '" title="' + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
+        });
+        headHtml += '</tr><tr class="metrics-head-emps">';
+        fields.forEach(function (field, fi) {
+            const wide = field.type === "money" || field.type === "avgCheck";
+            persons.forEach(function (person, ei) {
+                headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(fi)
+                    + (wide ? " metrics-money-col" : "")
+                    + " metrics-group-start"
+                    + (person.isSalesChannel ? " metrics-channel-col" : "")
+                    + '" title="' + escapeHtml(person.name) + '"><span class="metrics-emp-name">'
+                    + escapeHtml(person.name) + "</span></th>";
+            });
+        });
+        headHtml += "</tr>";
+        head.innerHTML = headHtml;
+    }
+
+    const body = document.getElementById("metricsBody");
+    if (!body) return;
+
+    let html = "";
+    if (!employees.length) {
+        html += '<tr><td class="metrics-date-col"></td><td class="metrics-visitors-col" colspan="'
+            + (1 + fields.length * persons.length) + '"><div class="note" style="padding:8px 4px">'
+            + "Кассиров с должностью «Кассир» пока нет. Касса самообслуживания — не сотрудник, её можно заполнять отдельно."
+            + "</div></td></tr>";
+    }
+    for (let day = 1; day <= days; day++) {
+        const rowCls = ["metrics-data-row", isWeekend(day) ? "metrics-weekend" : "", isToday(day) ? "metrics-today" : ""]
+            .filter(Boolean).join(" ");
+        const dayValues = {};
+        persons.forEach(function (person) { dayValues[person.id] = shopCashierDayValues(person, day); });
+        html += '<tr class="' + rowCls + '"><td class="metrics-date-col">' + shopMetricDateLabel(day) + "</td>";
+        html += '<td class="metrics-visitors-col"><input class="metrics-input no-spin" id="mstore-' + day
+            + '-visitors" type="number" min="0" step="1" inputmode="numeric" autocomplete="off"'
+            + ' value="' + blankZero(getShopStoreValue(day, "visitors")) + '"'
+            + ' onkeydown="onShopMetricNav(event)" onfocus="this.select()"'
+            + " onchange=\"setShopStoreValue(" + day + ",'visitors',this.value)\"></td>";
+        fields.forEach(function (field, fi) {
+            const wide = field.type === "money" || field.type === "avgCheck";
+            persons.forEach(function (person) {
+                html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi)
+                    + (wide ? " metrics-money-col" : "")
+                    + " metrics-group-start"
+                    + (person.isSalesChannel ? " metrics-channel-col" : "") + '">'
+                    + shopCashierInputHtml(person, day, field, dayValues[person.id])
+                    + "</td>";
+            });
+        });
+        html += "</tr>";
+    }
+
+    html += '<tr class="metrics-totals-row"><td class="metrics-date-col">ИТОГО</td>';
+    html += '<td class="metrics-visitors-col" id="mtot-store-visitors">'
+        + formatShopMetricField({ type: "number" }, shopStoreVisitorsTotal(selectedMonth)) + "</td>";
+    fields.forEach(function (field, fi) {
+        const wide = field.type === "money" || field.type === "avgCheck";
+        persons.forEach(function (person) {
+            const totals = shopCashierPersonTotals(person);
+            const val = field.type === "avgCheck" ? totals.avgCheck : totals[field.key];
+            const id = person.isSalesChannel
+                ? "mtot-ch-" + person.id + "-" + field.key
+                : "mtot-" + person.id + "-" + field.key;
+            html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi)
+                + (wide ? " metrics-money-col" : "")
+                + ' metrics-group-start" id="' + id + '">'
+                + formatShopMetricField(field, val) + "</td>";
+        });
+    });
+    html += "</tr>";
+    body.innerHTML = html;
+
+    const grand = shopCashierShopTotals();
+    renderShopMetricCards(category, grand);
+    renderShopCashierSummary(employees, grand);
+    if (wrap) {
+        wrap.scrollLeft = scrollLeft;
+        wrap.scrollTop = scrollTop;
+    }
+}
+
+function renderShopCashierSummary(employees, grand) {
+    const box = document.getElementById("metricsGrandBox");
+    if (!box) return;
+    const persons = (employees || []).concat([SHOP_SELF_CHECKOUT]);
+    let html = '<div class="card-title" style="margin-bottom:10px">Итого магазин</div>'
+        + '<div class="table-wrapper" style="max-height:none"><table class="cashier-summary-table"><thead><tr>'
+        + "<th>Кассир / касса</th><th>Сумма продаж</th><th>Количество чеков</th><th>Средний чек</th>"
+        + "</tr></thead><tbody>";
+    persons.forEach(function (person) {
+        const tot = shopCashierPersonTotals(person);
+        html += '<tr class="' + (person.isSalesChannel ? "cashier-channel-row" : "") + '">'
+            + "<td>" + (person.isSalesChannel ? "<strong>" + escapeHtml(person.name) + "</strong>" : escapeHtml(person.name)) + "</td>"
+            + "<td>" + money(tot.sales) + "</td>"
+            + "<td>" + Number(tot.receipts || 0).toLocaleString("ru-RU") + "</td>"
+            + "<td>" + money(tot.avgCheck) + "</td></tr>";
+    });
+    html += '<tr class="metrics-totals-row"><td><strong>ИТОГО МАГАЗИН</strong></td>'
+        + "<td>" + money(grand.sales) + "</td>"
+        + "<td>" + Number(grand.receipts || 0).toLocaleString("ru-RU") + "</td>"
+        + "<td>" + money(grand.avgCheck) + "</td></tr></tbody></table></div>"
+        + '<div class="note" style="margin-top:10px">Общий средний чек = общая сумма продаж / общее количество чеков. '
+        + "Касса самообслуживания не сотрудник и не попадает в зарплату. "
+        + "Количество покупателей — отдельно, не по кассирам."
+        + (grand.visitors ? " Конверсия (чеки / покупатели) можно будет добавить позже: сейчас "
+            + (Math.round(grand.conversion * 10) / 10) + "%." : "")
+        + "</div>";
+    box.innerHTML = html;
+}
+
 function renderShopMetrics() {
     const section = document.getElementById("metrics");
     if (!section) return;
     if (!workspace() || workspace().code !== "shop") return;
+    if (currentShopMetricCategory().id === "cashiers") {
+        renderShopCashierMetrics();
+        return;
+    }
 
     const category = currentShopMetricCategory();
     const employees = shopMetricEmployees(category);
@@ -4609,15 +5124,15 @@ function renderShopMetricGrand(category, grand) {
         box.innerHTML = "";
         return;
     }
-    box.innerHTML = "<h3>" + escapeHtml(category.grandTitle) + "</h3>"
-        + "<p><strong>Общая сумма продаж:</strong> " + money(grand.sales) + "</p>"
-        + "<p><strong>Общее количество чеков:</strong> " + Number(grand.receipts || 0) + "</p>"
-        + "<p><strong>Общий средний чек:</strong> " + money(grand.avgCheck) + "</p>"
-        + "<p><strong>Общее количество покупателей / посещений:</strong> " + Number(grand.visitors || 0) + "</p>";
+    renderShopCashierSummary(shopMetricEmployees(category), grand || shopCashierShopTotals());
 }
 
 function refreshShopMetricSummary() {
     const category = currentShopMetricCategory();
+    if (category.id === "cashiers") {
+        refreshShopCashierSummary();
+        return;
+    }
     const employees = shopMetricEmployees(category);
     const grand = shopMetricGrandTotals(category, employees);
     renderShopMetricCards(category, grand);
@@ -4645,6 +5160,40 @@ function refreshShopMetricSummary() {
         if (!cell) return;
         const val = field.type === "avgCheck" ? grand.avgCheck : grand[field.key];
         cell.textContent = formatShopMetricField(field, val);
+    });
+}
+
+function refreshShopCashierSummary() {
+    const category = shopMetricCategoryById("cashiers");
+    const employees = shopMetricEmployees(category);
+    const persons = employees.concat([SHOP_SELF_CHECKOUT]);
+    const grand = shopCashierShopTotals();
+    renderShopMetricCards(category, grand);
+    renderShopCashierSummary(employees, grand);
+
+    const visTot = document.getElementById("mtot-store-visitors");
+    if (visTot) visTot.textContent = formatShopMetricField({ type: "number" }, grand.visitors);
+
+    const days = daysInMonth();
+    persons.forEach(function (person) {
+        const totals = shopCashierPersonTotals(person);
+        for (let day = 1; day <= days; day++) {
+            const avgId = person.isSalesChannel ? "mavg-ch-" + person.id + "-" + day : "mavg-" + person.id + "-" + day;
+            const avg = document.getElementById(avgId);
+            if (avg) {
+                const values = shopCashierDayValues(person, day);
+                avg.textContent = money(values.avgCheck);
+            }
+        }
+        (category.fields || []).forEach(function (field) {
+            const id = person.isSalesChannel
+                ? "mtot-ch-" + person.id + "-" + field.key
+                : "mtot-" + person.id + "-" + field.key;
+            const cell = document.getElementById(id);
+            if (!cell) return;
+            const val = field.type === "avgCheck" ? totals.avgCheck : totals[field.key];
+            cell.textContent = formatShopMetricField(field, val);
+        });
     });
 }
 
@@ -4916,7 +5465,9 @@ function bindRevisionEsc() {
     if (revisionEscBound) return;
     revisionEscBound = true;
     document.addEventListener("keydown", function (e) {
-        if (e.key === "Escape") closeRevisionModal();
+        if (e.key !== "Escape") return;
+        closeRevisionModal();
+        closeShopPayModal();
     });
 }
 
@@ -5925,6 +6476,423 @@ function renderRepSalary() {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
     }
+}
+
+
+/* ============================================================
+   ЗАРПЛАТА ВОЛОДАРСКОГО
+   Факт — из метрик и ревизии. Бонус — индивидуальная карта employee_id + metric_id.
+   Касса самообслуживания не сотрудник. Общая зарплата отделов не меняется.
+============================================================ */
+function ensureShopPayroll() {
+    if (!appData.shopPayroll || typeof appData.shopPayroll !== "object") {
+        appData.shopPayroll = { departmentId: "shop", salaries: [], rules: [], manual: {} };
+    }
+    const p = appData.shopPayroll;
+    if (!p.departmentId) p.departmentId = "shop";
+    if (!Array.isArray(p.salaries)) p.salaries = [];
+    if (!Array.isArray(p.rules)) p.rules = [];
+    if (!p.manual || typeof p.manual !== "object") p.manual = {};
+    return p;
+}
+
+function canEditShopPayrollRules() {
+    return isSummary() && currentSummaryRole === "admin";
+}
+
+function canEditShopSalaryAdj() {
+    return isSummary() && (currentSummaryRole === "admin" || currentSummaryRole === "adjust");
+}
+
+function shopPeriodApplies(from, to, month) {
+    if (from && month < from) return false;
+    if (to && month > to) return false;
+    return true;
+}
+
+function shopPickPeriodRecord(list, employeeId, month) {
+    const hits = (list || []).filter(function (r) {
+        return r && r.employeeId === employeeId && shopPeriodApplies(r.validFrom, r.validTo, month);
+    });
+    hits.sort(function (a, b) {
+        return String(b.validFrom || "").localeCompare(String(a.validFrom || ""));
+    });
+    return hits[0] || null;
+}
+
+function shopSalaryEmployees() {
+    const w = findWorkspaceByCode("shop");
+    if (!w) return [];
+    const seen = {};
+    const list = [];
+    function add(e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id]) return;
+        if (!includeInMonthPayroll(e)) return;
+        seen[e.id] = true;
+        list.push(e);
+    }
+    assignedIds(w).forEach(function (id) { add(findEmployeeIn(w, id)); });
+    (w.employees || []).forEach(add);
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function shopBonusMetricFact(metric, employeeId, month) {
+    const m = month || selectedMonth;
+    const keep = selectedMonth;
+    selectedMonth = m;
+    let fact = 0;
+    let planAuto = 0;
+    if (metric.source === "revision") {
+        const st = shopRevisionEmployeeMetrics(employeeId, m);
+        fact = st.done;
+        planAuto = st.assigned;
+    } else if (metric.source === "store_metric") {
+        fact = shopStoreVisitorsTotal(m);
+    } else if (metric.category) {
+        const tot = shopMetricEmployeeTotals(shopMetricCategoryById(metric.category), employeeId);
+        fact = metric.field === "avgCheck" ? Number(tot.avgCheck || 0) : Number(tot[metric.field] || 0);
+    }
+    selectedMonth = keep;
+    return { fact: fact, planAuto: planAuto };
+}
+
+function shopEmployeeBonusLines(employeeId, month) {
+    const m = month || selectedMonth;
+    const payroll = ensureShopPayroll();
+    const lines = [];
+    SHOP_BONUS_METRICS.forEach(function (metric) {
+        const rule = shopPickPeriodRecord(
+            payroll.rules.filter(function (r) { return r.metricId === metric.id; }),
+            employeeId,
+            m
+        );
+        if (!rule) return;
+        const src = shopBonusMetricFact(metric, employeeId, m);
+        const plan = Number(rule.plan || 0) || Number(src.planAuto || 0);
+        const fact = Number(src.fact || 0);
+        const percent = plan ? Math.round(fact * 100 / plan) : (fact ? 100 : 0);
+        let amount = 0;
+        if (rule.type === "per_unit") amount = Math.round(Number(rule.amount || 0) * fact);
+        else if (rule.type === "percent") amount = Math.round(fact * Number(rule.percent || 0) / 100);
+        else if (rule.type === "manual") {
+            const rec = payroll.manual[m] && payroll.manual[m][employeeId] && payroll.manual[m][employeeId][metric.id];
+            amount = Math.round(Number(rec || 0));
+        } else if (rule.type === "plan") {
+            amount = plan && fact >= plan ? Math.round(Number(rule.amount || 0)) : 0;
+        } else {
+            amount = (plan ? fact >= plan : fact > 0) ? Math.round(Number(rule.amount || 0)) : 0;
+        }
+        lines.push({ metric: metric, rule: rule, plan: plan, fact: fact, percent: percent, amount: amount });
+    });
+    return lines;
+}
+
+function shopEmployeeBonusTotal(employeeId, month) {
+    return shopEmployeeBonusLines(employeeId, month).reduce(function (s, line) { return s + line.amount; }, 0);
+}
+
+function shopEmployeeOklad(employee, month) {
+    const rec = shopPickPeriodRecord(ensureShopPayroll().salaries, employee.id, month || selectedMonth);
+    if (rec) return Math.round(Number(rec.amount || 0));
+    const shop = findWorkspaceByCode("shop");
+    const data = calculateEmployee(employee.id, month || selectedMonth, shop ? [shop] : undefined);
+    return Math.round(Number(data.accrued || 0));
+}
+
+function shopSalaryRowData(employee) {
+    const shop = findWorkspaceByCode("shop");
+    const ts = calculateEmployee(employee.id, selectedMonth, shop ? [shop] : undefined);
+    const oklad = shopEmployeeOklad(employee, selectedMonth);
+    const metricBonus = shopEmployeeBonusTotal(employee.id, selectedMonth);
+    const premium = Number(ts.bonus || 0);
+    const fine = Number(ts.fines || 0);
+    const advance = Number(ts.advance || 0);
+    return {
+        workedDays: ts.workedDays,
+        oklad: oklad,
+        metricBonus: metricBonus,
+        premium: premium,
+        fine: fine,
+        advance: advance,
+        total: oklad + metricBonus + premium - fine - advance
+    };
+}
+
+function closeShopPayModal() {
+    const back = document.getElementById("shopPayModalBack");
+    if (back) back.classList.remove("show");
+}
+
+function openShopPayModal(html) {
+    const back = document.getElementById("shopPayModalBack");
+    const box = document.getElementById("shopPayModal");
+    if (!back || !box) return;
+    bindRevisionEsc();
+    box.innerHTML = html;
+    back.classList.add("show");
+}
+
+function renderShopSalary() {
+    if (!isSummary()) return;
+    const body = document.getElementById("shopSalaryBody");
+    if (!body) return;
+    const employees = shopSalaryEmployees();
+    if (!employees.length) {
+        body.innerHTML = '<tr><td colspan="8"><div class="empty-row">В магазине Володарского нет сотрудников в табеле за этот месяц.</div></td></tr>';
+        return;
+    }
+    const canAdj = canEditShopSalaryAdj();
+    const canRules = canEditShopPayrollRules();
+    let html = "";
+    let sums = { days: 0, oklad: 0, bonus: 0, premium: 0, fine: 0, advance: 0, total: 0 };
+    employees.forEach(function (employee) {
+        const row = shopSalaryRowData(employee);
+        sums.days += row.workedDays;
+        sums.oklad += row.oklad;
+        sums.bonus += row.metricBonus;
+        sums.premium += row.premium;
+        sums.fine += row.fine;
+        sums.advance += row.advance;
+        sums.total += row.total;
+        html += '<tr class="' + (isWorking(employee) ? "" : "staff-fired") + '">'
+            + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusCard('" + employee.id + "')\">"
+            + escapeHtml(employee.name) + "</button>"
+            + (isWorking(employee) ? "" : ' <span class="note">уволен</span>') + "</td>"
+            + "<td>" + row.workedDays + "</td>"
+            + "<td>" + (canRules
+                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(row.oklad) + "\" onchange=\"setShopEmployeeOklad('" + employee.id + "',this.value)\">"
+                : money(row.oklad)) + "</td>"
+            + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusBreakdown('" + employee.id + "')\">"
+            + money(row.metricBonus) + "</button></td>"
+            + "<td>" + (canAdj
+                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(row.premium) + "\" onchange=\"setShopSalaryAdj('" + employee.id + "','bonus',this.value)\">"
+                : money(row.premium)) + "</td>"
+            + "<td>" + (canAdj
+                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(row.fine) + "\" onchange=\"setShopSalaryAdj('" + employee.id + "','fines',this.value)\">"
+                : money(row.fine)) + "</td>"
+            + "<td>" + (canAdj
+                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(row.advance) + "\" onchange=\"setShopSalaryAdj('" + employee.id + "','advance',this.value)\">"
+                : money(row.advance)) + "</td>"
+            + '<td class="pay">' + money(row.total) + "</td></tr>";
+    });
+    html += '<tr class="totals-row"><td>Итого</td><td>' + sums.days + "</td><td>"
+        + money(sums.oklad) + "</td><td>" + money(sums.bonus) + "</td><td>"
+        + money(sums.premium) + "</td><td>" + money(sums.fine) + "</td><td>"
+        + money(sums.advance) + "</td><td class=\"pay\">" + money(sums.total) + "</td></tr>";
+    body.innerHTML = html;
+}
+
+function setShopSalaryAdj(employeeId, field, value) {
+    if (!canEditShopSalaryAdj()) return;
+    if (currentSummaryRole === "admin") {
+        ensureSalary(employeeId)[field] = parseMoney(value, 0);
+        saveApp();
+        renderShopSalary();
+        return;
+    }
+    setAdjustment(employeeId, field, value);
+}
+
+function setShopEmployeeOklad(employeeId, raw) {
+    if (!canEditShopPayrollRules()) return;
+    const amount = parseMoney(raw, 0);
+    const payroll = ensureShopPayroll();
+    const month = selectedMonth;
+    const current = shopPickPeriodRecord(payroll.salaries, employeeId, month);
+    if (current && current.validFrom !== month) current.validTo = shiftMonth(month, -1);
+    let rec = payroll.salaries.find(function (s) {
+        return s.employeeId === employeeId && s.validFrom === month && shopPeriodApplies(s.validFrom, s.validTo, month);
+    });
+    if (!rec) {
+        rec = {
+            id: generateId(),
+            employeeId: employeeId,
+            departmentId: "shop",
+            amount: amount,
+            validFrom: month,
+            validTo: null
+        };
+        payroll.salaries.push(rec);
+    } else {
+        rec.amount = amount;
+    }
+    saveApp();
+    renderShopSalary();
+}
+
+function shopRuleForCard(employeeId, metricId) {
+    return shopPickPeriodRecord(
+        ensureShopPayroll().rules.filter(function (r) { return r.metricId === metricId; }),
+        employeeId,
+        selectedMonth
+    );
+}
+
+function mutateShopBonusRule(employeeId, metricId, patch) {
+    if (!canEditShopPayrollRules()) return;
+    const payroll = ensureShopPayroll();
+    const month = selectedMonth;
+    let rule = shopRuleForCard(employeeId, metricId);
+    if (!rule) {
+        rule = {
+            id: generateId(),
+            employeeId: employeeId,
+            metricId: metricId,
+            departmentId: "shop",
+            type: "plan",
+            amount: 0,
+            plan: 0,
+            percent: 0,
+            validFrom: month,
+            validTo: null
+        };
+        payroll.rules.push(rule);
+    } else if (rule.validFrom !== month) {
+        rule.validTo = shiftMonth(month, -1);
+        rule = {
+            id: generateId(),
+            employeeId: employeeId,
+            metricId: metricId,
+            departmentId: "shop",
+            type: rule.type,
+            amount: rule.amount,
+            plan: rule.plan,
+            percent: rule.percent,
+            validFrom: month,
+            validTo: null
+        };
+        payroll.rules.push(rule);
+    }
+    Object.keys(patch).forEach(function (key) { rule[key] = patch[key]; });
+    saveApp();
+}
+
+function setShopBonusMetricEnabled(employeeId, metricId, on) {
+    if (!canEditShopPayrollRules()) return;
+    const payroll = ensureShopPayroll();
+    const month = selectedMonth;
+    const current = shopRuleForCard(employeeId, metricId);
+    if (on) {
+        if (!current || current.validFrom !== month) {
+            if (current) current.validTo = shiftMonth(month, -1);
+            payroll.rules.push({
+                id: generateId(),
+                employeeId: employeeId,
+                metricId: metricId,
+                departmentId: "shop",
+                type: "plan",
+                amount: 0,
+                plan: 0,
+                percent: 0,
+                validFrom: month,
+                validTo: null
+            });
+        }
+    } else if (current) {
+        current.validTo = shiftMonth(month, -1);
+    }
+    saveApp();
+    openShopBonusCard(employeeId);
+}
+
+function setShopBonusRuleField(employeeId, metricId, field, value) {
+    const patch = {};
+    if (field === "type") patch.type = value;
+    else if (field === "amount" || field === "plan") patch[field] = parseMoney(value, 0);
+    else if (field === "percent") patch.percent = parseDecimal(value, 0);
+    mutateShopBonusRule(employeeId, metricId, patch);
+    openShopBonusCard(employeeId);
+}
+
+function setShopBonusManual(employeeId, metricId, value) {
+    if (!canEditShopPayrollRules() && !canEditShopSalaryAdj()) return;
+    const payroll = ensureShopPayroll();
+    if (!payroll.manual[selectedMonth]) payroll.manual[selectedMonth] = {};
+    if (!payroll.manual[selectedMonth][employeeId]) payroll.manual[selectedMonth][employeeId] = {};
+    payroll.manual[selectedMonth][employeeId][metricId] = parseMoney(value, 0);
+    saveApp();
+    renderShopSalary();
+}
+
+function openShopBonusCard(employeeId) {
+    const employee = getEmployee(employeeId);
+    if (!employee) return;
+    const canRules = canEditShopPayrollRules();
+    let html = "<h3>Карта бонусных метрик</h3>"
+        + "<div class=\"note\" style=\"margin-bottom:12px\">" + escapeHtml(employee.name)
+        + " · правила с " + monthLabel(selectedMonth)
+        + ". Не привязаны к должности. Старые месяцы не пересчитываются.</div>";
+    SHOP_BONUS_METRICS.forEach(function (metric) {
+        const rule = shopRuleForCard(employeeId, metric.id);
+        const on = !!rule;
+        const src = shopBonusMetricFact(metric, employeeId, selectedMonth);
+        html += '<div class="rev-group-card" style="margin-bottom:8px">'
+            + '<label class="check" style="display:flex;gap:8px;align-items:center;font-weight:700">'
+            + '<input type="checkbox"' + (on ? " checked" : "") + (canRules ? "" : " disabled")
+            + " onchange=\"setShopBonusMetricEnabled('" + employeeId + "','" + metric.id + "',this.checked)\">"
+            + escapeHtml(metric.name)
+            + (metric.shopLevel ? ' <span class="note">общий показатель магазина</span>' : "")
+            + "</label>";
+        if (on) {
+            html += '<div class="shop-pay-rule">'
+                + '<select ' + (canRules ? "" : "disabled ") + "onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','type',this.value)\">"
+                + SHOP_BONUS_RULE_TYPES.map(function (t) {
+                    return '<option value="' + t.id + '"' + (rule.type === t.id ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
+                }).join("") + "</select>"
+                + '<input type="number" min="0" step="1" placeholder="Сумма" title="Сумма" value="' + blankZeroInt(rule.amount) + '"'
+                + (canRules ? "" : " disabled")
+                + " onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','amount',this.value)\">"
+                + '<input type="number" min="0" step="1" placeholder="План" title="План" value="' + blankZeroInt(rule.plan || src.planAuto) + '"'
+                + (canRules ? "" : " disabled")
+                + " onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','plan',this.value)\">"
+                + '<input type="number" min="0" step="0.01" placeholder="%" title="Процент" value="' + blankZero(rule.percent) + '"'
+                + (canRules ? "" : " disabled")
+                + " onchange=\"setShopBonusRuleField('" + employeeId + "','" + metric.id + "','percent',this.value)\">"
+                + (rule.type === "manual"
+                    ? '<input type="number" min="0" step="1" placeholder="Вручную" value="'
+                        + blankZeroInt(ensureShopPayroll().manual[selectedMonth]
+                            && ensureShopPayroll().manual[selectedMonth][employeeId]
+                            && ensureShopPayroll().manual[selectedMonth][employeeId][metric.id]) + '"'
+                        + " onchange=\"setShopBonusManual('" + employeeId + "','" + metric.id + "',this.value)\">"
+                    : "<span class=\"note\">факт " + (Math.round(src.fact * 100) / 100) + "</span>")
+                + "</div>";
+        }
+        html += "</div>";
+    });
+    html += '<div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="closeShopPayModal();renderShopSalary()">Закрыть</button></div>';
+    openShopPayModal(html);
+}
+
+function openShopBonusBreakdown(employeeId) {
+    const employee = getEmployee(employeeId);
+    if (!employee) return;
+    const lines = shopEmployeeBonusLines(employeeId, selectedMonth);
+    let html = "<h3>Бонус по метрикам</h3>"
+        + "<div class=\"note\" style=\"margin-bottom:12px\">" + escapeHtml(employee.name) + " · " + monthLabel(selectedMonth) + "</div>";
+    if (!lines.length) {
+        html += '<div class="empty-row">Для сотрудника нет активных бонусных метрик в этом месяце.</div>';
+    } else {
+        html += '<table class="shop-pay-metrics"><thead><tr><th>Метрика</th><th>План</th><th>Факт</th><th>Выполнение</th><th>Начислено</th></tr></thead><tbody>';
+        let sum = 0;
+        lines.forEach(function (line) {
+            sum += line.amount;
+            html += "<tr><td>" + escapeHtml(line.metric.name) + "</td><td>"
+                + (line.plan ? line.plan.toLocaleString("ru-RU") : "—") + "</td><td>"
+                + (Math.round(line.fact * 100) / 100).toLocaleString("ru-RU") + "</td><td>"
+                + line.percent + "%</td><td>" + money(line.amount) + "</td></tr>";
+        });
+        html += '<tr><td><strong>ИТОГО</strong></td><td></td><td></td><td></td><td><strong>'
+            + money(sum) + "</strong></td></tr></tbody></table>";
+    }
+    html += '<div class="rev-modal-actions" style="margin-top:12px">'
+        + (canEditShopPayrollRules() ? '<button type="button" class="btn btn-primary" onclick="openShopBonusCard(\'' + employeeId + "')\">Карта метрик</button>" : "")
+        + '<button type="button" class="btn btn-secondary" onclick="closeShopPayModal()">Закрыть</button></div>';
+    openShopPayModal(html);
 }
 
 
