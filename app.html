@@ -1144,6 +1144,7 @@
             flex: 0 0 auto;
             display: flex;
             align-items: flex-end;
+            gap: 6px;
             padding-bottom: 1px;
         }
 
@@ -2021,7 +2022,7 @@
                         </div>
                         <div class="toolbar" id="shopSalaryTabs">
                             <button type="button" class="metrics-tab active" data-shop-pay="table" onclick="setShopSalaryPanel('table')">Таблица</button>
-                            <button type="button" class="metrics-tab" data-shop-pay="settings" id="shopSalarySettingsTab" onclick="setShopSalaryPanel('settings')">Настройки сотрудников</button>
+                            <button type="button" class="metrics-tab" data-shop-pay="settings" id="shopSalarySettingsTab" onclick="setShopSalaryPanel('settings')">План и бонусы</button>
                         </div>
                     </div>
                 </div>
@@ -2048,7 +2049,7 @@
                 <div class="card" id="shopSalarySettingsCard" style="display:none;">
                     <div class="card-header">
                         <div>
-                            <div class="card-title">Настройки зарплаты сотрудников</div>
+                            <div class="card-title">План и бонусы</div>
                             <div class="note">Выберите сотрудника по имени. Правила, ставка и KPI хранятся внутри по постоянным связям и действуют с выбранного месяца. Старые месяцы не пересчитываются.</div>
                         </div>
                         <div class="toolbar">
@@ -2072,9 +2073,9 @@
                         <div>
                             <div class="card-title">Все сотрудники</div>
                             <div class="note">
-                                Здесь сотрудники всех отделов. Ставка — за день, плюс такси на день.
-                                Если человек работает и ставка с такси не менялись, на каждый месяц подставляется то же.
-                                Изменение действует с выбранного месяца и дальше.
+                                Здесь ФИО, отдел, статус, ставка и такси. Планы и бонусы магазина (выкладка, ревизия, проходы)
+                                задаются в разделе «Зарплата Володарского» → «План и бонусы».
+                                У сотрудников магазина есть кнопка «План и бонусы».
                             </div>
                         </div>
                         <div class="toolbar">
@@ -7097,6 +7098,17 @@ function setShopSalaryPanel(id) {
     renderShopSalary();
 }
 
+function openShopEmployeeKpiFromStaff(employeeId) {
+    if (!canEditShopPayrollRules()) {
+        toast("План и бонусы может менять только администратор Общей.", "error");
+        return;
+    }
+    shopSalaryEditEmployeeId = employeeId || "";
+    shopSalaryPanel = "settings";
+    const btn = document.querySelector('.nav-btn[data-section="shopSalary"]');
+    showSection("shopSalary", btn);
+}
+
 function setShopSalaryEditEmployee(employeeId) {
     shopSalaryEditEmployeeId = employeeId || "";
     renderShopSalarySettings();
@@ -8336,9 +8348,14 @@ function renderSummaryStaff() {
                 + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">")
                 + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">")
                 + (isDrivers && isRep ? percentBlock : "")
+                + '<div class="emp-actions">'
+                + (g.dept.code === "shop" && canEditShopPayrollRules()
+                    ? '<button type="button" class="btn btn-secondary btn-small" onclick="openShopEmployeeKpiFromStaff(\'' + employee.id + '\')">План и бонусы</button>'
+                    : "")
                 + (locked
                     ? ""
-                    : '<div class="emp-actions"><button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>')
+                    : '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>')
+                + "</div>"
                 + "</div>";
         });
     });
