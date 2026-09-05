@@ -2292,7 +2292,7 @@
                         </div>
                         <div class="form-group" id="deptPinBox">
                             <label for="workspacePinSetting">PIN-код</label>
-                            <input type="password" id="workspacePinSetting" maxlength="12" autocomplete="off">
+                            <input type="password" id="workspacePinSetting" maxlength="32" autocomplete="off">
                         </div>
                         <div class="form-group" data-for="dept">
                             <label for="defaultHoursSetting">Рабочих часов по умолчанию</label>
@@ -2997,6 +2997,21 @@ function getEmployeeTerms(employee, monthValue) {
     };
 }
 
+function pinString(value) {
+    if (value == null) return "";
+    return String(value).trim();
+}
+
+function pinIsSet(value) {
+    return pinString(value) !== "";
+}
+
+function pinsMatch(entered, stored) {
+    const a = pinString(entered);
+    const b = pinString(stored);
+    return a !== "" && a === b;
+}
+
 function summaryRoleInfo(role) {
     const base = SUMMARY_ROLES.find(function (r) { return r.role === role; }) || SUMMARY_ROLES[0];
     const w = findWorkspaceByCode("summary");
@@ -3004,10 +3019,10 @@ function summaryRoleInfo(role) {
     const stored = w && w.roleUsers && w.roleUsers[role];
     return {
         role: base.role,
-        id: base.role,
+        id: (stored && (stored.user_id || stored.id)) || ("user_" + base.role),
         name: (stored && stored.name) || base.name,
         title: base.title,
-        pin: (stored && stored.pin) || (w && w.rolePins && w.rolePins[role]) || base.pin,
+        pin: pinString((stored && stored.pin) || (w && w.rolePins && w.rolePins[role]) || base.pin),
         note: base.note
     };
 }
@@ -3025,7 +3040,7 @@ function adminPin() {
     const summary = findWorkspaceByCode("summary");
     if (summary) {
         ensureSummaryPins(summary);
-        return summary.rolePins.admin || "5555";
+        return pinString(summary.rolePins && summary.rolePins.admin) || "5555";
     }
     return "5555";
 }
@@ -3163,7 +3178,8 @@ function normalizeEmployee(e) {
 function normalizeWorkspace(w) {
     if (!w.id) w.id = generateId();
     if (!w.name) w.name = "Таблица";
-    if (typeof w.pin !== "string") w.pin = String(w.pin || "0000");
+    if (typeof w.pin !== "string") w.pin = pinString(w.pin);
+    else w.pin = w.pin.trim();
     w.defaultHours = parseHours(w.defaultHours, 8);
     if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
     if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
@@ -3176,10 +3192,12 @@ function normalizeWorkspace(w) {
 
 function ensureSummaryPins(w) {
     if (!w) return;
-    if (!w.rolePins || typeof w.rolePins !== "object") w.rolePins = {};
-    if (!w.rolePins.admin) w.rolePins.admin = (w.pin && w.pin !== "1111") ? w.pin : "5555";
-    if (!w.rolePins.adjust) w.rolePins.adjust = "6666";
-    if (!w.rolePins.pay) w.rolePins.pay = "7777";
+    if (!w.rolePins || typeof w.rolePins !== "object") {
+        w.rolePins = { admin: "5555", adjust: "6666", pay: "7777" };
+    }
+    w.rolePins.admin = pinString(w.rolePins.admin) || (pinString(w.pin) && pinString(w.pin) !== "1111" ? pinString(w.pin) : "5555");
+    w.rolePins.adjust = pinString(w.rolePins.adjust) || "6666";
+    w.rolePins.pay = pinString(w.rolePins.pay) || "7777";
     w.pin = w.rolePins.admin;
     ensureSummaryUsers(w);
 }
@@ -3193,11 +3211,50 @@ function ensureSummaryUsers(w) {
     SUMMARY_ROLES.forEach(function (r) {
         const prev = w.roleUsers[r.role] && typeof w.roleUsers[r.role] === "object" ? w.roleUsers[r.role] : {};
         const name = String(prev.name || r.name).replace(/\s+/g, " ").trim() || r.name;
-        const pin = String(prev.pin || w.rolePins[r.role] || r.pin || "").trim() || r.pin;
-        w.roleUsers[r.role] = { id: r.role, name: name, pin: pin };
+        const pin = pinString(prev.pin != null ? prev.pin : (prev.password != null ? prev.password : w.rolePins[r.role])) || r.pin;
+        w.roleUsers[r.role] = {
+            id: r.role,
+            user_id: prev.user_id || ("user_" + r.role),
+            role: r.role,
+            name: name,
+            pin: pin
+        };
         w.rolePins[r.role] = pin;
     });
     w.pin = w.rolePins.admin;
+}
+
+function restoreCanonicalPins(data) {
+    if (!data || data.authPinRestore === "v2") return;
+    if (!Array.isArray(data.workspaces)) return;
+    DEPT_DEFAULTS.forEach(function (def) {
+        const w = data.workspaces.find(function (x) {
+            return x && x.code === def.code && x.type !== "summary";
+        });
+        if (w) w.pin = String(def.pin);
+    });
+    const summary = data.workspaces.find(function (w) {
+        return w && (w.code === "summary" || w.type === "summary");
+    });
+    if (summary) {
+        if (!summary.rolePins || typeof summary.rolePins !== "object") summary.rolePins = {};
+        if (!summary.roleUsers || typeof summary.roleUsers !== "object") summary.roleUsers = {};
+        SUMMARY_ROLES.forEach(function (r) {
+            const prev = summary.roleUsers[r.role] && typeof summary.roleUsers[r.role] === "object"
+                ? summary.roleUsers[r.role]
+                : {};
+            summary.roleUsers[r.role] = {
+                id: r.role,
+                user_id: prev.user_id || ("user_" + r.role),
+                role: r.role,
+                name: String(prev.name || r.name).replace(/\s+/g, " ").trim() || r.name,
+                pin: String(r.pin)
+            };
+            summary.rolePins[r.role] = String(r.pin);
+        });
+        summary.pin = String(summary.rolePins.admin);
+    }
+    data.authPinRestore = "v2";
 }
 
 function mergeSalaryRecord(dst, src) {
@@ -3489,7 +3546,7 @@ function repairFourDepartments(data) {
         w.type = "dept";
         w.code = def.code;
         w.name = def.name;
-        if (!w.pin || (def.code !== "shop" && w.pin === "1111")) w.pin = def.pin;
+        if (!pinString(w.pin) || (def.code !== "shop" && pinString(w.pin) === "1111")) w.pin = def.pin;
         if (!Array.isArray(w.employees)) w.employees = [];
         if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
         if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
@@ -3508,7 +3565,7 @@ function repairFourDepartments(data) {
     summary.type = "summary";
     summary.code = SUMMARY_DEFAULT.code;
     summary.name = SUMMARY_DEFAULT.name;
-    if (!summary.pin || summary.pin === "1111") summary.pin = SUMMARY_DEFAULT.pin;
+    if (!pinString(summary.pin) || pinString(summary.pin) === "1111") summary.pin = SUMMARY_DEFAULT.pin;
     ensureSummaryPins(summary);
     summary.employees = [];
     summary.employeeIds = [];
@@ -3638,6 +3695,7 @@ function migrateAppData(data) {
         });
     });
     migrateStableIds(data);
+    restoreCanonicalPins(data);
     return data;
 }
 
@@ -3757,9 +3815,16 @@ function loadAppData() {
         if (!parsed || !Array.isArray(parsed.workspaces) || !parsed.workspaces.length) {
             throw new Error("bad structure");
         }
-        const migrated = migrateAppData(parsed);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
-        return migrated;
+        try {
+            const migrated = migrateAppData(parsed);
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated));
+            return migrated;
+        } catch (migrateErr) {
+            console.error(migrateErr);
+            restoreCanonicalPins(parsed);
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed)); } catch (e2) {}
+            return parsed;
+        }
     } catch (err) {
         console.error(err);
         toast("Не удалось прочитать сохранённые данные. Открыта пустая копия.", "error");
@@ -3955,6 +4020,26 @@ function isRepPercentField(field) {
 
 function isBlankName(name) {
     return !String(name || "").replace(/\s+/g, " ").trim();
+}
+
+function isPlaceholderEmployeeName(name) {
+    const n = String(name || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return !n || n === "сотрудник" || n === "сотрудник удалён";
+}
+
+function shopMetricEmployeeCaption(employee) {
+    if (!employee) return "Удалённый";
+    if (employee.name === "Сотрудник удалён" || (!getEmployee(employee.id) && isPlaceholderEmployeeName(employee.name))) {
+        return "Удалённый";
+    }
+    if (isPlaceholderEmployeeName(employee.name)) return "Без ФИО";
+    return String(employee.name).replace(/\s+/g, " ").trim();
+}
+
+function shopMetricEmployeeTitle(employee) {
+    const name = shopMetricEmployeeCaption(employee);
+    if (!isWorking(employee)) return name + " (уволен)";
+    return name;
 }
 
 function syncNameFieldState(el) {
@@ -4291,11 +4376,11 @@ function renderLogin(view) {
     if (summary) ensureSummaryPins(summary);
     const showHint = defs.every(function (d) {
         const w = findWorkspaceByCode(d.code);
-        return w && w.pin === d.pin;
+        return w && pinsMatch(w.pin, d.pin);
     }) && summary && summary.rolePins
-        && summary.rolePins.admin === "5555"
-        && summary.rolePins.adjust === "6666"
-        && summary.rolePins.pay === "7777";
+        && pinsMatch(summary.rolePins.admin, "5555")
+        && pinsMatch(summary.rolePins.adjust, "6666")
+        && pinsMatch(summary.rolePins.pay, "7777");
 
     const homeLink = document.getElementById("loginHomeLink");
     const title = document.getElementById("loginTitle");
@@ -4372,8 +4457,8 @@ function deptLoginCardHtml(d) {
         +     '<option value="staff">Сотрудник отдела</option>'
         +     '<option value="admin">' + escapeHtml(summaryRoleInfo("admin").name) + " — админ</option>"
         +   "</select>"
-        +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="12" autocomplete="off"'
-        +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
+        +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="32" autocomplete="off"'
+        +   ' onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
         +   '<div class="login-error" id="loginError_' + d.code + '"></div>'
         +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginByCode(\'' + d.code + '\')">Войти</button>'
         + "</div>";
@@ -4425,8 +4510,8 @@ function summaryLoginCardHtml() {
         +     '<option value="adjust">' + escapeHtml(summaryRoleInfo("adjust").name) + " — удержания</option>"
         +     '<option value="pay">' + escapeHtml(summaryRoleInfo("pay").name) + " — выдача</option>"
         +   "</select>"
-        +   '<input type="password" id="loginPin_summary" placeholder="PIN" maxlength="12" autocomplete="off"'
-        +   ' inputmode="numeric" onkeydown="if(event.key===\'Enter\'){loginSummary()}">'
+        +   '<input type="password" id="loginPin_summary" placeholder="PIN" maxlength="32" autocomplete="off"'
+        +   ' onkeydown="if(event.key===\'Enter\'){loginSummary()}">'
         +   '<div class="login-error" id="loginError_summary"></div>'
         +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginSummary()">Войти</button>'
         + "</div>";
@@ -4445,7 +4530,7 @@ function loginByCode(code) {
     if (error) error.textContent = "";
 
     const expected = role === "admin" ? adminPin() : (w && w.pin);
-    if (!w || entered !== expected) {
+    if (!w || !pinsMatch(entered, expected)) {
         if (card) card.classList.add("error");
         if (error) error.textContent = "Неверный PIN-код.";
         if (input) {
@@ -4482,12 +4567,12 @@ function loginSummary() {
     const entered = ((input && input.value) || "").trim();
     const w = findWorkspaceByCode("summary");
     if (w) ensureSummaryPins(w);
-    const expected = w && w.rolePins ? w.rolePins[info.role] : info.pin;
+    const expected = w && w.rolePins ? pinString(w.rolePins[info.role]) : pinString(info.pin);
 
     if (card) card.classList.remove("error");
     if (error) error.textContent = "";
 
-    if (!w || entered !== expected) {
+    if (!w || !pinsMatch(entered, expected)) {
         if (card) card.classList.add("error");
         if (error) error.textContent = "Неверный PIN-код.";
         if (input) {
@@ -5003,10 +5088,14 @@ function getShopMetricValue(categoryId, employeeId, day, field) {
 function shopMetricEmployeeHasMonthData(categoryId, employeeId) {
     const emp = shopMetricMonthStore(categoryId, selectedMonth)[employeeId];
     if (!emp || typeof emp !== "object") return false;
+    const skip = { source: 1, metric_id: 1, employee_id: 1 };
     return Object.keys(emp).some(function (day) {
         const rec = emp[day];
         if (!rec || typeof rec !== "object") return false;
-        return Object.keys(rec).some(function (key) { return Number(rec[key] || 0) !== 0; });
+        return Object.keys(rec).some(function (key) {
+            if (skip[key]) return false;
+            return Number(rec[key] || 0) !== 0;
+        });
     });
 }
 
@@ -5015,19 +5104,22 @@ function shopMetricEmployees(category) {
     const seen = {};
     const list = [];
     function add(e) {
-        if (!e || !e.id || seen[e.id]) return;
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         seen[e.id] = true;
         list.push(e);
     }
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (!employeeMatchesMetricCategory(e, category)) return;
-        if (isWorking(e) || shopMetricEmployeeHasMonthData(category.id, e.id)) add(e);
+        const hasData = shopMetricEmployeeHasMonthData(category.id, e.id);
+        if (isPlaceholderEmployeeName(e.name) && !hasData) return;
+        if (isWorking(e) || hasData) add(e);
     });
     Object.keys(shopMetricMonthStore(category.id, selectedMonth)).forEach(function (id) {
         if (id === SHOP_SELF_CHECKOUT_ID) return;
         if (seen[id] || !shopMetricEmployeeHasMonthData(category.id, id)) return;
-        add(getEmployee(id) || { id: id, name: "Сотрудник удалён", jobStatus: "fired", position: "" });
+        const found = getEmployee(id);
+        add(found || { id: id, name: "Сотрудник удалён", jobStatus: "fired", position: "" });
     });
     list.sort(compareEmployeesByStatusThenName);
     return list;
@@ -5291,8 +5383,8 @@ function renderShopCashierMetrics() {
                     + (wide ? " metrics-money-col" : "")
                     + " metrics-group-start"
                     + (person.isSalesChannel ? " metrics-channel-col" : "")
-                    + '" title="' + escapeHtml(person.name) + '"><span class="metrics-emp-name">'
-                    + escapeHtml(person.name) + "</span></th>";
+                    + '" title="' + escapeHtml(shopMetricEmployeeTitle(person)) + '"><span class="metrics-emp-name">'
+                    + escapeHtml(shopMetricEmployeeCaption(person)) + "</span></th>";
             });
         });
         headHtml += "</tr>";
@@ -5514,8 +5606,8 @@ function renderShopShelfMetric() {
     let headHtml = '<tr><th class="metrics-date-col">Дата</th>';
     if (!cashierView) {
         manuals.forEach(function (e) {
-            headHtml += '<th class="metrics-emp-col" title="' + escapeHtml(e.name) + '"><span class="metrics-emp-name">'
-                + escapeHtml(e.name) + "</span></th>";
+            headHtml += '<th class="metrics-emp-col" title="' + escapeHtml(shopMetricEmployeeTitle(e)) + '"><span class="metrics-emp-name">'
+                    + escapeHtml(shopMetricEmployeeCaption(e)) + "</span></th>";
         });
     }
     headHtml += '<th class="metrics-emp-col">Кассиры</th></tr>';
@@ -5615,13 +5707,13 @@ function renderShopMetrics() {
             const wide = field.type === "money" || field.type === "avgCheck";
             employees.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
-                const title = employee.name + (fired ? " (уволен)" : "");
+                const title = shopMetricEmployeeTitle(employee);
                 headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(fi)
                     + (wide ? " metrics-money-col" : "")
                     + (ei === 0 && fi ? " metrics-group-start" : "")
                     + (fired ? " metrics-fired" : "")
                     + '" title="' + escapeHtml(title) + '"><span class="metrics-emp-name">'
-                    + escapeHtml(employee.name) + "</span></th>";
+                    + escapeHtml(shopMetricEmployeeCaption(employee)) + "</span></th>";
             });
         });
         headHtml += "</tr>";
@@ -8855,7 +8947,7 @@ function saveWorkspaceSettings() {
     else if (def) w.name = def.name;
 
     if (!isSummary()) {
-        const pin = document.getElementById("workspacePinSetting").value.trim();
+        const pin = pinString(document.getElementById("workspacePinSetting").value);
         if (!pin) { toast("PIN-код не может быть пустым.", "error"); return; }
         w.pin = pin;
         w.defaultHours = hours;
@@ -8874,25 +8966,28 @@ function renderSummaryUsers() {
     ensureSummaryUsers(w);
     let html = "";
     SUMMARY_ROLES.forEach(function (r) {
-        const user = w.roleUsers[r.role];
+        const user = w.roleUsers[r.role] || {};
         const editing = editingSummaryUserRole === r.role;
         const shown = !!summaryUserPinVisible[r.role];
-        html += "<tr><td><code>" + escapeHtml(user.id) + "</code></td>";
+        const pinSet = pinIsSet(user.pin);
+        html += "<tr><td>" + escapeHtml(r.title) + "</td>";
         if (editing) {
             html += "<td colspan=\"3\"><div class=\"users-edit\">"
                 + '<div class="form-group"><label>Имя пользователя</label>'
-                + '<input id="editUserName_' + r.role + '" maxlength="80" value="' + escapeAttribute(user.name) + '"></div>'
-                + '<div class="form-group"><label>PIN-код</label><div class="pin-row">'
-                + '<input id="editUserPin_' + r.role + '" maxlength="12" autocomplete="off" value="' + escapeAttribute(user.pin) + '" type="' + (shown ? "text" : "password") + '">'
+                + '<input id="editUserName_' + r.role + '" maxlength="80" value="' + escapeAttribute(user.name || r.name) + '"></div>'
+                + '<div class="form-group"><label>PIN-код</label>'
+                + (pinSet ? "" : '<div class="note">PIN не задан</div>')
+                + '<div class="pin-row">'
+                + '<input id="editUserPin_' + r.role + '" maxlength="32" autocomplete="off" value="' + escapeAttribute(pinSet ? String(user.pin) : "") + '" type="' + (shown ? "text" : "password") + '" placeholder="' + (pinSet ? "" : "Задайте новый PIN") + '">'
                 + '<button type="button" class="btn btn-secondary btn-small" onclick="toggleSummaryUserPin(\'' + r.role + '\')">'
-                + (shown ? "Скрыть" : "Показать") + "</button></div></div>"
+                + (shown ? "Скрыть PIN" : "Показать PIN") + "</button></div></div>"
                 + '<div class="form-group"><label>&nbsp;</label>'
                 + '<button type="button" class="btn btn-primary btn-small" onclick="saveSummaryUser(\'' + r.role + '\')">Сохранить</button> '
                 + '<button type="button" class="btn btn-secondary btn-small" onclick="cancelEditSummaryUser()">Отмена</button>'
                 + "</div></div></td>";
         } else {
-            html += "<td>" + escapeHtml(user.name) + "</td>"
-                + "<td>••••</td>"
+            html += "<td>" + escapeHtml(user.name || r.name) + "</td>"
+                + "<td>" + (pinSet ? "••••" : "PIN не задан") + "</td>"
                 + '<td><button type="button" class="btn btn-secondary btn-small" onclick="startEditSummaryUser(\'' + r.role + '\')">Изменить</button></td>';
         }
         html += "</tr>";
@@ -8931,19 +9026,23 @@ function saveSummaryUser(role) {
     const nameEl = document.getElementById("editUserName_" + role);
     const pinEl = document.getElementById("editUserPin_" + role);
     const name = String((nameEl && nameEl.value) || "").replace(/\s+/g, " ").trim();
-    const pin = String((pinEl && pinEl.value) || "").trim();
+    const pin = pinString(pinEl && pinEl.value);
     if (!name) {
         toast("Введите имя пользователя.", "error");
         return;
     }
     if (!pin) {
-        toast("PIN-код не может быть пустым.", "error");
+        toast("PIN не задан. Введите новый PIN-код.", "error");
         return;
     }
-    if (!w.roleUsers[role]) w.roleUsers[role] = { id: role, name: name, pin: pin };
-    w.roleUsers[role].id = role;
-    w.roleUsers[role].name = name;
-    w.roleUsers[role].pin = pin;
+    const prev = w.roleUsers[role] && typeof w.roleUsers[role] === "object" ? w.roleUsers[role] : {};
+    w.roleUsers[role] = Object.assign({}, prev, {
+        id: role,
+        user_id: prev.user_id || ("user_" + role),
+        role: role,
+        name: name,
+        pin: pin
+    });
     w.rolePins[role] = pin;
     if (role === "admin") w.pin = pin;
     editingSummaryUserRole = null;
@@ -9159,7 +9258,15 @@ function requestedLoginView() {
 
 function init() {
     verifyRepPayExample();
-    appData = loadAppData();
+    try {
+        appData = loadAppData();
+    } catch (err) {
+        console.error(err);
+        appData = null;
+    }
+    if (!appData || !Array.isArray(appData.workspaces) || !appData.workspaces.length) {
+        appData = migrateAppData(createDefaultData());
+    }
     renderLogin(requestedLoginView());
     updateClock();
     setInterval(updateClock, 1000);
