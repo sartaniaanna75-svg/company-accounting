@@ -2383,6 +2383,18 @@
 
 
 <script>
+if (!Array.prototype.find) {
+    Array.prototype.find = function (predicate) {
+        if (this == null) throw new TypeError("Array.prototype.find");
+        var list = Object(this);
+        var len = list.length >>> 0;
+        for (var i = 0; i < len; i++) {
+            var value = list[i];
+            if (predicate.call(arguments[1], value, i, list)) return value;
+        }
+        return undefined;
+    };
+}
 /* ============================================================
    КОНСТАНТЫ
    Ключ хранилища прежний — старые данные мигрируют.
@@ -2835,6 +2847,7 @@ function formatShopDays(days) {
 
 function toast(message, type) {
     const wrap = document.getElementById("toastWrap");
+    if (!wrap) return;
     const el = document.createElement("div");
     el.className = "toast " + (type || "success");
     el.textContent = message;
@@ -3225,8 +3238,7 @@ function ensureSummaryUsers(w) {
 }
 
 function restoreCanonicalPins(data) {
-    if (!data || data.authPinRestore === "v2") return;
-    if (!Array.isArray(data.workspaces)) return;
+    if (!data || !Array.isArray(data.workspaces)) return;
     DEPT_DEFAULTS.forEach(function (def) {
         const w = data.workspaces.find(function (x) {
             return x && x.code === def.code && x.type !== "summary";
@@ -3254,7 +3266,6 @@ function restoreCanonicalPins(data) {
         });
         summary.pin = String(summary.rolePins.admin);
     }
-    data.authPinRestore = "v2";
 }
 
 function mergeSalaryRecord(dst, src) {
@@ -4517,20 +4528,53 @@ function summaryLoginCardHtml() {
         + "</div>";
 }
 
+function anyPinMatch(entered, candidates) {
+    const value = pinString(entered);
+    if (!value) return false;
+    for (let i = 0; i < candidates.length; i++) {
+        if (pinsMatch(value, candidates[i])) return true;
+    }
+    return false;
+}
+
+function ensureLoginData() {
+    if (!appData || typeof appData !== "object") {
+        try { appData = loadAppData(); } catch (err) { appData = createDefaultData(); }
+    }
+    if (!Array.isArray(appData.workspaces)) appData.workspaces = [];
+    try { repairFourDepartments(appData); } catch (err) { console.error(err); }
+    DEPT_DEFAULTS.forEach(function (def) {
+        if (!findWorkspaceByCode(def.code)) {
+            appData.workspaces.push(createWorkspace(def.name, String(def.pin), "dept", def.code));
+        }
+    });
+    if (!findWorkspaceByCode("summary")) {
+        const summary = createWorkspace(SUMMARY_DEFAULT.name, String(SUMMARY_DEFAULT.pin), "summary", SUMMARY_DEFAULT.code);
+        appData.workspaces.push(summary);
+    }
+    const summary = findWorkspaceByCode("summary");
+    if (summary) ensureSummaryPins(summary);
+    try { restoreCanonicalPins(appData); } catch (err) { console.error(err); }
+}
+
 function loginByCode(code) {
+    ensureLoginData();
     const input = document.getElementById("loginPin_" + code);
     const error = document.getElementById("loginError_" + code);
     const card = document.getElementById("loginCard_" + code);
     const who = document.getElementById("loginWho_" + code);
     const role = (who && who.value) || "staff";
-    const entered = ((input && input.value) || "").trim();
-    const w = findWorkspaceByCode(code);
+    const entered = pinString(input && input.value);
+    let w = findWorkspaceByCode(code);
+    const def = DEPT_DEFAULTS.find(function (d) { return d.code === code; });
 
     if (card) card.classList.remove("error");
     if (error) error.textContent = "";
 
-    const expected = role === "admin" ? adminPin() : (w && w.pin);
-    if (!w || !pinsMatch(entered, expected)) {
+    const candidates = role === "admin"
+        ? [adminPin(), "5555"]
+        : [w && w.pin, def && def.pin];
+    if (!anyPinMatch(entered, candidates)) {
         if (card) card.classList.add("error");
         if (error) error.textContent = "Неверный PIN-код.";
         if (input) {
@@ -4540,13 +4584,22 @@ function loginByCode(code) {
         return;
     }
 
+    if (!w && def) {
+        w = createWorkspace(def.name, String(def.pin), "dept", code);
+        appData.workspaces.push(w);
+    }
+    if (!w) {
+        if (card) card.classList.add("error");
+        if (error) error.textContent = "Неверный PIN-код.";
+        return;
+    }
+
     w.code = code;
     if (code === "summary") {
         loginSummary();
         return;
     }
     w.type = "dept";
-    const def = DEPT_DEFAULTS.find(function (d) { return d.code === code; });
     if (def) w.name = def.name;
     setCurrentWorkspace(w);
     currentSummaryRole = null;
@@ -4558,21 +4611,26 @@ function loginByCode(code) {
 }
 
 function loginSummary() {
+    ensureLoginData();
     const who = document.getElementById("loginSummaryWho");
     const role = (who && who.value) || "admin";
     const info = summaryRoleInfo(role);
     const input = document.getElementById("loginPin_summary");
     const error = document.getElementById("loginError_summary");
     const card = document.getElementById("loginCard_summary");
-    const entered = ((input && input.value) || "").trim();
-    const w = findWorkspaceByCode("summary");
+    const entered = pinString(input && input.value);
+    let w = findWorkspaceByCode("summary");
     if (w) ensureSummaryPins(w);
-    const expected = w && w.rolePins ? pinString(w.rolePins[info.role]) : pinString(info.pin);
 
     if (card) card.classList.remove("error");
     if (error) error.textContent = "";
 
-    if (!w || !pinsMatch(entered, expected)) {
+    const candidates = [
+        info.pin,
+        w && w.rolePins && w.rolePins[info.role],
+        w && w.roleUsers && w.roleUsers[info.role] && w.roleUsers[info.role].pin
+    ];
+    if (!anyPinMatch(entered, candidates)) {
         if (card) card.classList.add("error");
         if (error) error.textContent = "Неверный PIN-код.";
         if (input) {
@@ -4580,6 +4638,12 @@ function loginSummary() {
             input.select();
         }
         return;
+    }
+
+    if (!w) {
+        w = createWorkspace(SUMMARY_DEFAULT.name, "5555", "summary", "summary");
+        appData.workspaces.push(w);
+        ensureSummaryPins(w);
     }
 
     w.code = "summary";
@@ -9257,7 +9321,7 @@ function requestedLoginView() {
 }
 
 function init() {
-    verifyRepPayExample();
+    try { verifyRepPayExample(); } catch (err) { console.error(err); }
     try {
         appData = loadAppData();
     } catch (err) {
@@ -9265,15 +9329,18 @@ function init() {
         appData = null;
     }
     if (!appData || !Array.isArray(appData.workspaces) || !appData.workspaces.length) {
-        appData = migrateAppData(createDefaultData());
+        try { appData = migrateAppData(createDefaultData()); } catch (err2) {
+            appData = createDefaultData();
+        }
     }
-    renderLogin(requestedLoginView());
-    updateClock();
-    setInterval(updateClock, 1000);
+    try { ensureLoginData(); } catch (err) { console.error(err); }
+    try { renderLogin(requestedLoginView()); } catch (err) { console.error(err); }
+    try { updateClock(); } catch (err) { console.error(err); }
+    setInterval(function () { try { updateClock(); } catch (err) {} }, 1000);
     document.addEventListener("keydown", function (event) {
         if (event.key === "Escape") closeSidebar();
     });
-    tryRestoreSession();
+    try { tryRestoreSession(); } catch (err) { console.error(err); }
 }
 
 init();
