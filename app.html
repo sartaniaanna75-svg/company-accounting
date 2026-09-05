@@ -1496,6 +1496,58 @@
             font-weight: 700;
         }
 
+        .mc-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 10px;
+            align-items: end;
+            margin-bottom: 10px;
+        }
+        .mc-toolbar .form-group { margin: 0; min-width: 120px; }
+        .mc-toolbar .form-group.mc-grow { min-width: 160px; }
+        .mc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .mc-table th,
+        .mc-table td {
+            border-bottom: 1px solid var(--border);
+            padding: 6px 8px;
+            height: 34px;
+            text-align: left;
+            white-space: nowrap;
+        }
+        .mc-table th { font-size: 11px; color: var(--muted); font-weight: 700; background: #f8fafc; }
+        .mc-table td.mc-pct { font-variant-numeric: tabular-nums; font-weight: 700; }
+        .mc-row { cursor: pointer; }
+        .mc-row:hover td { background: #f1f5f9; }
+        .mc-row.open td { background: #eef2ff; }
+        .mc-ok { color: #166534; }
+        .mc-warn { color: #a16207; }
+        .mc-bad { color: #b91c1c; font-weight: 700; }
+        .mc-muted { color: var(--muted); }
+        .mc-detail td { background: #f8fafc; padding: 8px 10px 12px; height: auto; white-space: normal; }
+        .mc-sub { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .mc-sub th,
+        .mc-sub td { border-bottom: 1px solid #e5e7eb; padding: 5px 6px; height: 30px; }
+        .mc-sub th { color: var(--muted); font-size: 11px; }
+        .mc-link {
+            border: 0;
+            background: none;
+            color: var(--primary-dark);
+            cursor: pointer;
+            padding: 0;
+            font: inherit;
+            text-decoration: underline;
+        }
+        .mc-attn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #9a3412;
+            padding-bottom: 4px;
+            white-space: nowrap;
+        }
+
         /* =========================================================
            Сотрудники: подбор и справочник
         ========================================================= */
@@ -1977,7 +2029,15 @@
         .rev-st-planned { background: #d9e6f2; color: #1e3a5f; }
         .rev-st-done { background: #d8eadc; color: #1f3d28; }
         .rev-st-overdue { background: #f0d9d9; color: #7f1d1d; }
-        .rev-st-moved { background: #f3e4d4; color: #7c4a1e; }
+        .rev-st-moved,
+        .rev-st-cancelled {
+            background: #dc2626;
+            color: #fff;
+            font-weight: 800;
+            letter-spacing: .02em;
+        }
+        .rev-st-moved:hover,
+        .rev-st-cancelled:hover { background: #b91c1c; color: #fff; }
         .rev-mark.rev-off {
             background: #efe8dc;
             color: #78716c;
@@ -1987,6 +2047,7 @@
             overflow: hidden;
         }
         .rev-mark.rev-off:hover { background: #e7dfd2; }
+        .rev-swatch.rev-off { background: #efe8dc; box-shadow: inset 0 0 0 1px #d6d3d1; }
 
         .rev-groups-list { display: flex; flex-direction: column; gap: 12px; }
 
@@ -2235,6 +2296,12 @@
         <button type="button" class="nav-btn" data-for="warehouse" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
         </button>
+        <button type="button" class="nav-btn" data-for="warehouse" data-section="salesPlan" onclick="showSection('salesPlan', this)">
+            📈 План продаж
+        </button>
+        <button type="button" class="nav-btn" data-for="warehouse" data-section="revision" onclick="showSection('revision', this)">
+            📋 Ревизия
+        </button>
         <button type="button" class="nav-btn" data-for="warehouse" data-section="dwork-loaders" onclick="showSection('dwork-loaders', this)">
             📦 Грузчики
         </button>
@@ -2266,11 +2333,17 @@
         <button type="button" class="nav-btn" data-for="shop" data-section="salesPlan" onclick="showSection('salesPlan', this)">
             📈 План продаж
         </button>
+        <button type="button" class="nav-btn" data-for="office" data-section="salesPlan" onclick="showSection('salesPlan', this)">
+            📈 План продаж
+        </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
             📚 Метрики
         </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
+        </button>
+        <button type="button" class="nav-btn" data-for="drivers" data-section="salesPlan" onclick="showSection('salesPlan', this)">
+            📈 План продаж
         </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="dwork-sales" onclick="showSection('dwork-sales', this)">
             🛒 Торговые
@@ -2295,9 +2368,6 @@
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="driversSalary" onclick="showSection('driversSalary', this)">
             🚚 Зарплата Водителей
-        </button>
-        <button type="button" class="nav-btn" data-for="summary" data-section="summaryStaff" onclick="showSection('summaryStaff', this)">
-            👤 Сотрудники
         </button>
         <button type="button" class="nav-btn" data-for="both" data-section="discipline" onclick="showSection('discipline', this)">
             ⚠️ Дисциплина
@@ -2562,7 +2632,8 @@
                         <span><i class="rev-swatch rev-st-planned"></i> Запланировано</span>
                         <span><i class="rev-swatch rev-st-done"></i> Выполнено</span>
                         <span><i class="rev-swatch rev-st-overdue"></i> Просрочено</span>
-                        <span><i class="rev-swatch rev-st-moved"></i> Перенесено</span>
+                        <span><i class="rev-swatch rev-st-moved"></i> Перенесено / снято</span>
+                        <span><i class="rev-swatch rev-off"></i> Выходной</span>
                     </div>
                     <div class="table-wrapper" id="revisionWrap">
                         <table class="rev-table" id="revisionTable">
@@ -2601,7 +2672,7 @@
                             <thead>
                                 <tr>
                                     <th>Сотрудник</th>
-                                    <th>Выполнение магазина</th>
+                                    <th>Выполнение</th>
                                     <th>Бонус при 100%</th>
                                     <th>Начислено</th>
                                 </tr>
@@ -2989,11 +3060,18 @@
                 <div class="card">
                     <div class="card-header">
                         <div>
-                            <div class="card-title">Контроль дисциплины</div>
+                            <div class="card-title">Дисциплина</div>
                             <div class="note" id="disciplineNote">Оценка строится по числу опозданий за выбранный месяц в этом отделе.</div>
                         </div>
+                        <div class="toolbar">
+                            <div class="metrics-tabs">
+                                <button type="button" class="metrics-tab active" id="discTabLate" onclick="setDisciplinePanel('late')">Контроль дисциплины</button>
+                                <button type="button" class="metrics-tab" id="discTabMetrics" onclick="setDisciplinePanel('metrics')">Контроль выполнения метрик</button>
+                            </div>
+                        </div>
                     </div>
-
+                </div>
+                <div class="card" id="disciplineLateCard">
                     <div class="table-wrapper">
                         <table class="analysis-table">
                             <thead id="disciplineHead">
@@ -3012,6 +3090,25 @@
                                 </tr>
                             </thead>
                             <tbody id="disciplineBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="disciplineMetricsCard" style="display:none">
+                    <div class="mc-toolbar" id="metricControlFilters"></div>
+                    <div class="table-wrapper" style="max-height:none">
+                        <table class="mc-table">
+                            <thead>
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th>Назначено</th>
+                                    <th>Выполняет</th>
+                                    <th>Не выполняет</th>
+                                    <th>Нет данных</th>
+                                    <th>%</th>
+                                    <th>Статус</th>
+                                </tr>
+                            </thead>
+                            <tbody id="metricControlBody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -3222,6 +3319,18 @@
                     </div>
                 </div>
 
+                <div class="card" data-for="summary" id="summaryStaffSettingsCard">
+                    <div class="card-title">Справочник сотрудников</div>
+                    <div class="note" style="margin-top:8px;">
+                        Карточки, ставки и отдел хранятся здесь. Это не шаг зарплаты: расчёт идёт во вкладках зарплаты по отделам.
+                    </div>
+                    <div class="settings-actions">
+                        <button type="button" class="btn btn-secondary" onclick="showSection('summaryStaff')">
+                            Открыть справочник
+                        </button>
+                    </div>
+                </div>
+
                 <div class="card" data-for="summary">
                     <div class="card-title">Интеграция с 1С УТ</div>
                     <div class="note" style="margin-top:12px;">
@@ -3344,6 +3453,9 @@ let shopMetricCategory = "pickers";
 let deptMetricTab = "";
 let timesheetWorkTabFilterByDept = {};
 let revisionPanel = "schedule";
+let disciplinePanel = "late";
+let metricControlFilters = { dept: "", tab: "", employeeId: "", status: "all", sort: "name", attention: "" };
+let metricControlOpenId = "";
 let revisionFocusGroupId = "";
 let revisionFocusFolderId = "";
 let revisionEscBound = false;
@@ -3375,6 +3487,48 @@ const PAYROLL_VIEWS = {
         workTabId: "drivers",
         title: "Зарплата Водителей",
         empty: "В рабочей группе «Водители» нет сотрудников в табеле за этот месяц."
+    }
+};
+const SALES_PLAN_VIEWS = {
+    shop: {
+        id: "shop",
+        departmentId: "shop",
+        workTabId: "",
+        title: "План продаж — Магазин Володарского",
+        note: "Коллективный KPI магазина. Один план и один факт на месяц. Месяц выбирается сверху.",
+        peopleEmpty: "Сначала заведите сотрудников магазина во вкладке «ФИО сотрудника».",
+        factCalculatedLabel: "Из касс магазина",
+        defaultFactSource: "calculated"
+    },
+    warehouse: {
+        id: "warehouse",
+        departmentId: "warehouse",
+        workTabId: "",
+        title: "План продаж — Склад",
+        note: "Коллективный план склада. Факт пока вводится вручную за месяц; позже источник можно заменить на 1С.",
+        peopleEmpty: "Сначала заведите сотрудников склада во вкладке «ФИО сотрудника».",
+        factCalculatedLabel: "",
+        defaultFactSource: "manual"
+    },
+    office: {
+        id: "office",
+        departmentId: "office",
+        workTabId: "",
+        title: "План продаж — Офис",
+        note: "Коллективный план офиса. Факт пока вводится вручную за месяц; позже источник можно заменить на 1С.",
+        peopleEmpty: "Сначала заведите сотрудников офиса во вкладке «ФИО сотрудника».",
+        factCalculatedLabel: "",
+        defaultFactSource: "manual"
+    },
+    sales: {
+        id: "sales",
+        departmentId: "drivers",
+        workTabId: "sales",
+        title: "План продаж — Торговые",
+        note: "Коллективный план торговых. Факт — сумма «Общие продажи» из зарплаты ТП за месяц. Подразделение то же: Логистика + Торговые.",
+        peopleEmpty: "Нет торговых представителей в отделе «Логистика + Торговые».",
+        factCalculatedLabel: "Из продаж торговых (зарплата ТП)",
+        defaultFactSource: "calculated"
     }
 };
 let justAddedEmployeeId = null;
@@ -3945,21 +4099,34 @@ function generateMetricId() {
 }
 
 function generateRevisionGroupId() {
-    const groups = (appData && appData.shopRevision && appData.shopRevision.groups) || [];
-    return nextPrefixedId("rg", groups.map(function (g) { return g && g.id; }));
+    const ids = [];
+    function collect(root) {
+        ((root && root.groups) || []).forEach(function (g) { if (g && g.id) ids.push(g.id); });
+    }
+    collect(appData && appData.shopRevision);
+    collect(appData && appData.deptRevisions && appData.deptRevisions.warehouse);
+    return nextPrefixedId("rg", ids);
 }
 
 function generateRevisionFolderId() {
-    const folders = (appData && appData.shopRevision && appData.shopRevision.folders) || [];
-    return nextPrefixedId("rf", folders.map(function (f) { return f && f.id; }));
+    const ids = [];
+    function collect(root) {
+        ((root && root.folders) || []).forEach(function (f) { if (f && f.id) ids.push(f.id); });
+    }
+    collect(appData && appData.shopRevision);
+    collect(appData && appData.deptRevisions && appData.deptRevisions.warehouse);
+    return nextPrefixedId("rf", ids);
 }
 
 function generateRevisionTaskId() {
     const ids = [];
-    const tasks = (appData && appData.shopRevision && appData.shopRevision.tasks) || {};
-    Object.keys(tasks).forEach(function (month) {
-        Object.keys(tasks[month] || {}).forEach(function (id) { ids.push(id); });
-    });
+    function collectTasks(tasks) {
+        Object.keys(tasks || {}).forEach(function (month) {
+            Object.keys(tasks[month] || {}).forEach(function (id) { ids.push(id); });
+        });
+    }
+    collectTasks(appData && appData.shopRevision && appData.shopRevision.tasks);
+    collectTasks(appData && appData.deptRevisions && appData.deptRevisions.warehouse && appData.deptRevisions.warehouse.tasks);
     return nextPrefixedId("rt", ids);
 }
 
@@ -4469,8 +4636,10 @@ function createDefaultData() {
         shopMetrics: {},
         deptMetrics: {},
         shopRevision: { groups: [], folders: [], tasks: {}, ui: { collapsedGroups: {} } },
+        deptRevisions: {},
         shopPayroll: { departmentId: "shop", salaries: [], rules: [], manual: {}, metrics: [] },
         shopSalesPlan: { months: {} },
+        deptSalesPlans: {},
         workspaces: DEPT_DEFAULTS.map(function (d) {
             return createWorkspace(d.name, d.pin, "dept", d.code);
         }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
@@ -4997,6 +5166,8 @@ function migrateAppData(data) {
     if (!data.shopMetrics || typeof data.shopMetrics !== "object") data.shopMetrics = {};
     if (!data.shopSalesPlan || typeof data.shopSalesPlan !== "object") data.shopSalesPlan = { months: {} };
     if (!data.shopSalesPlan.months || typeof data.shopSalesPlan.months !== "object") data.shopSalesPlan.months = {};
+    if (!data.deptSalesPlans || typeof data.deptSalesPlans !== "object") data.deptSalesPlans = {};
+    if (!data.deptRevisions || typeof data.deptRevisions !== "object") data.deptRevisions = {};
     if (!data.shopMetrics.store || typeof data.shopMetrics.store !== "object") data.shopMetrics.store = {};
     if (!data.shopMetrics.channels || typeof data.shopMetrics.channels !== "object") data.shopMetrics.channels = {};
     if (!data.shopMetrics.channelValues || typeof data.shopMetrics.channelValues !== "object") data.shopMetrics.channelValues = {};
@@ -5653,12 +5824,14 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         accrued = sales.afterDays;
         skipFine = skipFineStored;
         fineTotal = fines + lateAmount + skipFine;
-        pay = accrued - lateAmount - fines - skipFine - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
+        salesPlanBonus = salesPlanBonusForEmployee(employee.id, selectedMonth);
+        kpiBonus = salesPlanBonus;
+        pay = accrued + salesPlanBonus - lateAmount - fines - skipFine - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
     } else if (payrollHome) {
         workedDays = hourDays;
         accrued = Math.round(hourDays * Number(rate || 0));
         kpiBonusOnly = shopEmployeeBonusTotal(employee.id, selectedMonth);
-        salesPlanBonus = shopHome ? shopSalesPlanEmployeeBonus(employee.id, selectedMonth) : 0;
+        salesPlanBonus = salesPlanBonusForEmployee(employee.id, selectedMonth);
         kpiBonus = kpiBonusOnly + salesPlanBonus;
         skipFine = 0;
         fineTotal = fines + lateAmount;
@@ -5668,7 +5841,9 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         accrued = Math.round(hourDays * Number(rate || 0));
         skipFine = 0;
         fineTotal = fines + lateAmount;
-        pay = accrued - lateAmount - fines - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
+        salesPlanBonus = salesPlanBonusForEmployee(employee.id, selectedMonth);
+        kpiBonus = salesPlanBonus;
+        pay = accrued + salesPlanBonus - lateAmount - fines - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
     }
 
     if (monthOverride) selectedMonth = monthKeep;
@@ -6050,7 +6225,7 @@ function loginSummary() {
     currentSummaryRole = info.role;
     currentDeptRole = null;
     selectedMonth = currentMonthValue();
-    currentSection = info.role === "pay" ? "salary" : (info.role === "adjust" ? "salary" : "summaryStaff");
+    currentSection = info.role === "pay" ? "salary" : (info.role === "adjust" ? "salary" : "timesheet");
     saveSession();
     openApp();
 }
@@ -6062,7 +6237,7 @@ function loginById(id) {
     if (w.type === "summary") {
         currentSummaryRole = currentSummaryRole || "admin";
         currentDeptRole = null;
-        currentSection = currentSummaryRole === "admin" ? "summaryStaff" : "timesheet";
+        currentSection = "timesheet";
     } else {
         currentSummaryRole = null;
         currentDeptRole = currentDeptRole || "staff";
@@ -6180,6 +6355,9 @@ function applyModeUI() {
         if (mode === "drivers") {
             show = !summary && !!(workspace() && workspace().code === "drivers");
         }
+        if (mode === "office") {
+            show = !summary && !!(workspace() && workspace().code === "office");
+        }
         if (el.classList.contains("nav-btn")) {
             const sec = el.getAttribute("data-section");
             const code = workspace() && workspace().code;
@@ -6252,19 +6430,24 @@ function allowedSections() {
         if (workspace() && workspace().code === "shop") {
             list.splice(1, 0, "metrics-pickers", "metrics-cashiers", "metrics-managers", "revision", "salesPlan");
             if (currentDeptRole === "admin") list.push("metricCatalog");
-        } else if (workspace() && (workspace().code === "warehouse" || workspace().code === "drivers")) {
-            list.splice.apply(list, [1, 0].concat(deptWorkNavSections(workspace().code)));
+        } else if (workspace() && workspace().code === "warehouse") {
+            list.splice(1, 0, "salesPlan", "revision");
+            list.splice.apply(list, [3, 0].concat(deptWorkNavSections("warehouse")));
+            if (currentDeptRole === "admin") list.push("deptMetrics");
+        } else if (workspace() && workspace().code === "drivers") {
+            list.splice(1, 0, "salesPlan");
+            list.splice.apply(list, [2, 0].concat(deptWorkNavSections("drivers")));
             if (currentDeptRole === "admin") list.push("deptMetrics");
         } else if (workspace() && workspace().code === "office") {
-            list.splice(1, 0, "deptMetrics");
+            list.splice(1, 0, "deptMetrics", "salesPlan");
         }
         return list;
     }
     if (currentSummaryRole === "pay") return ["salary"];
     if (currentSummaryRole === "admin") {
-        return ["timesheet", "salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary", "summaryStaff", "discipline", "analysis", "settings", "metricCatalog"];
+        return ["timesheet", "salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary", "discipline", "analysis", "settings", "metricCatalog", "summaryStaff"];
     }
-    return ["timesheet", "salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary", "summaryStaff", "analysis"];
+    return ["timesheet", "salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary", "analysis"];
 }
 
 function defaultSection() {
@@ -6278,15 +6461,18 @@ function sectionTitle(id) {
         "metrics-pickers": "Метрики — товаросборщики",
         "metrics-cashiers": "Метрики — кассиры",
         "metrics-managers": "Метрики — руководители",
-        revision: "Ревизия — Магазин Володарского",
-        salesPlan: "План продаж — Магазин Володарского",
+        revision: workspace() && workspace().code === "warehouse" ? "Ревизия — Склад" : "Ревизия — Магазин Володарского",
+        salesPlan: (function () {
+            const v = typeof salesPlanViewFromWorkspace === "function" ? salesPlanViewFromWorkspace() : null;
+            return (v && v.title) || "План продаж";
+        })(),
         salary: "Зарплата",
         repSalary: "Зарплата ТП",
         shopSalary: "Зарплата Володарского",
         warehouseSalary: "Зарплата Склада",
         driversSalary: "Зарплата Водителей",
         summaryStaff: "Сотрудники",
-        discipline: "Контроль дисциплины",
+        discipline: disciplinePanel === "metrics" ? "Контроль выполнения метрик" : "Контроль дисциплины",
         analysis: "Анализ",
         fio: "ФИО сотрудника",
         employees: "В табель",
@@ -6386,9 +6572,11 @@ function refreshAll() {
         renderAnalysis();
     }
     renderDiscipline();
-    if (workspace() && workspace().code === "shop") {
-        renderShopMetrics();
+    if (workspace() && (workspace().code === "shop" || workspace().code === "warehouse")) {
+        if (workspace().code === "shop") renderShopMetrics();
         renderShopRevision();
+        renderShopSalesPlan();
+    } else if (workspace() && (workspace().code === "office" || workspace().code === "drivers")) {
         renderShopSalesPlan();
     }
     if (currentSection === "metricCatalog") renderMetricCatalog();
@@ -8312,33 +8500,111 @@ function canEditShopSalesPlan() {
     return isTableAdmin();
 }
 
+function salesPlanViewFromWorkspace() {
+    const w = workspace();
+    if (!w) return SALES_PLAN_VIEWS.shop;
+    if (w.code === "warehouse") return SALES_PLAN_VIEWS.warehouse;
+    if (w.code === "office") return SALES_PLAN_VIEWS.office;
+    if (w.code === "drivers") return SALES_PLAN_VIEWS.sales;
+    return SALES_PLAN_VIEWS.shop;
+}
+
+function salesPlanViewForEmployee(employeeId) {
+    const employee = getEmployee(employeeId);
+    if (!employee) return null;
+    if (isSalesRep(employee)) return SALES_PLAN_VIEWS.sales;
+    const code = employeeHomeDeptCode(employeeId);
+    if (code === "shop") return SALES_PLAN_VIEWS.shop;
+    if (code === "warehouse") return SALES_PLAN_VIEWS.warehouse;
+    if (code === "office") return SALES_PLAN_VIEWS.office;
+    return null;
+}
+
+function salesPlanStorageKey(view) {
+    return view && view.id ? view.id : "shop";
+}
+
+function ensureSalesPlanRoot(view) {
+    view = view || salesPlanViewFromWorkspace();
+    if (view.id === "shop") {
+        if (!appData.shopSalesPlan || typeof appData.shopSalesPlan !== "object") appData.shopSalesPlan = { months: {} };
+        if (!appData.shopSalesPlan.months || typeof appData.shopSalesPlan.months !== "object") appData.shopSalesPlan.months = {};
+        return appData.shopSalesPlan;
+    }
+    if (!appData.deptSalesPlans || typeof appData.deptSalesPlans !== "object") appData.deptSalesPlans = {};
+    const key = salesPlanStorageKey(view);
+    if (!appData.deptSalesPlans[key] || typeof appData.deptSalesPlans[key] !== "object") {
+        appData.deptSalesPlans[key] = { months: {} };
+    }
+    if (!appData.deptSalesPlans[key].months || typeof appData.deptSalesPlans[key].months !== "object") {
+        appData.deptSalesPlans[key].months = {};
+    }
+    return appData.deptSalesPlans[key];
+}
+
 function ensureShopSalesPlan() {
-    if (!appData.shopSalesPlan || typeof appData.shopSalesPlan !== "object") appData.shopSalesPlan = { months: {} };
-    if (!appData.shopSalesPlan.months || typeof appData.shopSalesPlan.months !== "object") appData.shopSalesPlan.months = {};
-    return appData.shopSalesPlan;
+    return ensureSalesPlanRoot(SALES_PLAN_VIEWS.shop);
 }
 
 function shopSalesPlanEmptyRecord(month) {
+    return salesPlanEmptyRecord(SALES_PLAN_VIEWS.shop, month);
+}
+
+function salesPlanEmptyRecord(view, month) {
+    view = view || SALES_PLAN_VIEWS.shop;
+    const m = month || selectedMonth;
     return {
-        department_id: "shop",
-        month: month || selectedMonth,
+        sales_plan_id: view.id + "_" + m,
+        department_id: view.departmentId,
+        work_tab_id: view.workTabId || "",
+        month: m,
         plan_sales: 0,
-        fact_source: "calculated",
+        fact_source: view.defaultFactSource || "manual",
+        fact_value: 0,
         manual_fact_sales: 0,
         calculation_type: "proportional",
         default_bonus: 0,
         max_coefficient: 1,
+        is_active: true,
+        valid_from: m,
+        valid_to: m,
         employees: {}
     };
 }
 
-function shopSalesPlanMonth(month, create) {
+function salesPlanMonth(view, month, create) {
+    view = view || salesPlanViewFromWorkspace();
     const m = month || selectedMonth;
-    const root = ensureShopSalesPlan();
-    if (root.months[m] && typeof root.months[m] === "object") return root.months[m];
-    if (!create) return shopSalesPlanEmptyRecord(m);
-    root.months[m] = shopSalesPlanEmptyRecord(m);
+    const root = ensureSalesPlanRoot(view);
+    if (root.months[m] && typeof root.months[m] === "object") {
+        const rec = root.months[m];
+        if (!rec.department_id) rec.department_id = view.departmentId;
+        if (rec.work_tab_id == null) rec.work_tab_id = view.workTabId || "";
+        if (!rec.sales_plan_id) rec.sales_plan_id = view.id + "_" + m;
+        if (rec.is_active == null) rec.is_active = true;
+        if (!rec.valid_from) rec.valid_from = m;
+        if (!rec.valid_to) rec.valid_to = m;
+        if (rec.fact_value == null) rec.fact_value = Number(rec.manual_fact_sales || 0);
+        return rec;
+    }
+    if (!create) return salesPlanEmptyRecord(view, m);
+    root.months[m] = salesPlanEmptyRecord(view, m);
     return root.months[m];
+}
+
+function shopSalesPlanMonth(month, create) {
+    return salesPlanMonth(SALES_PLAN_VIEWS.shop, month, create);
+}
+
+function salesRepsMonthTotalSales(month) {
+    const m = month || selectedMonth;
+    const w = findWorkspaceByCode("drivers");
+    let sum = 0;
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!isSalesRep(e)) return;
+        sum += peekRepSales(e.id, m).totalSales;
+    });
+    return roundMoney2(sum);
 }
 
 function shopStoreSalesFact(month) {
@@ -8350,47 +8616,82 @@ function shopStoreSalesFact(month) {
     return Number(tot.sales || 0);
 }
 
-function shopSalesPlanFact(month) {
-    const rec = shopSalesPlanMonth(month, false);
-    if (rec.fact_source === "manual") return Number(rec.manual_fact_sales || 0);
-    return shopStoreSalesFact(month);
+function salesPlanFact(view, month) {
+    view = view || salesPlanViewFromWorkspace();
+    const rec = salesPlanMonth(view, month, false);
+    if (rec.fact_source === "manual") return Number(rec.manual_fact_sales || rec.fact_value || 0);
+    if (view.id === "shop") return shopStoreSalesFact(month);
+    if (view.id === "sales") return salesRepsMonthTotalSales(month);
+    return Number(rec.manual_fact_sales || rec.fact_value || 0);
 }
 
-function shopSalesPlanRate(month) {
-    const rec = shopSalesPlanMonth(month, false);
+function shopSalesPlanFact(month) {
+    return salesPlanFact(SALES_PLAN_VIEWS.shop, month);
+}
+
+function salesPlanRate(view, month) {
+    view = view || salesPlanViewFromWorkspace();
+    const rec = salesPlanMonth(view, month, false);
     const plan = Number(rec.plan_sales || 0);
     if (!plan) return 0;
     const cap = Number(rec.max_coefficient || 1) > 0 ? Number(rec.max_coefficient || 1) : 1;
-    return Math.min(shopSalesPlanFact(month) / plan, cap);
+    return Math.min(salesPlanFact(view, month) / plan, cap);
 }
 
-function shopSalesPlanMaxBonus(rec, employeeId) {
+function shopSalesPlanRate(month) {
+    return salesPlanRate(SALES_PLAN_VIEWS.shop, month);
+}
+
+function salesPlanMaxBonus(rec, employeeId) {
     const slot = rec && rec.employees && rec.employees[employeeId];
     if (slot && slot.max_bonus != null && slot.max_bonus !== "") return Number(slot.max_bonus || 0);
     return Number(rec && rec.default_bonus || 0);
 }
 
-function shopSalesPlanIsParticipant(employeeId, month) {
-    const rec = shopSalesPlanMonth(month, false);
+function shopSalesPlanMaxBonus(rec, employeeId) {
+    return salesPlanMaxBonus(rec, employeeId);
+}
+
+function salesPlanIsParticipant(view, employeeId, month) {
+    const rec = salesPlanMonth(view, month, false);
     const slot = rec.employees && rec.employees[employeeId];
     return !!(slot && slot.is_active !== false);
 }
 
-function shopSalesPlanEmployeeBonus(employeeId, month) {
-    if (!shopSalesPlanIsParticipant(employeeId, month)) return 0;
-    const rec = shopSalesPlanMonth(month, false);
-    const plan = Number(rec.plan_sales || 0);
-    if (!plan) return 0;
-    return Math.round(shopSalesPlanMaxBonus(rec, employeeId) * shopSalesPlanRate(month));
+function shopSalesPlanIsParticipant(employeeId, month) {
+    return salesPlanIsParticipant(SALES_PLAN_VIEWS.shop, employeeId, month);
 }
 
-function setShopSalesPlanField(field, value) {
+function salesPlanEmployeeBonus(view, employeeId, month) {
+    if (!view || !salesPlanIsParticipant(view, employeeId, month)) return 0;
+    const rec = salesPlanMonth(view, month, false);
+    if (rec.is_active === false) return 0;
+    const plan = Number(rec.plan_sales || 0);
+    if (!plan) return 0;
+    return Math.round(salesPlanMaxBonus(rec, employeeId) * salesPlanRate(view, month));
+}
+
+function shopSalesPlanEmployeeBonus(employeeId, month) {
+    return salesPlanEmployeeBonus(SALES_PLAN_VIEWS.shop, employeeId, month);
+}
+
+function salesPlanBonusForEmployee(employeeId, month) {
+    const view = salesPlanViewForEmployee(employeeId);
+    if (!view) return 0;
+    return salesPlanEmployeeBonus(view, employeeId, month);
+}
+
+function setSalesPlanField(view, field, value) {
     if (!canEditShopSalesPlan()) return;
-    const rec = shopSalesPlanMonth(selectedMonth, true);
+    view = view || salesPlanViewFromWorkspace();
+    const rec = salesPlanMonth(view, selectedMonth, true);
     if (field === "plan_sales" || field === "manual_fact_sales" || field === "default_bonus") {
         rec[field] = parseMoney(value, 0);
+        if (field === "manual_fact_sales") rec.fact_value = rec.manual_fact_sales;
     } else if (field === "fact_source") {
         rec.fact_source = value === "manual" ? "manual" : "calculated";
+    } else if (field === "is_active") {
+        rec.is_active = !!value;
     } else if (field === "calculation_type") {
         rec.calculation_type = "proportional";
     }
@@ -8400,16 +8701,24 @@ function setShopSalesPlanField(field, value) {
     if (isSummary()) renderShopSalary();
 }
 
-function setShopSalesPlanParticipant(employeeId, on) {
+function setShopSalesPlanField(field, value) {
+    setSalesPlanField(salesPlanViewFromWorkspace(), field, value);
+}
+
+function setSalesPlanParticipant(view, employeeId, on) {
     if (!canEditShopSalesPlan()) return;
-    const rec = shopSalesPlanMonth(selectedMonth, true);
+    view = view || salesPlanViewFromWorkspace();
+    const rec = salesPlanMonth(view, selectedMonth, true);
     if (!rec.employees || typeof rec.employees !== "object") rec.employees = {};
     if (on) {
         const prev = rec.employees[employeeId] || {};
         rec.employees[employeeId] = {
+            sales_plan_participant_id: prev.sales_plan_participant_id || (view.id + "_" + employeeId),
             employee_id: employeeId,
             is_active: true,
-            max_bonus: prev.max_bonus != null ? prev.max_bonus : null
+            max_bonus: prev.max_bonus != null ? prev.max_bonus : null,
+            valid_from: selectedMonth,
+            valid_to: selectedMonth
         };
     } else if (rec.employees[employeeId]) {
         rec.employees[employeeId].is_active = false;
@@ -8420,12 +8729,22 @@ function setShopSalesPlanParticipant(employeeId, on) {
     renderShopSalesPlan();
 }
 
-function setShopSalesPlanPersonBonus(employeeId, raw) {
+function setShopSalesPlanParticipant(employeeId, on) {
+    setSalesPlanParticipant(salesPlanViewFromWorkspace(), employeeId, on);
+}
+
+function setSalesPlanPersonBonus(view, employeeId, raw) {
     if (!canEditShopSalesPlan()) return;
-    const rec = shopSalesPlanMonth(selectedMonth, true);
+    view = view || salesPlanViewFromWorkspace();
+    const rec = salesPlanMonth(view, selectedMonth, true);
     if (!rec.employees || typeof rec.employees !== "object") rec.employees = {};
     if (!rec.employees[employeeId]) {
-        rec.employees[employeeId] = { employee_id: employeeId, is_active: true, max_bonus: null };
+        rec.employees[employeeId] = {
+            sales_plan_participant_id: view.id + "_" + employeeId,
+            employee_id: employeeId,
+            is_active: true,
+            max_bonus: null
+        };
     }
     const text = String(raw == null ? "" : raw).trim();
     rec.employees[employeeId].max_bonus = text === "" ? null : parseMoney(text, 0);
@@ -8435,17 +8754,26 @@ function setShopSalesPlanPersonBonus(employeeId, raw) {
     renderShopSalesPlan();
 }
 
-function shopSalesPlanPeopleList() {
-    const w = findWorkspaceByCode("shop");
-    const rec = shopSalesPlanMonth(selectedMonth, false);
+function setShopSalesPlanPersonBonus(employeeId, raw) {
+    setSalesPlanPersonBonus(salesPlanViewFromWorkspace(), employeeId, raw);
+}
+
+function salesPlanPeopleList(view) {
+    view = view || salesPlanViewFromWorkspace();
+    const w = findWorkspaceByCode(view.departmentId);
+    const rec = salesPlanMonth(view, selectedMonth, false);
     const seen = {};
     const list = [];
     function add(e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id]) return;
+        if (view.workTabId === "sales" && !isSalesRep(e) && !(rec.employees && rec.employees[e.id])) return;
         seen[e.id] = true;
         list.push(e);
     }
-    directoryEmployees(w).forEach(add);
+    directoryEmployees(w).forEach(function (e) {
+        if (view.workTabId === "sales" && !isSalesRep(e)) return;
+        add(e);
+    });
     Object.keys(rec.employees || {}).forEach(function (id) {
         add(getEmployee(id) || { id: id, name: "Сотрудник удалён", jobStatus: "fired" });
     });
@@ -8453,56 +8781,75 @@ function shopSalesPlanPeopleList() {
     return list;
 }
 
+function shopSalesPlanPeopleList() {
+    return salesPlanPeopleList(SALES_PLAN_VIEWS.shop);
+}
+
 function renderShopSalesPlan() {
     const section = document.getElementById("salesPlan");
     if (!section) return;
-    if (!workspace() || workspace().code !== "shop") return;
-    const rec = shopSalesPlanMonth(selectedMonth, false);
+    const view = salesPlanViewFromWorkspace();
+    const w = workspace();
+    if (!w || w.code !== view.departmentId) return;
+    const rec = salesPlanMonth(view, selectedMonth, false);
     const can = canEditShopSalesPlan();
     const plan = Number(rec.plan_sales || 0);
-    const fact = shopSalesPlanFact(selectedMonth);
-    const rate = shopSalesPlanRate(selectedMonth);
+    const fact = salesPlanFact(view, selectedMonth);
+    const rate = salesPlanRate(view, selectedMonth);
     const title = document.getElementById("salesPlanTitle");
-    if (title) title.textContent = "План продаж — " + monthLabel(selectedMonth);
+    if (title) title.textContent = view.title + " · " + monthLabel(selectedMonth);
+    const note = document.getElementById("salesPlanNote");
+    if (note) note.textContent = view.note;
+    const allowCalc = view.id === "shop" || view.id === "sales";
     const box = document.getElementById("salesPlanSummary");
     if (box) {
-        box.innerHTML = "<dt>План магазина</dt><dd>"
+        box.innerHTML = "<dt>План</dt><dd>"
             + (can
                 ? '<input class="money-input sales-plan-amount no-spin" type="number" min="0" step="1" value="' + blankZeroInt(plan)
                     + '" onchange="setShopSalesPlanField(\'plan_sales\',this.value)">'
                 : money(plan))
             + "</dd><dt>Факт продаж</dt><dd>"
-            + (rec.fact_source === "manual" && can
+            + ((rec.fact_source === "manual" || !allowCalc) && can
                 ? '<input class="money-input no-spin" type="number" min="0" step="1" value="' + blankZeroInt(rec.manual_fact_sales)
                     + '" onchange="setShopSalesPlanField(\'manual_fact_sales\',this.value)">'
                 : money(fact))
-            + (rec.fact_source === "calculated"
-                ? '<div class="note">Кассиры + касса самообслуживания</div>'
-                : "")
+            + (rec.fact_source !== "manual" && view.factCalculatedLabel
+                ? '<div class="note">' + escapeHtml(view.factCalculatedLabel) + "</div>"
+                : '<div class="note">source = ' + (rec.fact_source === "manual" || !allowCalc ? "manual" : "calculated") + "</div>")
             + "</dd><dt>Выполнение</dt><dd>"
             + (plan ? formatShopCoefPct(rate) : "план не задан")
-            + "</dd><dt>Бонус при 100%</dt><dd>"
+            + "</dd><dt>Премия при 100%</dt><dd>"
             + (can
                 ? '<input class="money-input no-spin" type="number" min="0" step="1" value="' + blankZeroInt(rec.default_bonus)
                     + '" onchange="setShopSalesPlanField(\'default_bonus\',this.value)">'
                 : money(rec.default_bonus || 0))
-            + "</dd><dt>Источник факта</dt><dd>"
+            + "</dd><dt>Активно</dt><dd>"
             + (can
-                ? '<select onchange="setShopSalesPlanField(\'fact_source\',this.value)">'
-                    + '<option value="calculated"' + (rec.fact_source !== "manual" ? " selected" : "") + ">Из касс магазина</option>"
-                    + '<option value="manual"' + (rec.fact_source === "manual" ? " selected" : "") + ">Вручную</option>"
-                    + "</select>"
-                : (rec.fact_source === "manual" ? "Вручную" : "Из касс магазина"))
-            + "</dd><dt>Способ расчёта</dt><dd>Пропорционально, не выше 100%</dd>";
+                ? '<label class="check"><input type="checkbox"' + (rec.is_active === false ? "" : " checked")
+                    + " onchange=\"setShopSalesPlanField('is_active',this.checked)\"> Начислять бонус</label>"
+                : (rec.is_active === false ? "нет" : "да"))
+            + "</dd>"
+            + (allowCalc
+                ? ("<dt>Источник факта</dt><dd>"
+                    + (can
+                        ? '<select onchange="setShopSalesPlanField(\'fact_source\',this.value)">'
+                            + '<option value="calculated"' + (rec.fact_source !== "manual" ? " selected" : "") + ">"
+                            + escapeHtml(view.factCalculatedLabel) + "</option>"
+                            + '<option value="manual"' + (rec.fact_source === "manual" ? " selected" : "") + ">Вручную</option>"
+                            + "</select>"
+                        : (rec.fact_source === "manual" ? "Вручную" : view.factCalculatedLabel))
+                    + "</dd>")
+                : "<dt>Источник факта</dt><dd>Вручную (позже можно заменить на 1С)</dd>")
+            + "<dt>Способ расчёта</dt><dd>Пропорционально, не выше 100%</dd>";
     }
     const peopleBox = document.getElementById("salesPlanPeople");
     if (peopleBox) {
-        const people = shopSalesPlanPeopleList();
+        const people = salesPlanPeopleList(view);
         if (!people.length) {
-            peopleBox.innerHTML = '<div class="empty-row">Сначала заведите сотрудников магазина во вкладке «ФИО сотрудника».</div>';
+            peopleBox.innerHTML = '<div class="empty-row">' + escapeHtml(view.peopleEmpty) + "</div>";
         } else {
             peopleBox.innerHTML = people.map(function (e) {
-                const on = shopSalesPlanIsParticipant(e.id, selectedMonth);
+                const on = salesPlanIsParticipant(view, e.id, selectedMonth);
                 const slot = rec.employees && rec.employees[e.id];
                 const personal = slot && slot.max_bonus != null ? slot.max_bonus : "";
                 return '<label class="sales-plan-person">'
@@ -8520,16 +8867,16 @@ function renderShopSalesPlan() {
     }
     const body = document.getElementById("salesPlanBody");
     if (!body) return;
-    const rows = shopSalesPlanPeopleList().filter(function (e) {
-        return shopSalesPlanIsParticipant(e.id, selectedMonth);
+    const rows = salesPlanPeopleList(view).filter(function (e) {
+        return salesPlanIsParticipant(view, e.id, selectedMonth);
     });
     if (!rows.length) {
         body.innerHTML = '<tr><td colspan="4"><div class="empty-row">Отметьте участников коллективного бонуса.</div></td></tr>';
         return;
     }
     body.innerHTML = rows.map(function (e) {
-        const maxB = shopSalesPlanMaxBonus(rec, e.id);
-        const amount = shopSalesPlanEmployeeBonus(e.id, selectedMonth);
+        const maxB = salesPlanMaxBonus(rec, e.id);
+        const amount = salesPlanEmployeeBonus(view, e.id, selectedMonth);
         return "<tr><td>" + escapeHtml(e.name || "") + "</td><td>"
             + (plan ? formatShopCoefPct(rate) : "—") + "</td><td>"
             + money(maxB) + "</td><td>" + money(amount) + "</td></tr>";
@@ -9756,17 +10103,48 @@ function emptyShopRevision() {
     return { groups: [], folders: [], tasks: {}, ui: { collapsedGroups: {} } };
 }
 
-function ensureShopRevision() {
-    if (!appData.shopRevision || typeof appData.shopRevision !== "object") appData.shopRevision = emptyShopRevision();
-    const root = appData.shopRevision;
+function emptyRevisionRoot() {
+    return { groups: [], folders: [], tasks: {}, ui: { collapsedGroups: {} } };
+}
+
+function normalizeRevisionTree(root, deptId) {
+    if (!root || typeof root !== "object") root = emptyRevisionRoot();
     if (!Array.isArray(root.groups)) root.groups = [];
     if (!Array.isArray(root.folders)) root.folders = [];
     if (!root.tasks || typeof root.tasks !== "object") root.tasks = {};
     if (!root.ui || typeof root.ui !== "object") root.ui = { collapsedGroups: {} };
     if (!root.ui.collapsedGroups || typeof root.ui.collapsedGroups !== "object") root.ui.collapsedGroups = {};
-    root.groups.forEach(normalizeRevisionGroup);
-    root.folders.forEach(normalizeRevisionFolder);
+    root.groups.forEach(function (g) {
+        normalizeRevisionGroup(g);
+        if (!g.department_id) g.department_id = deptId || "shop";
+    });
+    root.folders.forEach(function (f) {
+        normalizeRevisionFolder(f);
+        if (!f.department_id) f.department_id = deptId || "shop";
+    });
     return root;
+}
+
+function revisionActiveDept() {
+    const w = workspace();
+    if (w && w.code === "warehouse") return "warehouse";
+    return "shop";
+}
+
+function revisionRoot(deptId) {
+    const dept = deptId || revisionActiveDept();
+    if (dept === "warehouse") {
+        if (!appData.deptRevisions || typeof appData.deptRevisions !== "object") appData.deptRevisions = {};
+        appData.deptRevisions.warehouse = normalizeRevisionTree(appData.deptRevisions.warehouse, "warehouse");
+        return appData.deptRevisions.warehouse;
+    }
+    return ensureShopRevision();
+}
+
+function ensureShopRevision() {
+    if (!appData.shopRevision || typeof appData.shopRevision !== "object") appData.shopRevision = emptyRevisionRoot();
+    appData.shopRevision = normalizeRevisionTree(appData.shopRevision, "shop");
+    return appData.shopRevision;
 }
 
 function normalizeRevisionGroup(g) {
@@ -9812,16 +10190,28 @@ function normalizeRevisionTask(t) {
     if (t.status !== "done" && t.status !== "moved" && t.status !== "cancelled") t.status = "planned";
     if (!t.createdAt) t.createdAt = new Date().toISOString();
     if (!t.confirmSource) t.confirmSource = "manual";
+    if (!t.source) t.source = t.confirmSource || "manual";
+    if (!t.department_id) t.department_id = t.department_id || "";
     if (t.inventoryDocId == null) t.inventoryDocId = "";
     if (t.inventoryDocDate == null) t.inventoryDocDate = "";
     if (t.discrepancyCount == null) t.discrepancyCount = 0;
     if (t.writeOffSum == null) t.writeOffSum = 0;
     if (t.receiptSum == null) t.receiptSum = 0;
+    if (t.change_type == null) t.change_type = t.status === "moved" || t.status === "cancelled" ? t.status : "";
+    if (t.changed_at == null) t.changed_at = "";
+    if (t.changed_by_user_id == null) t.changed_by_user_id = "";
+    if (t.original_planned_date == null) t.original_planned_date = t.planned_date || "";
+    if (t.current_planned_date == null) {
+        t.current_planned_date = t.status === "moved" && t.movedToMonth
+            ? String(t.movedToMonth) + "-" + String(Number(t.movedToDay || 0)).padStart(2, "0")
+            : (t.status === "cancelled" ? "" : (t.planned_date || ""));
+    }
+    if (t.change_reason == null) t.change_reason = "";
     return t;
 }
 
-function revisionMonthStore(month) {
-    const root = ensureShopRevision();
+function revisionMonthStore(month, deptId) {
+    const root = revisionRoot(deptId);
     const key = month || selectedMonth;
     if (!root.tasks[key] || typeof root.tasks[key] !== "object") root.tasks[key] = {};
     Object.keys(root.tasks[key]).forEach(function (id) {
@@ -9859,14 +10249,14 @@ function revisionCellShowsDayOff(folder, day, task) {
 }
 
 function revisionGroups() {
-    return ensureShopRevision().groups.filter(function (g) { return !g.archived; }).slice().sort(function (a, b) {
+    return revisionRoot().groups.filter(function (g) { return !g.archived; }).slice().sort(function (a, b) {
         if (a.sort !== b.sort) return a.sort - b.sort;
         return String(a.name || "").localeCompare(String(b.name || ""), "ru", { sensitivity: "base" });
     });
 }
 
 function revisionFoldersOf(groupId) {
-    return ensureShopRevision().folders.filter(function (f) {
+    return revisionRoot().folders.filter(function (f) {
         return !f.archived && f.groupId === groupId;
     }).slice().sort(function (a, b) {
         if (a.sort !== b.sort) return a.sort - b.sort;
@@ -9875,11 +10265,11 @@ function revisionFoldersOf(groupId) {
 }
 
 function revisionFindGroup(id) {
-    return ensureShopRevision().groups.find(function (g) { return g.id === id; }) || null;
+    return revisionRoot().groups.find(function (g) { return g.id === id; }) || null;
 }
 
 function revisionFindFolder(id) {
-    return ensureShopRevision().folders.find(function (f) { return f.id === id; }) || null;
+    return revisionRoot().folders.find(function (f) { return f.id === id; }) || null;
 }
 
 function revisionFindTask(taskId, month) {
@@ -9887,17 +10277,70 @@ function revisionFindTask(taskId, month) {
 }
 
 function revisionShopEmployees() {
-    const w = findWorkspaceByCode("shop") || workspace();
-    return directoryEmployees(w);
+    const dept = revisionActiveDept();
+    const home = findWorkspaceByCode(dept) || findWorkspaceByCode("shop") || workspace();
+    const list = directoryEmployees(home).slice();
+    if (dept !== "warehouse") return list;
+    const seen = {};
+    list.forEach(function (e) { if (e && e.id) seen[e.id] = true; });
+    orderedDeptWorkspaces().forEach(function (w) {
+        if (!w || w.code === dept) return;
+        directoryEmployees(w).forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+    });
+    return list;
 }
 
 function revisionActor() {
+    if (isSummary() && currentSummaryRole) {
+        const info = summaryRoleInfo(currentSummaryRole);
+        const w = findWorkspaceByCode("summary");
+        const user = w && w.roleUsers && w.roleUsers[currentSummaryRole];
+        return {
+            role: currentSummaryRole,
+            name: (info && info.name) || "Общая",
+            user_id: (user && (user.user_id || user.id)) || ("user_" + currentSummaryRole)
+        };
+    }
     if (currentDeptRole === "admin") {
         const info = summaryRoleInfo("admin");
-        return { role: "admin", name: (info && info.name) || "Админ" };
+        return { role: "admin", name: (info && info.name) || "Админ", user_id: "user_admin" };
     }
     const w = workspace();
-    return { role: currentDeptRole || "staff", name: officialName(w) || "Сотрудник магазина" };
+    return {
+        role: currentDeptRole || "staff",
+        name: officialName(w) || "Сотрудник магазина",
+        user_id: (w && w.code ? ("dept_" + w.code + "_" + (currentDeptRole || "staff")) : "dept_staff")
+    };
+}
+
+function revisionIsoDate(month, day) {
+    return String(month || selectedMonth) + "-" + String(Number(day)).padStart(2, "0");
+}
+
+function revisionIsChangeStatus(status) {
+    return status === "moved" || status === "cancelled";
+}
+
+function stampRevisionChange(task, type) {
+    if (!task) return;
+    const actor = revisionActor();
+    task.change_type = type;
+    task.changed_at = new Date().toISOString();
+    task.changed_by = actor;
+    task.changed_by_user_id = actor.user_id || "";
+    if (!task.original_planned_date) {
+        task.original_planned_date = task.planned_date || revisionIsoDate(selectedMonth, task.day);
+    }
+    if (type === "moved" && task.movedToMonth) {
+        task.current_planned_date = revisionIsoDate(task.movedToMonth, task.movedToDay);
+    } else if (type === "cancelled") {
+        task.current_planned_date = "";
+    }
+    if (task.change_reason == null) task.change_reason = "";
 }
 
 function revisionDatePast(month, day) {
@@ -9923,20 +10366,21 @@ function revisionIsActiveStatus(status) {
 function revisionTaskAt(folderId, day, month) {
     const store = revisionMonthStore(month);
     let moved = null;
+    let cancelled = null;
     let active = null;
     Object.keys(store).forEach(function (id) {
         const t = store[id];
         if (!t || t.folderId !== folderId || Number(t.day) !== Number(day)) return;
         const st = revisionTaskStatus(t, month);
-        if (st === "cancelled") return;
-        if (st === "moved") moved = t;
+        if (st === "cancelled") cancelled = t;
+        else if (st === "moved") moved = t;
         else active = t;
     });
-    return active || moved;
+    return active || moved || cancelled;
 }
 
-function revisionMonthTaskList(month) {
-    const store = revisionMonthStore(month);
+function revisionMonthTaskList(month, deptId) {
+    const store = revisionMonthStore(month, deptId);
     return Object.keys(store).map(function (id) { return store[id]; }).filter(Boolean);
 }
 
@@ -9994,7 +10438,7 @@ function shopRevisionEmployeeMetrics(employeeId, month) {
     let done = 0;
     let overdue = 0;
     let doneOnTime = 0;
-    revisionMonthTaskList(m).forEach(function (t) {
+    revisionMonthTaskList(m, employeeHomeDeptCode(employeeId) === "warehouse" ? "warehouse" : "shop").forEach(function (t) {
         const performer = t.completedEmployeeId || (t.status === "done" ? (t.employeeId || t.employee_id) : "");
         const assignee = t.assignedEmployeeId || t.employeeId || t.employee_id;
         const st = revisionTaskStatus(t, m);
@@ -10040,6 +10484,58 @@ function revisionDateTimeLabel(iso) {
         + String(d.getMinutes()).padStart(2, "0");
 }
 
+function revisionCellMarkText(status, emp, dayOff) {
+    if (status === "moved") return "П";
+    if (status === "cancelled") return "С";
+    if (dayOff) return "В";
+    if (!status) return "";
+    return escapeHtml(revisionEmployeeShort(emp));
+}
+
+function revisionIsoToLabel(iso) {
+    const s = String(iso || "");
+    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[3] + "." + m[2] + "." + m[1];
+    return s;
+}
+
+function revisionCellTitle(folder, day, task, status, dayOff) {
+    if (status === "moved" && task) {
+        const from = revisionDateLabel(task.day, selectedMonth);
+        const to = task.movedToDay
+            ? revisionDateLabel(task.movedToDay, task.movedToMonth)
+            : (revisionIsoToLabel(task.current_planned_date) || "другую дату");
+        const emp = getEmployee(task.employeeId);
+        const group = revisionFindGroup(folder && folder.groupId);
+        let s = "Ревизия была запланирована на " + from + " и перенесена на " + to;
+        if (emp && emp.name) s += ". Сотрудник: " + emp.name;
+        if (group && group.name) s += ". Группа: " + group.name;
+        if (folder && folder.name) s += ". Папка: " + folder.name;
+        if (task.changed_at) s += ". Изменено: " + revisionDateTimeLabel(task.changed_at);
+        if (task.change_reason) s += ". Причина: " + task.change_reason;
+        return s;
+    }
+    if (status === "cancelled" && task) {
+        const emp = getEmployee(task.employeeId);
+        const group = revisionFindGroup(folder && folder.groupId);
+        const was = revisionIsoToLabel(task.original_planned_date || task.planned_date)
+            || revisionDateLabel(task.day, selectedMonth);
+        let s = "Назначение ревизии было снято. Было назначено: " + was;
+        if (emp && emp.name) s += ". Сотрудник: " + emp.name;
+        if (group && group.name) s += ". Группа: " + group.name;
+        if (folder && folder.name) s += ". Папка: " + folder.name;
+        if (task.changed_at) s += ". Изменено: " + revisionDateTimeLabel(task.changed_at);
+        if (task.change_reason) s += ". Причина: " + task.change_reason;
+        return s;
+    }
+    if (dayOff) return "Выходной";
+    if (task) {
+        const emp = getEmployee(task.employeeId);
+        return (emp ? emp.name : "Сотрудник") + " · " + revisionStatusLabel(status);
+    }
+    return "Назначить пересчёт";
+}
+
 function revisionEmployeeSelectHtml(selectedId, includeId, day) {
     const list = revisionShopEmployees().slice();
     if (includeId && !list.some(function (e) { return e.id === includeId; })) {
@@ -10076,18 +10572,20 @@ function setRevisionPanel(id) {
 function renderShopRevision() {
     const section = document.getElementById("revision");
     if (!section) return;
-    if (!workspace() || workspace().code !== "shop") return;
-    ensureShopRevision();
+    if (!workspace() || (workspace().code !== "shop" && workspace().code !== "warehouse")) return;
+    revisionRoot();
     revisionMonthStore(selectedMonth);
     bindRevisionEsc();
 
     const monthNote = document.getElementById("revisionMonthNote");
     if (monthNote) {
         monthNote.textContent = monthLabel(selectedMonth)
-            + ". Группы и подпапки те же, что в прошлых месяцах. Сотрудник закрепляется за группой 1С; выходные подтягиваются из Табеля. Отметки прошлого месяца не копируются.";
+            + (workspace().code === "warehouse"
+                ? ". График склада отдельный от магазина Володарского. Группы и подпапки склада не копируются из магазина. Выходные — из Табеля."
+                : ". Группы и подпапки те же, что в прошлых месяцах. Сотрудник закрепляется за группой 1С; выходные подтягиваются из Табеля. Отметки прошлого месяца не копируются.");
     }
     const pageTitle = document.getElementById("revisionPageTitle");
-    if (pageTitle) pageTitle.textContent = "Ревизия — " + monthLabel(selectedMonth);
+    if (pageTitle) pageTitle.textContent = "Ревизия — " + officialName(workspace()) + " · " + monthLabel(selectedMonth);
 
     const summary = shopRevisionMonthSummary(selectedMonth);
     const cards = document.getElementById("revisionCards");
@@ -10153,7 +10651,7 @@ function renderRevisionSchedule() {
 
     const groups = revisionGroups();
     const days = daysInMonth();
-    const collapsed = ensureShopRevision().ui.collapsedGroups;
+    const collapsed = revisionRoot().ui.collapsedGroups;
 
     if (table) {
         const old = table.querySelector("colgroup");
@@ -10215,16 +10713,12 @@ function renderRevisionSchedule() {
                 const task = revisionTaskAt(folder.id, day, selectedMonth);
                 const status = revisionTaskStatus(task, selectedMonth);
                 const emp = task ? getEmployee(task.employeeId) : getEmployee(revisionFolderOwnerId(folder));
-                const letter = task ? revisionEmployeeShort(emp) : "+";
-                const dayOff = revisionCellShowsDayOff(folder, day, task);
+                const changeMark = revisionIsChangeStatus(status);
+                const dayOff = !changeMark && revisionCellShowsDayOff(folder, day, task);
                 const cls = ["rev-day", isWeekend(day) ? "rev-weekend" : "", isToday(day) ? "rev-today" : "", dayOff ? "rev-off-day" : ""].filter(Boolean).join(" ");
-                const title = dayOff
-                    ? "Выходной"
-                    : (task
-                        ? (emp ? emp.name : "Сотрудник") + " · " + revisionStatusLabel(status)
-                        : "Назначить пересчёт");
+                const title = revisionCellTitle(folder, day, task, status, dayOff);
                 const markCls = "rev-mark" + (status && !dayOff ? " rev-st-" + status : "") + (dayOff ? " rev-off" : "");
-                const cellText = dayOff ? "В" : (task ? escapeHtml(letter) : "");
+                const cellText = revisionCellMarkText(status, emp, dayOff);
                 html += '<td class="' + cls + '"><button type="button" class="' + markCls
                     + '" title="' + escapeHtml(title) + '" onclick="openRevisionAssign(\'' + folder.id + "'," + day + ')">'
                     + cellText + "</button></td>";
@@ -10243,12 +10737,12 @@ function revisionStatusLabel(status) {
     if (status === "done") return "Выполнено";
     if (status === "overdue") return "Просрочено";
     if (status === "moved") return "Перенесено";
-    if (status === "cancelled") return "Отменено";
+    if (status === "cancelled") return "Снято";
     return "Запланировано";
 }
 
 function toggleRevisionGroup(id) {
-    const ui = ensureShopRevision().ui.collapsedGroups;
+    const ui = revisionRoot().ui.collapsedGroups;
     if (ui[id]) delete ui[id];
     else ui[id] = true;
     saveApp();
@@ -10259,7 +10753,7 @@ function toggleRevisionGroup(id) {
 function renderRevisionGroupsPanel() {
     const box = document.getElementById("revisionGroupsCard");
     if (!box) return;
-    const groups = ensureShopRevision().groups.filter(function (g) { return !g.archived; }).slice().sort(function (a, b) {
+    const groups = revisionRoot().groups.filter(function (g) { return !g.archived; }).slice().sort(function (a, b) {
         return (a.sort || 0) - (b.sort || 0);
     });
     let html = "<div class=\"card-title\" style=\"margin-bottom:8px\">Группы пересчёта</div>"
@@ -10354,7 +10848,7 @@ function renderRevisionStaffPanel() {
 }
 
 function addRevisionGroup() {
-    const root = ensureShopRevision();
+    const root = revisionRoot();
     const sort = root.groups.reduce(function (m, g) { return Math.max(m, Number(g.sort || 0)); }, 0) + 1;
     const id = generateRevisionGroupId();
     root.groups.push({
@@ -10366,7 +10860,8 @@ function addRevisionGroup() {
         extId: "",
         external_1c_id: "",
         employee_id: "",
-        employeeId: ""
+        employeeId: "",
+        department_id: revisionActiveDept()
     });
     saveApp();
     revisionPanel = "groups";
@@ -10382,7 +10877,7 @@ function renameRevisionGroup(id, value) {
 }
 
 function deleteRevisionGroup(id) {
-    const root = ensureShopRevision();
+    const root = revisionRoot();
     const folders = root.folders.filter(function (f) { return f.groupId === id; });
     const hasHistory = folders.some(function (f) { return revisionFolderHasHistory(f.id); });
     if (!confirm(hasHistory
@@ -10401,7 +10896,7 @@ function deleteRevisionGroup(id) {
 }
 
 function addRevisionFolder(groupId) {
-    const root = ensureShopRevision();
+    const root = revisionRoot();
     const sort = root.folders.filter(function (f) { return f.groupId === groupId; })
         .reduce(function (m, f) { return Math.max(m, Number(f.sort || 0)); }, 0) + 1;
     const id = generateRevisionFolderId();
@@ -10415,7 +10910,8 @@ function addRevisionFolder(groupId) {
         planPerMonth: 1,
         archived: false,
         extId: "",
-        external_1c_id: ""
+        external_1c_id: "",
+        department_id: revisionActiveDept()
     });
     saveApp();
     revisionFocusFolderId = id;
@@ -10438,7 +10934,7 @@ function setRevisionFolderPlan(id, value) {
 }
 
 function revisionFolderHasHistory(folderId) {
-    const root = ensureShopRevision();
+    const root = revisionRoot();
     return Object.keys(root.tasks).some(function (month) {
         const map = root.tasks[month] || {};
         return Object.keys(map).some(function (id) { return map[id] && map[id].folderId === folderId; });
@@ -10446,7 +10942,7 @@ function revisionFolderHasHistory(folderId) {
 }
 
 function deleteRevisionFolder(id) {
-    const root = ensureShopRevision();
+    const root = revisionRoot();
     const f = revisionFindFolder(id);
     if (!f) return;
     const has = revisionFolderHasHistory(id);
@@ -10499,34 +10995,33 @@ function openRevisionFolder(folderId) {
     );
 }
 
-function openRevisionAssign(folderId, day) {
+function openRevisionAssign(folderId, day, forceNew) {
     const folder = revisionFindFolder(folderId);
     if (!folder) return;
     const group = revisionFindGroup(folder.groupId);
-    const task = revisionTaskAt(folderId, day, selectedMonth);
+    const stored = revisionTaskAt(folderId, day, selectedMonth);
+    const storedStatus = revisionTaskStatus(stored, selectedMonth);
+    if (!forceNew && stored && revisionIsChangeStatus(storedStatus)) {
+        openRevisionChangeInfo(folder, group, stored, storedStatus, day);
+        return;
+    }
+    const task = forceNew || revisionIsChangeStatus(storedStatus) ? null : stored;
     const status = revisionTaskStatus(task, selectedMonth);
     const defaultEmpId = (task && task.employeeId) || revisionGroupOwnerId(group);
     const dayOffHintEmp = defaultEmpId;
     const dateIso = selectedMonth + "-" + String(day).padStart(2, "0");
     let extra = "";
-    if (task && status === "moved") {
-        const to = task.movedToMonth && task.movedToDay
-            ? revisionDateLabel(task.movedToDay, task.movedToMonth)
-            : "другую дату";
-        extra += '<div class="note">Пересчёт перенесён на ' + escapeHtml(to) + ".</div>";
-    }
     if (task && status === "done") {
         extra += '<div class="note">Подтверждено: ' + escapeHtml(revisionDateTimeLabel(task.doneAt))
             + (task.confirmedBy && task.confirmedBy.name ? " · " + escapeHtml(task.confirmedBy.name) : "")
             + ".</div>";
     }
-    const actions = task && status !== "moved"
+    const actions = task
         ? '<button type="button" class="btn btn-success" onclick="markRevisionDone(\'' + task.id + '\')">✓ Пересчитано</button>'
             + (status === "done" ? '<button type="button" class="btn btn-secondary" onclick="unmarkRevisionDone(\'' + task.id + '\')">Снять отметку</button>' : "")
             + '<button type="button" class="btn btn-secondary" onclick="submitRevisionMove(\'' + task.id + '\')">Перенести</button>'
             + '<button type="button" class="btn btn-danger" onclick="deleteRevisionTask(\'' + task.id + '\')">Снять назначение</button>'
-        : '<button type="button" class="btn btn-primary" onclick="submitRevisionAssign(\'' + folderId + "'," + day + ","
-            + (task && task.id ? "'" + task.id + "'" : "null") + ')">Назначить</button>';
+        : '<button type="button" class="btn btn-primary" onclick="submitRevisionAssign(\'' + folderId + "'," + day + ",null)\">Назначить</button>";
     openRevisionModal(
         "<h3>" + (task ? "Пересчёт" : "Назначить пересчёт") + "</h3>"
         + '<div class="form-group"><label>Подпапка</label><div>' + escapeHtml(folder.name)
@@ -10536,7 +11031,7 @@ function openRevisionAssign(folderId, day) {
         + '<select id="revEmp">' + revisionEmployeeSelectHtml(defaultEmpId, defaultEmpId, day) + "</select></div>"
         + '<div class="form-group"><label for="revComment">Комментарий</label>'
         + '<textarea id="revComment" rows="2">' + escapeHtml(task && task.comment) + "</textarea></div>"
-        + (task && status !== "moved"
+        + (task
             ? '<div class="form-group"><label for="revMoveDate">Новая дата (для переноса)</label>'
                 + '<input id="revMoveDate" type="date" value="' + dateIso + '"></div>'
             : "")
@@ -10549,6 +11044,32 @@ function openRevisionAssign(folderId, day) {
     );
 }
 
+function openRevisionChangeInfo(folder, group, task, status, day) {
+    const emp = getEmployee(task.employeeId);
+    const toLabel = task.movedToDay
+        ? revisionDateLabel(task.movedToDay, task.movedToMonth)
+        : (revisionIsoToLabel(task.current_planned_date) || "—");
+    const was = revisionIsoToLabel(task.original_planned_date || task.planned_date)
+        || revisionDateLabel(task.day, selectedMonth);
+    let html = "<h3>" + (status === "moved" ? "Перенесено" : "Снято") + "</h3>"
+        + '<dl class="rev-kv">'
+        + "<dt>Группа</dt><dd>" + escapeHtml((group && group.name) || "—") + "</dd>"
+        + "<dt>Папка</dt><dd>" + escapeHtml((folder && folder.name) || "—") + "</dd>"
+        + "<dt>Было назначено</dt><dd>" + escapeHtml(was) + "</dd>"
+        + "<dt>Сотрудник</dt><dd>" + escapeHtml((emp && emp.name) || "—") + "</dd>"
+        + "<dt>Статус</dt><dd>" + escapeHtml(revisionStatusLabel(status)) + "</dd>";
+    if (status === "moved") {
+        html += "<dt>Новая дата</dt><dd>" + escapeHtml(toLabel) + "</dd>";
+    }
+    html += "<dt>Изменено</dt><dd>" + escapeHtml(revisionDateTimeLabel(task.changed_at || task.createdAt)) + "</dd>"
+        + "<dt>Причина</dt><dd>" + escapeHtml(task.change_reason || "не указана") + "</dd>"
+        + "</dl>"
+        + '<div class="rev-modal-actions">'
+        + '<button type="button" class="btn btn-primary" onclick="openRevisionAssign(\'' + folder.id + "'," + day + ',true)">Назначить заново</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="closeRevisionModal()">Закрыть</button></div>';
+    openRevisionModal(html);
+}
+
 function newRevisionTask(folder, day, employeeId, comment, fromTask) {
     return normalizeRevisionTask({
         id: generateRevisionTaskId(),
@@ -10559,6 +11080,8 @@ function newRevisionTask(folder, day, employeeId, comment, fromTask) {
         assignedEmployeeId: fromTask && fromTask.assignedEmployeeId ? fromTask.assignedEmployeeId : employeeId,
         completedEmployeeId: "",
         planned_date: (selectedMonth || "") + "-" + String(Number(day)).padStart(2, "0"),
+        original_planned_date: (selectedMonth || "") + "-" + String(Number(day)).padStart(2, "0"),
+        current_planned_date: (selectedMonth || "") + "-" + String(Number(day)).padStart(2, "0"),
         completed_date: "",
         comment: comment || "",
         status: "planned",
@@ -10567,6 +11090,8 @@ function newRevisionTask(folder, day, employeeId, comment, fromTask) {
         doneAt: null,
         confirmedBy: null,
         confirmSource: "manual",
+        source: "manual",
+        department_id: revisionActiveDept(),
         inventoryDocId: "",
         inventoryDocDate: "",
         discrepancyCount: 0,
@@ -10593,7 +11118,7 @@ function submitRevisionAssign(folderId, day, taskId) {
             + ". Назначить ревизию всё равно?")) return;
     }
     const store = revisionMonthStore(selectedMonth);
-    if (taskId && store[taskId] && store[taskId].status !== "moved") {
+    if (taskId && store[taskId] && !revisionIsChangeStatus(store[taskId].status)) {
         if (!store[taskId].assignedEmployeeId) store[taskId].assignedEmployeeId = store[taskId].employeeId || empId;
         store[taskId].employeeId = empId;
         store[taskId].employee_id = empId;
@@ -10604,7 +11129,7 @@ function submitRevisionAssign(folderId, day, taskId) {
         }
     } else {
         const existing = revisionTaskAt(folderId, day, selectedMonth);
-        if (existing && revisionTaskStatus(existing, selectedMonth) !== "moved") {
+        if (existing && !revisionIsChangeStatus(revisionTaskStatus(existing, selectedMonth))) {
             if (!existing.assignedEmployeeId) existing.assignedEmployeeId = existing.employeeId || empId;
             existing.employeeId = empId;
             existing.employee_id = empId;
@@ -10691,7 +11216,7 @@ function submitRevisionMove(taskId) {
             + ". Перенести ревизию всё равно?")) return;
     }
     const other = revisionTaskAt(folder.id, day, month);
-    if (other && revisionTaskStatus(other, month) !== "moved") {
+    if (other && !revisionIsChangeStatus(revisionTaskStatus(other, month))) {
         toast("На эту дату пересчёт уже назначен.", "error");
         return;
     }
@@ -10701,6 +11226,7 @@ function submitRevisionMove(taskId) {
     task.movedToTaskId = next.id;
     task.movedToMonth = month;
     task.movedToDay = day;
+    stampRevisionChange(task, "moved");
     saveApp();
     closeRevisionModal();
     renderShopRevision();
@@ -10709,9 +11235,15 @@ function submitRevisionMove(taskId) {
 
 function deleteRevisionTask(taskId) {
     const store = revisionMonthStore(selectedMonth);
-    if (!store[taskId]) return;
+    const task = store[taskId];
+    if (!task) return;
+    if (revisionIsChangeStatus(revisionTaskStatus(task, selectedMonth))) return;
     if (!confirm("Снять назначение с этой даты?")) return;
-    delete store[taskId];
+    task.status = "cancelled";
+    task.doneAt = null;
+    task.completed_date = "";
+    task.completedEmployeeId = "";
+    stampRevisionChange(task, "cancelled");
     saveApp();
     closeRevisionModal();
     renderShopRevision();
@@ -12400,16 +12932,20 @@ function shopKpiEarnedRows(employeeId, month) {
             passed: line.passed
         };
     });
-    if (shopSalesPlanIsParticipant(employeeId, m) || shopSalesPlanEmployeeBonus(employeeId, m)) {
-        const rec = shopSalesPlanMonth(m, false);
+    if (salesPlanBonusForEmployee(employeeId, m) || (function () {
+        const view = salesPlanViewForEmployee(employeeId);
+        return view ? salesPlanIsParticipant(view, employeeId, m) : false;
+    })()) {
+        const view = salesPlanViewForEmployee(employeeId);
+        const rec = salesPlanMonth(view, m, false);
         rows.push({
-            name: "План продаж магазина",
+            name: view.id === "shop" ? "План продаж магазина" : view.title.replace(/^План продаж — /, "План продаж "),
             plan: Number(rec.plan_sales || 0),
-            fact: shopSalesPlanFact(m),
+            fact: salesPlanFact(view, m),
             label: "",
-            coef: shopSalesPlanRate(m),
-            budget: shopSalesPlanMaxBonus(rec, employeeId),
-            amount: shopSalesPlanEmployeeBonus(employeeId, m),
+            coef: salesPlanRate(view, m),
+            budget: salesPlanMaxBonus(rec, employeeId),
+            amount: salesPlanEmployeeBonus(view, employeeId, m),
             kind: "Коллективный план продаж",
             checkKpi: false,
             salesPlan: true
@@ -13115,15 +13651,20 @@ function openShopBonusBreakdown(employeeId) {
     let html = "<h3>Бонус по метрикам</h3>"
         + "<div class=\"note\" style=\"margin-bottom:12px\">" + escapeHtml(employee.name) + " · " + monthLabel(selectedMonth)
         + " · оклад " + formatShopDays(row.workedDays) + " × " + money(row.dayRate) + "</div>";
-    html += '<div class="shop-kpi-card"><div class="card-title">План продаж магазина</div>';
-    if (employeeHomeDeptCode(employeeId) !== "shop") {
-        html += '<div class="note" style="margin-top:6px">Коллективный план продаж относится только к магазину Володарского.</div>';
-    } else if (row.salesPlanBonus || shopSalesPlanIsParticipant(employeeId, selectedMonth)) {
-        const rec = shopSalesPlanMonth(selectedMonth, false);
+    html += '<div class="shop-kpi-card"><div class="card-title">'
+        + escapeHtml((function () {
+            const v = salesPlanViewForEmployee(employeeId);
+            return v ? v.title : "План продаж";
+        })()) + "</div>";
+    const planView = salesPlanViewForEmployee(employeeId);
+    if (!planView) {
+        html += '<div class="note" style="margin-top:6px">Для этой должности коллективный план продаж не подключён.</div>';
+    } else if (row.salesPlanBonus || salesPlanIsParticipant(planView, employeeId, selectedMonth)) {
+        const rec = salesPlanMonth(planView, selectedMonth, false);
         html += '<div class="note" style="margin-top:6px">План: ' + money(rec.plan_sales || 0)
-            + "<br>Факт: " + money(shopSalesPlanFact(selectedMonth))
-            + "<br>Выполнение: " + (Number(rec.plan_sales || 0) ? formatShopCoefPct(shopSalesPlanRate(selectedMonth)) : "план не задан")
-            + "<br>Максимальный бонус сотрудника: " + money(shopSalesPlanMaxBonus(rec, employeeId))
+            + "<br>Факт: " + money(salesPlanFact(planView, selectedMonth))
+            + "<br>Выполнение: " + (Number(rec.plan_sales || 0) ? formatShopCoefPct(salesPlanRate(planView, selectedMonth)) : "план не задан")
+            + "<br>Премия при 100%: " + money(salesPlanMaxBonus(rec, employeeId))
             + "<br>Начислено: " + money(row.salesPlanBonus || 0) + "</div>";
     } else {
         html += '<div class="note" style="margin-top:6px">В этом месяце сотрудник не участвует в коллективном плане продаж.</div>';
@@ -13381,16 +13922,557 @@ function setIssued(employeeId, checked) {
 /* ============================================================
    ДИСЦИПЛИНА ОТДЕЛА
 ============================================================ */
+function setDisciplinePanel(id) {
+    disciplinePanel = id === "metrics" ? "metrics" : "late";
+    renderDiscipline();
+}
+
+function metricControlKind(metricId) {
+    const mid = canonicalMetricId(metricId);
+    if (mid === "metric_revision") return "revision";
+    if (mid === "metric_arrival_730") return "timesheet730";
+    if (mid === METRIC_WRITEOFF_LOSSES_ID) return "month";
+    const it = shopMetricCatalogById(mid);
+    const ft = it && it.fill_type;
+    if (ft === "month_money") return "month";
+    if (ft === "check" || ft === "done_not_done" || ft === "boolean") return "check";
+    return "number";
+}
+
+function metricControlKpiDef(employeeId, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    let found = null;
+    shopKpiDefsCurrent(month).forEach(function (d) {
+        if (canonicalMetricId(d.metric_id || d.metricId) !== mid) return;
+        if (!shopKpiAssigned(employeeId, d.kpi_id, month)) return;
+        found = d;
+    });
+    return found;
+}
+
+function metricControlHasDayValue(employeeId, day, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    const home = employeeHomeDeptCode(employeeId);
+    if (home && isGenericMetricsDept(home)) {
+        const rec = deptMetricFactsMonth(home, month)[employeeId];
+        const dayRec = rec && rec[String(day)];
+        return !!(dayRec && dayRec[mid] != null && dayRec[mid] !== "");
+    }
+    const rec = shopMetricFactsMonth(month)[employeeId];
+    const dayRec = rec && rec[String(day)];
+    if (dayRec && dayRec[mid] != null && dayRec[mid] !== "") return true;
+    const it = shopMetricCatalogById(mid);
+    const field = it && it.key;
+    const cat = it && (it.section_id || it.metric_tab_id);
+    if (field && cat) {
+        const legacy = shopMetricDayRecord(cat, employeeId, day, month);
+        if (legacy && legacy[field] != null && legacy[field] !== "") return true;
+    }
+    return false;
+}
+
+function metricControlCheckStats(employeeId, metricId, month) {
+    const m = month || selectedMonth;
+    const days = daysInMonthValue(m);
+    let done = 0;
+    let fail = 0;
+    let nodata = 0;
+    let excluded = 0;
+    for (let day = 1; day <= days; day++) {
+        const st = shopTimesheetStatus(employeeId, day, m);
+        if (st === "В" || st === "Б" || st === "ОТ" || st === "Л") {
+            excluded += 1;
+            continue;
+        }
+        if (st !== "Я" && st !== "О" && st !== "П") continue;
+        const mark = shopCheckKpiDayState({ metricId: metricId, metric_id: metricId }, employeeId, day, m);
+        if (st === "П") {
+            if (mark === "done") done += 1;
+            else fail += 1;
+            continue;
+        }
+        if (mark === "done") done += 1;
+        else if (mark === "fail") fail += 1;
+        else nodata += 1;
+    }
+    const eligible = done + fail + nodata;
+    return {
+        kind: "check",
+        doneDays: done,
+        failDays: fail,
+        noDataDays: nodata,
+        excludedDays: excluded,
+        eligibleDays: eligible,
+        fact: done,
+        plan: eligible,
+        completion: eligible ? done / eligible : null
+    };
+}
+
+function metricControlNumberStats(employeeId, metricId, month) {
+    const m = month || selectedMonth;
+    const days = daysInMonthValue(m);
+    const home = employeeHomeDeptCode(employeeId);
+    let filled = 0;
+    let empty = 0;
+    let excluded = 0;
+    for (let day = 1; day <= days; day++) {
+        const st = shopTimesheetStatus(employeeId, day, m);
+        if (st === "В" || st === "Б" || st === "ОТ" || st === "Л") {
+            excluded += 1;
+            continue;
+        }
+        if (st !== "Я" && st !== "О" && st !== "П") continue;
+        if (metricControlHasDayValue(employeeId, day, metricId, m)) filled += 1;
+        else empty += 1;
+    }
+    const fact = (home && isGenericMetricsDept(home))
+        ? deptMetricPersonalMonthTotal(home, employeeId, metricId, m)
+        : shopMetricPersonalMonthTotal(employeeId, metricId, m);
+    const kpi = metricControlKpiDef(employeeId, metricId, m);
+    const plan = kpi ? Number(kpi.plan || kpi.limit_value || 0) : 0;
+    const eligible = filled + empty;
+    const fillRate = eligible ? filled / eligible : null;
+    const planRate = plan > 0 ? Math.min(fact / plan, 1) : null;
+    return {
+        kind: "number",
+        filledDays: filled,
+        noDataDays: empty,
+        failDays: 0,
+        excludedDays: excluded,
+        eligibleDays: eligible,
+        fact: fact,
+        plan: plan,
+        hasKpiPlan: plan > 0,
+        fillRate: fillRate,
+        completion: planRate
+    };
+}
+
+function metricControlEvaluateLine(employeeId, metricId, month) {
+    const m = month || selectedMonth;
+    const mid = canonicalMetricId(metricId);
+    const it = shopMetricCatalogById(mid);
+    const name = (it && it.name) || SHOP_KPI_METRIC_NAMES[mid] || mid;
+    const kind = metricControlKind(mid);
+    const tab = it ? metricTabId(it) : "";
+    const home = employeeHomeDeptCode(employeeId);
+    let stats;
+    let status = "ok";
+    let statusLabel = "Выполнено";
+    let inOverall = false;
+    let completion = null;
+    let planLabel = "—";
+    let factLabel = "—";
+    let pctLabel = "—";
+
+    if (kind === "check") {
+        stats = metricControlCheckStats(employeeId, mid, m);
+        completion = stats.completion;
+        inOverall = completion != null;
+        planLabel = stats.eligibleDays ? (stats.eligibleDays + " дн.") : "нет раб. дней";
+        factLabel = stats.doneDays + " сд. / " + stats.failDays + " не сд. / " + stats.noDataDays + " нет данных";
+        pctLabel = completion == null ? "—" : formatShopCoefPct(completion);
+        if (stats.failDays > 0) {
+            status = stats.doneDays > 0 ? "part" : "fail";
+            statusLabel = stats.doneDays > 0 ? "Частично" : "Есть нарушения";
+        } else if (stats.noDataDays > 0) { status = "nodata"; statusLabel = "Нет данных"; }
+        else if (!stats.eligibleDays) { status = "ok"; statusLabel = "Нет рабочих дней"; inOverall = false; }
+        else { status = "ok"; statusLabel = "Выполнено"; }
+    } else if (kind === "revision") {
+        stats = shopRevisionEmployeeMetrics(employeeId, m);
+        const plan = Number(stats.assigned || 0);
+        const fact = Number(stats.done || 0);
+        completion = plan ? Math.min(fact / plan, 1) : null;
+        inOverall = completion != null;
+        planLabel = plan ? String(plan) : "нет назначений";
+        factLabel = fact + (stats.overdue ? (" · просрочено " + stats.overdue) : "");
+        pctLabel = completion == null ? "—" : formatShopCoefPct(completion);
+        if (stats.overdue > 0 || (plan > 0 && fact < plan)) { status = "fail"; statusLabel = "Есть нарушения"; }
+        else if (!plan) { status = "nodata"; statusLabel = "Нет данных"; }
+        else { status = "ok"; statusLabel = "Выполнено"; }
+        stats.kind = "revision";
+        stats.plan = plan;
+        stats.fact = fact;
+        stats.failDays = Number(stats.overdue || 0);
+        stats.noDataDays = plan ? 0 : 1;
+        stats.completion = completion;
+    } else if (kind === "timesheet730") {
+        const extra = shopTimesheet730Fact(employeeId, m, metricControlKpiDef(employeeId, mid, m) || {});
+        const done = Number(extra.doneDays != null ? extra.doneDays : extra.fact) || 0;
+        const later = Number(extra.laterDays != null ? extra.laterDays : extra.later) || 0;
+        const noData = Number(extra.noDataDays != null ? extra.noDataDays : extra.noData) || 0;
+        const skip = Number(extra.skipDays || 0);
+        const planDays = done + later + noData + skip;
+        stats = extra;
+        completion = planDays ? done / planDays : null;
+        inOverall = completion != null;
+        planLabel = planDays ? (planDays + " дн.") : "—";
+        factLabel = done + " вовремя · позже " + later + " · нет данных " + noData + (skip ? (" · прогул " + skip) : "");
+        pctLabel = completion == null ? "—" : formatShopCoefPct(completion);
+        if (later > 0 || skip > 0) {
+            status = done > 0 ? "part" : "fail";
+            statusLabel = done > 0 ? "Частично" : "Есть нарушения";
+        } else if (noData > 0) { status = "nodata"; statusLabel = "Нет данных"; }
+        else { status = "ok"; statusLabel = "Выполнено"; }
+        stats.kind = "timesheet730";
+        stats.failDays = later + skip;
+        stats.noDataDays = noData;
+        stats.completion = completion;
+    } else if (kind === "month") {
+        const kpi = metricControlKpiDef(employeeId, mid, m);
+        const fact = mid === METRIC_WRITEOFF_LOSSES_ID
+            ? shopWriteoffLossesFact(m)
+            : ((home && isGenericMetricsDept(home))
+                ? deptMetricPersonalMonthTotal(home, employeeId, mid, m)
+                : shopMetricPersonalMonthTotal(employeeId, mid, m));
+        const plan = kpi ? Number(kpi.plan || kpi.limit_value || 0) : 0;
+        const maxLimit = !!(kpi && isShopMaxLimitKpi(kpi)) || mid === METRIC_WRITEOFF_LOSSES_ID;
+        const passed = plan ? (maxLimit ? fact <= plan : fact >= plan) : null;
+        if (plan && maxLimit) completion = passed ? 1 : Math.max(0, 1 - (fact - plan) / plan);
+        else if (plan) completion = Math.min(fact / plan, 1);
+        else completion = null;
+        inOverall = plan > 0;
+        planLabel = plan ? money(plan) : "план не задан";
+        factLabel = money(fact);
+        pctLabel = completion == null ? "контроль заполнения" : formatShopCoefPct(Math.min(completion, 1));
+        if (plan && !passed) { status = "fail"; statusLabel = "Есть нарушения"; }
+        else if (!plan) { status = "ok"; statusLabel = "Контроль заполнения"; inOverall = false; }
+        else { status = "ok"; statusLabel = "Выполнено"; }
+        stats = { kind: "month", fact: fact, plan: plan, failDays: plan && !passed ? 1 : 0, noDataDays: 0, completion: completion };
+    } else {
+        stats = metricControlNumberStats(employeeId, mid, m);
+        if (stats.hasKpiPlan) {
+            completion = stats.completion;
+            inOverall = true;
+            planLabel = String(stats.plan);
+            factLabel = String(stats.fact);
+            pctLabel = formatShopCoefPct(completion);
+            if (stats.fact < stats.plan) { status = "fail"; statusLabel = stats.fact > 0 ? "Частично" : "Есть нарушения"; }
+            else if (stats.noDataDays > 0) { status = "nodata"; statusLabel = "Нет данных"; }
+            else { status = "ok"; statusLabel = "Выполнено"; }
+        } else {
+            completion = null;
+            inOverall = false;
+            planLabel = "без KPI-плана";
+            factLabel = stats.fact + " · заполнено " + stats.filledDays + " из " + stats.eligibleDays;
+            pctLabel = stats.fillRate == null ? "—" : ("заполнение " + formatShopCoefPct(stats.fillRate));
+            if (stats.noDataDays > 0) { status = "nodata"; statusLabel = "Нет данных"; }
+            else if (!stats.eligibleDays) { status = "ok"; statusLabel = "Нет рабочих дней"; }
+            else { status = "ok"; statusLabel = "Заполнено"; }
+        }
+    }
+
+    return {
+        metricId: mid,
+        name: name,
+        kind: kind,
+        tab: tab,
+        home: home,
+        status: status,
+        statusLabel: statusLabel,
+        inOverall: inOverall,
+        completion: completion,
+        planLabel: planLabel,
+        factLabel: factLabel,
+        pctLabel: pctLabel,
+        stats: stats
+    };
+}
+
+function metricControlSalesPlanLine(employeeId, month) {
+    const view = salesPlanViewForEmployee(employeeId);
+    if (!view || !salesPlanIsParticipant(view, employeeId, month)) return null;
+    const rec = salesPlanMonth(view, month, false);
+    const plan = Number(rec.plan_sales || 0);
+    const fact = salesPlanFact(view, month);
+    const rate = salesPlanRate(view, month);
+    let status = "ok";
+    let statusLabel = "Выполнено";
+    if (!plan) { status = "nodata"; statusLabel = "План не задан"; }
+    else if (rate < 1) { status = "fail"; statusLabel = "Частично"; }
+    return {
+        metricId: "sales_plan_" + view.id,
+        name: view.title,
+        kind: "salesPlan",
+        collective: true,
+        status: status,
+        statusLabel: statusLabel,
+        inOverall: plan > 0,
+        completion: plan > 0 ? rate : null,
+        planLabel: money(plan),
+        factLabel: money(fact),
+        pctLabel: plan ? formatShopCoefPct(rate) : "—",
+        stats: { failDays: plan && rate < 1 ? 1 : 0, noDataDays: plan ? 0 : 1, overdue: 0 }
+    };
+}
+
+function metricControlEmployeeReport(employee, month) {
+    const m = month || selectedMonth;
+    const ids = shopEmployeeWorkMetricIds(employee.id, m).filter(Boolean);
+    const workLines = ids.map(function (id) { return metricControlEvaluateLine(employee.id, id, m); });
+    const extra = [];
+    const salesLine = metricControlSalesPlanLine(employee.id, m);
+    if (salesLine) extra.push(salesLine);
+    const lines = workLines.concat(extra);
+    let ok = 0;
+    let fail = 0;
+    let nodata = 0;
+    const pcts = [];
+    workLines.forEach(function (line) {
+        if (line.status === "fail" || line.status === "part") fail += 1;
+        else if (line.status === "nodata") nodata += 1;
+        else ok += 1;
+        if (line.inOverall && line.completion != null) pcts.push(line.completion);
+    });
+    extra.forEach(function (line) {
+        if (line.inOverall && line.completion != null) pcts.push(line.completion);
+    });
+    const overall = pcts.length ? pcts.reduce(function (a, b) { return a + b; }, 0) / pcts.length : null;
+    let rowStatus = "ok";
+    let rowLabel = "Все метрики выполнены";
+    if (fail > 0) { rowStatus = "fail"; rowLabel = "Есть невыполненные метрики"; }
+    else if (nodata > 0) { rowStatus = "nodata"; rowLabel = "Есть незаполненные данные"; }
+    const extraFail = extra.some(function (l) { return l.status === "fail" || l.status === "part"; });
+    const extraNodata = extra.some(function (l) { return l.status === "nodata"; });
+    const attention = fail > 0 || nodata > 0 || extraFail || extraNodata
+        || (overall != null && overall < 1)
+        || workLines.some(function (l) { return l.kind === "revision" && l.stats && Number(l.stats.overdue || 0) > 0; });
+    return {
+        employee: employee,
+        home: employeeHome(employee.id),
+        assigned: workLines.length,
+        ok: ok,
+        fail: fail,
+        nodata: nodata,
+        overall: overall,
+        rowStatus: rowStatus,
+        rowLabel: rowLabel,
+        attention: attention,
+        extraFail: extraFail,
+        extraNodata: extraNodata,
+        workLines: workLines,
+        extraLines: extra
+    };
+}
+
+function metricControlPeople() {
+    const f = metricControlFilters;
+    const list = [];
+    if (isSummary()) {
+        summaryDirectoryGroups().forEach(function (g) {
+            if (f.dept && g.dept.code !== f.dept) return;
+            g.employees.forEach(function (e) {
+                if (!e || e.id === SHOP_SELF_CHECKOUT_ID) return;
+                list.push(e);
+            });
+        });
+    } else {
+        directoryEmployees().forEach(function (e) {
+            if (!e || e.id === SHOP_SELF_CHECKOUT_ID) return;
+            list.push(e);
+        });
+    }
+    return list.filter(function (e) {
+        if (f.employeeId && e.id !== f.employeeId) return false;
+        if (f.tab) {
+            const home = employeeHomeDeptCode(e.id);
+            if (employeeWorkTabId(e, home, selectedMonth) !== f.tab) return false;
+        }
+        return shopEmployeeWorkMetricIds(e.id, selectedMonth).length > 0
+            || !!metricControlSalesPlanLine(e.id, selectedMonth);
+    });
+}
+
+function metricControlOpenSource(employeeId, metricId, kind) {
+    if (kind === "salesPlan") {
+        if (allowedSections().indexOf("salesPlan") !== -1) showSection("salesPlan");
+        else toast("План продаж откройте в отделе сотрудника.", "error");
+        return;
+    }
+    if (kind === "revision") {
+        if (allowedSections().indexOf("revision") !== -1) showSection("revision");
+        else toast("Ревизию откройте в магазине или на складе.", "error");
+        return;
+    }
+    const home = employeeHomeDeptCode(employeeId);
+    const it = shopMetricCatalogById(metricId);
+    const tab = it ? metricTabId(it) : "";
+    if (home === "shop") {
+        const sec = tab === "cashiers" ? "metrics-cashiers" : (tab === "managers" ? "metrics-managers" : "metrics-pickers");
+        if (allowedSections().indexOf(sec) !== -1) showSection(sec);
+        else toast("Рабочие метрики откройте в Магазине Володарского.", "error");
+        return;
+    }
+    const sec = "dwork-" + (tab || defaultMetricTabId(home));
+    if (allowedSections().indexOf(sec) !== -1) showSection(sec);
+    else toast("Рабочую вкладку откройте в отделе сотрудника.", "error");
+}
+
+function toggleMetricControlRow(employeeId) {
+    metricControlOpenId = metricControlOpenId === employeeId ? "" : employeeId;
+    renderMetricControl();
+}
+
+function setMetricControlFilter(key, value) {
+    metricControlFilters[key] = value || "";
+    renderMetricControl();
+}
+
+function setMetricControlMonth(year, month) {
+    const y = String(year || "").trim();
+    const mo = String(month || "").padStart(2, "0");
+    if (!/^\d{4}$/.test(y) || !/^\d{2}$/.test(mo)) return;
+    changeMonth(y + "-" + mo);
+}
+
+function metricControlDetailHtml(rep) {
+    function rowsHtml(lines, title) {
+        if (!lines.length) return "";
+        let html = '<div class="mc-block-title">' + escapeHtml(title) + "</div>"
+            + '<table class="mc-sub"><thead><tr><th>Метрика</th><th>План / дни</th><th>Факт</th><th>%</th><th>Статус</th><th></th></tr></thead><tbody>';
+        lines.forEach(function (line) {
+            const cls = line.status === "fail" || line.status === "part" ? "mc-bad" : (line.status === "nodata" ? "mc-warn" : "mc-ok");
+            html += "<tr><td>" + escapeHtml(line.name) + "</td><td>" + escapeHtml(line.planLabel)
+                + "</td><td>" + escapeHtml(line.factLabel) + "</td><td class=\"mc-pct " + cls + "\">"
+                + escapeHtml(line.pctLabel) + "</td><td class=\"" + cls + "\">" + escapeHtml(line.statusLabel)
+                + "</td><td><button type=\"button\" class=\"mc-link\" onclick=\"event.stopPropagation();metricControlOpenSource('"
+                + rep.employee.id + "','" + line.metricId + "','" + line.kind + "')\">Открыть</button></td></tr>";
+        });
+        return html + "</tbody></table>";
+    }
+    return rowsHtml(rep.workLines, "Рабочие метрики")
+        + rowsHtml(rep.extraLines, "Коллективные KPI / планы");
+}
+
+function renderMetricControl() {
+    const box = document.getElementById("metricControlBody");
+    const filters = document.getElementById("metricControlFilters");
+    if (!box || !filters) return;
+    const parts = String(selectedMonth || "").split("-");
+    const year = parts[0] || String(new Date().getFullYear());
+    const month = parts[1] || "01";
+    const years = {};
+    years[year] = true;
+    years[String(Number(year) - 1)] = true;
+    years[String(Number(year) + 1)] = true;
+    const f = metricControlFilters;
+    let deptOpts = '<option value="">Все подразделения</option>';
+    DEPT_DEFAULTS.forEach(function (d) {
+        deptOpts += '<option value="' + d.code + '"' + (f.dept === d.code ? " selected" : "") + ">"
+            + escapeHtml(d.name) + "</option>";
+    });
+    const tabDept = f.dept || (!isSummary() && workspace() ? workspace().code : "");
+    let tabOpts = '<option value="">Все группы</option>';
+    metricTabsForDept(tabDept).forEach(function (t) {
+        tabOpts += '<option value="' + t.id + '"' + (f.tab === t.id ? " selected" : "") + ">"
+            + escapeHtml(t.label) + "</option>";
+    });
+    let empOpts = '<option value="">Все сотрудники</option>';
+    const peopleAll = metricControlPeople();
+    const byId = {};
+    peopleAll.forEach(function (e) { byId[e.id] = e; });
+    (isSummary() ? summaryDirectoryGroups().reduce(function (acc, g) {
+        return acc.concat(g.employees || []);
+    }, []) : directoryEmployees()).forEach(function (e) {
+        if (!e || !e.id) return;
+        empOpts += '<option value="' + e.id + '"' + (f.employeeId === e.id ? " selected" : "") + ">"
+            + escapeHtml(e.name) + "</option>";
+    });
+    filters.innerHTML = '<div class="form-group"><label>Год</label><select id="mcYearSel" onchange="setMetricControlMonth(this.value, document.getElementById(\'mcMonthSel\').value)">'
+        + Object.keys(years).sort().map(function (y) {
+            return '<option value="' + y + '"' + (y === year ? " selected" : "") + ">" + y + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Месяц</label><select id="mcMonthSel" onchange="setMetricControlMonth(document.getElementById(\'mcYearSel\').value, this.value)">'
+        + MONTH_FULL.map(function (name, i) {
+            const mm = String(i + 1).padStart(2, "0");
+            return '<option value="' + mm + '"' + (mm === month ? " selected" : "") + ">" + name + "</option>";
+        }).join("") + "</select></div>"
+        + (isSummary() ? '<div class="form-group mc-grow"><label>Подразделение</label><select onchange="setMetricControlFilter(\'dept\',this.value)">' + deptOpts + "</select></div>" : "")
+        + '<div class="form-group"><label>Рабочая группа</label><select onchange="setMetricControlFilter(\'tab\',this.value)">' + tabOpts + "</select></div>"
+        + '<div class="form-group mc-grow"><label>Сотрудник</label><select onchange="setMetricControlFilter(\'employeeId\',this.value)">' + empOpts + "</select></div>"
+        + '<div class="form-group"><label>Статус</label><select onchange="setMetricControlFilter(\'status\',this.value)">'
+        + '<option value="all"' + (f.status === "all" ? " selected" : "") + ">Все</option>"
+        + '<option value="ok"' + (f.status === "ok" ? " selected" : "") + ">Выполняет</option>"
+        + '<option value="fail"' + (f.status === "fail" ? " selected" : "") + ">Есть нарушения</option>"
+        + '<option value="nodata"' + (f.status === "nodata" ? " selected" : "") + ">Нет данных</option>"
+        + "</select></div>"
+        + '<label class="mc-attn"><input type="checkbox" ' + (f.attention ? "checked" : "")
+        + ' onchange="setMetricControlFilter(\'attention\',this.checked ? \'1\' : \'\')"> Требует внимания</label>'
+        + '<div class="form-group"><label>Сортировка</label><select onchange="setMetricControlFilter(\'sort\',this.value)">'
+        + '<option value="name"' + (f.sort === "name" ? " selected" : "") + ">По ФИО</option>"
+        + '<option value="pct"' + (f.sort === "pct" ? " selected" : "") + ">По % выполнения</option>"
+        + '<option value="fail"' + (f.sort === "fail" ? " selected" : "") + ">Сначала с нарушениями</option>"
+        + '<option value="nodata"' + (f.sort === "nodata" ? " selected" : "") + ">Сначала нет данных</option>"
+        + "</select></div>";
+
+    let reports = metricControlPeople().map(function (e) { return metricControlEmployeeReport(e, selectedMonth); });
+    reports = reports.filter(function (rep) {
+        if (f.attention && !rep.attention) return false;
+        if (f.status === "ok") return rep.rowStatus === "ok" && !rep.extraFail;
+        if (f.status === "fail") return rep.rowStatus === "fail" || rep.extraFail;
+        if (f.status === "nodata") return rep.rowStatus === "nodata" || rep.extraNodata;
+        return true;
+    });
+    reports.sort(function (a, b) {
+        if (f.sort === "pct") return (a.overall == null ? -1 : a.overall) - (b.overall == null ? -1 : b.overall);
+        if (f.sort === "fail") return (b.fail - a.fail) || compareEmployeesByStatusThenName(a.employee, b.employee);
+        if (f.sort === "nodata") return (b.nodata - a.nodata) || compareEmployeesByStatusThenName(a.employee, b.employee);
+        return compareEmployeesByStatusThenName(a.employee, b.employee);
+    });
+    if (!reports.length) {
+        box.innerHTML = '<tr><td colspan="7"><div class="empty-row">Нет сотрудников с назначенными рабочими метриками за этот месяц.</div></td></tr>';
+        return;
+    }
+    let html = "";
+    reports.forEach(function (rep) {
+        const open = metricControlOpenId === rep.employee.id;
+        const cls = rep.rowStatus === "fail" ? "mc-bad" : (rep.rowStatus === "nodata" ? "mc-warn" : "mc-ok");
+        const home = officialName(rep.home);
+        html += '<tr class="mc-row' + (open ? " open" : "") + '" onclick="toggleMetricControlRow(\'' + rep.employee.id + "')\">"
+            + "<td><strong>" + escapeHtml(rep.employee.name) + "</strong>"
+            + (isSummary() ? '<div class="note">' + escapeHtml(home || "") + "</div>" : "")
+            + "</td><td>" + rep.assigned + "</td><td>" + rep.ok + "</td><td>"
+            + (rep.fail ? '<span class="mc-bad">' + rep.fail + "</span>" : "0")
+            + "</td><td>" + (rep.nodata ? '<span class="mc-warn">' + rep.nodata + "</span>" : "0")
+            + "</td><td class=\"mc-pct " + cls + "\">" + (rep.overall == null ? "—" : formatShopCoefPct(rep.overall))
+            + "</td><td class=\"" + cls + "\">" + escapeHtml(rep.rowLabel) + "</td></tr>";
+        if (open) {
+            html += '<tr class="mc-detail"><td colspan="7">' + metricControlDetailHtml(rep) + "</td></tr>";
+        }
+    });
+    box.innerHTML = html;
+}
+
 function renderDiscipline() {
     if (currentWorkspaceIndex === null) return;
     if (isSummary() && currentSummaryRole !== "admin") return;
 
+    const lateCard = document.getElementById("disciplineLateCard");
+    const metricsCard = document.getElementById("disciplineMetricsCard");
+    const tabLate = document.getElementById("discTabLate");
+    const tabMetrics = document.getElementById("discTabMetrics");
+    if (tabLate) tabLate.classList.toggle("active", disciplinePanel !== "metrics");
+    if (tabMetrics) tabMetrics.classList.toggle("active", disciplinePanel === "metrics");
+    if (lateCard) lateCard.style.display = disciplinePanel === "metrics" ? "none" : "";
+    if (metricsCard) metricsCard.style.display = disciplinePanel === "metrics" ? "" : "none";
+
     const extraDept = isSummary();
     const note = document.getElementById("disciplineNote");
     if (note) {
-        note.textContent = extraDept
-            ? "Дисциплина по всем сотрудникам отделов за выбранный месяц. Уволенные внизу и неактивны."
-            : "Оценка строится по числу опозданий за выбранный месяц в этом отделе. Уволенные опускаются вниз.";
+        if (disciplinePanel === "metrics") {
+            note.textContent = extraDept
+                ? "Контроль назначенных рабочих метрик по отделам за выбранный месяц. Факты здесь не вводятся."
+                : "Контроль назначенных рабочих метрик этого отдела за выбранный месяц. Факты из рабочих вкладок, Табеля и Ревизии.";
+        } else {
+            note.textContent = extraDept
+                ? "Дисциплина по всем сотрудникам отделов за выбранный месяц. Уволенные внизу и неактивны."
+                : "Оценка строится по числу опозданий за выбранный месяц в этом отделе. Уволенные опускаются вниз.";
+        }
+    }
+    if (disciplinePanel === "metrics") {
+        renderMetricControl();
+        return;
     }
 
     const head = document.getElementById("disciplineHead");
