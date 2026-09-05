@@ -1496,58 +1496,6 @@
             font-weight: 700;
         }
 
-        .mc-toolbar {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px 10px;
-            align-items: end;
-            margin-bottom: 10px;
-        }
-        .mc-toolbar .form-group { margin: 0; min-width: 120px; }
-        .mc-toolbar .form-group.mc-grow { min-width: 160px; }
-        .mc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        .mc-table th,
-        .mc-table td {
-            border-bottom: 1px solid var(--border);
-            padding: 6px 8px;
-            height: 34px;
-            text-align: left;
-            white-space: nowrap;
-        }
-        .mc-table th { font-size: 11px; color: var(--muted); font-weight: 700; background: #f8fafc; }
-        .mc-table td.mc-pct { font-variant-numeric: tabular-nums; font-weight: 700; }
-        .mc-row { cursor: pointer; }
-        .mc-row:hover td { background: #f1f5f9; }
-        .mc-row.open td { background: #eef2ff; }
-        .mc-ok { color: #166534; }
-        .mc-warn { color: #a16207; }
-        .mc-bad { color: #b91c1c; font-weight: 700; }
-        .mc-muted { color: var(--muted); }
-        .mc-detail td { background: #f8fafc; padding: 8px 10px 12px; height: auto; white-space: normal; }
-        .mc-sub { width: 100%; border-collapse: collapse; font-size: 12px; }
-        .mc-sub th,
-        .mc-sub td { border-bottom: 1px solid #e5e7eb; padding: 5px 6px; height: 30px; }
-        .mc-sub th { color: var(--muted); font-size: 11px; }
-        .mc-link {
-            border: 0;
-            background: none;
-            color: var(--primary-dark);
-            cursor: pointer;
-            padding: 0;
-            font: inherit;
-            text-decoration: underline;
-        }
-        .mc-attn {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 12px;
-            font-weight: 600;
-            color: #9a3412;
-            padding-bottom: 4px;
-            white-space: nowrap;
-        }
-
         /* =========================================================
            Сотрудники: подбор и справочник
         ========================================================= */
@@ -1757,6 +1705,59 @@
             color: var(--muted);
             top: 33px;
         }
+
+        .mc-table { width: 100%; }
+        .mc-table th,
+        .mc-table td {
+            font-size: 12px;
+            padding: 6px 8px;
+            height: 34px;
+            text-align: center;
+            white-space: nowrap;
+        }
+        .mc-table td:first-child,
+        .mc-table th:first-child { text-align: left; }
+        .mc-name-btn {
+            border: 0;
+            background: transparent;
+            padding: 0;
+            font: inherit;
+            font-weight: 700;
+            color: inherit;
+            cursor: pointer;
+            text-align: left;
+        }
+        .mc-name-btn:hover { color: var(--primary-dark, #1d4ed8); }
+        .mc-st-ok { color: #166534; font-weight: 700; }
+        .mc-st-fail { color: #b91c1c; font-weight: 700; }
+        .mc-st-warn { color: #a16207; font-weight: 700; }
+        .mc-st-muted { color: #64748b; }
+        tr.mc-row-fail td { background: #fef2f2; }
+        tr.mc-row-warn td { background: #fffbeb; }
+        tr.mc-row-open td { outline: 1px solid #cbd5e1; }
+        tr.mc-expand td { height: auto; white-space: normal; text-align: left; background: #f8fafc; padding: 8px; }
+        .mc-detail {
+            margin: 0 0 10px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #f8fafc;
+        }
+        .mc-detail table th,
+        .mc-detail table td {
+            font-size: 11px;
+            padding: 5px 6px;
+            text-align: left;
+        }
+        .mc-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 10px;
+            align-items: end;
+            margin-bottom: 10px;
+        }
+        .mc-filters .form-group { margin: 0; min-width: 120px; }
+        .mc-filters label { font-size: 11px; }
 
         .pick-row {
             display: grid;
@@ -3061,17 +3062,24 @@
                     <div class="card-header">
                         <div>
                             <div class="card-title">Дисциплина</div>
-                            <div class="note" id="disciplineNote">Оценка строится по числу опозданий за выбранный месяц в этом отделе.</div>
+                            <div class="note">Два отдельных контроля: опоздания по табелю и выполнение назначенных рабочих метрик.</div>
                         </div>
                         <div class="toolbar">
                             <div class="metrics-tabs">
-                                <button type="button" class="metrics-tab active" id="discTabLate" onclick="setDisciplinePanel('late')">Контроль дисциплины</button>
+                                <button type="button" class="metrics-tab" id="discTabLate" onclick="setDisciplinePanel('late')">Контроль дисциплины</button>
                                 <button type="button" class="metrics-tab" id="discTabMetrics" onclick="setDisciplinePanel('metrics')">Контроль выполнения метрик</button>
                             </div>
                         </div>
                     </div>
                 </div>
                 <div class="card" id="disciplineLateCard">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Контроль дисциплины</div>
+                            <div class="note" id="disciplineNote">Оценка строится по числу опозданий за выбранный месяц в этом отделе.</div>
+                        </div>
+                    </div>
+
                     <div class="table-wrapper">
                         <table class="analysis-table">
                             <thead id="disciplineHead">
@@ -3094,9 +3102,16 @@
                     </div>
                 </div>
                 <div class="card" id="disciplineMetricsCard" style="display:none">
-                    <div class="mc-toolbar" id="metricControlFilters"></div>
-                    <div class="table-wrapper" style="max-height:none">
-                        <table class="mc-table">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Контроль выполнения метрик</div>
+                            <div class="note">Только назначенные рабочие метрики сотрудника. Факты те же, что во вкладках метрик, ревизии и плана продаж. Здесь ничего не заполняется.</div>
+                        </div>
+                    </div>
+                    <div class="mc-filters" id="metricControlFilters"></div>
+                    <div id="metricControlDetail"></div>
+                    <div class="table-wrapper">
+                        <table class="analysis-table mc-table" id="metricControlTable">
                             <thead>
                                 <tr>
                                     <th>Сотрудник</th>
@@ -3104,7 +3119,7 @@
                                     <th>Выполняет</th>
                                     <th>Не выполняет</th>
                                     <th>Нет данных</th>
-                                    <th>%</th>
+                                    <th>Выполнение %</th>
                                     <th>Статус</th>
                                 </tr>
                             </thead>
@@ -3454,7 +3469,14 @@ let deptMetricTab = "";
 let timesheetWorkTabFilterByDept = {};
 let revisionPanel = "schedule";
 let disciplinePanel = "late";
-let metricControlFilters = { dept: "", tab: "", employeeId: "", status: "all", sort: "name", attention: "" };
+let metricControlFilters = {
+    dept: "",
+    workTab: "",
+    employeeId: "",
+    status: "all",
+    attention: false,
+    sort: "name"
+};
 let metricControlOpenId = "";
 let revisionFocusGroupId = "";
 let revisionFocusFolderId = "";
@@ -6472,7 +6494,7 @@ function sectionTitle(id) {
         warehouseSalary: "Зарплата Склада",
         driversSalary: "Зарплата Водителей",
         summaryStaff: "Сотрудники",
-        discipline: disciplinePanel === "metrics" ? "Контроль выполнения метрик" : "Контроль дисциплины",
+        discipline: "Дисциплина",
         analysis: "Анализ",
         fio: "ФИО сотрудника",
         employees: "В табель",
@@ -13927,16 +13949,27 @@ function setDisciplinePanel(id) {
     renderDiscipline();
 }
 
-function metricControlKind(metricId) {
-    const mid = canonicalMetricId(metricId);
-    if (mid === "metric_revision") return "revision";
-    if (mid === "metric_arrival_730") return "timesheet730";
-    if (mid === METRIC_WRITEOFF_LOSSES_ID) return "month";
-    const it = shopMetricCatalogById(mid);
+function metricControlCanView() {
+    if (isSummary()) return currentSummaryRole === "admin";
+    return currentWorkspaceIndex !== null;
+}
+
+function metricControlCatalogItem(metricId) {
+    return shopMetricCatalogById(canonicalMetricId(metricId));
+}
+
+function metricControlIsCheck(metricId) {
+    const it = metricControlCatalogItem(metricId);
     const ft = it && it.fill_type;
-    if (ft === "month_money") return "month";
-    if (ft === "check" || ft === "done_not_done" || ft === "boolean") return "check";
-    return "number";
+    if (ft === "check" || ft === "done_not_done" || ft === "boolean") return true;
+    if (metricId === METRIC_SHELF_LABELS_ID) return true;
+    return false;
+}
+
+function metricControlIsMonthMetric(metricId) {
+    const it = metricControlCatalogItem(metricId);
+    const ft = it && it.fill_type;
+    return ft === "month_money" || metricId === METRIC_WRITEOFF_LOSSES_ID || metricId === "metric_revision";
 }
 
 function metricControlKpiDef(employeeId, metricId, month) {
@@ -13950,363 +13983,385 @@ function metricControlKpiDef(employeeId, metricId, month) {
     return found;
 }
 
-function metricControlHasDayValue(employeeId, day, metricId, month) {
+function metricControlCheckDayState(employeeId, metricId, day, month) {
     const mid = canonicalMetricId(metricId);
     const home = employeeHomeDeptCode(employeeId);
-    if (home && isGenericMetricsDept(home)) {
-        const rec = deptMetricFactsMonth(home, month)[employeeId];
-        const dayRec = rec && rec[String(day)];
-        return !!(dayRec && dayRec[mid] != null && dayRec[mid] !== "");
+    if (home && home !== "shop") return deptMetricCheckState(home, employeeId, day, mid, month) || "";
+    const it = metricControlCatalogItem(mid);
+    const cat = (it && (it.section_id || it.metric_tab_id)) || "";
+    const field = (it && it.key) || "";
+    if (!cat || !field) return "";
+    return shopMetricCheckState(cat, employeeId, day, field, month) || "";
+}
+
+function metricControlNumericHasFact(employeeId, metricId, day, month) {
+    const mid = canonicalMetricId(metricId);
+    const home = employeeHomeDeptCode(employeeId);
+    if (home && home !== "shop") {
+        const rec = (deptMetricFactsMonth(home, month)[employeeId] || {})[String(day)];
+        return !!(rec && rec[mid] != null && rec[mid] !== "");
     }
-    const rec = shopMetricFactsMonth(month)[employeeId];
-    const dayRec = rec && rec[String(day)];
-    if (dayRec && dayRec[mid] != null && dayRec[mid] !== "") return true;
-    const it = shopMetricCatalogById(mid);
-    const field = it && it.key;
+    if (shopMetricUsesFacts(mid)) {
+        const rec = (shopMetricFactsMonth(month)[employeeId] || {})[String(day)];
+        if (rec && rec[mid] != null && rec[mid] !== "") return true;
+    }
+    const it = metricControlCatalogItem(mid);
     const cat = it && (it.section_id || it.metric_tab_id);
-    if (field && cat) {
-        const legacy = shopMetricDayRecord(cat, employeeId, day, month);
-        if (legacy && legacy[field] != null && legacy[field] !== "") return true;
+    const field = it && it.key;
+    if (!cat || !field) return false;
+    const rec = shopMetricDayRecord(cat, employeeId, day, month);
+    return !!(rec && rec[field] != null && rec[field] !== "");
+}
+
+function metricControlDailyLoop(employeeId, month, each) {
+    const m = month || selectedMonth;
+    const days = daysInMonthValue(m);
+    for (let day = 1; day <= days; day++) {
+        const st = shopTimesheetStatus(employeeId, day, m);
+        if (st === "В" || st === "ОТ" || st === "Б" || st === "Л") {
+            each({ day: day, kind: "excluded", ts: st });
+            continue;
+        }
+        if (!st) {
+            each({ day: day, kind: "empty", ts: "" });
+            continue;
+        }
+        each({ day: day, kind: "eligible", ts: st });
     }
-    return false;
 }
 
 function metricControlCheckStats(employeeId, metricId, month) {
     const m = month || selectedMonth;
-    const days = daysInMonthValue(m);
     let done = 0;
     let fail = 0;
-    let nodata = 0;
+    let noData = 0;
     let excluded = 0;
-    for (let day = 1; day <= days; day++) {
-        const st = shopTimesheetStatus(employeeId, day, m);
-        if (st === "В" || st === "Б" || st === "ОТ" || st === "Л") {
+    let eligible = 0;
+    metricControlDailyLoop(employeeId, m, function (row) {
+        if (row.kind === "excluded") {
             excluded += 1;
-            continue;
+            return;
         }
-        if (st !== "Я" && st !== "О" && st !== "П") continue;
-        const mark = shopCheckKpiDayState({ metricId: metricId, metric_id: metricId }, employeeId, day, m);
-        if (st === "П") {
-            if (mark === "done") done += 1;
-            else fail += 1;
-            continue;
-        }
+        if (row.kind !== "eligible") return;
+        eligible += 1;
+        const mark = metricControlCheckDayState(employeeId, metricId, row.day, m);
         if (mark === "done") done += 1;
         else if (mark === "fail") fail += 1;
-        else nodata += 1;
-    }
-    const eligible = done + fail + nodata;
+        else noData += 1;
+    });
     return {
         kind: "check",
         doneDays: done,
         failDays: fail,
-        noDataDays: nodata,
+        noDataDays: noData,
         excludedDays: excluded,
         eligibleDays: eligible,
-        fact: done,
         plan: eligible,
-        completion: eligible ? done / eligible : null
+        fact: done,
+        rate: eligible ? done / eligible : null
     };
 }
 
-function metricControlNumberStats(employeeId, metricId, month) {
+function metricControlNumericStats(employeeId, metricId, month) {
     const m = month || selectedMonth;
-    const days = daysInMonthValue(m);
     const home = employeeHomeDeptCode(employeeId);
+    const keep = selectedMonth;
+    selectedMonth = m;
+    const fact = home && home !== "shop"
+        ? deptMetricPersonalMonthTotal(home, employeeId, metricId, m)
+        : (SHOP_QTY_FACT_METRIC_IDS[metricId] || shopMetricUsesFacts(metricId)
+            ? shopMetricPersonalMonthTotal(employeeId, metricId, m)
+            : (function () {
+                const it = metricControlCatalogItem(metricId);
+                const cat = it && (it.section_id || it.metric_tab_id);
+                if (!cat) return 0;
+                const tot = shopMetricEmployeeTotals(shopMetricCategoryById(cat), employeeId);
+                const field = it && it.key;
+                return Number((tot && field && tot[field]) || 0);
+            })());
+    selectedMonth = keep;
     let filled = 0;
     let empty = 0;
-    let excluded = 0;
-    for (let day = 1; day <= days; day++) {
-        const st = shopTimesheetStatus(employeeId, day, m);
-        if (st === "В" || st === "Б" || st === "ОТ" || st === "Л") {
-            excluded += 1;
-            continue;
-        }
-        if (st !== "Я" && st !== "О" && st !== "П") continue;
-        if (metricControlHasDayValue(employeeId, day, metricId, m)) filled += 1;
+    let eligible = 0;
+    metricControlDailyLoop(employeeId, m, function (row) {
+        if (row.kind !== "eligible") return;
+        eligible += 1;
+        if (metricControlNumericHasFact(employeeId, metricId, row.day, m)) filled += 1;
         else empty += 1;
+    });
+    const def = metricControlKpiDef(employeeId, metricId, m);
+    const plan = def ? Number(def.plan || def.limit_value || 0) : 0;
+    const maxLimit = def && isShopMaxLimitKpi(shopRuleFromKpiDef(def, employeeId));
+    let rate = null;
+    if (plan > 0) {
+        rate = maxLimit
+            ? (Number(fact) <= plan ? 1 : 0)
+            : Math.min(Number(fact) / plan, 1);
     }
-    const fact = (home && isGenericMetricsDept(home))
-        ? deptMetricPersonalMonthTotal(home, employeeId, metricId, m)
-        : shopMetricPersonalMonthTotal(employeeId, metricId, m);
-    const kpi = metricControlKpiDef(employeeId, metricId, m);
-    const plan = kpi ? Number(kpi.plan || kpi.limit_value || 0) : 0;
-    const eligible = filled + empty;
-    const fillRate = eligible ? filled / eligible : null;
-    const planRate = plan > 0 ? Math.min(fact / plan, 1) : null;
     return {
-        kind: "number",
-        filledDays: filled,
-        noDataDays: empty,
-        failDays: 0,
-        excludedDays: excluded,
-        eligibleDays: eligible,
+        kind: "numeric",
         fact: fact,
         plan: plan,
-        hasKpiPlan: plan > 0,
-        fillRate: fillRate,
-        completion: planRate
+        rate: rate,
+        fillRate: eligible ? filled / eligible : null,
+        filledDays: filled,
+        noDataDays: empty,
+        eligibleDays: eligible,
+        maxLimit: !!maxLimit,
+        hasKpiPlan: plan > 0
     };
 }
 
-function metricControlEvaluateLine(employeeId, metricId, month) {
-    const m = month || selectedMonth;
-    const mid = canonicalMetricId(metricId);
-    const it = shopMetricCatalogById(mid);
-    const name = (it && it.name) || SHOP_KPI_METRIC_NAMES[mid] || mid;
-    const kind = metricControlKind(mid);
-    const tab = it ? metricTabId(it) : "";
-    const home = employeeHomeDeptCode(employeeId);
-    let stats;
-    let status = "ok";
-    let statusLabel = "Выполнено";
-    let inOverall = false;
-    let completion = null;
-    let planLabel = "—";
-    let factLabel = "—";
-    let pctLabel = "—";
-
-    if (kind === "check") {
-        stats = metricControlCheckStats(employeeId, mid, m);
-        completion = stats.completion;
-        inOverall = completion != null;
-        planLabel = stats.eligibleDays ? (stats.eligibleDays + " дн.") : "нет раб. дней";
-        factLabel = stats.doneDays + " сд. / " + stats.failDays + " не сд. / " + stats.noDataDays + " нет данных";
-        pctLabel = completion == null ? "—" : formatShopCoefPct(completion);
-        if (stats.failDays > 0) {
-            status = stats.doneDays > 0 ? "part" : "fail";
-            statusLabel = stats.doneDays > 0 ? "Частично" : "Есть нарушения";
-        } else if (stats.noDataDays > 0) { status = "nodata"; statusLabel = "Нет данных"; }
-        else if (!stats.eligibleDays) { status = "ok"; statusLabel = "Нет рабочих дней"; inOverall = false; }
-        else { status = "ok"; statusLabel = "Выполнено"; }
-    } else if (kind === "revision") {
-        stats = shopRevisionEmployeeMetrics(employeeId, m);
-        const plan = Number(stats.assigned || 0);
-        const fact = Number(stats.done || 0);
-        completion = plan ? Math.min(fact / plan, 1) : null;
-        inOverall = completion != null;
-        planLabel = plan ? String(plan) : "нет назначений";
-        factLabel = fact + (stats.overdue ? (" · просрочено " + stats.overdue) : "");
-        pctLabel = completion == null ? "—" : formatShopCoefPct(completion);
-        if (stats.overdue > 0 || (plan > 0 && fact < plan)) { status = "fail"; statusLabel = "Есть нарушения"; }
-        else if (!plan) { status = "nodata"; statusLabel = "Нет данных"; }
-        else { status = "ok"; statusLabel = "Выполнено"; }
-        stats.kind = "revision";
-        stats.plan = plan;
-        stats.fact = fact;
-        stats.failDays = Number(stats.overdue || 0);
-        stats.noDataDays = plan ? 0 : 1;
-        stats.completion = completion;
-    } else if (kind === "timesheet730") {
-        const extra = shopTimesheet730Fact(employeeId, m, metricControlKpiDef(employeeId, mid, m) || {});
-        const done = Number(extra.doneDays != null ? extra.doneDays : extra.fact) || 0;
-        const later = Number(extra.laterDays != null ? extra.laterDays : extra.later) || 0;
-        const noData = Number(extra.noDataDays != null ? extra.noDataDays : extra.noData) || 0;
-        const skip = Number(extra.skipDays || 0);
-        const planDays = done + later + noData + skip;
-        stats = extra;
-        completion = planDays ? done / planDays : null;
-        inOverall = completion != null;
-        planLabel = planDays ? (planDays + " дн.") : "—";
-        factLabel = done + " вовремя · позже " + later + " · нет данных " + noData + (skip ? (" · прогул " + skip) : "");
-        pctLabel = completion == null ? "—" : formatShopCoefPct(completion);
-        if (later > 0 || skip > 0) {
-            status = done > 0 ? "part" : "fail";
-            statusLabel = done > 0 ? "Частично" : "Есть нарушения";
-        } else if (noData > 0) { status = "nodata"; statusLabel = "Нет данных"; }
-        else { status = "ok"; statusLabel = "Выполнено"; }
-        stats.kind = "timesheet730";
-        stats.failDays = later + skip;
-        stats.noDataDays = noData;
-        stats.completion = completion;
-    } else if (kind === "month") {
-        const kpi = metricControlKpiDef(employeeId, mid, m);
-        const fact = mid === METRIC_WRITEOFF_LOSSES_ID
-            ? shopWriteoffLossesFact(m)
-            : ((home && isGenericMetricsDept(home))
-                ? deptMetricPersonalMonthTotal(home, employeeId, mid, m)
-                : shopMetricPersonalMonthTotal(employeeId, mid, m));
-        const plan = kpi ? Number(kpi.plan || kpi.limit_value || 0) : 0;
-        const maxLimit = !!(kpi && isShopMaxLimitKpi(kpi)) || mid === METRIC_WRITEOFF_LOSSES_ID;
-        const passed = plan ? (maxLimit ? fact <= plan : fact >= plan) : null;
-        if (plan && maxLimit) completion = passed ? 1 : Math.max(0, 1 - (fact - plan) / plan);
-        else if (plan) completion = Math.min(fact / plan, 1);
-        else completion = null;
-        inOverall = plan > 0;
-        planLabel = plan ? money(plan) : "план не задан";
-        factLabel = money(fact);
-        pctLabel = completion == null ? "контроль заполнения" : formatShopCoefPct(Math.min(completion, 1));
-        if (plan && !passed) { status = "fail"; statusLabel = "Есть нарушения"; }
-        else if (!plan) { status = "ok"; statusLabel = "Контроль заполнения"; inOverall = false; }
-        else { status = "ok"; statusLabel = "Выполнено"; }
-        stats = { kind: "month", fact: fact, plan: plan, failDays: plan && !passed ? 1 : 0, noDataDays: 0, completion: completion };
-    } else {
-        stats = metricControlNumberStats(employeeId, mid, m);
-        if (stats.hasKpiPlan) {
-            completion = stats.completion;
-            inOverall = true;
-            planLabel = String(stats.plan);
-            factLabel = String(stats.fact);
-            pctLabel = formatShopCoefPct(completion);
-            if (stats.fact < stats.plan) { status = "fail"; statusLabel = stats.fact > 0 ? "Частично" : "Есть нарушения"; }
-            else if (stats.noDataDays > 0) { status = "nodata"; statusLabel = "Нет данных"; }
-            else { status = "ok"; statusLabel = "Выполнено"; }
-        } else {
-            completion = null;
-            inOverall = false;
-            planLabel = "без KPI-плана";
-            factLabel = stats.fact + " · заполнено " + stats.filledDays + " из " + stats.eligibleDays;
-            pctLabel = stats.fillRate == null ? "—" : ("заполнение " + formatShopCoefPct(stats.fillRate));
-            if (stats.noDataDays > 0) { status = "nodata"; statusLabel = "Нет данных"; }
-            else if (!stats.eligibleDays) { status = "ok"; statusLabel = "Нет рабочих дней"; }
-            else { status = "ok"; statusLabel = "Заполнено"; }
-        }
-    }
-
+function metricControlRevisionStats(employeeId, month) {
+    const st = shopRevisionEmployeeMetrics(employeeId, month);
+    const plan = Number(st.assigned || 0);
+    const fact = Number(st.done || 0);
+    const overdue = Number(st.overdue || 0);
     return {
-        metricId: mid,
-        name: name,
-        kind: kind,
-        tab: tab,
-        home: home,
-        status: status,
-        statusLabel: statusLabel,
-        inOverall: inOverall,
-        completion: completion,
-        planLabel: planLabel,
-        factLabel: factLabel,
-        pctLabel: pctLabel,
-        stats: stats
+        kind: "revision",
+        plan: plan,
+        fact: fact,
+        overdue: overdue,
+        rate: plan ? fact / plan : (fact ? 1 : null),
+        failDays: overdue,
+        noDataDays: plan || fact ? 0 : 1
     };
 }
 
-function metricControlSalesPlanLine(employeeId, month) {
+function metricControl730Stats(employeeId, month) {
+    const def = metricControlKpiDef(employeeId, "metric_arrival_730", month);
+    const extra = shopTimesheet730Fact(employeeId, month, def || {});
+    const eligible = Number(extra.doneDays || 0) + Number(extra.laterDays || 0)
+        + Number(extra.skipDays || 0) + Number(extra.noDataDays || 0);
+    const fact = Number(extra.fact || 0);
+    return {
+        kind: "timesheet730",
+        plan: eligible,
+        fact: fact,
+        rate: eligible ? fact / eligible : null,
+        doneDays: extra.doneDays,
+        failDays: extra.failDays,
+        noDataDays: extra.noDataDays,
+        eligibleDays: eligible
+    };
+}
+
+function metricControlLineStatus(line) {
+    if (line.kind === "check") {
+        if (line.failDays > 0) return "fail";
+        if (line.noDataDays > 0) return "nodata";
+        if (!line.eligibleDays) return "empty";
+        return "ok";
+    }
+    if (line.kind === "revision") {
+        if (line.overdue > 0 || (line.plan > 0 && line.fact < line.plan)) return "fail";
+        if (!line.plan && !line.fact) return "nodata";
+        return "ok";
+    }
+    if (line.kind === "timesheet730") {
+        if (line.failDays > 0) return "fail";
+        if (line.noDataDays > 0) return "nodata";
+        if (line.rate != null && line.rate < 1) return "fail";
+        return "ok";
+    }
+    if (line.kind === "sales") {
+        if (!line.plan) return "empty";
+        if (line.rate < 1) return "fail";
+        return "ok";
+    }
+    if (line.kind === "month") {
+        if (line.hasKpiPlan) {
+            if (line.maxLimit) return Number(line.fact) <= Number(line.plan) ? "ok" : "fail";
+            return line.rate >= 1 ? "ok" : "fail";
+        }
+        return Number(line.fact) ? "ok" : "nodata";
+    }
+    if (line.hasKpiPlan) {
+        if (line.maxLimit) return line.rate >= 1 ? "ok" : "fail";
+        if (line.rate != null && line.rate < 1) return "fail";
+        return "ok";
+    }
+    if (line.noDataDays > 0 && line.filledDays === 0) return "nodata";
+    if (line.noDataDays > 0) return "nodata";
+    return "ok";
+}
+
+function metricControlBuildLine(employeeId, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    const it = metricControlCatalogItem(mid);
+    const name = (it && it.name) || SHOP_KPI_METRIC_NAMES[mid] || mid;
+    let stats;
+    if (mid === "metric_revision") stats = metricControlRevisionStats(employeeId, month);
+    else if (mid === "metric_arrival_730") stats = metricControl730Stats(employeeId, month);
+    else if (mid === METRIC_WRITEOFF_LOSSES_ID || (it && it.fill_type === "month_money")) {
+        stats = metricControlNumericStats(employeeId, mid, month);
+        if (mid === METRIC_WRITEOFF_LOSSES_ID && typeof shopWriteoffLossesFact === "function") {
+            stats.fact = shopWriteoffLossesFact(month);
+            if (stats.plan > 0) {
+                stats.rate = stats.maxLimit
+                    ? (Number(stats.fact) <= stats.plan ? 1 : 0)
+                    : Math.min(Number(stats.fact) / stats.plan, 1);
+            }
+            stats.rateForAvg = stats.hasKpiPlan ? stats.rate : null;
+            stats.noDataDays = 0;
+        }
+        stats.kind = "month";
+    } else if (metricControlIsCheck(mid)) stats = metricControlCheckStats(employeeId, mid, month);
+    else stats = metricControlNumericStats(employeeId, mid, month);
+    stats.metricId = mid;
+    stats.name = name;
+    stats.group = "work";
+    stats.status = metricControlLineStatus(stats);
+    if ((stats.kind === "numeric" || stats.kind === "month") && !stats.hasKpiPlan) stats.rateForAvg = null;
+    else stats.rateForAvg = stats.rate;
+    return stats;
+}
+
+function metricControlSalesLine(employeeId, month) {
     const view = salesPlanViewForEmployee(employeeId);
     if (!view || !salesPlanIsParticipant(view, employeeId, month)) return null;
     const rec = salesPlanMonth(view, month, false);
     const plan = Number(rec.plan_sales || 0);
     const fact = salesPlanFact(view, month);
     const rate = salesPlanRate(view, month);
-    let status = "ok";
-    let statusLabel = "Выполнено";
-    if (!plan) { status = "nodata"; statusLabel = "План не задан"; }
-    else if (rate < 1) { status = "fail"; statusLabel = "Частично"; }
-    return {
-        metricId: "sales_plan_" + view.id,
+    const line = {
+        kind: "sales",
+        group: "plan",
+        metricId: "sales_plan",
         name: view.title,
-        kind: "salesPlan",
-        collective: true,
-        status: status,
-        statusLabel: statusLabel,
-        inOverall: plan > 0,
-        completion: plan > 0 ? rate : null,
-        planLabel: money(plan),
-        factLabel: money(fact),
-        pctLabel: plan ? formatShopCoefPct(rate) : "—",
-        stats: { failDays: plan && rate < 1 ? 1 : 0, noDataDays: plan ? 0 : 1, overdue: 0 }
+        plan: plan,
+        fact: fact,
+        rate: plan ? rate : null,
+        rateForAvg: plan ? rate : null,
+        noDataDays: 0,
+        failDays: plan && rate < 1 ? 1 : 0
     };
+    line.status = metricControlLineStatus(line);
+    return line;
 }
 
 function metricControlEmployeeReport(employee, month) {
     const m = month || selectedMonth;
-    const ids = shopEmployeeWorkMetricIds(employee.id, m).filter(Boolean);
-    const workLines = ids.map(function (id) { return metricControlEvaluateLine(employee.id, id, m); });
-    const extra = [];
-    const salesLine = metricControlSalesPlanLine(employee.id, m);
-    if (salesLine) extra.push(salesLine);
-    const lines = workLines.concat(extra);
+    const ids = shopEmployeeWorkMetricIds(employee.id, m);
+    const work = ids.map(function (id) { return metricControlBuildLine(employee.id, id, m); });
+    const sales = metricControlSalesLine(employee.id, m);
+    const all = work.concat(sales ? [sales] : []);
     let ok = 0;
     let fail = 0;
     let nodata = 0;
-    const pcts = [];
-    workLines.forEach(function (line) {
-        if (line.status === "fail" || line.status === "part") fail += 1;
+    const rates = [];
+    work.forEach(function (line) {
+        if (line.status === "fail") fail += 1;
         else if (line.status === "nodata") nodata += 1;
-        else ok += 1;
-        if (line.inOverall && line.completion != null) pcts.push(line.completion);
+        else if (line.status === "ok") ok += 1;
+        if (line.rateForAvg != null && Number.isFinite(line.rateForAvg)) rates.push(line.rateForAvg);
     });
-    extra.forEach(function (line) {
-        if (line.inOverall && line.completion != null) pcts.push(line.completion);
-    });
-    const overall = pcts.length ? pcts.reduce(function (a, b) { return a + b; }, 0) / pcts.length : null;
-    let rowStatus = "ok";
-    let rowLabel = "Все метрики выполнены";
-    if (fail > 0) { rowStatus = "fail"; rowLabel = "Есть невыполненные метрики"; }
-    else if (nodata > 0) { rowStatus = "nodata"; rowLabel = "Есть незаполненные данные"; }
-    const extraFail = extra.some(function (l) { return l.status === "fail" || l.status === "part"; });
-    const extraNodata = extra.some(function (l) { return l.status === "nodata"; });
-    const attention = fail > 0 || nodata > 0 || extraFail || extraNodata
-        || (overall != null && overall < 1)
-        || workLines.some(function (l) { return l.kind === "revision" && l.stats && Number(l.stats.overdue || 0) > 0; });
+    if (sales && sales.rateForAvg != null && Number.isFinite(sales.rateForAvg)) rates.push(sales.rateForAvg);
+    const pct = rates.length ? rates.reduce(function (a, b) { return a + b; }, 0) / rates.length : null;
+    let status = "ok";
+    if (fail || (sales && sales.status === "fail")) status = "fail";
+    else if (nodata || (sales && sales.status === "nodata")) status = "nodata";
+    else if (!all.length) status = "empty";
     return {
         employee: employee,
-        home: employeeHome(employee.id),
-        assigned: workLines.length,
+        work: work,
+        sales: sales,
+        all: all,
+        assigned: work.length,
         ok: ok,
         fail: fail,
         nodata: nodata,
-        overall: overall,
-        rowStatus: rowStatus,
-        rowLabel: rowLabel,
-        attention: attention,
-        extraFail: extraFail,
-        extraNodata: extraNodata,
-        workLines: workLines,
-        extraLines: extra
+        pct: pct,
+        status: status
     };
 }
 
 function metricControlPeople() {
     const f = metricControlFilters;
-    const list = [];
+    let people = [];
     if (isSummary()) {
         summaryDirectoryGroups().forEach(function (g) {
             if (f.dept && g.dept.code !== f.dept) return;
-            g.employees.forEach(function (e) {
-                if (!e || e.id === SHOP_SELF_CHECKOUT_ID) return;
-                list.push(e);
-            });
+            g.employees.forEach(function (e) { people.push(e); });
         });
     } else {
-        directoryEmployees().forEach(function (e) {
-            if (!e || e.id === SHOP_SELF_CHECKOUT_ID) return;
-            list.push(e);
+        people = directoryEmployees().slice();
+    }
+    if (f.workTab) {
+        people = people.filter(function (e) {
+            const home = employeeHomeDeptCode(e.id);
+            return employeeWorkTabId(e, home, selectedMonth) === f.workTab;
         });
     }
-    return list.filter(function (e) {
-        if (f.employeeId && e.id !== f.employeeId) return false;
-        if (f.tab) {
-            const home = employeeHomeDeptCode(e.id);
-            if (employeeWorkTabId(e, home, selectedMonth) !== f.tab) return false;
-        }
-        return shopEmployeeWorkMetricIds(e.id, selectedMonth).length > 0
-            || !!metricControlSalesPlanLine(e.id, selectedMonth);
-    });
+    if (f.employeeId) people = people.filter(function (e) { return e.id === f.employeeId; });
+    people.sort(compareEmployeesByStatusThenName);
+    return people;
 }
 
-function metricControlOpenSource(employeeId, metricId, kind) {
-    if (kind === "salesPlan") {
-        if (allowedSections().indexOf("salesPlan") !== -1) showSection("salesPlan");
-        else toast("План продаж откройте в отделе сотрудника.", "error");
+function metricControlStatusLabel(status) {
+    if (status === "fail") return "Есть невыполненные метрики";
+    if (status === "nodata") return "Есть незаполненные данные";
+    if (status === "empty") return "Нет назначенных метрик";
+    return "Все метрики выполнены";
+}
+
+function metricControlLineStatusLabel(line) {
+    if (line.status === "empty") return "Нет рабочих дней";
+    if (line.kind === "check" && line.failDays > 0) return "Есть нарушения";
+    if (line.status === "nodata") return "Нет данных";
+    if (line.rate != null && line.rate > 0 && line.rate < 1) return "Частично";
+    if (line.status === "fail") return "Не выполнено";
+    return "Выполнено";
+}
+
+function metricControlOpenSource(metricId, employeeId) {
+    if (isSummary()) {
+        toast("Откройте отдел сотрудника, чтобы перейти к исходным данным.", "error");
         return;
     }
-    if (kind === "revision") {
-        if (allowedSections().indexOf("revision") !== -1) showSection("revision");
-        else toast("Ревизию откройте в магазине или на складе.", "error");
-        return;
-    }
+    const mid = canonicalMetricId(metricId);
     const home = employeeHomeDeptCode(employeeId);
-    const it = shopMetricCatalogById(metricId);
+    if (home && workspace() && workspace().code !== home) {
+        toast("Эта метрика относится к другому подразделению.", "error");
+        return;
+    }
+    if (mid === "sales_plan" || mid === "metric_sales_plan") {
+        showSection("salesPlan");
+        return;
+    }
+    if (mid === "metric_revision") {
+        showSection("revision");
+        return;
+    }
+    const it = metricControlCatalogItem(mid);
     const tab = it ? metricTabId(it) : "";
     if (home === "shop") {
-        const sec = tab === "cashiers" ? "metrics-cashiers" : (tab === "managers" ? "metrics-managers" : "metrics-pickers");
-        if (allowedSections().indexOf(sec) !== -1) showSection(sec);
-        else toast("Рабочие метрики откройте в Магазине Володарского.", "error");
+        if (tab === "cashiers") showSection("metrics-cashiers");
+        else if (tab === "managers") showSection("metrics-managers");
+        else showSection("metrics-pickers");
         return;
     }
-    const sec = "dwork-" + (tab || defaultMetricTabId(home));
-    if (allowedSections().indexOf(sec) !== -1) showSection(sec);
-    else toast("Рабочую вкладку откройте в отделе сотрудника.", "error");
+    if (home === "warehouse" || home === "drivers") {
+        if (tab) showSection("dwork-" + tab);
+        else showSection("deptMetrics");
+        return;
+    }
+    showSection("deptMetrics");
+}
+
+function setMetricControlFilter(field, value) {
+    metricControlFilters[field] = value;
+    if (field === "dept") {
+        metricControlFilters.workTab = "";
+        metricControlFilters.employeeId = "";
+    }
+    renderMetricControl();
+}
+
+function setMetricControlMonth(year, monthNum) {
+    const y = String(year || "").trim();
+    const mo = String(monthNum || "").padStart(2, "0");
+    if (/^\d{4}$/.test(y) && /^\d{2}$/.test(mo)) changeMonth(y + "-" + mo);
 }
 
 function toggleMetricControlRow(employeeId) {
@@ -14314,165 +14369,177 @@ function toggleMetricControlRow(employeeId) {
     renderMetricControl();
 }
 
-function setMetricControlFilter(key, value) {
-    metricControlFilters[key] = value || "";
-    renderMetricControl();
-}
-
-function setMetricControlMonth(year, month) {
-    const y = String(year || "").trim();
-    const mo = String(month || "").padStart(2, "0");
-    if (!/^\d{4}$/.test(y) || !/^\d{2}$/.test(mo)) return;
-    changeMonth(y + "-" + mo);
-}
-
-function metricControlDetailHtml(rep) {
-    function rowsHtml(lines, title) {
-        if (!lines.length) return "";
-        let html = '<div class="mc-block-title">' + escapeHtml(title) + "</div>"
-            + '<table class="mc-sub"><thead><tr><th>Метрика</th><th>План / дни</th><th>Факт</th><th>%</th><th>Статус</th><th></th></tr></thead><tbody>';
-        lines.forEach(function (line) {
-            const cls = line.status === "fail" || line.status === "part" ? "mc-bad" : (line.status === "nodata" ? "mc-warn" : "mc-ok");
-            html += "<tr><td>" + escapeHtml(line.name) + "</td><td>" + escapeHtml(line.planLabel)
-                + "</td><td>" + escapeHtml(line.factLabel) + "</td><td class=\"mc-pct " + cls + "\">"
-                + escapeHtml(line.pctLabel) + "</td><td class=\"" + cls + "\">" + escapeHtml(line.statusLabel)
-                + "</td><td><button type=\"button\" class=\"mc-link\" onclick=\"event.stopPropagation();metricControlOpenSource('"
-                + rep.employee.id + "','" + line.metricId + "','" + line.kind + "')\">Открыть</button></td></tr>";
-        });
-        return html + "</tbody></table>";
-    }
-    return rowsHtml(rep.workLines, "Рабочие метрики")
-        + rowsHtml(rep.extraLines, "Коллективные KPI / планы");
-}
-
-function renderMetricControl() {
-    const box = document.getElementById("metricControlBody");
-    const filters = document.getElementById("metricControlFilters");
-    if (!box || !filters) return;
-    const parts = String(selectedMonth || "").split("-");
-    const year = parts[0] || String(new Date().getFullYear());
-    const month = parts[1] || "01";
-    const years = {};
-    years[year] = true;
-    years[String(Number(year) - 1)] = true;
-    years[String(Number(year) + 1)] = true;
+function renderMetricControlFilters() {
+    const box = document.getElementById("metricControlFilters");
+    if (!box) return;
     const f = metricControlFilters;
-    let deptOpts = '<option value="">Все подразделения</option>';
-    DEPT_DEFAULTS.forEach(function (d) {
-        deptOpts += '<option value="' + d.code + '"' + (f.dept === d.code ? " selected" : "") + ">"
-            + escapeHtml(d.name) + "</option>";
+    const parts = selectedMonth.split("-");
+    const year = parts[0];
+    const monthNum = parts[1];
+    const years = {};
+    for (let i = -18; i <= 3; i++) years[shiftMonth(selectedMonth, i).slice(0, 4)] = true;
+    const deptLocked = !isSummary();
+    const deptCode = deptLocked ? (workspace() && workspace().code) : f.dept;
+    let html = '<div class="form-group"><label>Год</label><select onchange="setMetricControlMonth(this.value,\'' + monthNum + '\')">';
+    Object.keys(years).sort().forEach(function (y) {
+        html += '<option value="' + y + '"' + (y === year ? " selected" : "") + ">" + y + "</option>";
     });
-    const tabDept = f.dept || (!isSummary() && workspace() ? workspace().code : "");
-    let tabOpts = '<option value="">Все группы</option>';
-    metricTabsForDept(tabDept).forEach(function (t) {
-        tabOpts += '<option value="' + t.id + '"' + (f.tab === t.id ? " selected" : "") + ">"
-            + escapeHtml(t.label) + "</option>";
+    html += "</select></div><div class=\"form-group\"><label>Месяц</label><select onchange=\"setMetricControlMonth('" + year + "',this.value)\">";
+    MONTH_FULL.forEach(function (name, i) {
+        const mm = String(i + 1).padStart(2, "0");
+        html += '<option value="' + mm + '"' + (mm === monthNum ? " selected" : "") + ">" + name + "</option>";
     });
-    let empOpts = '<option value="">Все сотрудники</option>';
-    const peopleAll = metricControlPeople();
-    const byId = {};
-    peopleAll.forEach(function (e) { byId[e.id] = e; });
-    (isSummary() ? summaryDirectoryGroups().reduce(function (acc, g) {
-        return acc.concat(g.employees || []);
-    }, []) : directoryEmployees()).forEach(function (e) {
-        if (!e || !e.id) return;
-        empOpts += '<option value="' + e.id + '"' + (f.employeeId === e.id ? " selected" : "") + ">"
-            + escapeHtml(e.name) + "</option>";
+    html += "</select></div>";
+    if (!deptLocked) {
+        html += '<div class="form-group"><label>Подразделение</label><select onchange="setMetricControlFilter(\'dept\',this.value)">'
+            + '<option value="">Все</option>';
+        DEPT_DEFAULTS.forEach(function (d) {
+            html += '<option value="' + d.code + '"' + (f.dept === d.code ? " selected" : "") + ">" + escapeHtml(d.name) + "</option>";
+        });
+        html += "</select></div>";
+    }
+    const tabs = metricTabsForDept(deptCode || "shop");
+    html += '<div class="form-group"><label>Рабочая группа</label><select onchange="setMetricControlFilter(\'workTab\',this.value)">'
+        + '<option value="">Все</option>';
+    tabs.forEach(function (t) {
+        html += '<option value="' + t.id + '"' + (f.workTab === t.id ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
     });
-    filters.innerHTML = '<div class="form-group"><label>Год</label><select id="mcYearSel" onchange="setMetricControlMonth(this.value, document.getElementById(\'mcMonthSel\').value)">'
-        + Object.keys(years).sort().map(function (y) {
-            return '<option value="' + y + '"' + (y === year ? " selected" : "") + ">" + y + "</option>";
-        }).join("") + "</select></div>"
-        + '<div class="form-group"><label>Месяц</label><select id="mcMonthSel" onchange="setMetricControlMonth(document.getElementById(\'mcYearSel\').value, this.value)">'
-        + MONTH_FULL.map(function (name, i) {
-            const mm = String(i + 1).padStart(2, "0");
-            return '<option value="' + mm + '"' + (mm === month ? " selected" : "") + ">" + name + "</option>";
-        }).join("") + "</select></div>"
-        + (isSummary() ? '<div class="form-group mc-grow"><label>Подразделение</label><select onchange="setMetricControlFilter(\'dept\',this.value)">' + deptOpts + "</select></div>" : "")
-        + '<div class="form-group"><label>Рабочая группа</label><select onchange="setMetricControlFilter(\'tab\',this.value)">' + tabOpts + "</select></div>"
-        + '<div class="form-group mc-grow"><label>Сотрудник</label><select onchange="setMetricControlFilter(\'employeeId\',this.value)">' + empOpts + "</select></div>"
-        + '<div class="form-group"><label>Статус</label><select onchange="setMetricControlFilter(\'status\',this.value)">'
+    html += "</select></div><div class=\"form-group\"><label>Сотрудник</label><select onchange=\"setMetricControlFilter('employeeId',this.value)\">"
+        + '<option value="">Все</option>';
+    const empKeep = f.employeeId;
+    f.employeeId = "";
+    metricControlPeople().forEach(function (e) {
+        html += '<option value="' + e.id + '"' + (empKeep === e.id ? " selected" : "") + ">" + escapeHtml(e.name) + "</option>";
+    });
+    f.employeeId = empKeep;
+    html += "</select></div><div class=\"form-group\"><label>Статус</label><select onchange=\"setMetricControlFilter('status',this.value)\">"
         + '<option value="all"' + (f.status === "all" ? " selected" : "") + ">Все</option>"
         + '<option value="ok"' + (f.status === "ok" ? " selected" : "") + ">Выполняет</option>"
         + '<option value="fail"' + (f.status === "fail" ? " selected" : "") + ">Есть нарушения</option>"
         + '<option value="nodata"' + (f.status === "nodata" ? " selected" : "") + ">Нет данных</option>"
-        + "</select></div>"
-        + '<label class="mc-attn"><input type="checkbox" ' + (f.attention ? "checked" : "")
-        + ' onchange="setMetricControlFilter(\'attention\',this.checked ? \'1\' : \'\')"> Требует внимания</label>'
-        + '<div class="form-group"><label>Сортировка</label><select onchange="setMetricControlFilter(\'sort\',this.value)">'
+        + "</select></div><div class=\"form-group\"><label>Сортировка</label><select onchange=\"setMetricControlFilter('sort',this.value)\">"
         + '<option value="name"' + (f.sort === "name" ? " selected" : "") + ">По ФИО</option>"
         + '<option value="pct"' + (f.sort === "pct" ? " selected" : "") + ">По % выполнения</option>"
         + '<option value="fail"' + (f.sort === "fail" ? " selected" : "") + ">Сначала с нарушениями</option>"
         + '<option value="nodata"' + (f.sort === "nodata" ? " selected" : "") + ">Сначала нет данных</option>"
-        + "</select></div>";
+        + "</select></div><div class=\"form-group\"><label class=\"check\"><input type=\"checkbox\""
+        + (f.attention ? " checked" : "") + " onchange=\"setMetricControlFilter('attention',this.checked)\"> Требует внимания</label></div>";
+    box.innerHTML = html;
+}
 
-    let reports = metricControlPeople().map(function (e) { return metricControlEmployeeReport(e, selectedMonth); });
-    reports = reports.filter(function (rep) {
-        if (f.attention && !rep.attention) return false;
-        if (f.status === "ok") return rep.rowStatus === "ok" && !rep.extraFail;
-        if (f.status === "fail") return rep.rowStatus === "fail" || rep.extraFail;
-        if (f.status === "nodata") return rep.rowStatus === "nodata" || rep.extraNodata;
+function metricControlDetailHtml(rep) {
+    let html = '<div class="mc-detail"><strong>' + escapeHtml(rep.employee.name) + "</strong> · "
+        + escapeHtml(monthLabel(selectedMonth))
+        + '<div class="note" style="margin:6px 0 8px">Рабочие метрики — только назначенные этому сотруднику. Коллективный план продаж, если сотрудник участник, показан отдельно.</div>';
+    if (!rep.work.length && !rep.sales) {
+        html += '<div class="empty-row">На этот месяц рабочие метрики не назначены.</div></div>';
+        return html;
+    }
+    html += '<table class="analysis-table" style="width:100%"><thead><tr>'
+        + "<th>Метрика</th><th>План / дни</th><th>Факт</th><th>Выполнение</th><th>Статус</th><th></th></tr></thead><tbody>";
+    function rowHtml(line) {
+        const planTxt = line.kind === "check"
+            ? (line.eligibleDays + " дн.")
+            : (line.plan ? (line.kind === "sales" ? money(line.plan) : String(line.plan)) : "—");
+        const factTxt = line.kind === "check" || line.kind === "timesheet730"
+            ? ("Сделано " + line.doneDays + " · не сделано " + line.failDays + " · нет данных " + line.noDataDays)
+            : (line.kind === "sales" ? money(line.fact) : String(line.fact));
+        const pct = line.rateForAvg != null || line.rate != null
+            ? formatShopCoefPct(line.rate != null ? line.rate : line.rateForAvg)
+            : (line.kind === "numeric" && !line.hasKpiPlan
+                ? ("заполнение " + (line.fillRate != null ? formatShopCoefPct(line.fillRate) : "—"))
+                : "—");
+        const stCls = line.status === "fail" ? "mc-st-fail" : (line.status === "nodata" ? "mc-st-warn" : "mc-st-ok");
+        const jump = isSummary() ? "" : '<button type="button" class="btn btn-secondary btn-small" onclick="metricControlOpenSource(\''
+            + line.metricId + "','" + rep.employee.id + "')\">Открыть</button>";
+        return "<tr><td>" + escapeHtml(line.name)
+            + (line.group === "plan" ? '<div class="note">Коллективный план</div>' : "")
+            + (line.kind === "numeric" && !line.hasKpiPlan
+                ? '<div class="note">KPI не назначен · контроль заполнения: ' + line.filledDays + " из " + line.eligibleDays + "</div>"
+                : "")
+            + (line.kind === "revision" && line.overdue
+                ? '<div class="note">Просрочено: ' + line.overdue + "</div>" : "")
+            + "</td><td>" + planTxt + "</td><td>" + factTxt + "</td><td>" + pct
+            + "</td><td class=\"" + stCls + "\">" + metricControlLineStatusLabel(line) + "</td><td>" + jump + "</td></tr>";
+    }
+    if (rep.work.length) {
+        html += '<tr class="subhead"><th colspan="6">Рабочие метрики</th></tr>';
+        rep.work.forEach(function (line) { html += rowHtml(line); });
+    }
+    if (rep.sales) {
+        html += '<tr class="subhead"><th colspan="6">Коллективные KPI / планы</th></tr>';
+        html += rowHtml(rep.sales);
+    }
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function renderMetricControl() {
+    if (!metricControlCanView()) return;
+    const lateCard = document.getElementById("disciplineLateCard");
+    const metCard = document.getElementById("disciplineMetricsCard");
+    if (lateCard) lateCard.style.display = disciplinePanel === "metrics" ? "none" : "";
+    if (metCard) metCard.style.display = disciplinePanel === "metrics" ? "" : "none";
+    const tabLate = document.getElementById("discTabLate");
+    const tabMet = document.getElementById("discTabMetrics");
+    if (tabLate) tabLate.classList.toggle("active", disciplinePanel !== "metrics");
+    if (tabMet) tabMet.classList.toggle("active", disciplinePanel === "metrics");
+    if (disciplinePanel !== "metrics") return;
+    renderMetricControlFilters();
+    const reports = metricControlPeople().map(function (e) {
+        return metricControlEmployeeReport(e, selectedMonth);
+    });
+    const f = metricControlFilters;
+    let list = reports.filter(function (r) {
+        if (f.status === "ok" && r.status !== "ok") return false;
+        if (f.status === "fail" && r.status !== "fail") return false;
+        if (f.status === "nodata" && r.status !== "nodata") return false;
+        if (f.attention) {
+            const lowPlan = r.pct != null && r.pct < 1;
+            if (r.status !== "fail" && r.status !== "nodata" && !lowPlan) return false;
+        }
         return true;
     });
-    reports.sort(function (a, b) {
-        if (f.sort === "pct") return (a.overall == null ? -1 : a.overall) - (b.overall == null ? -1 : b.overall);
-        if (f.sort === "fail") return (b.fail - a.fail) || compareEmployeesByStatusThenName(a.employee, b.employee);
-        if (f.sort === "nodata") return (b.nodata - a.nodata) || compareEmployeesByStatusThenName(a.employee, b.employee);
-        return compareEmployeesByStatusThenName(a.employee, b.employee);
-    });
-    if (!reports.length) {
-        box.innerHTML = '<tr><td colspan="7"><div class="empty-row">Нет сотрудников с назначенными рабочими метриками за этот месяц.</div></td></tr>';
+    if (f.sort === "pct") {
+        list.sort(function (a, b) { return (a.pct == null ? 2 : a.pct) - (b.pct == null ? 2 : b.pct); });
+    } else if (f.sort === "fail") {
+        list.sort(function (a, b) { return b.fail - a.fail || (a.pct == null ? 0 : a.pct) - (b.pct == null ? 0 : b.pct); });
+    } else if (f.sort === "nodata") {
+        list.sort(function (a, b) { return b.nodata - a.nodata || b.fail - a.fail; });
+    }
+    const detailHost = document.getElementById("metricControlDetail");
+    if (detailHost) detailHost.innerHTML = "";
+    const body = document.getElementById("metricControlBody");
+    if (!body) return;
+    if (!list.length) {
+        body.innerHTML = '<tr><td colspan="7"><div class="empty-row">Нет сотрудников по выбранным фильтрам.</div></td></tr>';
         return;
     }
-    let html = "";
-    reports.forEach(function (rep) {
-        const open = metricControlOpenId === rep.employee.id;
-        const cls = rep.rowStatus === "fail" ? "mc-bad" : (rep.rowStatus === "nodata" ? "mc-warn" : "mc-ok");
-        const home = officialName(rep.home);
-        html += '<tr class="mc-row' + (open ? " open" : "") + '" onclick="toggleMetricControlRow(\'' + rep.employee.id + "')\">"
-            + "<td><strong>" + escapeHtml(rep.employee.name) + "</strong>"
-            + (isSummary() ? '<div class="note">' + escapeHtml(home || "") + "</div>" : "")
-            + "</td><td>" + rep.assigned + "</td><td>" + rep.ok + "</td><td>"
-            + (rep.fail ? '<span class="mc-bad">' + rep.fail + "</span>" : "0")
-            + "</td><td>" + (rep.nodata ? '<span class="mc-warn">' + rep.nodata + "</span>" : "0")
-            + "</td><td class=\"mc-pct " + cls + "\">" + (rep.overall == null ? "—" : formatShopCoefPct(rep.overall))
-            + "</td><td class=\"" + cls + "\">" + escapeHtml(rep.rowLabel) + "</td></tr>";
-        if (open) {
-            html += '<tr class="mc-detail"><td colspan="7">' + metricControlDetailHtml(rep) + "</td></tr>";
-        }
-    });
-    box.innerHTML = html;
+    body.innerHTML = list.map(function (r) {
+        const open = r.employee.id === metricControlOpenId;
+        const cls = (r.status === "fail" ? "mc-row-fail" : (r.status === "nodata" ? "mc-row-warn" : ""))
+            + (open ? " mc-row-open" : "");
+        const stCls = r.status === "fail" ? "mc-st-fail" : (r.status === "nodata" ? "mc-st-warn" : (r.status === "ok" ? "mc-st-ok" : "mc-st-muted"));
+        return '<tr class="' + cls + '"><td><button type="button" class="mc-name-btn" onclick="toggleMetricControlRow(\''
+            + r.employee.id + "')\">" + escapeHtml(r.employee.name) + "</button>"
+            + (isWorking(r.employee) ? "" : '<div class="note">уволен</div>') + "</td>"
+            + "<td>" + r.assigned + "</td><td>" + r.ok + "</td><td>" + r.fail + "</td><td>" + r.nodata
+            + "</td><td>" + (r.pct == null ? "—" : formatShopCoefPct(r.pct))
+            + "</td><td class=\"" + stCls + "\">" + metricControlStatusLabel(r.status) + "</td></tr>"
+            + (open ? '<tr class="mc-expand"><td colspan="7">' + metricControlDetailHtml(r) + "</td></tr>" : "");
+    }).join("");
 }
 
 function renderDiscipline() {
     if (currentWorkspaceIndex === null) return;
     if (isSummary() && currentSummaryRole !== "admin") return;
 
-    const lateCard = document.getElementById("disciplineLateCard");
-    const metricsCard = document.getElementById("disciplineMetricsCard");
-    const tabLate = document.getElementById("discTabLate");
-    const tabMetrics = document.getElementById("discTabMetrics");
-    if (tabLate) tabLate.classList.toggle("active", disciplinePanel !== "metrics");
-    if (tabMetrics) tabMetrics.classList.toggle("active", disciplinePanel === "metrics");
-    if (lateCard) lateCard.style.display = disciplinePanel === "metrics" ? "none" : "";
-    if (metricsCard) metricsCard.style.display = disciplinePanel === "metrics" ? "" : "none";
-
     const extraDept = isSummary();
     const note = document.getElementById("disciplineNote");
     if (note) {
-        if (disciplinePanel === "metrics") {
-            note.textContent = extraDept
-                ? "Контроль назначенных рабочих метрик по отделам за выбранный месяц. Факты здесь не вводятся."
-                : "Контроль назначенных рабочих метрик этого отдела за выбранный месяц. Факты из рабочих вкладок, Табеля и Ревизии.";
-        } else {
-            note.textContent = extraDept
-                ? "Дисциплина по всем сотрудникам отделов за выбранный месяц. Уволенные внизу и неактивны."
-                : "Оценка строится по числу опозданий за выбранный месяц в этом отделе. Уволенные опускаются вниз.";
-        }
-    }
-    if (disciplinePanel === "metrics") {
-        renderMetricControl();
-        return;
+        note.textContent = extraDept
+            ? "Дисциплина по всем сотрудникам отделов за выбранный месяц. Уволенные внизу и неактивны."
+            : "Оценка строится по числу опозданий за выбранный месяц в этом отделе. Уволенные опускаются вниз.";
     }
 
     const head = document.getElementById("disciplineHead");
@@ -14512,30 +14579,29 @@ function renderDiscipline() {
         if (!groups.length) {
             document.getElementById("disciplineBody").innerHTML =
                 '<tr><td colspan="12"><div class="empty-row">Сотрудников пока нет.</div></td></tr>';
-            return;
-        }
-        let html = "";
-        groups.forEach(function (g) {
-            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="12">'
-                + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + "</td></tr>";
-            g.employees.forEach(function (employee) {
-                html += personCells(employee, officialName(g.dept));
+        } else {
+            let html = "";
+            groups.forEach(function (g) {
+                html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="12">'
+                    + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + "</td></tr>";
+                g.employees.forEach(function (employee) {
+                    html += personCells(employee, officialName(g.dept));
+                });
             });
-        });
-        document.getElementById("disciplineBody").innerHTML = html;
-        return;
+            document.getElementById("disciplineBody").innerHTML = html;
+        }
+    } else {
+        const list = directoryEmployees();
+        if (!list.length) {
+            document.getElementById("disciplineBody").innerHTML =
+                '<tr><td colspan="11"><div class="empty-row">Сначала заведите сотрудников во вкладке «ФИО сотрудника».</div></td></tr>';
+        } else {
+            document.getElementById("disciplineBody").innerHTML = list.map(function (employee) {
+                return personCells(employee, "");
+            }).join("");
+        }
     }
-
-    const list = directoryEmployees();
-    if (!list.length) {
-        document.getElementById("disciplineBody").innerHTML =
-            '<tr><td colspan="11"><div class="empty-row">Сначала заведите сотрудников во вкладке «ФИО сотрудника».</div></td></tr>';
-        return;
-    }
-
-    document.getElementById("disciplineBody").innerHTML = list.map(function (employee) {
-        return personCells(employee, "");
-    }).join("");
+    renderMetricControl();
 }
 
 
