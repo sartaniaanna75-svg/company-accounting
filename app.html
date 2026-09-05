@@ -693,7 +693,34 @@
             opacity: .7;
         }
 
-        .metrics-table col.metrics-col-visitors { width: 88px; }
+        .metrics-shelf-table col.metrics-col-check { width: 52px; }
+        .metrics-shelf-table col.metrics-col-derived { width: 120px; }
+        .metrics-shelf-table th.metrics-shelf-title {
+            white-space: normal;
+            line-height: 1.25;
+            font-size: 12px;
+        }
+        .metrics-shelf-table td.metrics-check-cell {
+            text-align: center;
+            vertical-align: middle;
+        }
+        .metrics-shelf-check {
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            cursor: pointer;
+        }
+        .metrics-shelf-mark {
+            font-weight: 700;
+            font-size: 14px;
+        }
+        .metrics-shelf-mark.ok { color: #15803d; }
+        .metrics-shelf-mark.fail { color: #b91c1c; }
+        .metrics-shelf-mark.empty { color: #9ca3af; }
+        .metrics-shelf-off {
+            color: #9ca3af;
+            font-size: 11px;
+        }
 
         .metrics-table .metrics-visitors-col {
             position: sticky;
@@ -1847,6 +1874,20 @@
                     </div>
                     <div id="metricsGrandBox"></div>
                 </div>
+                <div class="card" id="metricsShelfBox" style="display:none;">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Товар выставлен на полке без нарекания и присутствуют все ценники</div>
+                            <div class="note" id="metricsShelfNote"></div>
+                        </div>
+                    </div>
+                    <div class="table-wrapper">
+                        <table class="metrics-table metrics-shelf-table" id="metricsShelfTable">
+                            <thead id="metricsShelfHead"></thead>
+                            <tbody id="metricsShelfBody"></tbody>
+                        </table>
+                    </div>
+                </div>
             </section>
 
 
@@ -2473,7 +2514,9 @@ const SHOP_SELF_CHECKOUT = {
     name: "Касса самообслуживания",
     isSalesChannel: true
 };
-const STORE_METRIC_VISITORS = "store_metric_visitors";
+const METRIC_SHELF_LABELS_ID = "metric_shelf_labels_ok";
+const METRIC_SHELF_LABELS_FIELD = "shelfLabels";
+const METRIC_SHELF_PLAN_DAYS = 22;
 const METRIC_ID_ALIASES = {
     early730: "metric_arrival_730",
     display: "metric_display_positions",
@@ -2501,7 +2544,8 @@ const SHOP_KPI_METRIC_NAMES = {
     metric_receiving: "Приёмка",
     metric_sales: "Сумма продаж",
     metric_checks: "Количество чеков",
-    metric_average_check: "Средний чек"
+    metric_average_check: "Средний чек",
+    metric_shelf_labels_ok: "Товар выставлен на полке без нарекания и присутствуют все ценники"
 };
 const SHOP_KPI_METRIC_IDS = Object.keys(SHOP_KPI_METRIC_NAMES);
 const DEFAULT_METRIC_CATALOG = [
@@ -2514,7 +2558,16 @@ const DEFAULT_METRIC_CATALOG = [
     { id: "metric_revision", name: "Ревизия", sourceType: "revision", calcType: "budget_ratio", active: true },
     { id: "metric_sales", name: "Сумма продаж", sourceType: "store_metrics", category: "cashiers", field: "sales", calcType: "budget_ratio", active: true },
     { id: "metric_checks", name: "Количество чеков", sourceType: "store_metrics", category: "cashiers", field: "receipts", calcType: "budget_ratio", active: true },
-    { id: "metric_average_check", name: "Средний чек", sourceType: "store_metrics", category: "cashiers", field: "avgCheck", calcType: "budget_ratio", active: true }
+    { id: "metric_average_check", name: "Средний чек", sourceType: "store_metrics", category: "cashiers", field: "avgCheck", calcType: "budget_ratio", active: true },
+    {
+        id: "metric_shelf_labels_ok",
+        name: "Товар выставлен на полке без нарекания и присутствуют все ценники",
+        sourceType: "manual",
+        category: "pickers",
+        field: "shelfLabels",
+        calcType: "budget_ratio",
+        active: true
+    }
 ];
 const SHOP_BONUS_METRICS = DEFAULT_METRIC_CATALOG;
 const SHOP_KPI_CALC_TYPES = [
@@ -2612,6 +2665,7 @@ function canonicalSourceType(value) {
     const raw = String(value || "");
     if (raw === "shop_metrics" || raw === "store_metric") return "store_metrics";
     if (raw === "api_1c") return "1c_api";
+    if (raw === "derived_from_pickers") return "derived";
     return raw;
 }
 
@@ -5307,6 +5361,7 @@ function renderShopCashierMetrics() {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
     }
+    renderShopShelfMetric();
 }
 
 function renderShopCashierSummary(employees, grand) {
@@ -5336,6 +5391,175 @@ function renderShopCashierSummary(employees, grand) {
             + (Math.round(grand.conversion * 10) / 10) + "%." : "")
         + "</div>";
     box.innerHTML = html;
+}
+
+function shopTimesheetStatus(employeeId, day, month) {
+    const shop = findWorkspaceByCode("shop");
+    if (!shop) return "";
+    const m = month || selectedMonth;
+    const rec = shop.timesheet && shop.timesheet[m] && shop.timesheet[m][employeeId] && shop.timesheet[m][employeeId][day];
+    return rec && rec.status ? rec.status : "";
+}
+
+function shopTimesheetIsWorkDay(employeeId, day, month) {
+    const st = shopTimesheetStatus(employeeId, day, month);
+    return st === "Я" || st === "О";
+}
+
+function shopShelfParticipation(rule) {
+    if (rule && rule.participationRole) return rule.participationRole;
+    if (rule && (canonicalSourceType(rule.sourceType || rule.source_type) === "derived")) return "derived_recipient";
+    return "manual_source";
+}
+
+function shopShelfActiveRules(month) {
+    const m = month || selectedMonth;
+    return (shopSalaryEmployees() || []).reduce(function (list, e) {
+        shopEmployeeActiveRules(e.id, m).forEach(function (r) {
+            if (canonicalMetricId(r.metricId || r.metric_id) === METRIC_SHELF_LABELS_ID) {
+                list.push({ employee: e, rule: r, role: shopShelfParticipation(r) });
+            }
+        });
+        return list;
+    }, []);
+}
+
+function shopShelfManualEmployees(month) {
+    return shopShelfActiveRules(month).filter(function (x) { return x.role === "manual_source"; }).map(function (x) { return x.employee; });
+}
+
+function getShopShelfValue(employeeId, day, month) {
+    const store = shopMetricMonthStore("pickers", month || selectedMonth);
+    const rec = store[employeeId] && store[employeeId][String(day)];
+    return rec && Number(rec[METRIC_SHELF_LABELS_FIELD] || 0) ? 1 : 0;
+}
+
+function setShopShelfValue(employeeId, day, checked) {
+    const store = shopMetricMonthStore("pickers", selectedMonth);
+    if (!store[employeeId] || typeof store[employeeId] !== "object") store[employeeId] = {};
+    const dayKey = String(day);
+    if (!store[employeeId][dayKey] || typeof store[employeeId][dayKey] !== "object") store[employeeId][dayKey] = {};
+    if (checked) {
+        store[employeeId][dayKey][METRIC_SHELF_LABELS_FIELD] = 1;
+        store[employeeId][dayKey].source = "manual";
+        store[employeeId][dayKey].metric_id = METRIC_SHELF_LABELS_ID;
+        store[employeeId][dayKey].employee_id = employeeId;
+    } else {
+        delete store[employeeId][dayKey][METRIC_SHELF_LABELS_FIELD];
+        const keys = Object.keys(store[employeeId][dayKey]).filter(function (k) {
+            return k !== "source" && k !== "metric_id" && k !== "employee_id";
+        });
+        if (!keys.length) delete store[employeeId][dayKey];
+        if (!Object.keys(store[employeeId]).length) delete store[employeeId];
+    }
+    saveApp();
+    renderShopShelfMetric();
+}
+
+function shopShelfDayDerivedStatus(day, month) {
+    const m = month || selectedMonth;
+    const manuals = shopShelfManualEmployees(m).filter(function (e) {
+        return shopTimesheetIsWorkDay(e.id, day, m);
+    });
+    if (!manuals.length) return "empty";
+    const allDone = manuals.every(function (e) { return getShopShelfValue(e.id, day, m) === 1; });
+    return allDone ? "done" : "fail";
+}
+
+function shopShelfMonthFact(employeeId, month, rule) {
+    const m = month || selectedMonth;
+    const days = daysInMonthValue(m);
+    const derived = shopShelfParticipation(rule) === "derived_recipient";
+    let fact = 0;
+    for (let day = 1; day <= days; day++) {
+        if (derived) {
+            if (shopShelfDayDerivedStatus(day, m) === "done") fact += 1;
+        } else if (shopTimesheetIsWorkDay(employeeId, day, m) && getShopShelfValue(employeeId, day, m) === 1) {
+            fact += 1;
+        }
+    }
+    return { fact: fact, planAuto: METRIC_SHELF_PLAN_DAYS, derived: derived };
+}
+
+function shopShelfStatusMark(status) {
+    if (status === "done") return '<span class="metrics-shelf-mark ok" title="Сделано">✓</span>';
+    if (status === "fail") return '<span class="metrics-shelf-mark fail" title="Не сделано">✗</span>';
+    return '<span class="metrics-shelf-mark empty" title="Нет данных">—</span>';
+}
+
+function renderShopShelfMetric() {
+    const box = document.getElementById("metricsShelfBox");
+    const head = document.getElementById("metricsShelfHead");
+    const body = document.getElementById("metricsShelfBody");
+    const note = document.getElementById("metricsShelfNote");
+    if (!box || !head || !body) return;
+    if (!workspace() || workspace().code !== "shop") {
+        box.style.display = "none";
+        return;
+    }
+    box.style.display = "";
+    const cashierView = currentShopMetricCategory().id === "cashiers";
+    const manuals = shopShelfManualEmployees(selectedMonth);
+    if (note) {
+        note.textContent = cashierView
+            ? "Для кассиров результат дня считается автоматически. Редактировать его вручную нельзя."
+            : "✓ — сделано, пусто — не сделано. Выходной, отпуск и больничный не портят день кассирам. Если никто из товароразборщиков в этот день не работает, у кассиров «нет данных».";
+    }
+    if (!manuals.length) {
+        head.innerHTML = "";
+        body.innerHTML = '<tr><td><div class="empty-row">Назначьте эту метрику товароразборщикам в «Зарплата Володарского → Настройки сотрудников» со способом «вручную».</div></td></tr>';
+        return;
+    }
+    const canEdit = !cashierView;
+    let headHtml = '<tr><th class="metrics-date-col">Дата</th>';
+    if (!cashierView) {
+        manuals.forEach(function (e) {
+            headHtml += '<th class="metrics-emp-col" title="' + escapeHtml(e.name) + '"><span class="metrics-emp-name">'
+                + escapeHtml(e.name) + "</span></th>";
+        });
+    }
+    headHtml += '<th class="metrics-emp-col">Кассиры</th></tr>';
+    head.innerHTML = headHtml;
+    const days = daysInMonth();
+    let html = "";
+    const tot = {};
+    manuals.forEach(function (e) { tot[e.id] = 0; });
+    let derivedDone = 0;
+    for (let day = 1; day <= days; day++) {
+        const rowCls = ["metrics-data-row", isWeekend(day) ? "metrics-weekend" : "", isToday(day) ? "metrics-today" : ""]
+            .filter(Boolean).join(" ");
+        const derived = shopShelfDayDerivedStatus(day, selectedMonth);
+        if (derived === "done") derivedDone += 1;
+        html += '<tr class="' + rowCls + '"><td class="metrics-date-col">' + shopMetricDateLabel(day) + "</td>";
+        if (!cashierView) {
+            manuals.forEach(function (e) {
+                const work = shopTimesheetIsWorkDay(e.id, day, selectedMonth);
+                const done = getShopShelfValue(e.id, day, selectedMonth) === 1;
+                if (work && done) tot[e.id] += 1;
+                html += '<td class="metrics-check-cell">';
+                if (!work) {
+                    html += '<span class="metrics-shelf-off" title="Не рабочий день">·</span>';
+                } else if (canEdit) {
+                    html += '<input class="metrics-shelf-check" type="checkbox"' + (done ? " checked" : "")
+                        + " onchange=\"setShopShelfValue('" + e.id + "'," + day + ",this.checked)\">";
+                } else {
+                    html += done ? shopShelfStatusMark("done") : shopShelfStatusMark("fail");
+                }
+                html += "</td>";
+            });
+        }
+        html += '<td class="metrics-check-cell">' + shopShelfStatusMark(derived)
+            + (derived === "empty" ? '<div class="note">нет данных</div>' : "")
+            + "</td></tr>";
+    }
+    html += '<tr class="metrics-totals-row"><td class="metrics-date-col">ИТОГО ✓</td>';
+    if (!cashierView) {
+        manuals.forEach(function (e) {
+            html += "<td class=\"metrics-check-cell\">" + tot[e.id] + "</td>";
+        });
+    }
+    html += "<td class=\"metrics-check-cell\">" + derivedDone + "</td></tr>";
+    body.innerHTML = html;
 }
 
 function renderShopMetrics() {
@@ -5375,6 +5599,7 @@ function renderShopMetrics() {
             + escapeHtml(category.label) + '». В карточке сотрудника магазина укажите нужную должность.</div></td></tr>';
         renderShopMetricCards(category, {});
         renderShopMetricGrand(category, {});
+        renderShopShelfMetric();
         return;
     }
 
@@ -5456,6 +5681,7 @@ function renderShopMetrics() {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
     }
+    renderShopShelfMetric();
 }
 
 function renderShopMetricCards(category, grand) {
@@ -6954,6 +7180,8 @@ function shopKpiCalcType(rule) {
 }
 
 function shopKpiSourceType(rule) {
+    if (canonicalMetricId(rule && (rule.metricId || rule.metric_id)) === METRIC_SHELF_LABELS_ID
+        && shopShelfParticipation(rule) === "derived_recipient") return "derived";
     if (rule && (rule.sourceType || rule.source_type)) return canonicalSourceType(rule.sourceType || rule.source_type);
     const tpl = shopKpiTemplate(rule && (rule.metricId || rule.metric_id));
     if (tpl && tpl.sourceType) return canonicalSourceType(tpl.sourceType);
@@ -6972,8 +7200,14 @@ function shopKpiName(rule) {
 }
 
 function shopKpiFactSourceLabel(rule) {
+    const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id || rule.id));
+    if (id === METRIC_SHELF_LABELS_ID) {
+        return shopShelfParticipation(rule) === "derived_recipient"
+            ? "Автоматически по товароразборщикам"
+            : "Ручной ввод";
+    }
     const source = shopKpiSourceType(rule);
-    if (source === "revision" || canonicalMetricId(rule && (rule.metricId || rule.metric_id || rule.id)) === "metric_revision") return "Ревизия";
+    if (source === "revision" || id === "metric_revision") return "Ревизия";
     const tpl = shopKpiTemplate(rule && (rule.metricId || rule.metric_id || rule.id));
     if ((tpl && tpl.category === "cashiers") || (rule && rule.category === "cashiers")) return "Метрики кассиров";
     if (source === "timesheet") return "Табель";
@@ -7057,6 +7291,11 @@ function shopBonusMetricFact(rule, employeeId, month) {
         fact = st.fact;
         planAuto = st.planAuto;
         label = st.label;
+    } else if (metricId === METRIC_SHELF_LABELS_ID || source === "derived") {
+        const st = shopShelfMonthFact(employeeId, m, rule);
+        fact = st.fact;
+        planAuto = st.planAuto;
+        label = st.fact + " из " + st.planAuto + (st.derived ? " · автоматически" : "");
     } else if (source === "revision" || metricId === "metric_revision") {
         const st = shopRevisionEmployeeMetrics(employeeId, m);
         fact = st.done;
@@ -7114,7 +7353,7 @@ function shopEmployeeBonusLines(employeeId, month) {
     const m = month || selectedMonth;
     return shopEmployeeActiveRules(employeeId, m).map(function (rule) {
         const src = shopBonusMetricFact(rule, employeeId, m);
-        const plan = Number(rule.plan || 0);
+        const plan = Number(rule.plan || 0) || Number(src.planAuto || 0);
         const fact = Number(src.fact || 0);
         const pay = shopKpiPayout(rule, fact, plan, employeeId, m);
         return {
@@ -7383,7 +7622,7 @@ function shopKpiEditorHtml(employeeId, rule) {
         + '<div class="note" style="margin-top:4px">Факт: '
         + (src.label || String(Math.round((src.fact || 0) * 100) / 100))
         + "</div></td>"
-        + '<td><input type="number" min="0" step="0.01" value="' + blankZero(rule.plan)
+        + '<td><input type="number" min="0" step="0.01" value="' + blankZero(rule.plan || src.planAuto)
         + "\" onchange=\"setShopKpiField('" + employeeId + "','" + metricId + "','plan',this.value)\""
         + (shared ? " disabled" : "") + "></td>"
         + '<td><input type="number" min="0" step="1" value="' + blankZeroInt(shared ? shopSharedBudget(metricId, selectedMonth) : shopKpiBudget(rule))
@@ -7392,7 +7631,15 @@ function shopKpiEditorHtml(employeeId, rule) {
         + '<td><input type="number" min="0" step="1" value="' + blankZeroInt(shopKpiMaxCoef(rule))
         + "\" onchange=\"setShopKpiField('" + employeeId + "','" + metricId + "','maxCoefPercent',this.value)\""
         + (shared ? " disabled" : "") + ">%</td>"
-        + "<td>" + escapeHtml(shopKpiFactSourceLabel(rule)) + "</td>"
+        + "<td>" + escapeHtml(shopKpiFactSourceLabel(rule))
+        + (metricId === METRIC_SHELF_LABELS_ID
+            ? '<div class="form-group" style="margin-top:6px"><select onchange="setShopKpiField(\''
+                + employeeId + "','" + metricId + "','participationRole',this.value)\">"
+                + '<option value="manual_source"' + (shopShelfParticipation(rule) === "manual_source" ? " selected" : "") + ">Вручную</option>"
+                + '<option value="derived_recipient"' + (shopShelfParticipation(rule) === "derived_recipient" ? " selected" : "") + ">Автоматически от товароразборщиков</option>"
+                + "</select></div>"
+            : "")
+        + "</td>"
         + '<td><input type="date" value="' + fromDate
         + "\" onchange=\"setShopKpiField('" + employeeId + "','" + metricId + "','validFrom',this.value)\"></td></tr>";
     html += '<tr><td colspan="6"><button type="button" class="btn btn-danger btn-small" onclick="removeShopKpi(\''
@@ -7432,6 +7679,10 @@ function stampBonusRule(rule) {
     rule.metricId = rule.metric_id;
     rule.sourceType = canonicalSourceType(rule.sourceType || rule.source_type);
     rule.source_type = rule.sourceType;
+    if (!rule.participationRole && canonicalMetricId(rule.metricId) === METRIC_SHELF_LABELS_ID) {
+        rule.participationRole = rule.sourceType === "derived" ? "derived_recipient" : "manual_source";
+    }
+    if (rule.participationRole) rule.participation_role = rule.participationRole;
     rule.valid_from = shopPeriodMonthKey(rule.validFrom || rule.valid_from);
     rule.valid_to = rule.validTo != null && rule.validTo !== "" ? shopPeriodMonthKey(rule.validTo) : (rule.valid_to ? shopPeriodMonthKey(rule.valid_to) : rule.valid_to);
     rule.validFrom = rule.valid_from || rule.validFrom;
@@ -7499,6 +7750,7 @@ function shopCloneRuleFields(rule) {
         type: rule.type || "plan",
         calcType: shopKpiCalcType(rule),
         sourceType: shopKpiSourceType(rule),
+        participationRole: shopShelfParticipation(rule),
         sourceKey: rule.sourceKey || "",
         sourceCategory: rule.sourceCategory || "",
         amount: shopKpiBudget(rule),
@@ -7550,6 +7802,10 @@ function setShopKpiField(employeeId, metricId, field, value) {
         patch.amount = patch.budget;
     } else if (field === "maxCoefPercent") patch.maxCoefPercent = parseDecimal(value, 100);
     else if (field === "validFrom") patch.validFrom = shopPeriodMonthKey(value);
+    else if (field === "participationRole") {
+        patch.participationRole = value === "derived_recipient" ? "derived_recipient" : "manual_source";
+        patch.sourceType = patch.participationRole === "derived_recipient" ? "derived" : "manual";
+    }
     mutateShopBonusRule(employeeId, metricId, patch);
     renderShopSalarySettings();
 }
@@ -7558,6 +7814,15 @@ function addShopKpi(employeeId) {
     if (!canEditShopPayrollRules()) return;
     let html = "<h3>Назначить метрику</h3><div class=\"note\" style=\"margin-bottom:12px\">Можно назначить любую существующую метрику магазина, в том числе ревизию кассиру. Новые метрики не создаются.</div>";
     shopKpiAssignableMetrics().forEach(function (metric) {
+        if (canonicalMetricId(metric.id) === METRIC_SHELF_LABELS_ID) {
+            html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpi(\''
+                + employeeId + "','" + metric.id + "','manual_source')\">" + escapeHtml(SHOP_KPI_METRIC_NAMES[metric.id])
+                + ' <span class="note"> · способ заполнения: вручную</span></button></div>';
+            html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpi(\''
+                + employeeId + "','" + metric.id + "','derived_recipient')\">" + escapeHtml(SHOP_KPI_METRIC_NAMES[metric.id])
+                + ' <span class="note"> · способ заполнения: автоматически от товароразборщиков</span></button></div>';
+            return;
+        }
         html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpi(\''
             + employeeId + "','" + metric.id + "')\">" + escapeHtml(SHOP_KPI_METRIC_NAMES[metric.id] || metric.name)
             + ' <span class="note"> · ' + escapeHtml(shopKpiFactSourceLabel(metric))
@@ -7567,7 +7832,7 @@ function addShopKpi(employeeId) {
     openShopPayModal(html);
 }
 
-function createShopKpi(employeeId, templateId) {
+function createShopKpi(employeeId, templateId, participationRole) {
     if (!canEditShopPayrollRules()) return;
     const tpl = shopKpiTemplate(templateId);
     if (!tpl || SHOP_KPI_METRIC_IDS.indexOf(canonicalMetricId(tpl.id)) === -1) {
@@ -7580,6 +7845,8 @@ function createShopKpi(employeeId, templateId) {
         toast("Эта метрика уже назначена сотруднику.", "error");
         return;
     }
+    const shelf = metricId === METRIC_SHELF_LABELS_ID;
+    const role = participationRole === "derived_recipient" ? "derived_recipient" : "manual_source";
     ensureShopPayroll().rules.push(stampBonusRule({
         id: generateBonusRuleId(),
         employeeId: employeeId,
@@ -7588,13 +7855,14 @@ function createShopKpi(employeeId, templateId) {
         name: SHOP_KPI_METRIC_NAMES[metricId] || tpl.name,
         type: "plan",
         calcType: "budget_ratio",
-        sourceType: canonicalSourceType(tpl.sourceType || "store_metrics"),
+        sourceType: shelf ? (role === "derived_recipient" ? "derived" : "manual") : canonicalSourceType(tpl.sourceType || "store_metrics"),
+        participationRole: shelf ? role : "",
         sourceKey: tpl.field || "",
         sourceCategory: tpl.category || "",
         amount: 0,
         budget: 0,
         maxCoefPercent: 100,
-        plan: 0,
+        plan: shelf ? METRIC_SHELF_PLAN_DAYS : 0,
         percent: 0,
         paysBonus: true,
         enabled: true,
@@ -7728,7 +7996,11 @@ function openShopBonusBreakdown(employeeId) {
         let sum = 0;
         lines.forEach(function (line) {
             sum += line.amount;
-            html += "<tr><td>" + escapeHtml(line.metric.name) + "</td><td>"
+            html += "<tr><td>" + escapeHtml(line.metric.name)
+                + (line.metric.id === METRIC_SHELF_LABELS_ID && shopShelfParticipation(line.rule) === "derived_recipient"
+                    ? '<div class="note">Факт рассчитан автоматически по результатам товароразборщиков.</div>'
+                    : "")
+                + "</td><td>"
                 + (line.shared ? "—" : (line.plan ? line.plan.toLocaleString("ru-RU") : "—")) + "</td><td>"
                 + (line.label && !line.shared ? escapeHtml(line.label) : (Math.round(line.fact * 100) / 100).toLocaleString("ru-RU"))
                 + "</td><td>" + formatShopCoefPct(line.coef) + "</td><td>"
