@@ -515,7 +515,18 @@
         .metrics-table col.metrics-col-recount-resp { width: 122px; }
         .metrics-table col.metrics-col-inv-money { width: 78px; }
         .metrics-table col.metrics-col-inv-who { width: 122px; }
-        .metrics-table.metrics-managers-table col.metrics-col-emp { width: 56px; }
+        .metrics-table.metrics-managers-table {
+            --metrics-h1: 40px;
+            --metrics-h2: 34px;
+        }
+        .metrics-table.metrics-managers-table col.metrics-col-emp { width: 50px; }
+        .metrics-table.metrics-managers-table col.metrics-col-recount-total { width: 58px; }
+        .metrics-table.metrics-managers-table col.metrics-col-recount-resp { width: 108px; }
+        .metrics-table.metrics-managers-table col.metrics-col-inv-money { width: 70px; }
+        .metrics-table.metrics-managers-table thead tr.metrics-head-metrics th {
+            max-width: 72px;
+            hyphens: auto;
+        }
         .metrics-table.metrics-cashiers-table col.metrics-col-emp { width: 64px; }
         .metrics-table.metrics-cashiers-table col.metrics-col-money { width: 72px; }
         .metrics-table.metrics-cashiers-table col.metrics-col-actual { width: 118px; }
@@ -1930,7 +1941,30 @@
             .month-bar { top: 60px; }
         }
 
-        @media (max-width: 640px) {
+        .metric-cat-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .metric-cat-table th, .metric-cat-table td {
+            border-bottom: 1px solid #e5e7eb;
+            padding: 4px 6px;
+            text-align: left;
+            vertical-align: middle;
+        }
+        .metric-cat-table th { background: #f8fafc; font-size: 11px; }
+        .metric-cat-table td:first-child, .metric-cat-table th:first-child { text-align: right; width: 52px; }
+        .metric-cat-table tr.is-inactive { opacity: .55; }
+        .metric-cat-table tr.drag-over { background: #eff6ff; }
+        .metric-cat-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+        .metric-cat-form .full { grid-column: 1 / -1; }
+        .metric-cat-form .form-group { gap: 2px; }
+        .metric-cat-form .form-group label { font-size: 11px; }
+        .metric-cat-pos { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 10px; }
+        .metric-cat-people { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 10px; max-height: 220px; overflow: auto; }
+        .metric-cat-people label.check, .metric-cat-pos label.check {
+            display: grid; grid-template-columns: 14px 1fr; gap: 6px; align-items: start;
+            font-size: 12px; font-weight: 400; margin: 0; padding: 1px 0;
+        }
+        @media (max-width: 720px) {
+            .metric-cat-form, .metric-cat-pos, .metric-cat-people { grid-template-columns: 1fr; }
+        }
             .settings-grid, .pick-row { grid-template-columns: 1fr; }
             .page-title { font-size: 18px; }
             .rev-folder-edit { grid-template-columns: 1fr; }
@@ -2005,6 +2039,9 @@
         <button type="button" class="nav-btn" data-for="dept" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
         </button>
+        <button type="button" class="nav-btn" data-for="dept" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
+            📚 Метрики
+        </button>
         <div class="menu-title" data-for="shop">Метрики</div>
         <button type="button" class="nav-btn" data-for="shop" data-section="metrics-pickers" onclick="showSection('metrics-pickers', this)">
             📦 Товаросборщики
@@ -2044,6 +2081,9 @@
         </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="employees" onclick="showSection('employees', this)">
             📋 В табель
+        </button>
+        <button type="button" class="nav-btn" data-for="both" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
+            📚 Метрики
         </button>
         <button type="button" class="nav-btn" data-for="both" data-section="settings" onclick="showSection('settings', this)">
             ⚙️ Настройки
@@ -2221,7 +2261,46 @@
                         </table>
                     </div>
                 </div>
-                <div class="card" id="metricsAccessBox" style="display:none"></div>
+            </section>
+
+
+            <!-- =================================================
+                 МЕТРИКИ — Склад / Офис / Логистика (общий каталог)
+            ================================================== -->
+            <section id="deptMetrics" class="section">
+                <div class="card">
+                    <div class="card-title" id="deptMetricsPageTitle">Метрики</div>
+                    <div class="note" id="deptMetricsNote" style="margin-top:6px">Единый справочник Work Time. Кто заполняет — в карточке ФИО → Рабочие метрики. KPI в зарплату назначается отдельно.</div>
+                    <div class="toolbar" style="margin-top:10px" id="deptMetricsCatalogToolbar"></div>
+                    <div class="table-wrapper" style="margin-top:10px;max-height:none">
+                        <table class="metric-cat-table">
+                            <thead>
+                                <tr>
+                                    <th>Порядок</th>
+                                    <th>Название метрики</th>
+                                    <th>Тип фиксации</th>
+                                    <th>Активна</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="deptMetricsCatalogBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Рабочие показатели</div>
+                            <div class="note" id="deptMetricsMonthNote"></div>
+                        </div>
+                    </div>
+                    <div class="table-wrapper" id="deptMetricsWrap">
+                        <table class="metrics-table" id="deptMetricsTable">
+                            <thead id="deptMetricsHead"></thead>
+                            <tbody id="deptMetricsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
             </section>
 
 
@@ -2614,6 +2693,29 @@
             <!-- =================================================
                  НАСТРОЙКИ
             ================================================== -->
+            <section id="metricCatalog" class="section">
+                <div class="card">
+                    <div class="card-title">Метрики</div>
+                    <div class="note" style="margin-top:6px">Единый справочник рабочих показателей Work Time (Магазин Володарского). KPI в зарплату назначается отдельно.</div>
+                    <div class="toolbar" style="margin-top:10px" id="metricCatalogToolbar"></div>
+                    <div class="table-wrapper" style="margin-top:10px;max-height:none">
+                        <table class="metric-cat-table">
+                            <thead>
+                                <tr>
+                                    <th>Порядок</th>
+                                    <th>Название метрики</th>
+                                    <th>Отдел/блок</th>
+                                    <th>Тип заполнения</th>
+                                    <th>Активна</th>
+                                    <th>Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody id="metricCatalogBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
             <section id="settings" class="section">
                 <div class="card">
                     <div class="card-title">Настройки текущей таблицы</div>
@@ -2706,6 +2808,9 @@
 </div>
 
 
+<div id="metricCatalogModalBack" class="rev-modal-back" onclick="if (event.target === this) closeMetricCatalogModal()">
+    <div class="rev-modal" id="metricCatalogModal" role="dialog" aria-modal="true"></div>
+</div>
 <div id="revisionModalBack" class="rev-modal-back" onclick="if (event.target === this) closeRevisionModal()">
     <div class="rev-modal" id="revisionModal" role="dialog" aria-modal="true"></div>
 </div>
@@ -2745,6 +2850,9 @@ const DEPT_DEFAULTS = [
     { code: "drivers", name: "Логистика + Торговые", pin: "4444" }
 ];
 const TERRITORY_DEPT_CODES = ["office", "warehouse", "drivers"];
+function isGenericMetricsDept(code) {
+    return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
+}
 const LEGACY_DEPT_NAMES = ["Магазин", "Водители", "Логистика + Торговая"];
 const SUMMARY_DEFAULT = { code: "summary", name: "Общая", pin: "5555" };
 const SUMMARY_ROLES = [
@@ -2871,7 +2979,7 @@ const SHOP_METRIC_CATEGORIES = [
             { key: "orderPositions", label: "Кол-во позиций в заказе", type: "number", metricId: "metric_order_positions" },
             { key: "receiving", label: "Количество принятого товара", type: "number", metricId: "metric_receiving" },
             { key: "receiptsPosted", label: "Количество поставленных поступлений", type: "number", metricId: "metric_receipts_posted" },
-            { key: "recount", label: "Количество позиций пересчёта", type: "number", metricId: "metric_recount" },
+            { key: "recount", label: "Количество позиций в пересчёте", type: "number", metricId: "metric_recount" },
             { key: "inventoryBy11", label: "Инвентаризация сделана по графику до 11:00", type: "check", metricId: "metric_mgr_inventory_by_11" },
             { key: "goodsPlaced", label: "Товар поставлен верно", type: "check", metricId: "metric_mgr_goods_placed_ok" },
             { key: "goodsReceived", label: "Товар принят верно", type: "check", metricId: "metric_mgr_goods_received_ok" },
@@ -3002,6 +3110,41 @@ const SHOP_WORK_METRIC_DEFS = [
 ];
 const SHOP_WORK_METRIC_IDS = {};
 SHOP_WORK_METRIC_DEFS.forEach(function (d) { SHOP_WORK_METRIC_IDS[d.id] = true; });
+const SHOP_METRIC_SECTIONS = [
+    { id: "pickers", label: "Товароразборщики" },
+    { id: "cashiers", label: "Кассиры" },
+    { id: "managers", label: "Руководители" }
+];
+const SHOP_METRIC_FILL_TYPES = [
+    { id: "number", label: "Число" },
+    { id: "check", label: "Сделано / Не сделано" },
+    { id: "money", label: "Денежная сумма" },
+    { id: "auto_calc", label: "Автоматический расчёт" },
+    { id: "auto_sum", label: "Автоматическая сумма" }
+];
+function shopMetricCatalogSeed() {
+    return [
+        { id: "metric_display_positions", key: "display", name: "Позиции выкладки", section_id: "pickers", fill_type: "number", sort_order: 10, assignable: true, core_column: true },
+        { id: "metric_recount", key: "recount", name: "Количество позиций в пересчёте", section_id: "pickers", fill_type: "number", sort_order: 20, assignable: true, core_column: true },
+        { id: "metric_assembly", key: "invoices", name: "Сборка накладных", section_id: "pickers", fill_type: "number", sort_order: 30, assignable: true, core_column: true },
+        { id: "metric_sugar_packing", key: "sugar", name: "Фасовка сахара", section_id: "pickers", fill_type: "number", sort_order: 40, assignable: true, core_column: true },
+        { id: "metric_aisles", key: "walks", name: "Проходы", section_id: "pickers", fill_type: "check", sort_order: 50, assignable: true, core_column: true },
+        { id: METRIC_SHELF_LABELS_ID, key: "shelfLabels", name: METRIC_SHELF_LABELS_NAME, section_id: "pickers", fill_type: "check", sort_order: 60, assignable: true, core_column: true },
+        { id: "metric_sales", key: "sales", name: "Сумма продаж", section_id: "cashiers", fill_type: "money", sort_order: 10, assignable: false, core_column: true },
+        { id: "metric_checks", key: "receipts", name: "Количество чеков", section_id: "cashiers", fill_type: "number", sort_order: 20, assignable: false, core_column: true },
+        { id: "metric_average_check", key: "avgCheck", name: "Средний чек", section_id: "cashiers", fill_type: "auto_calc", sort_order: 30, assignable: false, core_column: true, formula: { op: "div", left: "metric_sales", right: "metric_checks" } },
+        { id: "metric_supplier_orders", key: "supplierOrders", name: "Кол-во заказов поставщикам", section_id: "managers", fill_type: "number", sort_order: 10, assignable: true, core_column: true },
+        { id: "metric_order_positions", key: "orderPositions", name: "Кол-во позиций в заказе", section_id: "managers", fill_type: "number", sort_order: 20, assignable: true, core_column: true },
+        { id: "metric_receiving", key: "receiving", name: "Количество принятого товара", section_id: "managers", fill_type: "number", sort_order: 30, assignable: true, core_column: true },
+        { id: "metric_receipts_posted", key: "receiptsPosted", name: "Количество поставленных поступлений", section_id: "managers", fill_type: "number", sort_order: 40, assignable: true, core_column: true },
+        { id: "metric_mgr_inventory_by_11", key: "inventoryBy11", name: "Инвентаризация сделана по графику до 11:00", section_id: "managers", fill_type: "check", sort_order: 60, assignable: true, core_column: true },
+        { id: "metric_mgr_goods_placed_ok", key: "goodsPlaced", name: "Товар поставлен верно", section_id: "managers", fill_type: "check", sort_order: 70, assignable: true, core_column: true },
+        { id: "metric_mgr_goods_received_ok", key: "goodsReceived", name: "Товар принят верно", section_id: "managers", fill_type: "check", sort_order: 80, assignable: true, core_column: true },
+        { id: "metric_mgr_goods_shelved_same_day", key: "goodsShelvedSameDay", name: "Поступивший товар размещен по полкам склада в этот же день", section_id: "managers", fill_type: "check", sort_order: 90, assignable: true, core_column: true },
+        { id: "metric_mgr_shift_duties_done", key: "dutiesDone", name: "Функционал руководителя выполнен за смену", section_id: "managers", fill_type: "check", sort_order: 100, assignable: true, core_column: true },
+        { id: "metric_revision", key: "revision", name: "Ревизия", section_id: "pickers", fill_type: "number", sort_order: 200, assignable: true, show_column: false }
+    ];
+}
 const SHOP_PICKER_DEFAULT_WORK_IDS = [
     "metric_display_positions",
     "metric_recount",
@@ -3173,6 +3316,12 @@ function ensureMetricCatalogFor(data) {
         m.source_type = m.sourceType;
         if (m.active == null) m.active = true;
         if (SHOP_KPI_METRIC_NAMES[m.id]) m.name = SHOP_KPI_METRIC_NAMES[m.id];
+        try {
+            const work = appData && appData.shopMetricCatalog && (appData.shopMetricCatalog.items || []).find(function (it) {
+                return it && it.id === m.id;
+            });
+            if (work && work.name) m.name = work.name;
+        } catch (err) {}
         if (!m.name) m.name = "Метрика";
     });
     return list;
@@ -3619,6 +3768,7 @@ function createDefaultData() {
         salary: {},
         repSales: {},
         shopMetrics: {},
+        deptMetrics: {},
         shopRevision: { groups: [], folders: [], tasks: {}, ui: { collapsedGroups: {} } },
         shopPayroll: { departmentId: "shop", salaries: [], rules: [], manual: {}, metrics: [] },
         workspaces: DEPT_DEFAULTS.map(function (d) {
@@ -5234,6 +5384,7 @@ function applyModeUI() {
         if (el.classList.contains("nav-btn")) {
             const sec = el.getAttribute("data-section");
             if (sec && allowed.indexOf(sec) === -1) show = false;
+            if (sec === "deptMetrics" && (!workspace() || !isGenericMetricsDept(workspace().code))) show = false;
         }
         el.style.display = show ? "" : "none";
     });
@@ -5297,12 +5448,15 @@ function allowedSections() {
             : ["timesheet", "discipline", "fio", "employees"];
         if (workspace() && workspace().code === "shop") {
             list.splice(1, 0, "metrics-pickers", "metrics-cashiers", "metrics-managers", "revision");
+            if (currentDeptRole === "admin") list.push("metricCatalog");
+        } else if (workspace() && isGenericMetricsDept(workspace().code)) {
+            list.splice(1, 0, "deptMetrics");
         }
         return list;
     }
     if (currentSummaryRole === "pay") return ["salary"];
     if (currentSummaryRole === "admin") {
-        return ["timesheet", "salary", "repSalary", "shopSalary", "summaryStaff", "discipline", "analysis", "settings"];
+        return ["timesheet", "salary", "repSalary", "shopSalary", "summaryStaff", "discipline", "analysis", "settings", "metricCatalog"];
     }
     return ["timesheet", "salary", "repSalary", "shopSalary", "summaryStaff", "analysis"];
 }
@@ -5327,7 +5481,9 @@ function sectionTitle(id) {
         analysis: "Анализ",
         fio: "ФИО сотрудника",
         employees: "В табель",
-        settings: "Настройки"
+        settings: "Настройки",
+        metricCatalog: "Метрики",
+        deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : "")
     };
     return titles[id] || "";
 }
@@ -5385,6 +5541,8 @@ function showSection(id, button) {
     if (id === "fio") renderFio();
     if (id === "employees") renderEmployees();
     if (id === "settings") loadWorkspaceSettings();
+    if (id === "metricCatalog") renderMetricCatalog();
+    if (id === "deptMetrics") renderDeptMetrics();
 }
 
 function changeMonth(month) {
@@ -5409,6 +5567,8 @@ function refreshAll() {
         renderShopMetrics();
         renderShopRevision();
     }
+    if (currentSection === "metricCatalog") renderMetricCatalog();
+    if (currentSection === "deptMetrics" || (workspace() && isGenericMetricsDept(workspace().code))) renderDeptMetrics();
     updateStats();
 }
 
@@ -5429,7 +5589,10 @@ function shopMetricInputFields(category) {
 }
 
 function shopMetricFieldSpec(categoryId, field) {
-    return ((shopMetricCategoryById(categoryId).fields) || []).find(function (f) { return f.key === field; }) || null;
+    const fromCat = ((shopMetricCategoryById(categoryId).fields) || []).find(function (f) { return f.key === field; });
+    if (fromCat) return shopDecorateMetricField(fromCat);
+    const item = shopMetricCatalogItems().find(function (it) { return it && (it.key === field || it.id === field); });
+    return item ? shopCatalogToField(item) : null;
 }
 
 function shopMetricWorkDaysCount(employeeId, month) {
@@ -5472,7 +5635,318 @@ function ensureShopMetrics() {
     if (!root.substitutionPayDefaults || typeof root.substitutionPayDefaults !== "object") {
         root.substitutionPayDefaults = { day_rate: 0, extra_pay: 0, coef: 1, kpi_mode: "keep_primary" };
     }
+    ensureShopMetricCatalog();
     return root;
+}
+
+function ensureShopMetricCatalog() {
+    if (!appData.shopMetricCatalog || typeof appData.shopMetricCatalog !== "object") {
+        appData.shopMetricCatalog = { items: [] };
+    }
+    if (!Array.isArray(appData.shopMetricCatalog.items)) appData.shopMetricCatalog.items = [];
+    const list = appData.shopMetricCatalog.items;
+    shopMetricCatalogSeed().forEach(function (seed) {
+        const found = list.find(function (it) { return it && it.id === seed.id; });
+        if (!found) {
+            list.push({
+                id: seed.id,
+                key: seed.key,
+                name: seed.name,
+                section_id: seed.section_id,
+                fill_type: seed.fill_type,
+                sort_order: seed.sort_order,
+                active: true,
+                assignable: seed.assignable !== false,
+                core_column: !!seed.core_column,
+                show_column: seed.show_column !== false,
+                builtin: true,
+                department_id: "shop",
+                position_titles: [],
+                formula: seed.formula || null
+            });
+            return;
+        }
+        found.id = seed.id;
+        found.key = found.key || seed.key;
+        found.builtin = true;
+        if (found.core_column == null) found.core_column = !!seed.core_column;
+        if (found.show_column == null) found.show_column = seed.show_column !== false;
+        if (found.assignable == null) found.assignable = seed.assignable !== false;
+        if (!found.section_id) found.section_id = seed.section_id;
+        if (!found.fill_type) found.fill_type = seed.fill_type;
+        if (found.sort_order == null) found.sort_order = seed.sort_order;
+        if (found.active == null) found.active = true;
+        if (!found.department_id) found.department_id = "shop";
+        if (!Array.isArray(found.position_titles)) found.position_titles = [];
+        if (!found.formula && seed.formula) found.formula = seed.formula;
+        if (!found.name) found.name = seed.name;
+    });
+    return appData.shopMetricCatalog;
+}
+
+function metricDepartmentId(item) {
+    return (item && item.department_id) || "shop";
+}
+
+function catalogDeptContext() {
+    if (isSummary()) return "shop";
+    const c = workspace() && workspace().code;
+    if (c === "shop" || isGenericMetricsDept(c)) return c;
+    return "shop";
+}
+
+function catalogItemsForDept(dept) {
+    const code = dept || catalogDeptContext();
+    return shopMetricCatalogItems().filter(function (it) {
+        return metricDepartmentId(it) === code;
+    });
+}
+
+function employeeHomeDeptCode(employeeId) {
+    const list = (appData && appData.workspaces) || [];
+    for (let i = 0; i < list.length; i++) {
+        const w = list[i];
+        if (!w || w.type === "summary") continue;
+        if ((w.employees || []).some(function (e) { return e && e.id === employeeId; })) {
+            return w.code || "shop";
+        }
+    }
+    const cur = workspace();
+    return (cur && cur.code) || "shop";
+}
+
+function ensureDeptMetrics(deptCode) {
+    if (!isGenericMetricsDept(deptCode)) return ensureShopMetrics();
+    if (!appData.deptMetrics || typeof appData.deptMetrics !== "object") appData.deptMetrics = {};
+    if (!appData.deptMetrics[deptCode] || typeof appData.deptMetrics[deptCode] !== "object") {
+        appData.deptMetrics[deptCode] = { facts: {}, workAccess: {} };
+    }
+    const root = appData.deptMetrics[deptCode];
+    if (!root.facts || typeof root.facts !== "object") root.facts = {};
+    if (!root.workAccess || typeof root.workAccess !== "object") root.workAccess = {};
+    return root;
+}
+
+function metricsStoreForEmployee(employeeId) {
+    const dept = employeeHomeDeptCode(employeeId);
+    return isGenericMetricsDept(dept) ? ensureDeptMetrics(dept) : ensureShopMetrics();
+}
+
+function metricsStoreForDept(deptCode) {
+    return isGenericMetricsDept(deptCode) ? ensureDeptMetrics(deptCode) : ensureShopMetrics();
+}
+
+function deptMetricFactsMonth(deptCode, month) {
+    const root = ensureDeptMetrics(deptCode);
+    const key = month || selectedMonth;
+    if (!root.facts[key] || typeof root.facts[key] !== "object") root.facts[key] = {};
+    return root.facts[key];
+}
+
+function deptTimesheetStatus(deptCode, employeeId, day, month) {
+    const w = findWorkspaceByCode(deptCode);
+    if (!w) return "";
+    const m = month || selectedMonth;
+    const rec = w.timesheet && w.timesheet[m] && w.timesheet[m][employeeId] && w.timesheet[m][employeeId][day];
+    return rec && rec.status ? rec.status : "";
+}
+
+function deptTimesheetLockLabel(deptCode, employeeId, day, month) {
+    const st = deptTimesheetStatus(deptCode, employeeId, day, month);
+    if (st === "В") return "Выходной";
+    if (st === "Б") return "Больничный";
+    if (st === "ОТ") return "Отпуск";
+    if (st === "П") return "Прогул";
+    if (st === "Л") return "Лишение";
+    return "";
+}
+
+function refreshMetricsUi() {
+    if (workspace() && workspace().code === "shop") renderShopMetrics();
+    if (workspace() && isGenericMetricsDept(workspace().code)) renderDeptMetrics();
+}
+
+function shopMetricCatalogItems() {
+    return (ensureShopMetricCatalog().items || []).filter(function (it) { return it && it.id; });
+}
+
+function shopMetricCatalogById(id) {
+    const mid = canonicalMetricId(id);
+    return shopMetricCatalogItems().find(function (it) { return it.id === mid; }) || null;
+}
+
+function shopMetricDisplayName(metricId, fallback) {
+    const it = shopMetricCatalogById(metricId);
+    if (it && it.name) return it.name;
+    if (SHOP_KPI_METRIC_NAMES[canonicalMetricId(metricId)]) return SHOP_KPI_METRIC_NAMES[canonicalMetricId(metricId)];
+    return fallback || metricId || "Метрика";
+}
+
+function shopMetricSectionLabel(sectionId) {
+    const hit = SHOP_METRIC_SECTIONS.find(function (s) { return s.id === sectionId; });
+    return hit ? hit.label : sectionId || "—";
+}
+
+function shopMetricFillLabel(fill) {
+    const hit = SHOP_METRIC_FILL_TYPES.find(function (s) { return s.id === fill; });
+    return hit ? hit.label : fill || "—";
+}
+
+function shopCatalogSort(metricId, fallback) {
+    const it = shopMetricCatalogById(metricId);
+    const n = it ? Number(it.sort_order) : NaN;
+    return Number.isFinite(n) ? n : (fallback || 9999);
+}
+
+function shopWorkMetricDefs() {
+    return shopMetricCatalogItems().filter(function (it) {
+        return it.assignable !== false && it.show_column !== false;
+    }).sort(function (a, b) {
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
+    }).map(function (it) {
+        return {
+            id: it.id,
+            key: it.key || it.id,
+            label: it.name,
+            type: it.fill_type === "check" ? "check" : (it.fill_type === "money" ? "money" : "number"),
+            tabs: [it.section_id],
+            section_id: it.section_id,
+            fill_type: it.fill_type,
+            active: it.active !== false,
+            formula: it.formula || null,
+            extra: !it.core_column
+        };
+    });
+}
+
+function shopIsAssignableMetricId(id) {
+    const it = shopMetricCatalogById(id);
+    return !!(it && it.assignable !== false);
+}
+
+function shopMetricUsesFacts(metricId) {
+    const mid = canonicalMetricId(metricId);
+    if (SHOP_QTY_FACT_METRIC_IDS[mid]) return true;
+    const it = shopMetricCatalogById(mid);
+    return !!(it && !it.builtin && (it.fill_type === "number" || it.fill_type === "money"));
+}
+
+function shopCatalogItemShownInUi(item) {
+    if (!item || item.show_column === false) return false;
+    if (item.active !== false) return true;
+    return shopMetricHasMonthData(item.id, selectedMonth);
+}
+
+function shopMetricHasMonthData(metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    const m = month || selectedMonth;
+    const facts = shopMetricFactsMonth(m);
+    if (Object.keys(facts).some(function (empId) {
+        const days = facts[empId];
+        return days && Object.keys(days).some(function (d) { return days[d] && days[d][mid] != null && Number(days[d][mid] || 0); });
+    })) return true;
+    const deptFactsRoot = appData.deptMetrics;
+    if (deptFactsRoot && typeof deptFactsRoot === "object") {
+        const hasDept = Object.keys(deptFactsRoot).some(function (dept) {
+            const monthStore = deptFactsRoot[dept] && deptFactsRoot[dept].facts && deptFactsRoot[dept].facts[m];
+            if (!monthStore) return false;
+            return Object.keys(monthStore).some(function (empId) {
+                const days = monthStore[empId];
+                return days && Object.keys(days).some(function (d) {
+                    const rec = days[d];
+                    if (!rec) return false;
+                    if (rec[mid] != null && Number(rec[mid] || 0)) return true;
+                    return rec[mid + "Mark"] === "done" || rec[mid + "Mark"] === "fail";
+                });
+            });
+        });
+        if (hasDept) return true;
+    }
+    const it = shopMetricCatalogById(mid);
+    const key = (it && it.key) || METRIC_ID_ALIASES[mid] && Object.keys(METRIC_ID_ALIASES).find(function (k) { return METRIC_ID_ALIASES[k] === mid; });
+    const cats = ["pickers", "cashiers", "managers"];
+    return cats.some(function (catId) {
+        const store = shopMetricMonthStore(catId, m);
+        return Object.keys(store).some(function (empId) {
+            const days = store[empId];
+            if (!days || typeof days !== "object") return false;
+            return Object.keys(days).some(function (d) {
+                const rec = days[d];
+                if (!rec || typeof rec !== "object") return false;
+                if (key && rec[key] != null && Number(rec[key] || 0)) return true;
+                if (rec[mid] != null && Number(rec[mid] || 0)) return true;
+                return false;
+            });
+        });
+    });
+}
+
+function shopCatalogToField(item) {
+    const fill = item.fill_type || "number";
+    return {
+        key: item.key || item.id,
+        label: item.name,
+        type: fill === "check" ? "check" : (fill === "money" ? "money" : (fill === "auto_calc" ? "avgCheck" : "number")),
+        metricId: item.id,
+        extra: !item.core_column,
+        derived: false,
+        autoCalc: fill === "auto_calc",
+        formula: item.formula || null
+    };
+}
+
+function shopCatalogOperandValue(employeeId, day, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    const catalogItem = shopMetricCatalogById(mid);
+    const dept = metricDepartmentId(catalogItem);
+    if (isGenericMetricsDept(dept)) {
+        return getDeptMetricStored(dept, employeeId, day, mid, month);
+    }
+    if (mid === "metric_sales") return getShopMetricValue("cashiers", employeeId, day, "sales");
+    if (mid === "metric_checks") return getShopMetricValue("cashiers", employeeId, day, "receipts");
+    if (shopMetricUsesFacts(mid) || SHOP_QTY_FACT_METRIC_IDS[mid]) return getShopMetricFact(employeeId, day, mid, month);
+    const it = shopMetricCatalogById(mid);
+    const section = (it && it.section_id) || "pickers";
+    const key = (it && it.key) || mid;
+    return getShopMetricValue(section, employeeId, day, key);
+}
+
+function shopCatalogAutoValue(employeeId, day, metricId, month) {
+    const it = shopMetricCatalogById(metricId);
+    const formula = it && it.formula;
+    if (!formula || !formula.op) return 0;
+    if (formula.op === "div") {
+        const a = Number(shopCatalogOperandValue(employeeId, day, formula.left, month) || 0);
+        const b = Number(shopCatalogOperandValue(employeeId, day, formula.right, month) || 0);
+        return b ? a / b : 0;
+    }
+    if (formula.op === "sum") {
+        return Number(shopCatalogOperandValue(employeeId, day, formula.left || formula.metric_id, month) || 0);
+    }
+    return 0;
+}
+
+function shopCatalogDaySum(day, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    let sum = 0;
+    const w = findWorkspaceByCode("shop");
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id) return;
+        sum += Number(shopCatalogOperandValue(e.id, day, mid, month) || 0);
+    });
+    return sum;
+}
+
+function shopDecorateMetricField(field) {
+    if (!field) return field;
+    const mid = field.metricId || METRIC_ID_ALIASES[field.key];
+    if (!mid) return field;
+    const it = shopMetricCatalogById(mid);
+    if (!it) return field;
+    const copy = Object.assign({}, field);
+    copy.label = it.name || copy.label;
+    copy.metricId = mid;
+    return copy;
 }
 
 function shopMetricMonthStore(categoryId, month) {
@@ -5652,7 +6126,7 @@ function shopWorkAccessDefaultIds(employeeId) {
 
 function shopWorkAccessInheritIds(employeeId, month) {
     const m = month || selectedMonth;
-    const wa = ensureShopMetrics().workAccess || {};
+    const wa = metricsStoreForEmployee(employeeId).workAccess || {};
     const prev = Object.keys(wa).filter(function (key) {
         return /^\d{4}-\d{2}$/.test(key) && key < m && wa[key] && typeof wa[key] === "object"
             && Object.prototype.hasOwnProperty.call(wa[key], employeeId);
@@ -5662,12 +6136,13 @@ function shopWorkAccessInheritIds(employeeId, month) {
             return canonicalMetricId(id);
         }).filter(Boolean);
     }
+    if (isGenericMetricsDept(employeeHomeDeptCode(employeeId))) return [];
     return shopWorkAccessDefaultIds(employeeId);
 }
 
 function shopEmployeeWorkMetricIds(employeeId, month) {
     const m = month || selectedMonth;
-    const map = ensureShopMetrics().workAccess[m];
+    const map = metricsStoreForEmployee(employeeId).workAccess[m];
     if (map && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, employeeId)) {
         return (map[employeeId] || []).map(function (id) { return canonicalMetricId(id); }).filter(Boolean);
     }
@@ -5679,12 +6154,13 @@ function shopEmployeeHasWorkMetric(employeeId, metricId, month) {
     return !!mid && shopEmployeeWorkMetricIds(employeeId, month).indexOf(mid) !== -1;
 }
 
-function shopMaterializeWorkAccessMonth(month) {
+function shopMaterializeWorkAccessMonth(month, deptCode) {
     const m = month || selectedMonth;
-    const root = ensureShopMetrics();
+    const code = deptCode || ((workspace() && workspace().code) || "shop");
+    const root = metricsStoreForDept(code);
     if (!root.workAccess[m] || typeof root.workAccess[m] !== "object") root.workAccess[m] = {};
     const map = root.workAccess[m];
-    const w = findWorkspaceByCode("shop");
+    const w = findWorkspaceByCode(isGenericMetricsDept(code) ? code : "shop");
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (!Object.prototype.hasOwnProperty.call(map, e.id)) {
@@ -5695,6 +6171,7 @@ function shopMaterializeWorkAccessMonth(month) {
 }
 
 function syncShopExtraAccessFromWork(employeeId, month) {
+    if (isGenericMetricsDept(employeeHomeDeptCode(employeeId))) return;
     const extras = shopEmployeeWorkMetricIds(employeeId, month).filter(function (id) {
         return SHOP_QTY_FACT_METRIC_IDS[id];
     });
@@ -5727,11 +6204,10 @@ function withShopUiQuiet(fn) {
     try { fn(); } finally { shopUiQuiet -= 1; }
 }
 
-function setShopEmployeeExtraMetric(employeeId, metricId, on) {
-    if (shopUiQuiet) return;
+function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
     const mid = canonicalMetricId(metricId);
-    if (!mid || !SHOP_WORK_METRIC_IDS[mid]) return;
-    const map = shopMaterializeWorkAccessMonth(selectedMonth);
+    if (!mid || (!shopIsAssignableMetricId(mid) && !SHOP_WORK_METRIC_IDS[mid] && !shopEmployeeHasWorkMetric(employeeId, mid))) return;
+    const map = shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId));
     if (!Object.prototype.hasOwnProperty.call(map, employeeId)) {
         map[employeeId] = shopWorkAccessInheritIds(employeeId, selectedMonth);
     }
@@ -5741,70 +6217,35 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
     if (!on && idx !== -1) list.splice(idx, 1);
     map[employeeId] = list;
     syncShopExtraAccessFromWork(employeeId, selectedMonth);
+}
+
+function setShopEmployeeExtraMetric(employeeId, metricId, on) {
+    if (shopUiQuiet) return;
+    applyShopEmployeeWorkMetric(employeeId, metricId, on);
     saveApp();
     if (currentSection === "fio" || currentSection === "employees") renderFio();
     if (currentSection === "shopSalary") renderShopSalary();
-    if (workspace() && workspace().code === "shop") renderShopMetrics();
-}
-
-function shopAccessPanelEmployees(metricId) {
-    const w = findWorkspaceByCode("shop");
-    const list = [];
-    const seen = {};
-    function add(e) {
-        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
-        if (isPlaceholderEmployeeName(e.name) && !shopEmployeeHasWorkMetric(e.id, metricId)) return;
-        if (!isWorking(e) && !shopEmployeeHasWorkMetric(e.id, metricId)) return;
-        seen[e.id] = true;
-        list.push(e);
-    }
-    ((w && w.employees) || []).forEach(add);
-    list.sort(compareEmployeesByStatusThenName);
-    return list;
+    refreshMetricsUi();
 }
 
 function renderShopMetricAccessPanel() {
     const box = document.getElementById("metricsAccessBox");
-    if (!box) return;
-    const cat = currentShopMetricCategory();
-    if (!cat || (cat.id !== "managers" && cat.id !== "cashiers" && cat.id !== "pickers")) {
+    if (box) {
         box.style.display = "none";
         box.innerHTML = "";
-        return;
     }
-    const defs = SHOP_WORK_METRIC_DEFS.filter(function (def) {
-        return (def.tabs || []).indexOf(cat.id) !== -1;
-    });
-    let html = '<div class="metrics-access-head"><div class="card-title">Кто заполняет показатели</div>'
-        + '<div class="note">Одна операция — одно место. Участники на выбранный месяц, любая должность.</div></div>'
-        + '<div class="metrics-access-grid">';
-    defs.forEach(function (def) {
-        const people = shopAccessPanelEmployees(def.id);
-        html += '<div class="metrics-access-metric"><div class="metrics-access-metric-title">'
-            + escapeHtml(def.id === "metric_recount" ? "Участники пересчёта"
-                : (def.id === "metric_receiving" ? "Участники приёмки"
-                    : (def.id === "metric_receipts_posted" ? "Участники поставления поступлений" : def.label))) + '</div><div class="metrics-access-people">';
-        if (!people.length) {
-            html += '<span class="note">Нет сотрудников</span>';
-        }
-        people.forEach(function (emp) {
-            const home = shopEmployeeHomeCategoryId(emp);
-            const homeLabel = home === "cashiers" ? "касс." : (home === "managers" ? "рук." : (home === "pickers" ? "таб." : "др."));
-            html += '<label class="check"><input type="checkbox"'
-                + (shopEmployeeHasExtraMetric(emp.id, def.id) ? " checked" : "")
-                + " onclick=\"setShopEmployeeExtraMetric('" + emp.id + "','" + def.id + "',this.checked)\">"
-                + "<span>" + escapeHtml(shopMetricEmployeeCaption(emp))
-                + " · " + homeLabel + "</span></label>";
-        });
-        html += "</div></div>";
-    });
-    html += "</div>";
-    box.style.display = "";
-    withShopUiQuiet(function () { box.innerHTML = html; });
 }
 
 function shopGrantableExtraMetrics(employee) {
-    return SHOP_WORK_METRIC_DEFS.slice();
+    const empId = employee && employee.id;
+    const dept = empId ? employeeHomeDeptCode(empId) : catalogDeptContext();
+    return shopWorkMetricDefs().filter(function (def) {
+        const it = shopMetricCatalogById(def.id);
+        if (!it) return false;
+        if (metricDepartmentId(it) !== dept) return false;
+        if (it.active !== false) return true;
+        return empId && shopEmployeeHasWorkMetric(empId, def.id);
+    });
 }
 
 function shopMetricFactsMonth(month) {
@@ -5818,7 +6259,7 @@ function shopMetricFactsMonth(month) {
 function shopMetricFallbackFact(employeeId, day, metricId, month) {
     const mid = canonicalMetricId(metricId);
     let found = 0;
-    const cats = mid === "metric_recount" ? ["pickers", "cashiers"] : ["pickers", "cashiers", "managers"];
+    const cats = ["pickers", "cashiers", "managers"];
     cats.forEach(function (catId) {
         const cat = shopMetricCategoryById(catId);
         ((cat && cat.fields) || []).concat(SHOP_EXTRA_METRIC_DEFS.map(function (d) {
@@ -5895,7 +6336,7 @@ function shopRecountExecutorIds(month) {
         ids.push(id);
     }
     Object.keys(shopMetricFactsMonth(m)).forEach(add);
-    ["pickers", "cashiers"].forEach(function (catId) {
+    ["pickers", "cashiers", "managers"].forEach(function (catId) {
         Object.keys(shopMetricMonthStore(catId, m)).forEach(add);
     });
     const w = findWorkspaceByCode("shop");
@@ -5908,7 +6349,7 @@ function shopRecountExecutorIds(month) {
 
 function shopMetricStoredFact(employeeId, day, metricId, month) {
     const mid = canonicalMetricId(metricId);
-    if (!mid || !SHOP_QTY_FACT_METRIC_IDS[mid]) return 0;
+    if (!mid || !shopMetricUsesFacts(mid)) return 0;
     const emp = shopMetricFactsMonth(month)[employeeId];
     const rec = emp && emp[String(day)];
     if (rec && rec[mid] != null && rec[mid] !== "") return Number(rec[mid] || 0);
@@ -6183,6 +6624,13 @@ function refreshShopInventoryUi(day) {
     }
 }
 
+function shopMetricFieldUsesFactsOverlay(field) {
+    if (!field || field.service) return false;
+    if (field.extra) return true;
+    const mid = field.metricId || METRIC_ID_ALIASES[field.key];
+    return mid === "metric_recount";
+}
+
 function shopMetricServiceColClass(field) {
     if (field.service === "recountResponsible" || field.service === "invConducted") return "metrics-col-recount-resp";
     if (field.service === "invPosting" || field.service === "invWriteoff" || field.service === "invResult") {
@@ -6200,18 +6648,13 @@ function shopMetricServiceHeadClass(field) {
 
 function getShopMetricFact(employeeId, day, metricId, month) {
     const mid = canonicalMetricId(metricId);
-    if (!mid || !SHOP_QTY_FACT_METRIC_IDS[mid]) return 0;
-    if (mid === "metric_recount" && !shopMetricIsRecountExecutor(employeeId, month)) {
-        return getShopRecountResponsibleId(day, month) === employeeId
-            ? shopRecountDayExecutorTotal(day, month)
-            : 0;
-    }
+    if (!mid || !shopMetricUsesFacts(mid)) return 0;
     return shopMetricStoredFact(employeeId, day, mid, month);
 }
 
 function setShopMetricFact(employeeId, day, metricId, n) {
     const mid = canonicalMetricId(metricId);
-    if (!mid || !SHOP_QTY_FACT_METRIC_IDS[mid]) return;
+    if (!mid || !shopMetricUsesFacts(mid)) return;
     if (mid === "metric_recount" && !shopMetricIsRecountExecutor(employeeId, selectedMonth)) return;
     const monthStore = shopMetricFactsMonth(selectedMonth);
     if (!monthStore[employeeId] || typeof monthStore[employeeId] !== "object") monthStore[employeeId] = {};
@@ -6280,7 +6723,16 @@ function shopMetricStoreMonthTotal(metricId, month) {
 function getShopMetricValue(categoryId, employeeId, day, field) {
     const spec = shopMetricFieldSpec(categoryId, field);
     const mid = (spec && spec.metricId) || METRIC_ID_ALIASES[field];
-    if (mid && SHOP_QTY_FACT_METRIC_IDS[mid]) {
+    const item = mid ? shopMetricCatalogById(mid) : null;
+    if (item && item.fill_type === "auto_calc" && field !== "avgCheck") {
+        return shopCatalogAutoValue(employeeId, day, mid);
+    }
+    if (field === "avgCheck") {
+        const sales = getShopMetricValue(categoryId, employeeId, day, "sales");
+        const receipts = getShopMetricValue(categoryId, employeeId, day, "receipts");
+        return shopMetricAvgCheck(sales, receipts);
+    }
+    if (mid && shopMetricUsesFacts(mid)) {
         return getShopMetricFact(employeeId, day, mid);
     }
     const store = shopMetricMonthStore(categoryId, selectedMonth);
@@ -6431,7 +6883,6 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         setShopChannelValue(employeeId, day, field, raw);
         return;
     }
-    if (categoryId === "managers" && field === "recount") return;
     const cashierSlotSales = categoryId === "cashiers" && (field === "sales" || field === "receipts");
     if (cashierSlotSales) {
         if (!shopCashierSlotCanEdit(employeeId, day)) return;
@@ -6459,17 +6910,17 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         const spec = shopMetricFieldSpec(categoryId, field);
         const mid = (spec && spec.metricId) || METRIC_ID_ALIASES[field];
         if (mid) rec[field + "_metric_id"] = mid;
-        if (mid && SHOP_QTY_FACT_METRIC_IDS[mid]) setShopMetricFact(employeeId, day, mid, n);
+        if (mid && shopMetricUsesFacts(mid)) setShopMetricFact(employeeId, day, mid, n);
     }
     if (!n) {
         const spec0 = shopMetricFieldSpec(categoryId, field);
         const mid0 = (spec0 && spec0.metricId) || METRIC_ID_ALIASES[field];
-        if (mid0 && SHOP_QTY_FACT_METRIC_IDS[mid0]) setShopMetricFact(employeeId, day, mid0, 0);
+        if (mid0 && shopMetricUsesFacts(mid0)) setShopMetricFact(employeeId, day, mid0, 0);
     }
     saveApp();
     const input = document.getElementById("mcell-" + categoryId + "-" + employeeId + "-" + day + "-" + field);
     if (input) {
-        const spec = ((shopMetricCategoryById(categoryId).fields) || []).find(function (f) { return f.key === field; });
+        const spec = shopMetricFieldSpec(categoryId, field);
         input.value = spec && spec.type === "money" ? formatShopMetricMoney(n) : blankZero(n);
     }
     refreshShopMetricSummary();
@@ -6482,16 +6933,9 @@ function changeShopMetricCategory(id) {
 }
 
 function shopMetricInputHtml(category, employeeId, day, field, value) {
-    if (category && category.id === "managers" && field && field.key === "recount") {
-        const n = getShopMetricFact(employeeId, day, "metric_recount");
-        if (!n) {
-            if (shopTimesheetIsDayOff(employeeId, day)) {
-                return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
-            }
-            return '<span class="metrics-dayoff" title="Нет ответственного за пересчёт в этот день">—</span>';
-        }
-        return '<span class="metrics-auto-fact" title="Получено из пересчётов товароразборщиков">'
-            + formatShopMetricField({ type: "number" }, n) + "</span>";
+    if (field && field.autoCalc) {
+        const n = shopCatalogAutoValue(employeeId, day, field.metricId);
+        return '<span class="metrics-auto-fact">' + formatShopMetricField({ type: field.type === "money" ? "money" : "number" }, n) + "</span>";
     }
     if (shopTimesheetIsDayOff(employeeId, day)) {
         return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
@@ -6588,11 +7032,7 @@ function shopWorkMetricPeople(metricId, category) {
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || !e.id) return;
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
-        const home = shopEmployeeHomeCategoryId(e);
-        if (catId === "cashiers" && home !== "cashiers") return;
-        if (catId === "managers" && home !== "managers"
-            && mid !== "metric_receiving" && mid !== "metric_receipts_posted") return;
-        if (!isWorking(e) && !shopMetricPersonalMonthTotal(e.id, mid) && !shopMetricEmployeeHasMonthData(home || catId, e.id)) return;
+        if (!isWorking(e) && !shopMetricPersonalMonthTotal(e.id, mid) && !shopMetricEmployeeHasMonthData(shopEmployeeHomeCategoryId(e) || catId, e.id)) return;
         add(e);
     });
     list.sort(compareEmployeesByStatusThenName);
@@ -6605,12 +7045,7 @@ function shopMetricColumnPeople(category, field, employees) {
     if (category && category.id === "cashiers" && field && !field.extra) {
         return employees || [];
     }
-    if (category && category.id === "managers" && field && (field.key === "recount" || mid === "metric_recount")) {
-        return (employees || []).filter(function (e) {
-            return e && shopEmployeeHomeCategoryId(e) === "managers";
-        });
-    }
-    if (mid && SHOP_WORK_METRIC_IDS[mid]) {
+    if (mid && (SHOP_WORK_METRIC_IDS[mid] || shopMetricCatalogById(mid))) {
         return shopWorkMetricPeople(mid, category);
     }
     if (field && field.extra) {
@@ -6808,25 +7243,43 @@ function shopCashierActualHtml(slotId, day) {
     return html;
 }
 
+function shopAppendCatalogExtraFields(list, category) {
+    const have = {};
+    (list || []).forEach(function (f) {
+        const id = f.metricId || METRIC_ID_ALIASES[f.key];
+        if (id) have[id] = true;
+    });
+    shopMetricCatalogItems().filter(function (it) {
+        return metricDepartmentId(it) === "shop" && it.section_id === category.id && !it.core_column && shopCatalogItemShownInUi(it);
+    }).sort(function (a, b) { return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0); }).forEach(function (it) {
+        if (have[it.id]) return;
+        if (it.fill_type === "auto_sum") {
+            list.push({
+                key: "_sum_" + it.id,
+                label: it.name,
+                type: "computed",
+                service: "catalogSum",
+                metricId: it.id
+            });
+            have[it.id] = true;
+            return;
+        }
+        if (!shopWorkMetricPeople(it.id, category).length) return;
+        list.push(shopCatalogToField(it));
+        have[it.id] = true;
+    });
+    return list;
+}
+
 function shopCashierDisplayFields() {
     const category = shopMetricCategoryById("cashiers");
-    const fields = (category.fields || []).slice();
-    SHOP_WORK_METRIC_DEFS.forEach(function (def) {
-        if (def.id === "metric_recount" || def.id === "metric_receiving" || def.id === "metric_receipts_posted") return;
-        if ((def.tabs || []).indexOf("cashiers") === -1) return;
-        if (def.id === METRIC_SHELF_LABELS_ID) return;
-        const people = shopWorkMetricPeople(def.id, category);
-        if (!people.length) return;
-        if (fields.some(function (f) { return (f.metricId || METRIC_ID_ALIASES[f.key]) === def.id; })) return;
-        fields.push({
-            key: def.key,
-            label: def.label,
-            type: def.type || "number",
-            metricId: def.id,
-            extra: true
-        });
+    const fields = (category.fields || []).map(shopDecorateMetricField);
+    shopAppendCatalogExtraFields(fields, category);
+    return fields.filter(function (field, idx, arr) {
+        const id = field.metricId || METRIC_ID_ALIASES[field.key];
+        if (!id) return true;
+        return arr.findIndex(function (f) { return (f.metricId || METRIC_ID_ALIASES[f.key]) === id; }) === idx;
     });
-    return fields;
 }
 
 function shopCashierFieldPeople(field, employees, persons) {
@@ -6932,7 +7385,7 @@ function renderShopCashierMetrics() {
     const employees = shopMetricEmployees(category);
     const persons = employees.concat([SHOP_SELF_CHECKOUT]);
     const extraFields = shopCashierDisplayFields().filter(function (field) {
-        return field.extra || field.key === METRIC_SHELF_LABELS_FIELD;
+        return field.extra || field.key === METRIC_SHELF_LABELS_FIELD || field.service === "catalogSum";
     });
     const wrap = document.getElementById("metricsWrap");
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
@@ -7074,6 +7527,13 @@ function renderShopCashierMetrics() {
             gi += 1;
         });
         extraFields.forEach(function (field) {
+            if (field.service === "catalogSum") {
+                const tot = shopCatalogDaySum(day, field.metricId);
+                html += '<td class="metrics-emp-col ' + shopMetricGroupClass(gi) + ' metrics-group-start">'
+                    + (tot ? tot.toLocaleString("ru-RU") : "—") + "</td>";
+                gi += 1;
+                return;
+            }
             const people = shopCashierFieldPeople(field, employees, persons);
             people.forEach(function (person) {
                 html += '<td class="metrics-emp-col ' + shopMetricGroupClass(gi)
@@ -7110,6 +7570,15 @@ function renderShopCashierMetrics() {
         gi += 1;
     });
     extraFields.forEach(function (field) {
+        if (field.service === "catalogSum") {
+            let monthSum = 0;
+            const daysN = daysInMonth();
+            for (let d = 1; d <= daysN; d++) monthSum += shopCatalogDaySum(d, field.metricId);
+            html += '<td class="metrics-emp-col ' + shopMetricGroupClass(gi) + ' metrics-group-start">'
+                + (monthSum ? monthSum.toLocaleString("ru-RU") : "—") + "</td>";
+            gi += 1;
+            return;
+        }
         const people = shopCashierFieldPeople(field, employees, persons);
         people.forEach(function (person) {
             const totals = shopCashierPersonTotals(person);
@@ -7655,6 +8124,16 @@ function renderShopDayRoles() {
     box.innerHTML = html;
 }
 
+function shopManagerRecountServiceFields() {
+    return [
+        { key: "_recountTotal", label: "Итого пересчитано", type: "computed", service: "recountTotal" },
+        { key: "_recountResponsible", label: "Ответственный за пересчёт", type: "select", service: "recountResponsible" },
+        { key: "_invPosting", label: "Оприходование", type: "money", service: "invPosting" },
+        { key: "_invWriteoff", label: "Списание", type: "money", service: "invWriteoff" },
+        { key: "_invResult", label: "Итог инвентаризации", type: "computed", service: "invResult" }
+    ];
+}
+
 function renderShopMetrics() {
     const section = document.getElementById("metrics");
     if (!section) return;
@@ -7673,7 +8152,7 @@ function renderShopMetrics() {
     const monthNote = document.getElementById("metricsMonthNote");
     if (monthNote) {
         monthNote.textContent = category.id === "managers"
-            ? (monthLabel(selectedMonth) + ". Пересчёт подставляется автоматически. Итог инвентаризации — отдельно: оприходование минус списание. Выходной (В) из Табеля.")
+            ? (monthLabel(selectedMonth) + ". После «поставленных поступлений» — пересчёт по рабочим метрикам, итог, ответственный и инвентаризация. Выходной (В) из Табеля.")
             : (monthLabel(selectedMonth) + ". Колонки только у тех, кому метрика назначена в этом месяце. Выходной берётся из Табеля.");
     }
 
@@ -7682,37 +8161,30 @@ function renderShopMetrics() {
 
     const fields = (function () {
         const list = [];
-        ((category.fields) || []).forEach(function (field) {
+        const core = ((category.fields) || []).slice();
+        if (category.id !== "managers") {
+            core.sort(function (a, b) {
+                return shopCatalogSort(a.metricId || METRIC_ID_ALIASES[a.key], 50) - shopCatalogSort(b.metricId || METRIC_ID_ALIASES[b.key], 50);
+            });
+        }
+        core.forEach(function (raw) {
+            const field = shopDecorateMetricField(raw);
+            const mid = field.metricId || METRIC_ID_ALIASES[field.key];
+            const item = mid ? shopMetricCatalogById(mid) : null;
+            if (item && !shopCatalogItemShownInUi(item) && field.key !== "recount") return;
             const people = shopMetricColumnPeople(category, field, []);
+            if (category.id === "managers" && field.key === "recount") {
+                if (people.length) list.push(field);
+                shopManagerRecountServiceFields().forEach(function (svc) { list.push(svc); });
+                return;
+            }
             if (people.length) list.push(field);
             if (category.id === "pickers" && field.key === "recount") {
                 list.push({ key: "_recountTotal", label: "Итого пересчитано", type: "computed", service: "recountTotal" });
                 list.push({ key: "_recountResponsible", label: "Ответственный за пересчёт", type: "select", service: "recountResponsible" });
             }
-            if (category.id === "managers" && field.key === "recount") {
-                if (!people.length) {
-                    list.push({ key: "recount", label: field.label, type: "number", metricId: "metric_recount" });
-                }
-                list.push({ key: "_recountTotal", label: "Итого пересчитано", type: "computed", service: "recountTotal" });
-                list.push({ key: "_recountResponsible", label: "Ответственный за пересчёт", type: "select", service: "recountResponsible" });
-                list.push({ key: "_invPosting", label: "Оприходование", type: "money", service: "invPosting" });
-                list.push({ key: "_invWriteoff", label: "Списание", type: "money", service: "invWriteoff" });
-                list.push({ key: "_invResult", label: "Итог инвентаризации", type: "computed", service: "invResult" });
-            }
         });
-        if (category.id === "pickers") {
-            const have = {};
-            list.forEach(function (f) {
-                const id = f.metricId || METRIC_ID_ALIASES[f.key];
-                if (id) have[id] = true;
-            });
-            SHOP_WORK_METRIC_DEFS.forEach(function (def) {
-                if ((def.tabs || []).indexOf("pickers") === -1) return;
-                if (have[def.id]) return;
-                if (!shopWorkMetricPeople(def.id, category).length) return;
-                list.push({ key: def.key, label: def.label, type: def.type || "number", metricId: def.id, extra: true });
-            });
-        }
+        shopAppendCatalogExtraFields(list, category);
         return list;
     })();
     const employees = (function () {
@@ -7803,7 +8275,7 @@ function renderShopMetrics() {
     employees.forEach(function (employee) {
         empTotals[employee.id] = shopMetricEmployeeTotals(category, employee.id);
         fields.forEach(function (field) {
-            if (!field.extra) return;
+            if (!shopMetricFieldUsesFactsOverlay(field)) return;
             empTotals[employee.id][field.key] = shopMetricPersonalMonthTotal(employee.id, field.metricId || METRIC_ID_ALIASES[field.key]);
         });
     });
@@ -7816,7 +8288,7 @@ function renderShopMetrics() {
         employees.forEach(function (employee) {
             dayValues[employee.id] = shopMetricDayValues(category, employee.id, day);
             fields.forEach(function (field) {
-                if (!field.extra) return;
+                if (!shopMetricFieldUsesFactsOverlay(field)) return;
                 dayValues[employee.id][field.key] = getShopMetricValue(category.id, employee.id, day, field.key);
             });
         });
@@ -7847,6 +8319,12 @@ function renderShopMetrics() {
             if (field.service === "invResult") {
                 html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
                     + ' metrics-group-start">' + shopInventoryResultHtml(day) + "</td>";
+                return;
+            }
+            if (field.service === "catalogSum") {
+                const tot = shopCatalogDaySum(day, field.metricId);
+                html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start">' + (tot ? tot.toLocaleString("ru-RU") : "—") + "</td>";
                 return;
             }
             const wide = field.type === "money" || field.type === "avgCheck";
@@ -7905,6 +8383,13 @@ function renderShopMetrics() {
                 + ' metrics-group-start"><span class="metrics-inv-result ' + shopInventoryResultClass(inv.result)
                 + '" id="mtot-_invResult">'
                 + (has ? formatShopSignedMoney(inv.result, false) : "0") + "</span></td>";
+            return;
+        }
+        if (field.service === "catalogSum") {
+            let monthSum = 0;
+            for (let d = 1; d <= days; d++) monthSum += shopCatalogDaySum(d, field.metricId);
+            html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
+                + ' metrics-group-start">' + (monthSum ? monthSum.toLocaleString("ru-RU") : "—") + "</td>";
             return;
         }
         const wide = field.type === "money" || field.type === "avgCheck";
@@ -7968,7 +8453,7 @@ function renderShopMetricGrand(category, grand) {
             + formatShopMetricField({ type: "number" }, shopMetricStoreMonthTotal("metric_receiving"))
             + "</strong> · общий физический пересчёт: <strong>"
             + formatShopMetricField({ type: "number" }, shopMetricStoreMonthTotal("metric_recount"))
-            + "</strong> (только исполнители, без повторного учёта руководителя). KPI руководителя берёт его управленческий факт, если метрика назначена в зарплате.</div>";
+            + "</strong> (сумма исполнителей с рабочей метрикой пересчёта). KPI — только если метрика назначена в зарплате.</div>";
         return;
     }
     if (category.id !== "cashiers") {
@@ -8002,7 +8487,9 @@ function refreshShopMetricSummary() {
         (category.fields || []).forEach(function (field) {
             const cell = document.getElementById("mtot-" + employee.id + "-" + field.key);
             if (!cell) return;
-            const val = field.type === "avgCheck" ? totals.avgCheck : totals[field.key];
+            const val = shopMetricFieldUsesFactsOverlay(field)
+                ? shopMetricPersonalMonthTotal(employee.id, field.metricId || METRIC_ID_ALIASES[field.key])
+                : (field.type === "avgCheck" ? totals.avgCheck : totals[field.key]);
             if (category.id === "managers" && shopMetricFieldIsCheck(field)) return;
             cell.textContent = formatShopMetricField(field, val);
         });
@@ -9533,7 +10020,23 @@ function shopSalaryEmployees() {
 function shopKpiTemplate(id) {
     const cid = canonicalMetricId(id);
     if (!cid) return null;
-    return (ensureMetricCatalog() || []).find(function (m) { return canonicalMetricId(m.id) === cid; }) || null;
+    const pay = (ensureMetricCatalog() || []).find(function (m) { return canonicalMetricId(m.id) === cid; });
+    if (pay) {
+        const work = shopMetricCatalogById(cid);
+        if (work && work.name) pay.name = work.name;
+        return pay;
+    }
+    const work = shopMetricCatalogById(cid);
+    if (!work) return null;
+    return {
+        id: work.id,
+        name: work.name,
+        sourceType: work.id === "metric_revision" ? "revision" : "store_metrics",
+        category: work.section_id || "",
+        field: work.key || "",
+        calcType: work.fill_type === "check" ? "checklist" : "budget_ratio",
+        active: work.active !== false
+    };
 }
 
 function shopKpiCalcType(rule) {
@@ -9560,7 +10063,8 @@ function shopKpiSourceType(rule) {
 
 function shopKpiName(rule) {
     const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id));
-    if (SHOP_KPI_METRIC_NAMES[id]) return SHOP_KPI_METRIC_NAMES[id];
+    const work = shopMetricDisplayName(id, "");
+    if (work && work !== id) return work;
     const tpl = shopKpiTemplate(id);
     if (tpl && tpl.name) return tpl.name;
     if (rule && rule.name) return rule.name;
@@ -9584,9 +10088,22 @@ function shopKpiFactSourceLabel(rule) {
 }
 
 function shopKpiAssignableMetrics() {
-    return (ensureMetricCatalog() || []).filter(function (m) {
-        return m && SHOP_KPI_METRIC_IDS.indexOf(canonicalMetricId(m.id)) !== -1;
+    const seen = {};
+    const list = [];
+    function add(m) {
+        if (!m || !m.id || seen[m.id]) return;
+        seen[m.id] = true;
+        list.push(m);
+    }
+    (ensureMetricCatalog() || []).forEach(function (m) {
+        if (m && m.active !== false) add(m);
     });
+    shopMetricCatalogItems().forEach(function (it) {
+        if (metricDepartmentId(it) !== "shop") return;
+        if (it.active === false || it.assignable === false) return;
+        add(shopKpiTemplate(it.id) || { id: it.id, name: it.name, sourceType: "store_metrics", category: it.section_id, field: it.key, calcType: it.fill_type === "check" ? "checklist" : "budget_ratio", active: true });
+    });
+    return list;
 }
 
 function shopKpiBudget(rule) {
@@ -9961,7 +10478,7 @@ function renderShopSalarySettings() {
     html += '<div class="shop-kpi-card shop-work-metrics-card"><strong>Рабочие метрики</strong>'
         + '<div class="note emp-extra-fn-hint">' + escapeHtml(monthLabel(selectedMonth)) + " · заполнение метрик, не бонус</div>"
         + '<div class="emp-extra-fn-list">';
-    SHOP_WORK_METRIC_DEFS.forEach(function (def) {
+    shopGrantableExtraMetrics(employee).forEach(function (def) {
         const on = shopEmployeeHasWorkMetric(employee.id, def.id);
         html += '<label class="check" title="' + escapeAttribute(def.label) + '">'
             + '<input type="checkbox"' + (on ? " checked" : "")
@@ -10201,19 +10718,19 @@ function setShopKpiField(employeeId, metricId, field, value) {
 
 function addShopKpi(employeeId) {
     if (!canEditShopPayrollRules()) return;
-    let html = "<h3>Назначить метрику</h3><div class=\"note\" style=\"margin-bottom:12px\">Можно назначить любую существующую метрику магазина, в том числе ревизию кассиру. Новые метрики не создаются.</div>";
+    let html = "<h3>Назначить метрику</h3><div class=\"note\" style=\"margin-bottom:12px\">Рабочая метрика не включает бонус сама. Здесь выбирается показатель для KPI.</div>";
     shopKpiAssignableMetrics().forEach(function (metric) {
         if (canonicalMetricId(metric.id) === METRIC_SHELF_LABELS_ID) {
             html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpi(\''
-                + employeeId + "','" + metric.id + "','manual_source')\">" + escapeHtml(SHOP_KPI_METRIC_NAMES[metric.id])
+                + employeeId + "','" + metric.id + "','manual_source')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
                 + ' <span class="note"> · способ заполнения: вручную</span></button></div>';
             html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpi(\''
-                + employeeId + "','" + metric.id + "','derived_recipient')\">" + escapeHtml(SHOP_KPI_METRIC_NAMES[metric.id])
+                + employeeId + "','" + metric.id + "','derived_recipient')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
                 + ' <span class="note"> · способ заполнения: автоматически от товароразборщиков</span></button></div>';
             return;
         }
         html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpi(\''
-            + employeeId + "','" + metric.id + "')\">" + escapeHtml(SHOP_KPI_METRIC_NAMES[metric.id] || metric.name)
+            + employeeId + "','" + metric.id + "')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
             + ' <span class="note"> · ' + escapeHtml(shopKpiFactSourceLabel(metric))
             + "</span></button></div>";
     });
@@ -10224,7 +10741,7 @@ function addShopKpi(employeeId) {
 function createShopKpi(employeeId, templateId, participationRole) {
     if (!canEditShopPayrollRules()) return;
     const tpl = shopKpiTemplate(templateId);
-    if (!tpl || SHOP_KPI_METRIC_IDS.indexOf(canonicalMetricId(tpl.id)) === -1) {
+    if (!tpl) {
         toast("Можно назначить только существующую метрику магазина.", "error");
         return;
     }
@@ -10705,10 +11222,819 @@ function renderAnalysis() {
    ФИО (справочник) И ВЫБОР В ТАБЕЛЬ
    В Общую список не заводят — он собирается сам из отделов.
 ============================================================ */
+function canEditShopMetricCatalog() {
+    if (isSummary()) return currentSummaryRole === "admin";
+    if (!isTableAdmin() || !workspace()) return false;
+    const c = workspace().code;
+    return c === "shop" || isGenericMetricsDept(c);
+}
+
+function shopMetricNameTokens(name) {
+    return String(name || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, " ").trim().split(/\s+/).filter(function (w) {
+        return w.length >= 4;
+    });
+}
+
+function shopMetricSimilarItems(name, exceptId) {
+    const tokens = shopMetricNameTokens(name);
+    if (!tokens.length) return [];
+    const dept = catalogDeptContext();
+    return catalogItemsForDept(dept).filter(function (it) {
+        if (!it || it.id === exceptId) return false;
+        const other = shopMetricNameTokens(it.name);
+        let hit = 0;
+        tokens.forEach(function (t) {
+            if (other.indexOf(t) !== -1) hit += 1;
+        });
+        return hit >= Math.min(2, tokens.length);
+    });
+}
+
+function shopMetricHasLinkedData(metricId) {
+    const mid = canonicalMetricId(metricId);
+    if (!mid) return false;
+    const facts = ensureShopMetrics().facts || {};
+    if (Object.keys(facts).some(function (month) {
+        const emps = facts[month];
+        return emps && Object.keys(emps).some(function (empId) {
+            const days = emps[empId];
+            return days && Object.keys(days).some(function (d) { return days[d] && days[d][mid] != null; });
+        });
+    })) return true;
+    const wa = ensureShopMetrics().workAccess || {};
+    if (Object.keys(wa).some(function (month) {
+        const map = wa[month];
+        return map && Object.keys(map).some(function (empId) {
+            return (map[empId] || []).indexOf(mid) !== -1;
+        });
+    })) return true;
+    const deptRoot = appData.deptMetrics;
+    if (deptRoot && typeof deptRoot === "object") {
+        const linkedDept = Object.keys(deptRoot).some(function (dept) {
+            const store = deptRoot[dept];
+            if (!store) return false;
+            const facts = store.facts || {};
+            if (Object.keys(facts).some(function (month) {
+                const emps = facts[month];
+                return emps && Object.keys(emps).some(function (empId) {
+                    const days = emps[empId];
+                    return days && Object.keys(days).some(function (d) {
+                        const rec = days[d];
+                        return rec && (rec[mid] != null || rec[mid + "Mark"] === "done" || rec[mid + "Mark"] === "fail");
+                    });
+                });
+            })) return true;
+            const dwa = store.workAccess || {};
+            return Object.keys(dwa).some(function (month) {
+                const map = dwa[month];
+                return map && Object.keys(map).some(function (empId) {
+                    return (map[empId] || []).indexOf(mid) !== -1;
+                });
+            });
+        });
+        if (linkedDept) return true;
+    }
+    const rules = (ensureShopPayroll().rules || []);
+    if (rules.some(function (r) { return canonicalMetricId(r.metricId || r.metric_id) === mid; })) return true;
+    return shopMetricHasMonthData(mid, selectedMonth);
+}
+
+function syncPayrollMetricFromCatalog(item) {
+    if (!item || item.assignable === false) return;
+    const list = ensureMetricCatalog();
+    let found = list.find(function (m) { return m && canonicalMetricId(m.id) === item.id; });
+    if (!found) {
+        found = cloneMetricDef({
+            id: item.id,
+            name: item.name,
+            sourceType: item.id === "metric_revision" ? "revision" : "store_metrics",
+            category: item.section_id || "",
+            field: item.key || "",
+            calcType: item.fill_type === "check" ? "checklist" : "budget_ratio",
+            active: item.active !== false
+        });
+        list.push(found);
+    }
+    found.name = item.name;
+    found.active = item.active !== false;
+}
+
+function shopCatalogNextCustomId() {
+    return nextPrefixedId("metric_custom", shopMetricCatalogItems().map(function (it) { return it.id; }));
+}
+
+function shopCatalogNextOrder(sectionId, deptCode) {
+    let max = 0;
+    const dept = deptCode || catalogDeptContext();
+    catalogItemsForDept(dept).forEach(function (it) {
+        if (dept === "shop" && it.section_id !== sectionId) return;
+        max = Math.max(max, Number(it.sort_order || 0));
+    });
+    return max + 10;
+}
+
+function closeMetricCatalogModal() {
+    const back = document.getElementById("metricCatalogModalBack");
+    if (back) back.classList.remove("show");
+}
+
+function openMetricCatalogModal(html) {
+    const back = document.getElementById("metricCatalogModalBack");
+    const box = document.getElementById("metricCatalogModal");
+    if (!back || !box) return;
+    box.innerHTML = html;
+    back.classList.add("show");
+}
+
+function renderMetricCatalog() {
+    const generic = currentSection === "deptMetrics";
+    const body = document.getElementById(generic ? "deptMetricsCatalogBody" : "metricCatalogBody");
+    const bar = document.getElementById(generic ? "deptMetricsCatalogToolbar" : "metricCatalogToolbar");
+    if (!body) return;
+    const can = canEditShopMetricCatalog();
+    if (bar) {
+        bar.innerHTML = can
+            ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Создать метрику</button>'
+            : '<div class="note">Просмотр. Изменять справочник может администратор.</div>';
+    }
+    const dept = generic ? catalogDeptContext() : "shop";
+    const items = catalogItemsForDept(dept).slice().sort(function (a, b) {
+        if (!generic) {
+            const s = String(a.section_id || "").localeCompare(String(b.section_id || ""));
+            if (s) return s;
+        }
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
+    });
+    const colSpan = generic ? 5 : 6;
+    if (!items.length) {
+        body.innerHTML = '<tr><td colspan="' + colSpan + '"><div class="note">Справочник пуст. Нажмите «+ Создать метрику».</div></td></tr>';
+        return;
+    }
+    body.innerHTML = items.map(function (it) {
+        const linked = shopMetricHasLinkedData(it.id);
+        let row = '<tr class="' + (it.active === false ? "is-inactive" : "") + '"'
+            + (can ? ' draggable="true" ondragstart="onMetricCatalogDrag(event,\'' + it.id + '\')" ondragover="onMetricCatalogDragOver(event)" ondrop="onMetricCatalogDrop(event,\'' + it.id + '\')"' : "")
+            + "><td>" + escapeHtml(String(it.sort_order || "")) + "</td><td>"
+            + escapeHtml(it.name) + "</td>";
+        if (!generic) {
+            row += "<td>" + escapeHtml(shopMetricSectionLabel(it.section_id)) + "</td>";
+        }
+        row += "<td>" + escapeHtml(shopMetricFillLabel(it.fill_type)) + "</td><td>"
+            + (it.active === false ? "Нет" : "Да") + "</td><td>"
+            + (can ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMetricCatalogForm(\'' + it.id + '\')">Изменить</button>'
+                + (it.builtin || linked
+                    ? ' <button type="button" class="btn btn-secondary btn-small" onclick="setShopMetricCatalogActive(\'' + it.id + "'," + (it.active === false) + ')">'
+                        + (it.active === false ? "Включить" : "Отключить") + "</button>"
+                    : ' <button type="button" class="btn btn-danger btn-small" onclick="deleteShopMetricCatalogItem(\'' + it.id + '\')">Удалить</button>')
+                : "")
+            + "</td></tr>";
+        return row;
+    }).join("");
+}
+
+function onMetricCatalogDrag(ev, id) {
+    ev.dataTransfer.setData("text/plain", id);
+}
+
+function onMetricCatalogDragOver(ev) {
+    ev.preventDefault();
+}
+
+function onMetricCatalogDrop(ev, targetId) {
+    ev.preventDefault();
+    if (!canEditShopMetricCatalog()) return;
+    const srcId = ev.dataTransfer.getData("text/plain");
+    if (!srcId || srcId === targetId) return;
+    const src = shopMetricCatalogById(srcId);
+    const dst = shopMetricCatalogById(targetId);
+    if (!src || !dst || metricDepartmentId(src) !== metricDepartmentId(dst)) return;
+    if (metricDepartmentId(src) === "shop" && src.section_id !== dst.section_id) return;
+    const a = Number(src.sort_order || 0);
+    src.sort_order = Number(dst.sort_order || 0);
+    dst.sort_order = a;
+    saveApp();
+    renderMetricCatalog();
+    refreshMetricsUi();
+}
+
+function setShopMetricCatalogActive(id, on) {
+    if (!canEditShopMetricCatalog()) return;
+    const it = shopMetricCatalogById(id);
+    if (!it) return;
+    it.active = !!on;
+    if (metricDepartmentId(it) === "shop") syncPayrollMetricFromCatalog(it);
+    saveApp();
+    renderMetricCatalog();
+    refreshMetricsUi();
+    toast(on ? "Метрика включена." : "Метрика отключена. История сохранена.");
+}
+
+function deleteShopMetricCatalogItem(id) {
+    if (!canEditShopMetricCatalog()) return;
+    const it = shopMetricCatalogById(id);
+    if (!it || it.builtin) return;
+    if (shopMetricHasLinkedData(id)) {
+        toast("Есть связанные данные. Отключите метрику, не удаляйте.", "error");
+        return;
+    }
+    ensureShopMetricCatalog().items = shopMetricCatalogItems().filter(function (x) { return x.id !== id; });
+    saveApp();
+    renderMetricCatalog();
+    refreshMetricsUi();
+    toast("Метрика удалена.");
+}
+
+function shopCatalogPositionOptions() {
+    return positionsForWorkspace(findWorkspaceByCode("shop") || workspace()) || [];
+}
+
+function openMetricCatalogForm(id, dupIgnore) {
+    if (!canEditShopMetricCatalog()) return;
+    const dept = catalogDeptContext();
+    const generic = isGenericMetricsDept(dept);
+    const existing = id ? shopMetricCatalogById(id) : null;
+    if (id && existing && metricDepartmentId(existing) !== dept) return;
+    const it = existing || {
+        id: "",
+        name: "",
+        section_id: generic ? "main" : "pickers",
+        fill_type: "number",
+        sort_order: shopCatalogNextOrder(generic ? "main" : "pickers", dept),
+        active: true,
+        assignable: true,
+        department_id: dept,
+        position_titles: [],
+        formula: { op: "div", left: "metric_sales", right: "metric_checks" }
+    };
+    const positions = generic ? [] : shopCatalogPositionOptions();
+    const allowed = it.position_titles || [];
+    let html = "<h3 style=\"margin:0 0 8px\">" + (id ? "Изменить метрику" : "Создать метрику") + "</h3>"
+        + '<div class="metric-cat-form">'
+        + '<div class="form-group full"><label>Название метрики</label>'
+        + '<input id="mcName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>';
+    if (!generic) {
+        html += '<div class="form-group"><label>Где показывать</label><select id="mcSection">';
+        SHOP_METRIC_SECTIONS.forEach(function (s) {
+            html += '<option value="' + s.id + '"' + (it.section_id === s.id ? " selected" : "") + ">" + escapeHtml(s.label) + "</option>";
+        });
+        html += "</select></div>";
+    }
+    html += '<div class="form-group"><label>Тип фиксации</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()">';
+    SHOP_METRIC_FILL_TYPES.forEach(function (s) {
+        html += '<option value="' + s.id + '"' + (it.fill_type === s.id ? " selected" : "") + ">" + escapeHtml(s.label) + "</option>";
+    });
+    html += "</select></div>"
+        + '<div class="form-group"><label>Порядок</label><input id="mcOrder" type="number" step="10" value="' + escapeAttribute(String(it.sort_order || 10)) + '"></div>'
+        + '<div class="form-group"><label>Активна</label><label class="check"><input id="mcActive" type="checkbox"'
+        + (it.active === false ? "" : " checked") + "> Да</label></div>";
+    if (!generic) {
+        html += '<div class="form-group full"><label>Для каких должностей доступна</label><div class="metric-cat-pos">';
+        positions.forEach(function (p) {
+            const on = !allowed.length || allowed.indexOf(p) !== -1;
+            html += '<label class="check"><input type="checkbox" class="mc-pos" value="' + escapeAttribute(p) + '"'
+                + (on ? " checked" : "") + "><span>" + escapeHtml(p) + "</span></label>";
+        });
+        html += '</div><div class="note">Пустой выбор = все должности. Можно добавить сотрудника другой должности в участниках.</div></div>';
+    }
+    html += '<div class="form-group full" id="mcFormulaBox"></div>';
+    if (!generic) {
+        html += '<div class="form-group full"><label>Участники</label>'
+            + '<label class="check"><input type="checkbox" id="mcAllPeople" onchange="refreshMetricCatalogPeopleBox(\'' + (it.id || "") + '\')"'
+            + "> Показать всех сотрудников</label>"
+            + '<div class="metric-cat-people" id="mcPeopleBox"></div></div>';
+    } else {
+        html += '<div class="note full">Кто заполняет показатель, задаётся в карточке сотрудника: ФИО → Рабочие метрики.</div>';
+    }
+    html += '<div class="note full" id="mcDupHint"></div></div>'
+        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + '<button type="button" class="btn btn-primary" onclick="saveMetricCatalogForm(\'' + (it.id || "") + '\',' + (dupIgnore ? "true" : "false") + ')">Сохранить</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="closeMetricCatalogModal()">Отмена</button></div>';
+    openMetricCatalogModal(html);
+    refreshMetricCatalogFormulaBox(it.formula);
+    if (!generic) refreshMetricCatalogPeopleBox(it.id || "");
+}
+
+function refreshMetricCatalogFormulaBox(formula) {
+    const box = document.getElementById("mcFormulaBox");
+    const fill = document.getElementById("mcFill");
+    if (!box || !fill) return;
+    const type = fill.value;
+    if (type !== "auto_calc" && type !== "auto_sum") {
+        box.innerHTML = "";
+        return;
+    }
+    const opts = catalogItemsForDept(catalogDeptContext()).filter(function (x) { return x.fill_type === "number" || x.fill_type === "money"; });
+    const f = formula || {};
+    let html = "<label>Формула / источник расчёта</label>";
+    if (type === "auto_calc") {
+        html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
+            + '<select id="mcLeft">';
+        opts.forEach(function (x) {
+            html += '<option value="' + x.id + '"' + (f.left === x.id ? " selected" : "") + ">" + escapeHtml(x.name) + "</option>";
+        });
+        html += '</select><span>÷</span><select id="mcRight">';
+        opts.forEach(function (x) {
+            html += '<option value="' + x.id + '"' + ((f.right || "metric_checks") === x.id ? " selected" : "") + ">" + escapeHtml(x.name) + "</option>";
+        });
+        html += "</select></div>";
+    } else {
+        html += '<div>SUM(<select id="mcLeft">';
+        opts.forEach(function (x) {
+            html += '<option value="' + x.id + '"' + (f.left === x.id ? " selected" : "") + ">" + escapeHtml(x.name) + "</option>";
+        });
+        html += "</select>)</div>";
+    }
+    box.innerHTML = html;
+}
+
+function refreshMetricCatalogPeopleBox(metricId) {
+    const box = document.getElementById("mcPeopleBox");
+    if (!box) return;
+    const w = findWorkspaceByCode("shop");
+    const all = document.getElementById("mcAllPeople") && document.getElementById("mcAllPeople").checked;
+    const posBoxes = document.querySelectorAll(".mc-pos:checked");
+    const allowed = [];
+    posBoxes.forEach(function (el) { allowed.push(el.value); });
+    const people = ((w && w.employees) || []).filter(function (e) {
+        return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID && isWorking(e);
+    }).sort(compareEmployeesByStatusThenName);
+    box.innerHTML = people.filter(function (e) {
+        if (all) return true;
+        if (!allowed.length) return true;
+        const pos = String(e.position || "").trim();
+        return allowed.indexOf(pos) !== -1 || (metricId && shopEmployeeHasWorkMetric(e.id, metricId));
+    }).map(function (e) {
+        const on = metricId && shopEmployeeHasWorkMetric(e.id, metricId);
+        return '<label class="check"><input type="checkbox" class="mc-person" value="' + escapeAttribute(e.id) + '"'
+            + (on ? " checked" : "") + "><span>" + escapeHtml(shopMetricEmployeeCaption(e)) + "</span></label>";
+    }).join("") || '<div class="note">Нет сотрудников для выбранных должностей.</div>';
+}
+
+function saveMetricCatalogForm(id, dupIgnore) {
+    if (!canEditShopMetricCatalog()) return;
+    const name = String((document.getElementById("mcName") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!name) {
+        toast("Укажите название метрики.", "error");
+        return;
+    }
+    if (!dupIgnore) {
+        const similar = shopMetricSimilarItems(name, id);
+        if (similar.length) {
+            const hint = document.getElementById("mcDupHint");
+            if (hint) {
+                hint.innerHTML = "Возможно, такая метрика уже существует: "
+                    + similar.map(function (s) {
+                        return '<button type="button" class="btn btn-secondary btn-small" onclick="openMetricCatalogForm(\'' + s.id + '\')">'
+                            + escapeHtml(s.name) + "</button>";
+                    }).join(" ")
+                    + ' <button type="button" class="btn btn-primary btn-small" onclick="saveMetricCatalogForm(\'' + (id || "") + "',true)\">Всё равно создать</button>";
+            }
+            toast("Возможно, такая метрика уже существует.", "error");
+            return;
+        }
+    }
+    const dept = catalogDeptContext();
+    const generic = isGenericMetricsDept(dept);
+    const sectionId = generic ? "main" : ((document.getElementById("mcSection") || {}).value || "pickers");
+    const fill = (document.getElementById("mcFill") || {}).value || "number";
+    const order = Number((document.getElementById("mcOrder") || {}).value || 10);
+    const active = !!(document.getElementById("mcActive") && document.getElementById("mcActive").checked);
+    const positions = [];
+    document.querySelectorAll(".mc-pos:checked").forEach(function (el) { positions.push(el.value); });
+    const allPos = generic ? [] : shopCatalogPositionOptions();
+    const positionTitles = generic ? [] : ((positions.length && positions.length < allPos.length) ? positions : []);
+    let formula = null;
+    if (fill === "auto_calc") {
+        formula = {
+            op: "div",
+            left: (document.getElementById("mcLeft") || {}).value || "",
+            right: (document.getElementById("mcRight") || {}).value || ""
+        };
+    } else if (fill === "auto_sum") {
+        formula = { op: "sum", left: (document.getElementById("mcLeft") || {}).value || "" };
+    }
+    let item = id ? shopMetricCatalogById(id) : null;
+    if (!item) {
+        item = {
+            id: shopCatalogNextCustomId(),
+            key: "",
+            builtin: false,
+            core_column: false,
+            show_column: fill !== "auto_sum",
+            assignable: fill !== "auto_sum",
+            department_id: dept
+        };
+        item.key = item.id;
+        ensureShopMetricCatalog().items.push(item);
+    }
+    if (item.builtin) {
+        item.name = name;
+        item.sort_order = Number.isFinite(order) ? order : item.sort_order;
+        item.active = active;
+        item.position_titles = positionTitles;
+        if (!item.core_column) {
+            item.section_id = sectionId;
+            item.fill_type = fill;
+            item.formula = formula;
+        }
+    } else {
+        item.name = name;
+        item.section_id = sectionId;
+        item.fill_type = fill;
+        item.sort_order = Number.isFinite(order) ? order : 10;
+        item.active = active;
+        item.position_titles = positionTitles;
+        item.formula = formula;
+        item.show_column = fill !== "auto_sum" ? true : true;
+        item.assignable = fill !== "auto_sum";
+    }
+    if (!item.department_id) item.department_id = dept;
+    if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
+    const people = generic ? [] : document.querySelectorAll(".mc-person");
+    people.forEach(function (el) {
+        if (item.assignable === false) return;
+        applyShopEmployeeWorkMetric(el.value, item.id, !!el.checked);
+    });
+    saveApp();
+    closeMetricCatalogModal();
+    renderMetricCatalog();
+    refreshMetricsUi();
+    toast("Метрика сохранена.");
+}
+
+function getDeptMetricStored(deptCode, employeeId, day, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    const facts = deptMetricFactsMonth(deptCode, month);
+    const rec = facts[employeeId] && facts[employeeId][String(day)];
+    if (!rec) return 0;
+    if (rec[mid + "Mark"] === "done") return 1;
+    if (rec[mid + "Mark"] === "fail") return 0;
+    return rec[mid] != null ? Number(rec[mid] || 0) : 0;
+}
+
+function deptMetricCheckState(deptCode, employeeId, day, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    const facts = deptMetricFactsMonth(deptCode, month);
+    const rec = facts[employeeId] && facts[employeeId][String(day)];
+    const mark = rec && rec[mid + "Mark"];
+    return mark === "done" || mark === "fail" ? mark : "";
+}
+
+function deptMetricEmployeeHasData(deptCode, employeeId, metricId) {
+    const mid = canonicalMetricId(metricId);
+    const facts = deptMetricFactsMonth(deptCode);
+    const days = facts[employeeId];
+    if (!days || typeof days !== "object") return false;
+    return Object.keys(days).some(function (d) {
+        const rec = days[d];
+        if (!rec) return false;
+        if (rec[mid + "Mark"] === "done" || rec[mid + "Mark"] === "fail") return true;
+        return rec[mid] != null && Number(rec[mid] || 0) !== 0;
+    });
+}
+
+function deptWorkMetricPeople(deptCode, metricId) {
+    const mid = canonicalMetricId(metricId);
+    const w = findWorkspaceByCode(deptCode);
+    const list = [];
+    const seen = {};
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id || seen[e.id]) return;
+        if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
+        if (!isWorking(e) && !deptMetricEmployeeHasData(deptCode, e.id, mid)) return;
+        seen[e.id] = true;
+        list.push(e);
+    });
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function deptMetricFields(deptCode) {
+    const list = [];
+    catalogItemsForDept(deptCode).filter(function (it) {
+        return shopCatalogItemShownInUi(it);
+    }).sort(function (a, b) {
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
+    }).forEach(function (it) {
+        if (it.fill_type === "auto_sum") {
+            list.push({
+                key: "_sum_" + it.id,
+                label: it.name,
+                type: "computed",
+                service: "catalogSum",
+                metricId: it.id
+            });
+            return;
+        }
+        if (!deptWorkMetricPeople(deptCode, it.id).length) return;
+        list.push(shopCatalogToField(it));
+    });
+    return list;
+}
+
+function deptCatalogDaySum(deptCode, day, metricId) {
+    const it = shopMetricCatalogById(metricId);
+    const src = (it && it.formula && (it.formula.left || it.formula.metric_id)) || metricId;
+    let sum = 0;
+    const w = findWorkspaceByCode(deptCode);
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id) return;
+        sum += Number(getDeptMetricStored(deptCode, e.id, day, src) || 0);
+    });
+    return sum;
+}
+
+function ensureDeptMetricDayRec(deptCode, employeeId, day) {
+    const facts = deptMetricFactsMonth(deptCode);
+    if (!facts[employeeId] || typeof facts[employeeId] !== "object") facts[employeeId] = {};
+    const dayKey = String(day);
+    if (!facts[employeeId][dayKey] || typeof facts[employeeId][dayKey] !== "object") facts[employeeId][dayKey] = {};
+    const rec = facts[employeeId][dayKey];
+    rec.employee_id = employeeId;
+    rec.source = "manual";
+    return rec;
+}
+
+function clearDeptMetricDayIfEmpty(deptCode, employeeId, day) {
+    const facts = deptMetricFactsMonth(deptCode);
+    const dayKey = String(day);
+    const rec = facts[employeeId] && facts[employeeId][dayKey];
+    if (!rec) return;
+    const keys = Object.keys(rec).filter(function (k) {
+        return k !== "employee_id" && k !== "source";
+    });
+    if (keys.length) return;
+    delete facts[employeeId][dayKey];
+    if (!Object.keys(facts[employeeId]).length) delete facts[employeeId];
+}
+
+function setDeptMetricValue(deptCode, employeeId, day, metricId, raw) {
+    if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
+    const it = shopMetricCatalogById(metricId);
+    if (!it || it.active === false) return;
+    const mid = canonicalMetricId(metricId);
+    const n = parseShopMetricNumber(raw);
+    const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
+    if (!n) {
+        delete rec[mid];
+        clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
+    } else {
+        rec[mid] = it.fill_type === "money" ? Math.round(n) : n;
+    }
+    saveApp();
+    renderDeptMetrics();
+}
+
+function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark) {
+    if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
+    const it = shopMetricCatalogById(metricId);
+    if (!it || it.active === false) return;
+    const mid = canonicalMetricId(metricId);
+    const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
+    rec[mid + "Mark"] = mark === "fail" ? "fail" : "done";
+    saveApp();
+    renderDeptMetrics();
+}
+
+function deptMetricInputHtml(deptCode, employeeId, day, field) {
+    const lock = deptTimesheetLockLabel(deptCode, employeeId, day);
+    if (lock === "Выходной") {
+        return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
+    }
+    if (lock) return '<span class="metrics-dayoff" title="По табелю">' + escapeHtml(lock) + "</span>";
+    const it = shopMetricCatalogById(field.metricId);
+    const canEdit = !!(it && it.active !== false);
+    if (field.autoCalc || (it && it.fill_type === "auto_calc")) {
+        const n = shopCatalogAutoValue(employeeId, day, field.metricId);
+        return '<span class="metrics-auto-fact">' + formatShopMetricField({ type: field.type === "money" ? "money" : "number" }, n) + "</span>";
+    }
+    if (it && it.fill_type === "check") {
+        const state = deptMetricCheckState(deptCode, employeeId, day, field.metricId);
+        if (!canEdit) {
+            if (state === "done") return shopShelfStatusMark("done");
+            if (state === "fail") return shopShelfStatusMark("fail");
+            return shopShelfStatusMark("empty");
+        }
+        return '<div class="metrics-check-pair">'
+            + '<button type="button" class="metrics-check-btn' + (state === "done" ? " on-ok" : "") + '"'
+            + " onclick=\"setDeptMetricCheck('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "','done')\""
+            + ' title="Сделано">✓</button>'
+            + '<button type="button" class="metrics-check-btn' + (state === "fail" ? " on-fail" : "") + '"'
+            + " onclick=\"setDeptMetricCheck('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "','fail')\""
+            + ' title="Не сделано">✕</button>'
+            + "</div>";
+    }
+    const n = getDeptMetricStored(deptCode, employeeId, day, field.metricId);
+    if (!canEdit) {
+        return '<span class="metrics-auto-fact">' + formatShopMetricField(field, n) + "</span>";
+    }
+    const display = field.type === "money" ? formatShopMetricMoney(n) : blankZero(n);
+    const inputType = field.type === "money" ? "text" : "number";
+    const idAttr = "dcell-" + deptCode + "-" + employeeId + "-" + day + "-" + field.metricId;
+    return '<input class="metrics-input no-spin" id="' + idAttr + '" type="' + inputType + '" min="0" step="1"'
+        + ' inputmode="decimal" value="' + display + '" autocomplete="off"'
+        + ' onkeydown="onDeptMetricNav(event)" onfocus="this.select()"'
+        + " onchange=\"setDeptMetricValue('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "',this.value)\">";
+}
+
+function onDeptMetricNav(event) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const table = document.getElementById("deptMetricsTable");
+    if (!table) return;
+    const inputs = Array.prototype.slice.call(table.querySelectorAll("tbody input.metrics-input"));
+    const idx = inputs.indexOf(event.target);
+    if (idx < 0) return;
+    const cols = Number(table.getAttribute("data-metric-cols") || 0);
+    let next = null;
+    if (event.shiftKey) {
+        next = cols ? inputs[idx - cols] : inputs[idx - 1];
+    } else {
+        next = cols ? inputs[idx + cols] : null;
+        if (!next) next = inputs[idx + 1];
+    }
+    if (next) {
+        next.focus();
+        next.select();
+    }
+}
+
+function renderDeptMetrics() {
+    const section = document.getElementById("deptMetrics");
+    if (!section) return;
+    const dept = workspace() && workspace().code;
+    if (!isGenericMetricsDept(dept)) return;
+    ensureDeptMetrics(dept);
+    renderMetricCatalog();
+    const title = document.getElementById("deptMetricsPageTitle");
+    if (title) title.textContent = "Метрики — " + officialName(workspace());
+    const monthNote = document.getElementById("deptMetricsMonthNote");
+    if (monthNote) {
+        monthNote.textContent = monthLabel(selectedMonth)
+            + ". Колонки только у тех, кому метрика назначена в ФИО → Рабочие метрики. Выходной (В) берётся из Табеля.";
+    }
+    const wrap = document.getElementById("deptMetricsWrap");
+    const scrollLeft = wrap ? wrap.scrollLeft : 0;
+    const scrollTop = wrap ? wrap.scrollTop : 0;
+    const table = document.getElementById("deptMetricsTable");
+    const fields = deptMetricFields(dept);
+    const employees = [];
+    const seen = {};
+    fields.forEach(function (field) {
+        if (field.service) return;
+        deptWorkMetricPeople(dept, field.metricId).forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
+            employees.push(e);
+        });
+    });
+    employees.sort(compareEmployeesByStatusThenName);
+    let inputCols = 0;
+    fields.forEach(function (field) {
+        if (field.service) return;
+        inputCols += Math.max(deptWorkMetricPeople(dept, field.metricId).length, 1);
+    });
+    if (table) {
+        table.setAttribute("data-metric-cols", String(inputCols));
+        const old = table.querySelector("colgroup");
+        if (old) old.remove();
+        let colHtml = '<colgroup><col class="metrics-col-date">';
+        fields.forEach(function (field, fi) {
+            if (field.service) {
+                colHtml += '<col class="metrics-col-emp metrics-col-g-' + (fi % 4) + '">';
+                return;
+            }
+            const wide = field.type === "money";
+            const n = Math.max(deptWorkMetricPeople(dept, field.metricId).length, 1);
+            for (let i = 0; i < n; i++) {
+                colHtml += '<col class="metrics-col-emp metrics-col-g-' + (fi % 4) + (wide ? " metrics-col-money" : "") + '">';
+            }
+        });
+        colHtml += "</colgroup>";
+        table.insertAdjacentHTML("afterbegin", colHtml);
+    }
+    const head = document.getElementById("deptMetricsHead");
+    const body = document.getElementById("deptMetricsBody");
+    if (!body) return;
+    if (!fields.length) {
+        if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
+        body.innerHTML = '<tr><td><div class="empty-row">Создайте метрику и назначьте её сотруднику в карточке ФИО → Рабочие метрики.</div></td></tr>';
+        if (wrap) {
+            wrap.scrollLeft = scrollLeft;
+            wrap.scrollTop = scrollTop;
+        }
+        return;
+    }
+    if (head) {
+        let headHtml = '<tr class="metrics-head-metrics"><th class="metrics-date-col" rowspan="2">Дата</th>';
+        fields.forEach(function (field, fi) {
+            if (field.service) {
+                headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
+                    + (fi ? " metrics-group-start" : "") + ' metrics-recount-total" rowspan="2" title="'
+                    + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
+                return;
+            }
+            const people = deptWorkMetricPeople(dept, field.metricId);
+            headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
+                + (fi ? " metrics-group-start" : "") + '" colspan="' + Math.max(people.length, 1)
+                + '" title="' + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
+        });
+        headHtml += '</tr><tr class="metrics-head-emps">';
+        fields.forEach(function (field, fi) {
+            if (field.service) return;
+            const wide = field.type === "money";
+            const people = deptWorkMetricPeople(dept, field.metricId);
+            people.forEach(function (employee, ei) {
+                const fired = !isWorking(employee);
+                headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(fi)
+                    + (wide ? " metrics-money-col" : "")
+                    + (ei === 0 ? " metrics-group-start" : "")
+                    + (fired ? " metrics-fired" : "")
+                    + '" title="' + escapeHtml(shopMetricEmployeeCaption(employee)) + '"><span class="metrics-emp-name">'
+                    + escapeHtml(shopMetricEmployeeCaption(employee)) + "</span></th>";
+            });
+            if (!people.length) {
+                headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</th>';
+            }
+        });
+        headHtml += "</tr>";
+        head.innerHTML = headHtml;
+    }
+    const days = daysInMonth();
+    let html = "";
+    for (let day = 1; day <= days; day++) {
+        const rowCls = ["metrics-data-row", isWeekend(day) ? "metrics-weekend" : "", isToday(day) ? "metrics-today" : ""]
+            .filter(Boolean).join(" ");
+        html += '<tr class="' + rowCls + '"><td class="metrics-date-col">' + shopMetricDateLabel(day) + "</td>";
+        fields.forEach(function (field, fi) {
+            if (field.service === "catalogSum") {
+                const tot = deptCatalogDaySum(dept, day, field.metricId);
+                html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start">' + (tot ? tot.toLocaleString("ru-RU") : "—") + "</td>";
+                return;
+            }
+            const wide = field.type === "money";
+            const people = deptWorkMetricPeople(dept, field.metricId);
+            people.forEach(function (employee, ei) {
+                const fired = !isWorking(employee);
+                const dayOff = deptTimesheetStatus(dept, employee.id, day) === "В";
+                html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi)
+                    + (wide ? " metrics-money-col" : "")
+                    + (ei === 0 ? " metrics-group-start" : "")
+                    + (fired ? " metrics-fired" : "")
+                    + (dayOff ? " metrics-off-day" : "") + '">'
+                    + deptMetricInputHtml(dept, employee.id, day, field)
+                    + "</td>";
+            });
+            if (!people.length) {
+                html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</td>';
+            }
+        });
+        html += "</tr>";
+    }
+    html += '<tr class="metrics-totals-row"><td class="metrics-date-col">ИТОГО</td>';
+    fields.forEach(function (field, fi) {
+        if (field.service === "catalogSum") {
+            let sum = 0;
+            for (let d = 1; d <= days; d++) sum += deptCatalogDaySum(dept, d, field.metricId);
+            html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
+                + ' metrics-group-start">' + (sum ? sum.toLocaleString("ru-RU") : "0") + "</td>";
+            return;
+        }
+        const people = deptWorkMetricPeople(dept, field.metricId);
+        people.forEach(function (employee, ei) {
+            let sum = 0;
+            for (let d = 1; d <= days; d++) sum += Number(getDeptMetricStored(dept, employee.id, d, field.metricId) || 0);
+            html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi)
+                + (ei === 0 ? " metrics-group-start" : "") + '">'
+                + formatShopMetricField(field, sum) + "</td>";
+        });
+        if (!people.length) {
+            html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</td>';
+        }
+    });
+    html += "</tr>";
+    body.innerHTML = html;
+    if (wrap) {
+        wrap.scrollLeft = scrollLeft;
+        wrap.scrollTop = scrollTop;
+    }
+}
+
 function shopExtraFunctionsHtml(employee) {
-    if (!workspace() || workspace().code !== "shop") return "";
+    if (!workspace() || isSummary()) return "";
+    const code = workspace().code;
+    if (code !== "shop" && !isGenericMetricsDept(code)) return "";
     const opts = shopGrantableExtraMetrics(employee);
-    if (!opts.length) return "";
+    if (!opts.length) {
+        if (!isGenericMetricsDept(code)) return "";
+        return fieldBlock(
+            "Рабочие метрики",
+            '<div class="note emp-extra-fn-hint">Месяц ' + escapeHtml(monthLabel(selectedMonth))
+                + ". Создайте метрику во вкладке «Метрики», затем отметьте её здесь.</div>",
+            "emp-extra-fns"
+        );
+    }
     const boxes = opts.map(function (def) {
         const on = shopEmployeeHasWorkMetric(employee.id, def.id);
         return '<label class="check" title="' + escapeAttribute(def.label) + '">'
