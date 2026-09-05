@@ -717,10 +717,43 @@
         .metrics-shelf-mark.ok { color: #15803d; }
         .metrics-shelf-mark.fail { color: #b91c1c; }
         .metrics-shelf-mark.empty { color: #9ca3af; }
-        .metrics-shelf-off {
-            color: #9ca3af;
-            font-size: 11px;
+        .metrics-check-pair {
+            display: flex;
+            gap: 4px;
+            justify-content: center;
+            align-items: center;
         }
+        .metrics-check-btn {
+            border: 1px solid #d1d5db;
+            background: #fff;
+            border-radius: 4px;
+            padding: 2px 7px;
+            cursor: pointer;
+            font-size: 13px;
+            line-height: 1.2;
+        }
+        .metrics-check-btn.on-ok {
+            background: #dcfce7;
+            border-color: #16a34a;
+            color: #15803d;
+            font-weight: 700;
+        }
+        .metrics-check-btn.on-fail {
+            background: #fee2e2;
+            border-color: #dc2626;
+            color: #b91c1c;
+            font-weight: 700;
+        }
+        .metrics-dayoff {
+            color: #6b7280;
+            font-size: 11px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .rev-mark.rev-off {
+            box-shadow: inset 0 0 0 2px #9ca3af;
+        }
+        .rev-off-hint { color: #b45309; font-size: 12px; margin-top: 6px; }
 
         .metrics-table .metrics-visitors-col {
             position: sticky;
@@ -1877,7 +1910,7 @@
                 <div class="card" id="metricsShelfBox" style="display:none;">
                     <div class="card-header">
                         <div>
-                            <div class="card-title">Товар выставлен на полке без нарекания и присутствуют все ценники</div>
+                            <div class="card-title" id="metricsShelfTitle">Товар весь выставлен на полке без нареканий, ценники везде присутствуют</div>
                             <div class="note" id="metricsShelfNote"></div>
                         </div>
                     </div>
@@ -2487,7 +2520,7 @@ const SHOP_METRIC_CATEGORIES = [
             { key: "recount", label: "Количество позиций в пересчёте", type: "number" },
             { key: "invoices", label: "Сборка накладных", type: "number" },
             { key: "sugar", label: "Фасовка сахара", type: "number" },
-            { key: "walks", label: "Проходы", type: "number" },
+            { key: "walks", label: "Проходы", type: "check" },
             { key: "receiving", label: "Приёмка", type: "number" }
         ],
         cards: [
@@ -2528,6 +2561,7 @@ const SHOP_SELF_CHECKOUT = {
 };
 const METRIC_SHELF_LABELS_ID = "metric_shelf_labels_ok";
 const METRIC_SHELF_LABELS_FIELD = "shelfLabels";
+const METRIC_SHELF_LABELS_NAME = "Товар весь выставлен на полке без нареканий, ценники везде присутствуют";
 const METRIC_SHELF_PLAN_DAYS = 22;
 const METRIC_ID_ALIASES = {
     early730: "metric_arrival_730",
@@ -2557,7 +2591,7 @@ const SHOP_KPI_METRIC_NAMES = {
     metric_sales: "Сумма продаж",
     metric_checks: "Количество чеков",
     metric_average_check: "Средний чек",
-    metric_shelf_labels_ok: "Товар выставлен на полке без нарекания и присутствуют все ценники"
+    metric_shelf_labels_ok: METRIC_SHELF_LABELS_NAME
 };
 const SHOP_KPI_METRIC_IDS = Object.keys(SHOP_KPI_METRIC_NAMES);
 const DEFAULT_METRIC_CATALOG = [
@@ -2573,7 +2607,7 @@ const DEFAULT_METRIC_CATALOG = [
     { id: "metric_average_check", name: "Средний чек", sourceType: "store_metrics", category: "cashiers", field: "avgCheck", calcType: "budget_ratio", active: true },
     {
         id: "metric_shelf_labels_ok",
-        name: "Товар выставлен на полке без нарекания и присутствуют все ценники",
+        name: METRIC_SHELF_LABELS_NAME,
         sourceType: "manual",
         category: "pickers",
         field: "shelfLabels",
@@ -5158,6 +5192,7 @@ function shopMetricEmployeeHasMonthData(categoryId, employeeId) {
         if (!rec || typeof rec !== "object") return false;
         return Object.keys(rec).some(function (key) {
             if (skip[key]) return false;
+            if (key.slice(-4) === "Mark") return rec[key] === "done" || rec[key] === "fail";
             return Number(rec[key] || 0) !== 0;
         });
     });
@@ -5220,7 +5255,13 @@ function shopMetricEmployeeTotals(category, employeeId) {
     const days = daysInMonth();
     for (let day = 1; day <= days; day++) {
         shopMetricInputFields(category).forEach(function (field) {
-            totals[field.key] += getShopMetricValue(category.id, employeeId, day, field.key);
+            if (shopMetricFieldIsCheck(field)) {
+                if (shopTimesheetIsWorkDay(employeeId, day) && shopMetricCheckState(category.id, employeeId, day, field.key) === "done") {
+                    totals[field.key] += 1;
+                }
+            } else {
+                totals[field.key] += getShopMetricValue(category.id, employeeId, day, field.key);
+            }
         });
     }
     totals.avgCheck = shopMetricAvgCheck(totals.sales, totals.receipts);
@@ -5282,6 +5323,9 @@ function shopMetricInputHtml(category, employeeId, day, field, value) {
     const idAttr = "mcell-" + category.id + "-" + employeeId + "-" + day + "-" + field.key;
     if (field.type === "avgCheck") {
         return '<span class="metrics-avg" id="mavg-' + employeeId + "-" + day + '">' + money(shopMetricAvgCheck(value.sales, value.receipts)) + "</span>";
+    }
+    if (shopMetricFieldIsCheck(field)) {
+        return shopCheckCellHtml(category.id, employeeId, day, field.key, true);
     }
     const display = field.type === "money" ? formatShopMetricMoney(value[field.key]) : blankZero(value[field.key]);
     const step = field.type === "money" ? "1" : "1";
@@ -5562,6 +5606,79 @@ function shopTimesheetIsWorkDay(employeeId, day, month) {
     return st === "Я" || st === "О";
 }
 
+function shopTimesheetIsDayOff(employeeId, day, month) {
+    return shopTimesheetStatus(employeeId, day, month) === "В";
+}
+
+function shopTimesheetLockLabel(employeeId, day, month) {
+    const st = shopTimesheetStatus(employeeId, day, month);
+    if (st === "В") return "Выходной";
+    if (st === "Б") return "Больничный";
+    if (st === "ОТ") return "Отпуск";
+    if (st === "П") return "Прогул";
+    if (st === "Л") return "Лишение";
+    return "";
+}
+
+function shopMetricFieldIsCheck(field) {
+    return !!(field && (field.type === "check" || field.key === "walks"));
+}
+
+function shopMetricDayRecord(categoryId, employeeId, day, month) {
+    const store = shopMetricMonthStore(categoryId, month || selectedMonth);
+    return store[employeeId] && store[employeeId][String(day)];
+}
+
+function shopMetricCheckState(categoryId, employeeId, day, field, month) {
+    const rec = shopMetricDayRecord(categoryId, employeeId, day, month);
+    if (!rec) return "";
+    const mark = rec[field + "Mark"];
+    if (mark === "done" || mark === "fail") return mark;
+    if (field === "walks" && rec.walks != null && rec.walks !== "") {
+        return Number(rec.walks) > 0 ? "done" : "fail";
+    }
+    if (field === METRIC_SHELF_LABELS_FIELD && rec[METRIC_SHELF_LABELS_FIELD] != null) {
+        return Number(rec[METRIC_SHELF_LABELS_FIELD]) > 0 ? "done" : "fail";
+    }
+    return "";
+}
+
+function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
+    if (!shopTimesheetIsWorkDay(employeeId, day) && shopTimesheetLockLabel(employeeId, day)) return;
+    const store = shopMetricMonthStore(categoryId, selectedMonth);
+    if (!store[employeeId] || typeof store[employeeId] !== "object") store[employeeId] = {};
+    const dayKey = String(day);
+    if (!store[employeeId][dayKey] || typeof store[employeeId][dayKey] !== "object") store[employeeId][dayKey] = {};
+    const rec = store[employeeId][dayKey];
+    rec[field + "Mark"] = mark === "fail" ? "fail" : "done";
+    rec.source = "manual";
+    rec.employee_id = employeeId;
+    if (field === METRIC_SHELF_LABELS_FIELD) rec.metric_id = METRIC_SHELF_LABELS_ID;
+    saveApp();
+    renderShopMetrics();
+}
+
+function shopCheckCellHtml(categoryId, employeeId, day, field, canEdit) {
+    const lock = shopTimesheetLockLabel(employeeId, day);
+    if (lock) {
+        return '<span class="metrics-dayoff" title="По табелю">' + escapeHtml(lock) + "</span>";
+    }
+    const state = shopMetricCheckState(categoryId, employeeId, day, field);
+    if (!canEdit) {
+        if (state === "done") return shopShelfStatusMark("done");
+        if (state === "fail") return shopShelfStatusMark("fail");
+        return shopShelfStatusMark("empty");
+    }
+    return '<div class="metrics-check-pair">'
+        + '<button type="button" class="metrics-check-btn' + (state === "done" ? " on-ok" : "") + '"'
+        + " onclick=\"setShopMetricCheck('" + categoryId + "','" + employeeId + "'," + day + ",'" + field + "','done')\""
+        + ' title="Сделано">✓</button>'
+        + '<button type="button" class="metrics-check-btn' + (state === "fail" ? " on-fail" : "") + '"'
+        + " onclick=\"setShopMetricCheck('" + categoryId + "','" + employeeId + "'," + day + ",'" + field + "','fail')\""
+        + ' title="Не сделано">✕</button>'
+        + "</div>";
+}
+
 function shopShelfParticipation(rule) {
     if (rule && rule.participationRole) return rule.participationRole;
     if (rule && (canonicalSourceType(rule.sourceType || rule.source_type) === "derived")) return "derived_recipient";
@@ -5581,13 +5698,22 @@ function shopShelfActiveRules(month) {
 }
 
 function shopShelfManualEmployees(month) {
-    return shopShelfActiveRules(month).filter(function (x) { return x.role === "manual_source"; }).map(function (x) { return x.employee; });
+    const seen = {};
+    const list = [];
+    function add(e) {
+        if (!e || !e.id || seen[e.id]) return;
+        seen[e.id] = true;
+        list.push(e);
+    }
+    shopMetricEmployees(shopMetricCategoryById("pickers")).forEach(add);
+    shopShelfActiveRules(month).forEach(function (x) {
+        if (x.role === "manual_source") add(x.employee);
+    });
+    return list;
 }
 
 function getShopShelfValue(employeeId, day, month) {
-    const store = shopMetricMonthStore("pickers", month || selectedMonth);
-    const rec = store[employeeId] && store[employeeId][String(day)];
-    return rec && Number(rec[METRIC_SHELF_LABELS_FIELD] || 0) ? 1 : 0;
+    return shopMetricCheckState("pickers", employeeId, day, METRIC_SHELF_LABELS_FIELD, month) === "done" ? 1 : 0;
 }
 
 function setShopShelfValue(employeeId, day, checked) {
@@ -5653,17 +5779,19 @@ function renderShopShelfMetric() {
         box.style.display = "none";
         return;
     }
+    const titleEl = document.getElementById("metricsShelfTitle");
+    if (titleEl) titleEl.textContent = METRIC_SHELF_LABELS_NAME;
     box.style.display = "";
     const cashierView = currentShopMetricCategory().id === "cashiers";
     const manuals = shopShelfManualEmployees(selectedMonth);
     if (note) {
         note.textContent = cashierView
-            ? "Для кассиров результат дня считается автоматически. Редактировать его вручную нельзя."
-            : "✓ — сделано, пусто — не сделано. Выходной, отпуск и больничный не портят день кассирам. Если никто из товароразборщиков в этот день не работает, у кассиров «нет данных».";
+            ? "Кассиры эту метрику не заполняют. Результат дня считается автоматически по работающим товароразборщикам. Выходной в табеле в расчёт не входит."
+            : "По каждому рабочему дню выберите ✓ Сделано или ✕ Не сделано. Выходной подставляется из Табеля автоматически.";
     }
     if (!manuals.length) {
         head.innerHTML = "";
-        body.innerHTML = '<tr><td><div class="empty-row">Назначьте эту метрику товароразборщикам в «Зарплата Володарского → Настройки сотрудников» со способом «вручную».</div></td></tr>';
+        body.innerHTML = '<tr><td><div class="empty-row">Нет товароразборщиков в магазине. Укажите должность в карточке сотрудника.</div></td></tr>';
         return;
     }
     const canEdit = !cashierView;
@@ -5689,23 +5817,19 @@ function renderShopShelfMetric() {
         html += '<tr class="' + rowCls + '"><td class="metrics-date-col">' + shopMetricDateLabel(day) + "</td>";
         if (!cashierView) {
             manuals.forEach(function (e) {
-                const work = shopTimesheetIsWorkDay(e.id, day, selectedMonth);
-                const done = getShopShelfValue(e.id, day, selectedMonth) === 1;
-                if (work && done) tot[e.id] += 1;
-                html += '<td class="metrics-check-cell">';
-                if (!work) {
-                    html += '<span class="metrics-shelf-off" title="Не рабочий день">·</span>';
-                } else if (canEdit) {
-                    html += '<input class="metrics-shelf-check" type="checkbox"' + (done ? " checked" : "")
-                        + " onchange=\"setShopShelfValue('" + e.id + "'," + day + ",this.checked)\">";
-                } else {
-                    html += done ? shopShelfStatusMark("done") : shopShelfStatusMark("fail");
+                if (shopTimesheetIsWorkDay(e.id, day, selectedMonth)
+                    && shopMetricCheckState("pickers", e.id, day, METRIC_SHELF_LABELS_FIELD) === "done") {
+                    tot[e.id] += 1;
                 }
-                html += "</td>";
+                html += '<td class="metrics-check-cell">'
+                    + shopCheckCellHtml("pickers", e.id, day, METRIC_SHELF_LABELS_FIELD, canEdit)
+                    + "</td>";
             });
         }
-        html += '<td class="metrics-check-cell">' + shopShelfStatusMark(derived)
-            + (derived === "empty" ? '<div class="note">нет данных</div>' : "")
+        html += '<td class="metrics-check-cell">'
+            + (derived === "empty"
+                ? '<span class="metrics-dayoff" title="Нет работающих товароразборщиков">нет данных</span>'
+                : shopShelfStatusMark(derived))
             + "</td></tr>";
     }
     html += '<tr class="metrics-totals-row"><td class="metrics-date-col">ИТОГО ✓</td>';
@@ -6197,15 +6321,20 @@ function revisionDateTimeLabel(iso) {
         + String(d.getMinutes()).padStart(2, "0");
 }
 
-function revisionEmployeeSelectHtml(selectedId, includeId) {
+function revisionEmployeeSelectHtml(selectedId, includeId, day) {
     const list = revisionShopEmployees().slice();
     if (includeId && !list.some(function (e) { return e.id === includeId; })) {
         list.push(getEmployee(includeId) || { id: includeId, name: "Сотрудник удалён", jobStatus: "fired" });
     }
     let html = '<option value="">Выберите сотрудника</option>';
     list.forEach(function (e) {
+        const off = day && shopTimesheetIsDayOff(e.id, day);
+        const lock = day ? shopTimesheetLockLabel(e.id, day) : "";
         html += '<option value="' + escapeHtml(e.id) + '"' + (e.id === selectedId ? " selected" : "") + ">"
-            + escapeHtml(e.name) + (isWorking(e) ? "" : " (уволен)") + "</option>";
+            + escapeHtml(e.name)
+            + (isWorking(e) ? "" : " (уволен)")
+            + (off || lock ? " — " + (off ? "Выходной" : lock) : "")
+            + "</option>";
     });
     return html;
 }
@@ -6235,7 +6364,7 @@ function renderShopRevision() {
     const monthNote = document.getElementById("revisionMonthNote");
     if (monthNote) {
         monthNote.textContent = monthLabel(selectedMonth)
-            + ". Группа 1С — зона ответственности, а не человек. На дату назначается сотрудник Work Time.";
+            + ". Группа 1С — зона ответственности, а не человек. На дату назначается сотрудник Work Time. Выходной берётся из Табеля.";
     }
     const pageTitle = document.getElementById("revisionPageTitle");
     if (pageTitle) pageTitle.textContent = "Ревизия — " + monthLabel(selectedMonth);
@@ -6365,10 +6494,12 @@ function renderRevisionSchedule() {
                 const status = revisionTaskStatus(task, selectedMonth);
                 const emp = task ? getEmployee(task.employeeId) : null;
                 const letter = task ? revisionEmployeeShort(emp) : "+";
+                const dayOff = emp && shopTimesheetIsDayOff(emp.id, day);
                 const title = task
                     ? (emp ? emp.name : "Сотрудник") + " · " + revisionStatusLabel(status)
+                        + (dayOff ? " · Выходной по табелю" : "")
                     : "Назначить пересчёт";
-                const markCls = "rev-mark" + (status ? " rev-st-" + status : "");
+                const markCls = "rev-mark" + (status ? " rev-st-" + status : "") + (dayOff ? " rev-off" : "");
                 html += '<td class="' + cls + '"><button type="button" class="' + markCls
                     + '" title="' + escapeHtml(title) + '" onclick="openRevisionAssign(\'' + folder.id + "'," + day + ')">'
                     + (task ? escapeHtml(letter) : "") + "</button></td>";
@@ -6638,7 +6769,7 @@ function openRevisionAssign(folderId, day) {
         + (group ? ' <span class="note">· ' + escapeHtml(group.name) + "</span>" : "") + "</div></div>"
         + '<div class="form-group"><label>Дата</label><div>' + revisionDateLabel(day) + "</div></div>"
         + '<div class="form-group"><label for="revEmp">Ответственный</label>'
-        + '<select id="revEmp">' + revisionEmployeeSelectHtml(task && task.employeeId, task && task.employeeId) + "</select></div>"
+        + '<select id="revEmp">' + revisionEmployeeSelectHtml(task && task.employeeId, task && task.employeeId, day) + "</select></div>"
         + '<div class="form-group"><label for="revComment">Комментарий</label>'
         + '<textarea id="revComment" rows="2">' + escapeHtml(task && task.comment) + "</textarea></div>"
         + (task && status !== "moved"
@@ -6646,6 +6777,9 @@ function openRevisionAssign(folderId, day) {
                 + '<input id="revMoveDate" type="date" value="' + dateIso + '"></div>'
             : "")
         + extra
+        + (shopTimesheetIsDayOff(task && task.employeeId, day)
+            ? '<div class="rev-off-hint">Сейчас назначен сотрудник, у которого по табелю в этот день выходной.</div>'
+            : "")
         + '<div class="rev-modal-actions">' + actions
         + '<button type="button" class="btn btn-secondary" onclick="closeRevisionModal()">Отмена</button></div>'
     );
@@ -6689,6 +6823,10 @@ function submitRevisionAssign(folderId, day, taskId) {
     if (!empId) {
         toast("Выберите ответственного сотрудника.", "error");
         return;
+    }
+    if (shopTimesheetLockLabel(empId, day)) {
+        if (!confirm("У этого сотрудника по табелю в этот день: " + shopTimesheetLockLabel(empId, day)
+            + ". Назначить ревизию всё равно?")) return;
     }
     const store = revisionMonthStore(selectedMonth);
     if (taskId && store[taskId] && store[taskId].status !== "moved") {
@@ -6784,6 +6922,10 @@ function submitRevisionMove(taskId) {
     const comEl = document.getElementById("revComment");
     if (empEl && empEl.value) task.employeeId = empEl.value;
     if (comEl) task.comment = comEl.value.trim();
+    if (shopTimesheetLockLabel(task.employeeId, day, month)) {
+        if (!confirm("У этого сотрудника по табелю в новый день: " + shopTimesheetLockLabel(task.employeeId, day, month)
+            + ". Перенести ревизию всё равно?")) return;
+    }
     const other = revisionTaskAt(folder.id, day, month);
     if (other && revisionTaskStatus(other, month) !== "moved") {
         toast("На эту дату пересчёт уже назначен.", "error");
