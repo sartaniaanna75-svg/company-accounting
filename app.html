@@ -789,8 +789,38 @@
             line-height: 24px;
         }
         .metrics-responsible-select.is-empty {
-            background: #fff7ed;
-            border-color: #fdba74;
+            background: #fdecee;
+            border-color: #f5c2c7;
+        }
+        .metrics-table tbody td.metrics-need-fill {
+            background: #fdecee;
+        }
+        .metrics-table tbody td.metrics-need-fill input.metrics-input {
+            background: #fff5f6;
+            border-color: #f5c2c7;
+        }
+        .metrics-table tbody td.metrics-inv-idle {
+            background: #f8fafc;
+            color: #94a3b8;
+        }
+        .metrics-resp-hint {
+            font-size: 10px;
+            line-height: 1.2;
+            color: #b42318;
+            margin-top: 2px;
+            font-weight: 600;
+        }
+        .metrics-inv-loss {
+            display: block;
+            text-align: right;
+            font-weight: 700;
+            color: #334155;
+        }
+        .metrics-inv-loss.is-loss {
+            color: #b42318;
+            background: #fdecee;
+            border-radius: 3px;
+            padding: 2px 4px;
         }
         .metrics-auto-fact {
             display: block;
@@ -8097,24 +8127,54 @@ function setShopRecountResponsible(day, employeeId) {
     const store = shopRecountResponsibleMonth(selectedMonth);
     const dayKey = String(day);
     const id = String(employeeId || "");
+    const prev = store[dayKey] && store[dayKey].employee_id ? String(store[dayKey].employee_id) : "";
     if (!id) {
-        delete store[dayKey];
+        if (store[dayKey] && typeof store[dayKey] === "object") {
+            const rec = store[dayKey];
+            if (prev) {
+                if (!Array.isArray(rec.history)) rec.history = [];
+                rec.history.push({
+                    from_employee_id: prev,
+                    to_employee_id: "",
+                    changed_at: new Date().toISOString(),
+                    changed_by_user_id: shopMetricsActorUserId()
+                });
+            }
+            rec.employee_id = "";
+            stampAuthOnRecord(rec);
+        }
     } else {
-        store[dayKey] = {
-            employee_id: id,
-            updated_at: new Date().toISOString()
-        };
+        const rec = store[dayKey] && typeof store[dayKey] === "object" ? store[dayKey] : {};
+        rec.employee_id = id;
+        rec.updated_at = new Date().toISOString();
+        stampAuthOnRecord(rec);
+        if (prev && prev !== id) {
+            if (!Array.isArray(rec.history)) rec.history = [];
+            rec.history.push({
+                from_employee_id: prev,
+                to_employee_id: id,
+                changed_at: rec.updated_at,
+                changed_by_user_id: rec.updated_by_user_id || shopMetricsActorUserId()
+            });
+        }
+        store[dayKey] = rec;
+    }
+    const invRec = shopInventoryMonth(selectedMonth)[dayKey];
+    if (invRec && typeof invRec === "object") {
+        invRec.conducted_by_employee_id = id;
+        shopInventoryPersistDay(day, invRec);
     }
     saveApp();
     refreshShopRecountTotalsUi();
+    refreshShopInventoryUi(day);
 }
 
 function shopRecountSelectHtml(day) {
     const current = getShopRecountResponsibleId(day);
-    const total = shopRecountDayExecutorTotal(day);
-    const empty = !current && total > 0;
+    const empty = shopInventoryFieldNeedsFill(day, "responsible");
     let html = '<select class="metrics-responsible-select' + (empty ? " is-empty" : "") + '"'
         + ' id="mrecount-resp-' + day + '"'
+        + ' title="Физический сотрудник, к которому относятся итог инвентаризации и потери за эту дату"'
         + " onchange=\"setShopRecountResponsible(" + day + ",this.value)\">"
         + '<option value="">—</option>';
     shopRecountResponsibleCandidates().forEach(function (emp) {
@@ -8122,6 +8182,9 @@ function shopRecountSelectHtml(day) {
             + escapeHtml(shopMetricEmployeeCaption(emp)) + "</option>";
     });
     html += "</select>";
+    html += '<div class="metrics-resp-hint" id="mrecount-resp-hint-' + day + '"'
+        + (empty ? "" : ' style="display:none"') + ">"
+        + (empty ? "Не выбран ответственный" : "") + "</div>";
     return html;
 }
 
@@ -8134,12 +8197,24 @@ function refreshShopRecountTotalsUi() {
         const cell = document.getElementById("mrecount-total-" + day);
         if (cell) cell.textContent = tot ? tot.toLocaleString("ru-RU") : "—";
         const sel = document.getElementById("mrecount-resp-" + day);
-        if (sel) sel.classList.toggle("is-empty", !sel.value && tot > 0);
+        if (sel) sel.classList.toggle("is-empty", shopInventoryFieldNeedsFill(day, "responsible"));
+        const hint = document.getElementById("mrecount-resp-hint-" + day);
+        if (hint) {
+            const need = shopInventoryFieldNeedsFill(day, "responsible");
+            hint.textContent = need ? "Не выбран ответственный" : "";
+            hint.style.display = need ? "" : "none";
+        }
+        const tdResp = document.getElementById("mrecount-resp-td-" + day);
+        if (tdResp) {
+            tdResp.classList.toggle("metrics-need-fill", shopInventoryFieldNeedsFill(day, "responsible"));
+            tdResp.classList.toggle("metrics-inv-idle", !shopInventoryBlockActive(day));
+        }
     }
     const foot = document.getElementById("mtot-_recountTotal");
     if (foot) foot.textContent = monthSum ? monthSum.toLocaleString("ru-RU") : "0";
     const card = document.getElementById("mcard-recount");
     if (card) card.textContent = formatShopMetricField({ type: "number" }, monthSum);
+    for (let d = 1; d <= days; d++) refreshShopInventoryUi(d);
 }
 
 function shopMetricsActorUserId() {
@@ -8205,7 +8280,9 @@ function shopInventoryPersistDay(day, rec) {
     rec.result = rec.posting - rec.writeoff;
     rec.updated_at = new Date().toISOString();
     rec.updated_by_user_id = shopMetricsActorUserId();
-    const empty = !rec.posting && !rec.writeoff && !rec.conducted_by_employee_id && rec.source !== "1c";
+    stampAuthOnRecord(rec);
+    const empty = !rec.posting && !rec.writeoff && !rec.conducted_by_employee_id
+        && rec.posting_filled !== true && rec.writeoff_filled !== true && rec.source !== "1c";
     if (empty) delete shopInventoryMonth(selectedMonth)[String(day)];
 }
 
@@ -8252,11 +8329,21 @@ function shopInventoryResultHtml(day) {
         + (has ? formatShopSignedMoney(n, false) : "—") + "</span>";
 }
 
+function shopInventoryLossHtml(day) {
+    const loss = shopInventoryDayLoss(day);
+    const has = shopInventoryDayHasValues(day);
+    const text = has ? (loss ? Math.round(loss).toLocaleString("ru-RU") : "0") : "—";
+    return '<span class="metrics-inv-loss' + (loss > 0 ? " is-loss" : "") + '" id="minv-loss-' + day
+        + '" title="Потери = max(0, −итог инвентаризации). Относятся к ответственному за пересчёт.">'
+        + text + "</span>";
+}
+
 function shopInventoryMoneyInputHtml(day, field, sign) {
     const rec = getShopInventoryDay(day);
     const locked = rec.source === "1c";
     const val = field === "writeoff" ? rec.writeoff : rec.posting;
-    const display = val ? String(val) : "";
+    const filled = shopInventoryAmountFilled(day, field);
+    const display = filled ? String(val) : "";
     if (locked) {
         return '<span class="metrics-inv-result ' + (sign === "-" ? "is-minus" : "is-plus")
             + '" title="Получено из 1С">' + (sign === "-" ? "−" : "+")
@@ -8265,7 +8352,7 @@ function shopInventoryMoneyInputHtml(day, field, sign) {
     return '<div class="metrics-signed-cell ' + (sign === "-" ? "is-minus" : "is-plus") + '"><span>'
         + (sign === "-" ? "−" : "+") + "</span>"
         + '<input class="metrics-input no-spin" id="minv-' + field + "-" + day + '" type="number" min="0" step="1"'
-        + ' inputmode="decimal" value="' + display + '" autocomplete="off"'
+        + ' inputmode="decimal" value="' + display + '" autocomplete="off" placeholder=""'
         + ' onfocus="this.select()" onkeydown="onShopMetricNav(event)"'
         + " onchange=\"setShopInventoryValue(" + day + ",'" + field + "',this.value)\"></div>";
 }
@@ -8290,9 +8377,15 @@ function setShopInventoryValue(day, field, raw) {
     if (shopUiQuiet) return;
     const rec = shopInventoryEnsureDay(day);
     if (rec.source === "1c") return;
+    const text = String(raw == null ? "" : raw).trim();
     const n = parseShopMetricNumber(raw);
-    if (field === "writeoff") rec.writeoff = n;
-    else rec.posting = n;
+    if (field === "writeoff") {
+        rec.writeoff = n;
+        rec.writeoff_filled = text !== "";
+    } else {
+        rec.posting = n;
+        rec.posting_filled = text !== "";
+    }
     rec.source = "manual";
     shopInventoryPersistDay(day, rec);
     saveApp();
@@ -8346,8 +8439,91 @@ function shopWriteoffLossesMonth(month, create) {
     return root.months[m];
 }
 
+function shopInventoryDayHasValues(day, month) {
+    const rec = getShopInventoryDay(day, month);
+    return !!(rec.posting || rec.writeoff);
+}
+
+function shopInventoryDayLoss(day, month) {
+    const rec = getShopInventoryDay(day, month);
+    if (!rec.posting && !rec.writeoff) return 0;
+    return Math.max(0, -Number(rec.result || 0));
+}
+
+function shopInventoryMonthHasAny(month) {
+    const days = daysInMonthValue(month || selectedMonth);
+    for (let day = 1; day <= days; day++) {
+        if (shopInventoryDayHasValues(day, month)) return true;
+    }
+    return false;
+}
+
+function shopInventoryBlockActive(day, month) {
+    return shopRecountDayExecutorTotal(day, month) > 0
+        || shopInventoryDayHasValues(day, month)
+        || !!getShopRecountResponsibleId(day, month);
+}
+
+function shopInventoryAmountFilled(day, field, month) {
+    const rec = shopInventoryMonth(month)[String(day)];
+    if (!rec || typeof rec !== "object") return false;
+    const flag = field === "writeoff" ? rec.writeoff_filled : rec.posting_filled;
+    if (flag === true) return true;
+    const n = field === "writeoff"
+        ? Math.abs(Number(rec.writeoff || rec.write_off || 0))
+        : Math.abs(Number(rec.posting || rec.surplus || 0));
+    return n > 0;
+}
+
+function shopInventoryFieldNeedsFill(day, field, month) {
+    if (!shopInventoryBlockActive(day, month)) return false;
+    if (field === "responsible") return !getShopRecountResponsibleId(day, month);
+    if (field === "posting" || field === "writeoff") return !shopInventoryAmountFilled(day, field, month);
+    return false;
+}
+
+function shopWriteoffLossesComputedMonth(month) {
+    const days = daysInMonthValue(month || selectedMonth);
+    let sum = 0;
+    for (let day = 1; day <= days; day++) sum += shopInventoryDayLoss(day, month);
+    return sum;
+}
+
+function shopWriteoffLossesEmployeeDay(employeeId, day, month) {
+    if (!employeeId || getShopRecountResponsibleId(day, month) !== employeeId) return 0;
+    return shopInventoryDayLoss(day, month);
+}
+
+function shopWriteoffLossesEmployeeMonth(employeeId, month) {
+    const days = daysInMonthValue(month || selectedMonth);
+    let sum = 0;
+    for (let day = 1; day <= days; day++) sum += shopWriteoffLossesEmployeeDay(employeeId, day, month);
+    return sum;
+}
+
+function shopWriteoffLossesEmployeeDays(employeeId, month) {
+    const days = daysInMonthValue(month || selectedMonth);
+    const list = [];
+    for (let day = 1; day <= days; day++) {
+        const loss = shopWriteoffLossesEmployeeDay(employeeId, day, month);
+        const resp = getShopRecountResponsibleId(day, month);
+        if (!loss && resp !== employeeId) continue;
+        if (resp !== employeeId) continue;
+        list.push({
+            day: day,
+            loss: loss,
+            employee_id: employeeId,
+            result: getShopInventoryDay(day, month).result
+        });
+    }
+    return list;
+}
+
 function shopWriteoffLossesFact(month) {
-    return Number(shopWriteoffLossesMonth(month, false).amount || 0);
+    const rec = shopWriteoffLossesMonth(month, false);
+    if (rec.source === "1c") return Number(rec.amount || 0);
+    if (shopInventoryMonthHasAny(month)) return shopWriteoffLossesComputedMonth(month);
+    return Number(rec.amount || 0);
 }
 
 function setShopWriteoffLossesFact(raw) {
@@ -8411,12 +8587,51 @@ function refreshShopInventoryUi(day) {
             cell.className = "metrics-inv-result " + shopInventoryResultClass(has ? rec.result : 0);
             cell.textContent = has ? formatShopSignedMoney(rec.result, false) : "—";
         }
+        const lossCell = document.getElementById("minv-loss-" + day);
+        if (lossCell) {
+            const loss = shopInventoryDayLoss(day);
+            const has = shopInventoryDayHasValues(day);
+            lossCell.className = "metrics-inv-loss" + (loss > 0 ? " is-loss" : "");
+            lossCell.textContent = has ? (loss ? Math.round(loss).toLocaleString("ru-RU") : "0") : "—";
+        }
         const sel = document.getElementById("minv-who-" + day);
         if (sel) sel.classList.toggle("is-empty", !sel.value && (rec.posting || rec.writeoff));
         const post = document.getElementById("minv-posting-" + day);
-        if (post && document.activeElement !== post) post.value = rec.posting ? String(rec.posting) : "";
+        if (post && document.activeElement !== post) {
+            post.value = shopInventoryAmountFilled(day, "posting") ? String(rec.posting || 0) : "";
+        }
         const woff = document.getElementById("minv-writeoff-" + day);
-        if (woff && document.activeElement !== woff) woff.value = rec.writeoff ? String(rec.writeoff) : "";
+        if (woff && document.activeElement !== woff) {
+            woff.value = shopInventoryAmountFilled(day, "writeoff") ? String(rec.writeoff || 0) : "";
+        }
+        const active = shopInventoryBlockActive(day);
+        const tdPost = document.getElementById("minv-posting-td-" + day);
+        if (tdPost) {
+            tdPost.classList.toggle("metrics-need-fill", shopInventoryFieldNeedsFill(day, "posting"));
+            tdPost.classList.toggle("metrics-inv-idle", !active);
+        }
+        const tdWoff = document.getElementById("minv-writeoff-td-" + day);
+        if (tdWoff) {
+            tdWoff.classList.toggle("metrics-need-fill", shopInventoryFieldNeedsFill(day, "writeoff"));
+            tdWoff.classList.toggle("metrics-inv-idle", !active);
+        }
+        const tdResp = document.getElementById("mrecount-resp-td-" + day);
+        if (tdResp) {
+            tdResp.classList.toggle("metrics-need-fill", shopInventoryFieldNeedsFill(day, "responsible"));
+            tdResp.classList.toggle("metrics-inv-idle", !active);
+        }
+        const respSel = document.getElementById("mrecount-resp-" + day);
+        if (respSel) respSel.classList.toggle("is-empty", shopInventoryFieldNeedsFill(day, "responsible"));
+        const hint = document.getElementById("mrecount-resp-hint-" + day);
+        if (hint) {
+            const need = shopInventoryFieldNeedsFill(day, "responsible");
+            hint.textContent = need ? "Не выбран ответственный" : "";
+            hint.style.display = need ? "" : "none";
+        }
+        const tdResult = document.getElementById("minv-result-td-" + day);
+        if (tdResult) tdResult.classList.toggle("metrics-inv-idle", !active);
+        const tdLoss = document.getElementById("minv-loss-td-" + day);
+        if (tdLoss) tdLoss.classList.toggle("metrics-inv-idle", !active);
     }
     const monthTot = shopInventoryMonthTotals();
     const fp = document.getElementById("mtot-_invPosting");
@@ -8429,6 +8644,11 @@ function refreshShopInventoryUi(day) {
     if (fr) {
         fr.className = "metrics-inv-result " + shopInventoryResultClass(monthTot.result);
         fr.textContent = (monthTot.posting || monthTot.writeoff) ? formatShopSignedMoney(monthTot.result, false) : "0";
+    }
+    const fl = document.getElementById("mtot-_writeoffLoss");
+    if (fl) {
+        const lossTot = shopWriteoffLossesFact(selectedMonth);
+        fl.textContent = lossTot ? Math.round(lossTot).toLocaleString("ru-RU") : "0";
     }
 }
 
@@ -8444,7 +8664,7 @@ function shopMetricServiceColClass(field) {
     if (field.service === "invPosting" || field.service === "invWriteoff" || field.service === "invResult") {
         return "metrics-col-inv-money";
     }
-    if (field.service === "writeoffLossMonth") return "metrics-col-writeoff-month";
+    if (field.service === "writeoffLossMonth") return "metrics-col-inv-money";
     return "metrics-col-recount-total";
 }
 
@@ -10545,31 +10765,41 @@ function renderShopMetrics() {
                 return;
             }
             if (field.service === "recountResponsible") {
+                const idle = !shopInventoryBlockActive(day);
+                const need = shopInventoryFieldNeedsFill(day, "responsible");
                 html += '<td class="metrics-emp-col metrics-recount-resp ' + shopMetricGroupClass(fi)
-                    + ' metrics-group-start">' + shopRecountSelectHtml(day) + "</td>";
+                    + ' metrics-group-start' + (need ? " metrics-need-fill" : "") + (idle ? " metrics-inv-idle" : "")
+                    + '" id="mrecount-resp-td-' + day + '">' + shopRecountSelectHtml(day) + "</td>";
                 return;
             }
             if (field.service === "invPosting") {
+                const idle = !shopInventoryBlockActive(day);
+                const need = shopInventoryFieldNeedsFill(day, "posting");
                 html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
-                    + ' metrics-group-start">' + shopInventoryMoneyInputHtml(day, "posting", "+") + "</td>";
+                    + ' metrics-group-start' + (need ? " metrics-need-fill" : "") + (idle ? " metrics-inv-idle" : "")
+                    + '" id="minv-posting-td-' + day + '">' + shopInventoryMoneyInputHtml(day, "posting", "+") + "</td>";
                 return;
             }
             if (field.service === "invWriteoff") {
+                const idle = !shopInventoryBlockActive(day);
+                const need = shopInventoryFieldNeedsFill(day, "writeoff");
                 html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
-                    + ' metrics-group-start">' + shopInventoryMoneyInputHtml(day, "writeoff", "-") + "</td>";
+                    + ' metrics-group-start' + (need ? " metrics-need-fill" : "") + (idle ? " metrics-inv-idle" : "")
+                    + '" id="minv-writeoff-td-' + day + '">' + shopInventoryMoneyInputHtml(day, "writeoff", "-") + "</td>";
                 return;
             }
             if (field.service === "invResult") {
+                const idle = !shopInventoryBlockActive(day);
                 html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
-                    + ' metrics-group-start">' + shopInventoryResultHtml(day) + "</td>";
+                    + ' metrics-group-start' + (idle ? " metrics-inv-idle" : "")
+                    + '" id="minv-result-td-' + day + '">' + shopInventoryResultHtml(day) + "</td>";
                 return;
             }
             if (field.service === "writeoffLossMonth") {
-                if (day === 1) {
-                    html += '<td class="metrics-emp-col metrics-money-col metrics-writeoff-month-cell '
-                        + shopMetricGroupClass(fi) + ' metrics-group-start" rowspan="' + (days + 1) + '">'
-                        + shopWriteoffLossesCellHtml() + "</td>";
-                }
+                const idle = !shopInventoryBlockActive(day);
+                html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start' + (idle ? " metrics-inv-idle" : "")
+                    + '" id="minv-loss-td-' + day + '">' + shopInventoryLossHtml(day) + "</td>";
                 return;
             }
             if (field.service === "catalogSum") {
@@ -10637,7 +10867,13 @@ function renderShopMetrics() {
                 + (has ? formatShopSignedMoney(inv.result, false) : "0") + "</span></td>";
             return;
         }
-        if (field.service === "writeoffLossMonth") return;
+        if (field.service === "writeoffLossMonth") {
+            const lossTot = shopWriteoffLossesFact(selectedMonth);
+            html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
+                + ' metrics-group-start" id="mtot-_writeoffLoss">'
+                + (lossTot ? Math.round(lossTot).toLocaleString("ru-RU") : "0") + "</td>";
+            return;
+        }
         if (field.service === "catalogSum") {
             let monthSum = 0;
             for (let d = 1; d <= days; d++) monthSum += shopCatalogDaySum(d, field.metricId);
@@ -12879,7 +13115,7 @@ function shopKpiName(rule) {
 function shopKpiFactSourceLabel(rule) {
     const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id || rule.id));
     if (id === METRIC_WRITEOFF_LOSSES_ID || shopKpiSourceType(rule) === "store_month") {
-        return "Общий месячный показатель магазина";
+        return "Авто из инвентаризации · лимит на магазин";
     }
     if (id === METRIC_SHELF_LABELS_ID) {
         return shopShelfParticipation(rule) === "derived_recipient"
@@ -14012,7 +14248,7 @@ function renderShopSalaryRules(view) {
         const inactive = def.active === false;
         html += "<tr><td><div class=\"shop-kpi-name\">" + escapeHtml(shopKpiName(def)) + "</div>"
             + '<div class="shop-kpi-mini">' + escapeHtml(shopKpiCalcKindLabel(def))
-            + (isShopMaxLimitKpi(def) ? " · лимит на магазин" : "")
+        + (isShopMaxLimitKpi(def) ? " · лимит на магазин · факт из итога инвентаризации" : "")
             + (ts730 ? " · тип: автоматический KPI" : "")
             + (check ? " · план из табеля Я/О/П" : "")
             + (inactive ? " · выключен" : "") + "</div>"
@@ -14930,7 +15166,10 @@ function metricControlBuildLine(employeeId, metricId, month) {
     else if (mid === METRIC_WRITEOFF_LOSSES_ID || (it && it.fill_type === "month_money")) {
         stats = metricControlNumericStats(employeeId, mid, month);
         if (mid === METRIC_WRITEOFF_LOSSES_ID && typeof shopWriteoffLossesFact === "function") {
-            stats.fact = shopWriteoffLossesFact(month);
+            stats.shopFact = shopWriteoffLossesFact(month);
+            stats.personalFact = shopWriteoffLossesEmployeeMonth(employeeId, month);
+            stats.fact = stats.shopFact;
+            stats.lossDays = shopWriteoffLossesEmployeeDays(employeeId, month);
             if (stats.plan > 0) {
                 stats.rate = stats.maxLimit
                     ? (Number(stats.fact) <= stats.plan ? 1 : 0)
@@ -15393,6 +15632,20 @@ function metricControlLineRowHtml(employeeId, line, showJump) {
             + metricControlDaysHtml(employeeId, line);
     }
     if (line.kind === "sales") extra = '<div class="note">Коллективный план</div>';
+    if (line.metricId === METRIC_WRITEOFF_LOSSES_ID) {
+        extra = '<div class="note">KPI магазина: ' + money(line.shopFact != null ? line.shopFact : line.fact)
+            + " · лимит " + money(line.plan || 0)
+            + " · лично как ответственный: " + money(line.personalFact || 0) + "</div>";
+        if (line.lossDays && line.lossDays.length) {
+            extra += '<div class="mc-days">';
+            line.lossDays.forEach(function (d) {
+                const label = String(d.day).padStart(2, "0") + "." + selectedMonth.slice(5, 7);
+                extra += '<span class="mc-day' + (d.loss > 0 ? " fail" : "") + '" title="Ответственный за пересчёт">'
+                    + label + " · " + Math.round(d.loss || 0).toLocaleString("ru-RU") + " ₽</span>";
+            });
+            extra += "</div>";
+        }
+    }
     return '<tr class="mc-line-' + tone + '"><td>' + escapeHtml(line.name) + extra + "</td>"
         + "<td>" + metricControlLineDoneText(line) + "</td>"
         + "<td>" + metricControlLineFailText(line) + "</td>"
