@@ -123,6 +123,48 @@
             margin: 10px 0 12px;
         }
 
+        .login-card .login-label {
+            display: block;
+            font-size: 12px;
+            color: var(--muted);
+            margin: 8px 0 4px;
+        }
+
+        .login-card .login-user,
+        .login-card .login-pin {
+            width: 100%;
+            margin: 0 0 8px;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            position: relative;
+            z-index: 2;
+            pointer-events: auto;
+        }
+
+        .login-card .login-pin:disabled,
+        .login-card .login-user:disabled {
+            background: #f3f4f6;
+            cursor: not-allowed;
+        }
+
+        .login-card .login-pin-wrap.is-idle {
+            display: none;
+        }
+
+        .login-card .login-empty {
+            font-size: 12px;
+            color: var(--muted);
+            margin: 8px 0 10px;
+            line-height: 1.4;
+        }
+
+        .login-card .btn:disabled {
+            opacity: .55;
+            cursor: not-allowed;
+        }
+
         .login-card.error input {
             border-color: var(--danger);
             animation: shake .28s ease;
@@ -3733,6 +3775,8 @@ let currentSummaryRole = null;
 let currentDeptRole = null;
 let currentUserId = "";
 let loginView = "home";
+let loginSelectedUserByDept = {};
+let loginPinByDept = {};
 let shopMetricCategory = "pickers";
 let deptMetricTab = "";
 let metricCatalogExpanded = {};
@@ -4968,10 +5012,39 @@ function userHasPerm(key, min) {
     return false;
 }
 
+function userAccessDeptCodes(user) {
+    const out = [];
+    function add(value) {
+        const code = String(value == null ? "" : value).trim();
+        if (!code || out.indexOf(code) !== -1) return;
+        out.push(code);
+    }
+    if (!user) return out;
+    (user.departments || []).forEach(add);
+    (user.user_department_access || []).forEach(function (item) {
+        if (item && typeof item === "object") add(item.department_id || item.department || item.code);
+        else add(item);
+    });
+    add(user.department_id);
+    return out;
+}
+
 function userCanAccessDept(user, code) {
     if (!user || user.is_active === false) return false;
     if (user.role === "admin" || user.legacy_role === "admin") return true;
-    return (user.departments || []).indexOf(code) !== -1;
+    return userAccessDeptCodes(user).indexOf(code) !== -1;
+}
+
+function usersForDeptLogin(code) {
+    return appUsers().filter(function (u) {
+        if (!u || !u.user_id) return false;
+        if (u.is_active === false) return false;
+        return userCanAccessDept(u, code);
+    }).sort(function (a, b) {
+        const an = String(a.display_name || a.user_id);
+        const bn = String(b.display_name || b.user_id);
+        return an.localeCompare(bn, "ru");
+    });
 }
 
 function userSwitchCodes(user) {
@@ -4979,7 +5052,7 @@ function userSwitchCodes(user) {
     if (user.role === "admin" || user.legacy_role === "admin") {
         return DEPT_DEFAULTS.map(function (d) { return d.code; }).concat(["summary"]);
     }
-    return (user.departments || []).filter(Boolean);
+    return userAccessDeptCodes(user);
 }
 
 function findActiveUserByPin(entered) {
@@ -5059,6 +5132,7 @@ function enterAsUser(user, code) {
     if (user.legacy_role === "pay") currentSection = "salary";
     else if (user.legacy_role === "adjust") currentSection = "salary";
     else currentSection = defaultSection();
+    clearLoginPinState();
     saveSession();
     openApp();
     return true;
@@ -6718,7 +6792,7 @@ function renderLogin(view) {
             backHome();
             if (title) title.textContent = "Магазин Володарского";
             if (subtitle) {
-                subtitle.innerHTML = "Введите свой PIN."
+                subtitle.innerHTML = "Выберите пользователя и введите его PIN."
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid single-view";
@@ -6727,7 +6801,7 @@ function renderLogin(view) {
             backHome();
             if (title) title.textContent = "ТЕРРИТОРИЯ";
             if (subtitle) {
-                subtitle.innerHTML = "Офис, Склад и Логистика + Торговые. Введите свой PIN."
+                subtitle.innerHTML = "Офис, Склад и Логистика + Торговые. Выберите пользователя и введите его PIN."
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid territory-view";
@@ -6738,11 +6812,11 @@ function renderLogin(view) {
             backHome();
             if (title) title.textContent = "Общая";
             if (subtitle) {
-                subtitle.innerHTML = "Введите свой PIN."
+                subtitle.innerHTML = "Выберите пользователя и введите его PIN."
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid single-view";
-            grid.innerHTML = summaryLoginCardHtml();
+            grid.innerHTML = userPinLoginCardHtml("summary", "Общая");
         } else if (loginView === "admin") {
             backHome();
             if (title) title.textContent = "Администратор";
@@ -6765,6 +6839,8 @@ function renderLogin(view) {
             grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + adminFolderCardHtml();
         }
 
+        restoreAllLoginCardState(grid);
+
         const hint = document.getElementById("defaultPinHint");
         if (hint) {
             hint.textContent = showHint
@@ -6786,17 +6862,165 @@ function renderLogin(view) {
     }
 }
 
+function loginPinDigits(value) {
+    return String(value == null ? "" : value).replace(/\D/g, "");
+}
+
+function clearLoginPinState(code) {
+    if (code) {
+        loginPinByDept[code] = "";
+        return;
+    }
+    loginPinByDept = {};
+}
+
+function usersForDeptLoginSafe(code) {
+    try {
+        return usersForDeptLogin(code);
+    } catch (err) {
+        console.error(err);
+        return null;
+    }
+}
+
+function userPinLoginCardHtml(code, title) {
+    if (!code) return "";
+    const users = usersForDeptLoginSafe(code);
+    let selected = loginSelectedUserByDept[code] || "";
+    if (users && users.length === 1) selected = users[0].user_id;
+    if (users && selected && !users.some(function (u) { return u.user_id === selected; })) selected = "";
+    if (users && users.length === 1) loginSelectedUserByDept[code] = selected;
+    const pinEnabled = !!selected;
+    const pinValue = pinEnabled ? loginPinDigits(loginPinByDept[code] || "") : "";
+
+    let body = "";
+    if (users === null) {
+        body = '<div class="login-empty">Ошибка загрузки пользователей</div>'
+            + '<button type="button" class="btn btn-primary" style="width:100%;" disabled>Войти</button>';
+    } else if (!users.length) {
+        body = '<div class="login-empty">Для этого раздела не найдено пользователей с доступом</div>'
+            + '<button type="button" class="btn btn-primary" style="width:100%;" disabled>Войти</button>';
+    } else {
+        let opts = '<option value="">Выберите пользователя</option>';
+        users.forEach(function (u) {
+            const label = u.display_name || u.user_id;
+            opts += '<option value="' + escapeAttribute(u.user_id) + '"'
+                + (u.user_id === selected ? " selected" : "") + ">"
+                + escapeHtml(label) + "</option>";
+        });
+        body = '<label class="login-label" for="loginUser_' + code + '">Пользователь</label>'
+            + '<select class="login-user" id="loginUser_' + code + '" data-login-dept="' + code + '"'
+            + ' onmousedown="event.stopPropagation()"'
+            + ' onchange="onLoginUserChange(\'' + code + '\', this)">'
+            + opts + "</select>"
+            + '<div class="login-pin-wrap' + (pinEnabled ? "" : " is-idle") + '" id="loginPinWrap_' + code + '">'
+            + '<label class="login-label" for="loginPin_' + code + '">PIN</label>'
+            + '<input class="login-pin" type="password" inputmode="numeric" id="loginPin_' + code + '"'
+            + ' placeholder="PIN" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false"'
+            + (pinEnabled ? "" : " disabled")
+            + ' value="' + escapeAttribute(pinValue) + '"'
+            + ' onmousedown="event.stopPropagation()"'
+            + ' oninput="onLoginPinInput(\'' + code + '\', this)"'
+            + ' onkeydown="onLoginPinKeydown(event,\'' + code + '\')">'
+            + "</div>"
+            + '<div class="login-error" id="loginError_' + code + '"></div>'
+            + '<button type="button" class="btn btn-primary" id="loginBtn_' + code + '" style="width:100%;"'
+            + (pinEnabled && pinValue ? "" : " disabled")
+            + ' onclick="event.stopPropagation();loginByCode(\'' + code + '\')">Войти</button>';
+    }
+
+    return ""
+        + '<div class="login-card ' + code + '" id="loginCard_' + code + '" data-login-dept="' + code + '">'
+        +   "<h3>" + escapeHtml(title || code) + "</h3>"
+        +   body
+        + "</div>";
+}
+
 function deptLoginCardHtml(d) {
     if (!d) return "";
-    return ""
-        + '<div class="login-card ' + d.code + '" id="loginCard_' + d.code + '">'
-        +   "<h3>" + escapeHtml(d.name) + "</h3>"
-        +   '<div class="note">Личный PIN пользователя</div>'
-        +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="32" autocomplete="off"'
-        +   ' onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
-        +   '<div class="login-error" id="loginError_' + d.code + '"></div>'
-        +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginByCode(\'' + d.code + '\')">Войти</button>'
-        + "</div>";
+    return userPinLoginCardHtml(d.code, d.name);
+}
+
+function onLoginUserChange(code, el) {
+    const userId = el && el.value ? String(el.value) : "";
+    loginSelectedUserByDept[code] = userId;
+    loginPinByDept[code] = "";
+    const card = document.getElementById("loginCard_" + code);
+    const error = document.getElementById("loginError_" + code);
+    if (card) card.classList.remove("error");
+    if (error) error.textContent = "";
+    const pin = document.getElementById("loginPin_" + code);
+    if (pin) pin.value = "";
+    syncLoginCardUi(code);
+    if (pin && userId) pin.focus();
+}
+
+function onLoginPinInput(code, el) {
+    const raw = String(el && el.value != null ? el.value : "");
+    const digits = loginPinDigits(raw);
+    if (digits !== raw && el) {
+        el.value = digits;
+        try { el.setSelectionRange(digits.length, digits.length); } catch (err) {}
+    }
+    loginPinByDept[code] = String(el && el.value != null ? el.value : digits);
+    const card = document.getElementById("loginCard_" + code);
+    const error = document.getElementById("loginError_" + code);
+    if (card) card.classList.remove("error");
+    if (error) error.textContent = "";
+    if (document.getElementById("loginUser_" + code)) syncLoginCardUi(code);
+}
+
+function onLoginPinKeydown(event, code) {
+    if (event) event.stopPropagation();
+    if (event && event.key === "Enter") {
+        event.preventDefault();
+        loginByCode(code);
+    }
+}
+
+function syncLoginCardUi(code) {
+    const select = document.getElementById("loginUser_" + code);
+    const pin = document.getElementById("loginPin_" + code);
+    const wrap = document.getElementById("loginPinWrap_" + code);
+    const btn = document.getElementById("loginBtn_" + code);
+    const userId = select ? String(select.value || "") : String(loginSelectedUserByDept[code] || "");
+    if (wrap) {
+        if (userId) wrap.classList.remove("is-idle");
+        else wrap.classList.add("is-idle");
+    }
+    if (pin) {
+        pin.disabled = !userId;
+        pin.readOnly = false;
+        if (!userId) pin.value = "";
+    }
+    if (btn) btn.disabled = !userId || !loginPinDigits(pin && pin.value);
+}
+
+function restoreLoginCardState(code) {
+    const select = document.getElementById("loginUser_" + code);
+    if (!select) return;
+    const users = usersForDeptLoginSafe(code) || [];
+    let selected = loginSelectedUserByDept[code] || "";
+    if (users.length === 1) selected = users[0].user_id;
+    if (selected && !users.some(function (u) { return u.user_id === selected; })) selected = "";
+    loginSelectedUserByDept[code] = selected;
+    select.value = selected;
+    const pin = document.getElementById("loginPin_" + code);
+    if (pin) {
+        pin.readOnly = false;
+        pin.disabled = !selected;
+        pin.value = selected ? loginPinDigits(loginPinByDept[code] || "") : "";
+    }
+    syncLoginCardUi(code);
+}
+
+function restoreAllLoginCardState(grid) {
+    const root = grid || document.getElementById("loginGrid");
+    if (!root) return;
+    root.querySelectorAll("div[data-login-dept]").forEach(function (el) {
+        const code = el.getAttribute("data-login-dept");
+        if (code) restoreLoginCardState(code);
+    });
 }
 
 function folderCardHtml(cls, view, title, note, extra) {
@@ -6840,15 +7064,7 @@ function adminFolderCardHtml() {
 }
 
 function summaryLoginCardHtml() {
-    return ""
-        + '<div class="login-card summary summary-card" id="loginCard_summary">'
-        +   "<h3>Общая</h3>"
-        +   '<div class="note">Введите свой PIN</div>'
-        +   '<input type="password" id="loginPin_summary" placeholder="PIN" maxlength="32" autocomplete="off"'
-        +   ' onkeydown="if(event.key===\'Enter\'){loginSummary()}">'
-        +   '<div class="login-error" id="loginError_summary"></div>'
-        +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginSummary()">Войти</button>'
-        + "</div>";
+    return userPinLoginCardHtml("summary", "Общая");
 }
 
 function adminLoginCardHtml() {
@@ -6856,8 +7072,11 @@ function adminLoginCardHtml() {
         + '<div class="login-card summary summary-card" id="loginCard_admin">'
         +   "<h3>Вход администратора</h3>"
         +   '<div class="note">PIN администратора</div>'
-        +   '<input type="password" id="loginPin_admin" placeholder="PIN" maxlength="32" autocomplete="off"'
-        +   ' onkeydown="if(event.key===\'Enter\'){loginAdmin()}">'
+        +   '<input class="login-pin" type="password" inputmode="numeric" id="loginPin_admin" placeholder="PIN" maxlength="32"'
+        +   ' autocomplete="off" autocapitalize="off" spellcheck="false"'
+        +   ' onmousedown="event.stopPropagation()"'
+        +   ' oninput="onLoginPinInput(\'admin\', this)"'
+        +   ' onkeydown="if(event.key===\'Enter\'){event.preventDefault();loginAdmin();}">'
         +   '<div class="login-error" id="loginError_admin"></div>'
         +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginAdmin()">Войти</button>'
         + "</div>";
@@ -6899,9 +7118,9 @@ function showLoginError(code, message) {
     const input = document.getElementById("loginPin_" + code);
     if (card) card.classList.add("error");
     if (error) error.textContent = message;
-    if (input) {
+    if (input && !input.disabled) {
         input.focus();
-        input.select();
+        try { input.select(); } catch (err) {}
     }
 }
 
@@ -6910,25 +7129,44 @@ function loginByCode(code) {
         console.log("[WorkTime login submit]", code);
         ensureLoginData();
         migrateAppUsers(appData);
+        const select = document.getElementById("loginUser_" + code);
         const input = document.getElementById("loginPin_" + code);
         const card = document.getElementById("loginCard_" + code);
         const error = document.getElementById("loginError_" + code);
-        const entered = pinString(input && input.value);
         if (card) card.classList.remove("error");
         if (error) error.textContent = "";
-        if (!entered) {
-            showLoginError(code, "Введите PIN.");
+
+        const userId = pinString((select && select.value) || loginSelectedUserByDept[code] || "");
+        if (!userId) {
+            showLoginError(code, "Выберите пользователя");
+            if (select) select.focus();
             return;
         }
-        const user = findActiveUserByPin(entered);
-        if (!user) {
-            showLoginError(code, "Неверный PIN-код.");
+
+        const entered = pinString(loginPinDigits((input && input.value) || loginPinByDept[code] || ""));
+        if (!entered) {
+            showLoginError(code, "Введите PIN");
+            return;
+        }
+
+        const user = findAccessUser(userId);
+        if (!user || user.is_active === false) {
+            showLoginError(code, "Для этого раздела не найдено пользователей с доступом");
             return;
         }
         if (!userCanAccessDept(user, code)) {
-            showLoginError(code, "Нет доступа к этому подразделению.");
+            showLoginError(code, "Нет доступа к этому разделу");
             return;
         }
+        if (!pinsMatch(entered, user.pin)) {
+            loginPinByDept[code] = "";
+            if (input) input.value = "";
+            syncLoginCardUi(code);
+            showLoginError(code, "Неверный PIN");
+            return;
+        }
+        clearLoginPinState(code);
+        if (input) input.value = "";
         if (!enterAsUser(user, code)) {
             showLoginError(code, "Ошибка входа в раздел.");
         }
@@ -6939,36 +7177,7 @@ function loginByCode(code) {
 }
 
 function loginSummary() {
-    try {
-        console.log("[WorkTime login submit]", "summary");
-        ensureLoginData();
-        migrateAppUsers(appData);
-        const input = document.getElementById("loginPin_summary");
-        const card = document.getElementById("loginCard_summary");
-        const error = document.getElementById("loginError_summary");
-        const entered = pinString(input && input.value);
-        if (card) card.classList.remove("error");
-        if (error) error.textContent = "";
-        if (!entered) {
-            showLoginError("summary", "Введите PIN.");
-            return;
-        }
-        const user = findActiveUserByPin(entered);
-        if (!user) {
-            showLoginError("summary", "Неверный PIN-код.");
-            return;
-        }
-        if (!userCanAccessDept(user, "summary")) {
-            showLoginError("summary", "Нет доступа к Общей.");
-            return;
-        }
-        if (!enterAsUser(user, "summary")) {
-            showLoginError("summary", "Ошибка входа в раздел.");
-        }
-    } catch (err) {
-        console.error(err);
-        showLoginError("summary", "Ошибка загрузки пользователей");
-    }
+    loginByCode("summary");
 }
 
 function loginAdmin() {
@@ -6977,20 +7186,24 @@ function loginAdmin() {
         ensureLoginData();
         migrateAppUsers(appData);
         const input = document.getElementById("loginPin_admin");
-        const entered = pinString(input && input.value);
+        const entered = pinString(loginPinDigits(input && input.value));
         const card = document.getElementById("loginCard_admin");
         const error = document.getElementById("loginError_admin");
         if (card) card.classList.remove("error");
         if (error) error.textContent = "";
         if (!entered) {
-            showLoginError("admin", "Введите PIN.");
+            showLoginError("admin", "Введите PIN");
             return;
         }
         const user = findActiveUserByPin(entered);
         if (!user || (user.role !== "admin" && user.legacy_role !== "admin")) {
+            if (input) input.value = "";
+            loginPinByDept.admin = "";
             showLoginError("admin", "Неверный PIN администратора.");
             return;
         }
+        if (input) input.value = "";
+        loginPinByDept.admin = "";
         if (!enterAsUser(user, "summary")) {
             showLoginError("admin", "Ошибка входа администратора.");
         }
@@ -7051,6 +7264,7 @@ function leaveWorkspace() {
     currentUserId = "";
     currentSection = "timesheet";
     selectedMonth = currentMonthValue();
+    clearLoginPinState();
     try { sessionStorage.removeItem(SESSION_KEY); } catch (err) {}
     closeSidebar();
     document.getElementById("app").style.display = "none";
