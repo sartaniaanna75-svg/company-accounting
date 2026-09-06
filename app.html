@@ -4072,10 +4072,10 @@ function metricWorkTabIds(item) {
     const dept = metricDepartmentId(item);
     const allowed = metricTabsForDept(dept).map(function (t) { return t.id; });
     const ids = [];
-    function push(id) {
+    const push = function (id) {
         if (!id || allowed.indexOf(id) === -1 || ids.indexOf(id) !== -1) return;
         ids.push(id);
-    }
+    };
     if (Array.isArray(item.work_tab_ids)) item.work_tab_ids.forEach(push);
     if (!ids.length) push(item.metric_tab_id || item.section_id);
     if (!ids.length) push(defaultMetricTabId(dept));
@@ -6681,94 +6681,108 @@ function summaryMonthMoney(monthValue) {
    ВХОД И СЕССИЯ
 ============================================================ */
 function renderLogin(view) {
-    if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin") loginView = view;
-    ensureLoginData();
-    migrateAppUsers(appData);
+    try {
+        console.log("[WorkTime login click]", view);
+        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin") loginView = view;
+        ensureLoginData();
+        try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
-    const defs = DEPT_DEFAULTS;
-    const summary = findWorkspaceByCode("summary");
-    if (summary) ensureSummaryPins(summary);
-    const showHint = defs.every(function (d) {
-        const w = findWorkspaceByCode(d.code);
-        const u = findAccessUser("user_dept_" + d.code);
-        return (u && pinsMatch(u.pin, d.pin)) || (w && pinsMatch(w.pin, d.pin));
-    }) && summary && findAccessUser("user_admin") && pinsMatch(findAccessUser("user_admin").pin, "5555")
-        && findAccessUser("user_adjust") && pinsMatch(findAccessUser("user_adjust").pin, "6666")
-        && findAccessUser("user_pay") && pinsMatch(findAccessUser("user_pay").pin, "7777");
+        const defs = DEPT_DEFAULTS;
+        const summary = findWorkspaceByCode("summary");
+        if (summary) ensureSummaryPins(summary);
+        const showHint = defs.every(function (d) {
+            const w = findWorkspaceByCode(d.code);
+            const u = findAccessUser("user_dept_" + d.code);
+            return (u && pinsMatch(u.pin, d.pin)) || (w && pinsMatch(w.pin, d.pin));
+        }) && summary && findAccessUser("user_admin") && pinsMatch(findAccessUser("user_admin").pin, "5555")
+            && findAccessUser("user_adjust") && pinsMatch(findAccessUser("user_adjust").pin, "6666")
+            && findAccessUser("user_pay") && pinsMatch(findAccessUser("user_pay").pin, "7777");
 
-    const homeLink = document.getElementById("loginHomeLink");
-    const title = document.getElementById("loginTitle");
-    const subtitle = document.getElementById("loginSubtitle");
-    const grid = document.getElementById("loginGrid");
+        const homeLink = document.getElementById("loginHomeLink");
+        const title = document.getElementById("loginTitle");
+        const subtitle = document.getElementById("loginSubtitle");
+        const grid = document.getElementById("loginGrid");
+        if (!grid) {
+            console.error("loginGrid not found");
+            if (subtitle) subtitle.textContent = "Ошибка загрузки экрана входа.";
+            return;
+        }
 
-    function backHome() {
-        if (homeLink) {
-            homeLink.innerHTML = '<button type="button" onclick="renderLogin(\'home\')">← Назад на главную</button>';
-        }
-    }
+        const backHome = function () {
+            if (homeLink) {
+                homeLink.innerHTML = '<button type="button" onclick="renderLogin(\'home\')">← Назад на главную</button>';
+            }
+        };
 
-    if (loginView === "shop") {
-        backHome();
-        if (title) title.textContent = "Магазин Володарского";
-        if (subtitle) {
-            subtitle.innerHTML = "Введите свой PIN."
-                + ' <span id="defaultPinHint"></span>';
+        if (loginView === "shop") {
+            backHome();
+            if (title) title.textContent = "Магазин Володарского";
+            if (subtitle) {
+                subtitle.innerHTML = "Введите свой PIN."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = deptLoginCardHtml(defs.find(function (d) { return d.code === "shop"; }));
+        } else if (loginView === "territory") {
+            backHome();
+            if (title) title.textContent = "ТЕРРИТОРИЯ";
+            if (subtitle) {
+                subtitle.innerHTML = "Офис, Склад и Логистика + Торговые. Введите свой PIN."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid territory-view";
+            grid.innerHTML = TERRITORY_DEPT_CODES.map(function (code) {
+                return deptLoginCardHtml(defs.find(function (d) { return d.code === code; }));
+            }).join("");
+        } else if (loginView === "summary") {
+            backHome();
+            if (title) title.textContent = "Общая";
+            if (subtitle) {
+                subtitle.innerHTML = "Введите свой PIN."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = summaryLoginCardHtml();
+        } else if (loginView === "admin") {
+            backHome();
+            if (title) title.textContent = "Администратор";
+            if (subtitle) {
+                subtitle.innerHTML = "Отдельный вход администратора. Все подразделения."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = adminLoginCardHtml();
+        } else {
+            if (homeLink) {
+                homeLink.innerHTML = '<a href="index.html">← На главную</a>';
+            }
+            if (title) title.textContent = "⏱ Табель сотрудников";
+            if (subtitle) {
+                subtitle.innerHTML = "Выберите раздел или вход администратора."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid";
+            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + adminFolderCardHtml();
         }
-        grid.className = "login-grid single-view";
-        grid.innerHTML = deptLoginCardHtml(defs.find(function (d) { return d.code === "shop"; }));
-    } else if (loginView === "territory") {
-        backHome();
-        if (title) title.textContent = "ТЕРРИТОРИЯ";
-        if (subtitle) {
-            subtitle.innerHTML = "Офис, Склад и Логистика + Торговые. Введите свой PIN."
-                + ' <span id="defaultPinHint"></span>';
-        }
-        grid.className = "login-grid territory-view";
-        grid.innerHTML = TERRITORY_DEPT_CODES.map(function (code) {
-            return deptLoginCardHtml(defs.find(function (d) { return d.code === code; }));
-        }).join("");
-    } else if (loginView === "summary") {
-        backHome();
-        if (title) title.textContent = "Общая";
-        if (subtitle) {
-            subtitle.innerHTML = "Введите свой PIN."
-                + ' <span id="defaultPinHint"></span>';
-        }
-        grid.className = "login-grid single-view";
-        grid.innerHTML = summaryLoginCardHtml();
-    } else if (loginView === "admin") {
-        backHome();
-        if (title) title.textContent = "Администратор";
-        if (subtitle) {
-            subtitle.innerHTML = "Отдельный вход администратора. Все подразделения."
-                + ' <span id="defaultPinHint"></span>';
-        }
-        grid.className = "login-grid single-view";
-        grid.innerHTML = adminLoginCardHtml();
-    } else {
-        if (homeLink) {
-            homeLink.innerHTML = '<a href="index.html">← На главную</a>';
-        }
-        if (title) title.textContent = "⏱ Табель сотрудников";
-        if (subtitle) {
-            subtitle.innerHTML = "Выберите раздел или вход администратора."
-                + ' <span id="defaultPinHint"></span>';
-        }
-        grid.className = "login-grid";
-        grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + adminFolderCardHtml();
-    }
 
-    const hint = document.getElementById("defaultPinHint");
-    if (hint) {
-        hint.textContent = showHint
-            ? (loginView === "home"
-                ? " PIN: магазин 1111 · офис 2222 · склад 3333 · логистика 4444 · админ 5555 · Ольга 6666 · Наталья 7777."
-                : loginView === "summary"
-                    ? " Общая: 5555 / 6666 / 7777."
-                    : loginView === "admin"
-                        ? " Админ: 5555."
-                        : " Введите личный PIN пользователя этого раздела.")
-            : "";
+        const hint = document.getElementById("defaultPinHint");
+        if (hint) {
+            hint.textContent = showHint
+                ? (loginView === "home"
+                    ? " PIN: магазин 1111 · офис 2222 · склад 3333 · логистика 4444 · админ 5555 · Ольга 6666 · Наталья 7777."
+                    : loginView === "summary"
+                        ? " Общая: 5555 / 6666 / 7777."
+                        : loginView === "admin"
+                            ? " Админ: 5555."
+                            : " Введите личный PIN пользователя этого раздела.")
+                : "";
+        }
+    } catch (err) {
+        console.error(err);
+        const subtitle = document.getElementById("loginSubtitle");
+        const msg = "Ошибка загрузки пользователей: " + (err && err.message ? err.message : String(err));
+        if (subtitle) subtitle.textContent = msg;
+        else alert(msg);
     }
 }
 
@@ -6892,63 +6906,98 @@ function showLoginError(code, message) {
 }
 
 function loginByCode(code) {
-    ensureLoginData();
-    migrateAppUsers(appData);
-    const input = document.getElementById("loginPin_" + code);
-    const card = document.getElementById("loginCard_" + code);
-    const error = document.getElementById("loginError_" + code);
-    const entered = pinString(input && input.value);
-    if (card) card.classList.remove("error");
-    if (error) error.textContent = "";
-
-    const user = findActiveUserByPin(entered);
-    if (!user) {
-        showLoginError(code, "Неверный PIN-код.");
-        return;
+    try {
+        console.log("[WorkTime login submit]", code);
+        ensureLoginData();
+        migrateAppUsers(appData);
+        const input = document.getElementById("loginPin_" + code);
+        const card = document.getElementById("loginCard_" + code);
+        const error = document.getElementById("loginError_" + code);
+        const entered = pinString(input && input.value);
+        if (card) card.classList.remove("error");
+        if (error) error.textContent = "";
+        if (!entered) {
+            showLoginError(code, "Введите PIN.");
+            return;
+        }
+        const user = findActiveUserByPin(entered);
+        if (!user) {
+            showLoginError(code, "Неверный PIN-код.");
+            return;
+        }
+        if (!userCanAccessDept(user, code)) {
+            showLoginError(code, "Нет доступа к этому подразделению.");
+            return;
+        }
+        if (!enterAsUser(user, code)) {
+            showLoginError(code, "Ошибка входа в раздел.");
+        }
+    } catch (err) {
+        console.error(err);
+        showLoginError(code, "Ошибка загрузки пользователей");
     }
-    if (!userCanAccessDept(user, code)) {
-        showLoginError(code, "Нет доступа к этому подразделению.");
-        return;
-    }
-    enterAsUser(user, code);
 }
 
 function loginSummary() {
-    ensureLoginData();
-    migrateAppUsers(appData);
-    const input = document.getElementById("loginPin_summary");
-    const card = document.getElementById("loginCard_summary");
-    const error = document.getElementById("loginError_summary");
-    const entered = pinString(input && input.value);
-    if (card) card.classList.remove("error");
-    if (error) error.textContent = "";
-    const user = findActiveUserByPin(entered);
-    if (!user) {
-        showLoginError("summary", "Неверный PIN-код.");
-        return;
+    try {
+        console.log("[WorkTime login submit]", "summary");
+        ensureLoginData();
+        migrateAppUsers(appData);
+        const input = document.getElementById("loginPin_summary");
+        const card = document.getElementById("loginCard_summary");
+        const error = document.getElementById("loginError_summary");
+        const entered = pinString(input && input.value);
+        if (card) card.classList.remove("error");
+        if (error) error.textContent = "";
+        if (!entered) {
+            showLoginError("summary", "Введите PIN.");
+            return;
+        }
+        const user = findActiveUserByPin(entered);
+        if (!user) {
+            showLoginError("summary", "Неверный PIN-код.");
+            return;
+        }
+        if (!userCanAccessDept(user, "summary")) {
+            showLoginError("summary", "Нет доступа к Общей.");
+            return;
+        }
+        if (!enterAsUser(user, "summary")) {
+            showLoginError("summary", "Ошибка входа в раздел.");
+        }
+    } catch (err) {
+        console.error(err);
+        showLoginError("summary", "Ошибка загрузки пользователей");
     }
-    if (!userCanAccessDept(user, "summary")) {
-        showLoginError("summary", "Нет доступа к Общей.");
-        return;
-    }
-    enterAsUser(user, "summary");
 }
 
 function loginAdmin() {
-    ensureLoginData();
-    migrateAppUsers(appData);
-    const input = document.getElementById("loginPin_admin");
-    const entered = pinString(input && input.value);
-    const card = document.getElementById("loginCard_admin");
-    const error = document.getElementById("loginError_admin");
-    if (card) card.classList.remove("error");
-    if (error) error.textContent = "";
-    const user = findActiveUserByPin(entered);
-    if (!user || (user.role !== "admin" && user.legacy_role !== "admin")) {
-        showLoginError("admin", "Неверный PIN администратора.");
-        return;
+    try {
+        console.log("[WorkTime login submit]", "admin");
+        ensureLoginData();
+        migrateAppUsers(appData);
+        const input = document.getElementById("loginPin_admin");
+        const entered = pinString(input && input.value);
+        const card = document.getElementById("loginCard_admin");
+        const error = document.getElementById("loginError_admin");
+        if (card) card.classList.remove("error");
+        if (error) error.textContent = "";
+        if (!entered) {
+            showLoginError("admin", "Введите PIN.");
+            return;
+        }
+        const user = findActiveUserByPin(entered);
+        if (!user || (user.role !== "admin" && user.legacy_role !== "admin")) {
+            showLoginError("admin", "Неверный PIN администратора.");
+            return;
+        }
+        if (!enterAsUser(user, "summary")) {
+            showLoginError("admin", "Ошибка входа администратора.");
+        }
+    } catch (err) {
+        console.error(err);
+        showLoginError("admin", "Ошибка загрузки пользователей");
     }
-    enterAsUser(user, "summary");
 }
 
 function loginById(id) {
@@ -17212,7 +17261,7 @@ function renderMetricCatalog() {
                     + (can ? ('<input type="text" value="' + escapeAttribute(sub.name) + '" style="width:160px" onchange="renameMetricSubmetric(\'' + it.id + "','" + sub.id + "',this.value)\">")
                         : escapeHtml(sub.name))
                     + "</td><td></td><td></td><td>"
-                    + (can ? ('<input type="number" value="' + escapeAttribute(String(sub.sort_order || 0)) + '" style="width:52px" onchange="setMetricSubmetricOrder(\'' + it.id + "','" + sub.id + "',this.value)">')
+                    + (can ? ('<input type="number" value="' + escapeAttribute(String(sub.sort_order || 0)) + '" style="width:52px" onchange="setMetricSubmetricOrder(\'' + it.id + "','" + sub.id + "',this.value)\">")
                         : escapeHtml(String(sub.sort_order || "")))
                     + '</td><td></td><td><label class="check"><input type="checkbox"' + (subOn ? " checked" : "")
                     + (can ? (' onchange="setMetricSubmetricActive(\'' + it.id + "','" + sub.id + "',this.checked)\"") : " disabled")
@@ -18044,14 +18093,14 @@ function fillDeptWorkTable(dept, tab, ids) {
             }
             groups.push({ kind: "plain", field: field, fi: fi, fields: [field] });
         });
-        function groupPeopleCount(group) {
+        const groupPeopleCount = function (group) {
             let n = 0;
             group.fields.forEach(function (field) {
                 if (field.service) n += 1;
                 else n += Math.max(deptWorkMetricPeople(dept, field.metricId).length, 1);
             });
             return Math.max(n, 1);
-        }
+        };
         let headHtml = '<tr class="metrics-head-metrics"><th class="metrics-date-col" rowspan="' + dateSpan + '">Дата</th>';
         groups.forEach(function (group) {
             if (group.kind === "service") {
