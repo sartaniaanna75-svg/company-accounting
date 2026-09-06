@@ -2436,8 +2436,21 @@
         .mc-seg { display: inline-flex; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
         .mc-seg button { border: 0; background: #fff; padding: 5px 10px; font-size: 12px; cursor: pointer; }
         .mc-seg button.on { background: #0f172a; color: #fff; }
-        .mc-tabs-checks { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+        .mc-tabs-checks { display: flex; flex-direction: column; gap: 6px; }
         .mc-tabs-checks label.check { font-size: 12px; font-weight: 400; margin: 0; }
+        .mc-tab-head, .mc-tab-row {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 158px;
+            gap: 8px;
+            align-items: center;
+        }
+        .mc-tab-head { font-size: 11px; color: var(--muted); }
+        .mc-tab-scope {
+            width: 100%;
+            margin: 0;
+            padding: 4px 6px;
+            font-size: 12px;
+        }
         .mc-sub-list { display: flex; flex-direction: column; gap: 4px; }
         .mc-sub-row { display: grid; grid-template-columns: 1fr 52px 18px 22px; gap: 6px; align-items: center; }
         .mc-sub-row input[type="text"], .mc-sub-row input[type="number"] { min-width: 0; padding: 4px 6px; font-size: 12px; }
@@ -4078,6 +4091,11 @@ const SHOP_WORK_METRIC_DEFS = [
 ];
 const SHOP_WORK_METRIC_IDS = {};
 SHOP_WORK_METRIC_DEFS.forEach(function (d) { SHOP_WORK_METRIC_IDS[d.id] = true; });
+const METRIC_CROSS_ROLE_IDS = {
+    metric_recount: true,
+    metric_receiving: true,
+    metric_receipts_posted: true
+};
 const SHOP_METRIC_SECTIONS = [
     { id: "pickers", label: "Товароразборщики" },
     { id: "cashiers", label: "Кассиры" },
@@ -4127,6 +4145,45 @@ function metricWorkTabIds(item) {
 }
 function metricShowsOnTab(item, tabId) {
     return metricWorkTabIds(item).indexOf(tabId) !== -1;
+}
+function defaultMetricTabEmployeeScope(item, tabId) {
+    const id = item && item.id;
+    if (id && METRIC_CROSS_ROLE_IDS[id]) return "all_assigned";
+    return "same_work_tab";
+}
+function metricEmployeeScope(item, workTabId) {
+    if (!item) return defaultMetricTabEmployeeScope(item, workTabId);
+    const tab = String(workTabId || "");
+    const prev = item.work_tab_scopes && item.work_tab_scopes[tab];
+    if (prev === "all_assigned" || prev === "same_work_tab") return prev;
+    return defaultMetricTabEmployeeScope(item, tab);
+}
+function employeePrimaryWorkTabId(employee, dept, month) {
+    if (!employee) return "";
+    const code = dept || (workspace() && workspace().code) || "";
+    const m = month || selectedMonth;
+    const hist = employeeWorkTabHistory(employee);
+    for (let i = hist.length - 1; i >= 0; i--) {
+        const rec = hist[i];
+        if (!rec || !rec.metric_tab_id) continue;
+        if (rec.valid_from && m < rec.valid_from) continue;
+        if (rec.valid_to && m > rec.valid_to) continue;
+        return rec.metric_tab_id;
+    }
+    if (employee.work_tab_id) {
+        if (!employee.work_tab_from || m >= employee.work_tab_from) return String(employee.work_tab_id);
+    }
+    if (employee.primary_work_tab_id) return String(employee.primary_work_tab_id);
+    const roleId = String(employee.role_id || "");
+    if (roleId && metricTabsForDept(code).some(function (t) { return t.id === roleId; })) return roleId;
+    return "";
+}
+function employeeMatchesWorkTab(employee, dept, workTabId) {
+    const tab = String(workTabId || "");
+    if (!tab) return false;
+    const primary = employeePrimaryWorkTabId(employee, dept);
+    if (primary) return primary === tab;
+    return metricTabsForDept(dept).length <= 1;
 }
 function metricStructureType(item) {
     return item && item.structure_type === "with_submetrics" ? "with_submetrics" : "plain";
@@ -4324,11 +4381,14 @@ function workTabSelect(employee) {
     if (!tabs.length) return "";
     const current = String(employee.work_tab_id || "");
     let html = '<select onchange="updateEmployee(\'' + employee.id + '\',\'work_tab_id\',this.value)">'
-        + '<option value="">По должности</option>';
+        + '<option value="">Не выбрана</option>';
     tabs.forEach(function (t) {
         html += '<option value="' + t.id + '"' + (current === t.id ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
     });
     html += "</select>";
+    if (!current) {
+        html += '<div class="note">У сотрудника не выбрана основная должность. В режиме «Только свои» он не появится в рабочих метриках.</div>';
+    }
     return html;
 }
 function currentDeptMetricTab(dept) {
@@ -7749,6 +7809,15 @@ function normalizeMetricCatalogItemTabs(item) {
     }
     item.metric_tab_id = item.work_tab_ids[0];
     item.section_id = item.metric_tab_id;
+    if (!item.work_tab_scopes || typeof item.work_tab_scopes !== "object") item.work_tab_scopes = {};
+    const scopes = {};
+    item.work_tab_ids.forEach(function (tab) {
+        const prev = item.work_tab_scopes[tab];
+        scopes[tab] = prev === "all_assigned" || prev === "same_work_tab"
+            ? prev
+            : defaultMetricTabEmployeeScope(item, tab);
+    });
+    item.work_tab_scopes = scopes;
     if (!Array.isArray(item.submetrics)) item.submetrics = [];
     if (item.structure_type !== "with_submetrics" && item.structure_type !== "plain") {
         item.structure_type = item.submetrics.length ? "with_submetrics" : "plain";
@@ -9874,25 +9943,8 @@ function renderShopMetricsColgroup(table, fields, employees, category) {
 }
 
 function shopWorkMetricPeople(metricId, category) {
-    const mid = canonicalMetricId(metricId);
-    if (!mid) return [];
-    const w = findWorkspaceByCode("shop");
     const catId = category && category.id;
-    const list = [];
-    const seen = {};
-    function add(e) {
-        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
-        seen[e.id] = true;
-        list.push(e);
-    }
-    ((w && w.employees) || []).forEach(function (e) {
-        if (!e || !e.id) return;
-        if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
-        if (!isWorking(e) && !shopMetricPersonalMonthTotal(e.id, mid) && !shopMetricEmployeeHasMonthData(shopEmployeeHomeCategoryId(e) || catId, e.id)) return;
-        add(e);
-    });
-    list.sort(compareEmployeesByStatusThenName);
-    return list;
+    return workMetricPeopleForTab("shop", metricId, catId);
 }
 
 function shopMetricColumnPeople(category, field, employees) {
@@ -17627,7 +17679,7 @@ function catalogFormCanPickDept() {
     return isSummary() && currentSummaryRole === "admin";
 }
 
-function refreshMetricCatalogTabOptions(selectedTabs) {
+function refreshMetricCatalogTabOptions(selectedTabs, scopes) {
     const deptEl = document.getElementById("mcDept");
     const box = document.getElementById("mcTabsBox");
     if (!deptEl || !box) return;
@@ -17636,10 +17688,38 @@ function refreshMetricCatalogTabOptions(selectedTabs) {
     const chosen = {};
     (selectedTabs || []).forEach(function (id) { chosen[id] = true; });
     if (!Object.keys(chosen).length) chosen[defaultMetricTabId(dept)] = true;
-    box.innerHTML = tabs.map(function (t) {
-        return '<label class="check"><input type="checkbox" class="mc-tab" value="' + t.id + '"'
-            + (chosen[t.id] ? " checked" : "") + "><span>" + escapeHtml(t.label) + "</span></label>";
-    }).join("");
+    const scopeMap = scopes && typeof scopes === "object" ? scopes : {};
+    box.innerHTML = '<div class="mc-tab-head"><span>Вкладка</span><span>Сотрудники</span></div>'
+        + tabs.map(function (t) {
+            const on = !!chosen[t.id];
+            const scope = scopeMap[t.id] === "all_assigned" ? "all_assigned" : "same_work_tab";
+            return '<div class="mc-tab-row">'
+                + '<label class="check"><input type="checkbox" class="mc-tab" value="' + t.id + '"'
+                + (on ? " checked" : "") + ' onchange="onMetricCatalogTabToggle(this)">'
+                + "<span>" + escapeHtml(t.label) + "</span></label>"
+                + '<select class="mc-tab-scope" data-tab="' + t.id + '"' + (on ? "" : " disabled")
+                + ' title="Только свои — сотрудники, чья основная рабочая вкладка совпадает с этой. Все назначенные — все, кому метрика назначена, независимо от должности.">'
+                + '<option value="same_work_tab"' + (scope === "same_work_tab" ? " selected" : "") + ">Только свои</option>"
+                + '<option value="all_assigned"' + (scope === "all_assigned" ? " selected" : "") + ">Все назначенные</option>"
+                + "</select></div>";
+        }).join("");
+}
+
+function onMetricCatalogTabToggle(el) {
+    if (!el) return;
+    const sel = document.querySelector('.mc-tab-scope[data-tab="' + el.value + '"]');
+    if (sel) sel.disabled = !el.checked;
+}
+
+function collectMetricCatalogTabScopes() {
+    const scopes = {};
+    document.querySelectorAll(".mc-tab:checked").forEach(function (el) {
+        const tab = el.value;
+        const sel = document.querySelector('.mc-tab-scope[data-tab="' + tab + '"]');
+        const value = sel ? sel.value : "same_work_tab";
+        scopes[tab] = value === "all_assigned" ? "all_assigned" : "same_work_tab";
+    });
+    return scopes;
 }
 
 function onMetricCatalogDeptChange() {
@@ -17765,7 +17845,7 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<button type="button" class="btn btn-primary" onclick="saveMetricCatalogForm(\'' + (it.id || "") + '\',' + (dupIgnore ? "true" : "false") + ')">Сохранить</button>'
         + '<button type="button" class="btn btn-secondary" onclick="closeMetricCatalogModal()">Отмена</button></div>';
     openMetricCatalogModal(html);
-    refreshMetricCatalogTabOptions(metricWorkTabIds(it));
+    refreshMetricCatalogTabOptions(metricWorkTabIds(it), it.work_tab_scopes);
     refreshMetricCatalogFormulaBox(it.formula);
 }
 
@@ -17919,6 +17999,8 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (!item.department_id) item.department_id = dept;
     item.metric_tab_id = item.section_id || item.metric_tab_id;
     item.work_tab_ids = tabIds.slice();
+    item.work_tab_scopes = collectMetricCatalogTabScopes();
+    normalizeMetricCatalogItemTabs(item);
     item.structure_type = structure;
     if (structure === "with_submetrics") {
         const nextSubs = collectMetricCatalogSubmetrics(item.submetrics);
@@ -17979,15 +18061,31 @@ function deptMetricEmployeeHasData(deptCode, employeeId, metricId) {
     return Object.keys(days).some(function (d) { return recHasMetricFact(days[d], mid); });
 }
 
-function deptWorkMetricPeople(deptCode, metricId) {
+function deptWorkMetricPeople(deptCode, metricId, tabId) {
+    return workMetricPeopleForTab(deptCode, metricId, tabId || currentDeptMetricTab(deptCode));
+}
+
+function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     const mid = canonicalMetricId(metricId);
-    const w = findWorkspaceByCode(deptCode);
+    if (!mid) return [];
+    const code = isGenericMetricsDept(deptCode) ? deptCode : (deptCode || "shop");
+    const tab = workTabId || defaultMetricTabId(code);
+    const item = shopMetricCatalogById(mid);
+    const scope = metricEmployeeScope(item, tab);
+    const w = findWorkspaceByCode(code);
     const list = [];
     const seen = {};
     ((w && w.employees) || []).forEach(function (e) {
-        if (!e || !e.id || seen[e.id]) return;
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
-        if (!isWorking(e) && !deptMetricEmployeeHasData(deptCode, e.id, mid)) return;
+        if (scope === "same_work_tab" && !employeeMatchesWorkTab(e, code, tab)) return;
+        if (!isWorking(e)) {
+            if (isGenericMetricsDept(code)) {
+                if (!deptMetricEmployeeHasData(code, e.id, mid)) return;
+            } else if (!shopMetricPersonalMonthTotal(e.id, mid) && !shopMetricEmployeeHasMonthData(shopEmployeeHomeCategoryId(e) || tab, e.id)) {
+                return;
+            }
+        }
         seen[e.id] = true;
         list.push(e);
     });
