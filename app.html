@@ -14287,6 +14287,7 @@ function metricControlPeople() {
     } else {
         people = directoryEmployees().slice();
     }
+    people = people.filter(function (e) { return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID; });
     if (f.workTab) {
         people = people.filter(function (e) {
             const home = employeeHomeDeptCode(e.id);
@@ -14438,7 +14439,7 @@ function metricControlDetailHtml(rep) {
     html += '<table class="analysis-table" style="width:100%"><thead><tr>'
         + "<th>Метрика</th><th>План / дни</th><th>Факт</th><th>Выполнение</th><th>Статус</th><th></th></tr></thead><tbody>";
     function rowHtml(line) {
-        const planTxt = line.kind === "check"
+        const planTxt = (line.kind === "check" || line.kind === "timesheet730")
             ? (line.eligibleDays + " дн.")
             : (line.plan ? (line.kind === "sales" ? money(line.plan) : String(line.plan)) : "—");
         const factTxt = line.kind === "check" || line.kind === "timesheet730"
