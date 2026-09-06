@@ -2391,6 +2391,18 @@
         .metric-cat-form .full { grid-column: 1 / -1; }
         .metric-cat-form .form-group { gap: 4px; margin-bottom: 0; }
         .metric-cat-form .form-group label { font-size: 12px; }
+        .metric-cat-table td.mc-name { white-space: nowrap; }
+        .mc-toggle { border: 0; background: transparent; cursor: pointer; padding: 0 4px 0 0; font-size: 11px; color: #64748b; }
+        .mc-sub-row td { background: #f8fafc; font-size: 12px; color: #334155; }
+        .mc-sub-row input[type="text"] { width: 160px; max-width: 100%; padding: 2px 6px; font-size: 12px; }
+        .mc-sub-row input[type="number"] { width: 56px; padding: 2px 4px; font-size: 12px; }
+        .mc-tab-checks, .mc-sub-edit { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }
+        .mc-sub-edit { flex-wrap: nowrap; }
+        .mc-sub-edit input[type="text"] { flex: 1; min-width: 120px; padding: 3px 6px; font-size: 12px; }
+        .mc-structure { display: inline-flex; border: 1px solid #e5e7eb; border-radius: 6px; overflow: hidden; }
+        .mc-structure button { border: 0; background: #fff; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+        .mc-structure button.on { background: #eff6ff; color: #1d4ed8; }
+        .metrics-head-subs th { font-size: 11px; font-weight: 600; }
         .metric-cat-pos { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 10px; }
         .metric-cat-people { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 10px; max-height: 220px; overflow: auto; }
         .metric-cat-people label.check, .metric-cat-pos label.check {
@@ -2797,11 +2809,12 @@
                             <thead>
                                 <tr>
                                     <th>Порядок</th>
-                                    <th>Название метрики</th>
-                                    <th>Вкладка</th>
-                                    <th>Тип фиксации</th>
+                                    <th>Название</th>
+                                    <th>Вкладки</th>
+                                    <th>Подметрики</th>
+                                    <th>Тип</th>
                                     <th>Активна</th>
-                                    <th>Действия</th>
+                                    <th></th>
                                 </tr>
                             </thead>
                             <tbody id="deptMetricsCatalogBody"></tbody>
@@ -3456,11 +3469,12 @@
                             <thead>
                                 <tr>
                                     <th>Порядок</th>
-                                    <th>Название метрики</th>
-                                    <th>Вкладка</th>
-                                    <th>Тип заполнения</th>
+                                    <th>Название</th>
+                                    <th>Вкладки</th>
+                                    <th>Подметрики</th>
+                                    <th>Тип</th>
                                     <th>Активна</th>
-                                    <th>Действия</th>
+                                    <th></th>
                                 </tr>
                             </thead>
                             <tbody id="metricCatalogBody"></tbody>
@@ -3703,6 +3717,9 @@ let currentUserId = "";
 let loginView = "home";
 let shopMetricCategory = "pickers";
 let deptMetricTab = "";
+let metricCatalogExpanded = {};
+let metricCatalogFormSubs = [];
+let metricCatalogUi = { tab: "", structure: "", active: "active" };
 let timesheetWorkTabFilterByDept = {};
 let revisionPanel = "schedule";
 let disciplinePanel = "late";
@@ -4035,6 +4052,124 @@ function metricTabId(item) {
 function metricTabLabel(dept, tabId) {
     const hit = metricTabsForDept(dept).find(function (s) { return s.id === tabId; });
     return hit ? hit.label : (tabId || "—");
+}
+const METRIC_SUBFACT_SEP = "::";
+function metricStructureType(item) {
+    if (!item) return "plain";
+    if (item.structure_type === "with_submetrics" || item.structureType === "with_submetrics") return "with_submetrics";
+    if (Array.isArray(item.submetrics) && item.submetrics.length) return "with_submetrics";
+    return "plain";
+}
+function metricWorkTabIds(item) {
+    if (!item) return [];
+    const dept = metricDepartmentId(item);
+    const allowed = {};
+    metricTabsForDept(dept).forEach(function (t) { allowed[t.id] = true; });
+    const tabs = [];
+    function pushTab(tid) {
+        if (!tid || !allowed[tid] || tabs.indexOf(tid) !== -1) return;
+        tabs.push(tid);
+    }
+    if (Array.isArray(item.work_tabs)) {
+        item.work_tabs.forEach(function (row) {
+            if (row && row.is_active === false) return;
+            pushTab(typeof row === "string" ? row : (row && (row.work_tab_id || row.workTabId || row.id)));
+        });
+    }
+    if (!tabs.length && Array.isArray(item.work_tab_ids)) item.work_tab_ids.forEach(pushTab);
+    if (!tabs.length) pushTab(item.metric_tab_id || item.section_id || defaultMetricTabId(dept));
+    if (!tabs.length) tabs.push(defaultMetricTabId(dept));
+    return tabs;
+}
+function metricShowsOnTab(item, tabId) {
+    return metricWorkTabIds(item).indexOf(tabId) !== -1;
+}
+function metricTabLabelsText(item) {
+    const dept = metricDepartmentId(item);
+    return metricWorkTabIds(item).map(function (id) { return metricTabLabel(dept, id); }).join(" + ") || "—";
+}
+function normalizeMetricWorkTabs(item) {
+    if (!item || !item.id) return;
+    const dept = metricDepartmentId(item);
+    const tabs = metricWorkTabIds(item);
+    item.work_tab_ids = tabs;
+    item.work_tabs = tabs.map(function (tid, i) {
+        return { department_id: dept, work_tab_id: tid, sort_order: i, is_active: true };
+    });
+    item.metric_tab_id = tabs[0];
+    item.section_id = tabs[0];
+}
+function metricSubmetrics(item) {
+    if (!item || !Array.isArray(item.submetrics)) return [];
+    return item.submetrics.filter(Boolean).slice().sort(function (a, b) {
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    });
+}
+function metricActiveSubmetrics(item) {
+    return metricSubmetrics(item).filter(function (s) { return s.active !== false; });
+}
+function catalogSubmetricById(item, subId) {
+    if (!item || !subId) return null;
+    return metricSubmetrics(item).find(function (s) { return s && s.id === subId; }) || null;
+}
+function normalizeMetricSubmetrics(item) {
+    if (!item) return;
+    if (!Array.isArray(item.submetrics)) item.submetrics = [];
+    const used = {};
+    item.submetrics.forEach(function (s, i) {
+        if (!s) return;
+        if (!s.id || used[s.id]) s.id = nextPrefixedId("sms", item.submetrics.map(function (x) { return x && x.id; }));
+        used[s.id] = true;
+        if (s.sort_order == null) s.sort_order = (i + 1) * 10;
+        if (s.active == null) s.active = true;
+        s.name = String(s.name || "").replace(/\s+/g, " ").trim() || "Подметрика";
+    });
+    if (item.structure_type !== "plain" && item.structure_type !== "with_submetrics") {
+        item.structure_type = item.submetrics.length ? "with_submetrics" : "plain";
+    }
+}
+function nextSubmetricId(item) {
+    return nextPrefixedId("sms", metricSubmetrics(item).map(function (s) { return s && s.id; }));
+}
+function metricFactKey(metricId, submetricId) {
+    const mid = canonicalMetricId(metricId);
+    if (!submetricId) return mid;
+    return mid + METRIC_SUBFACT_SEP + submetricId;
+}
+function parseMetricFactKey(key) {
+    const s = String(key || "");
+    const i = s.indexOf(METRIC_SUBFACT_SEP);
+    if (i < 0) return { metricId: "", submetricId: "" };
+    return { metricId: s.slice(0, i), submetricId: s.slice(i + METRIC_SUBFACT_SEP.length) };
+}
+function recMetricValue(rec, metricId, submetricId) {
+    if (!rec) return null;
+    const key = metricFactKey(metricId, submetricId);
+    if (rec[key] != null && rec[key] !== "") return rec[key];
+    return null;
+}
+function recHasMetricHistory(rec, metricId, submetricId) {
+    if (!rec) return false;
+    const mid = canonicalMetricId(metricId);
+    if (submetricId) {
+        const key = metricFactKey(mid, submetricId);
+        return rec[key] != null || rec[key + "Mark"] === "done" || rec[key + "Mark"] === "fail";
+    }
+    if (rec[mid] != null || rec[mid + "Mark"] === "done" || rec[mid + "Mark"] === "fail") return true;
+    const prefix = mid + METRIC_SUBFACT_SEP;
+    return Object.keys(rec).some(function (k) {
+        return k.indexOf(prefix) === 0 && rec[k] != null && rec[k] !== "";
+    });
+}
+function kpiSubmetricId(rule) {
+    return String((rule && (rule.submetric_id || rule.submetricId || rule.source_submetric_id)) || "");
+}
+function metricSourceCaption(metricId, submetricId) {
+    const it = shopMetricCatalogById(canonicalMetricId(metricId));
+    const name = (it && it.name) || "";
+    if (!submetricId) return name;
+    const sub = catalogSubmetricById(it, submetricId);
+    return name + (sub ? " · " + sub.name : "");
 }
 const WORK_TAB_POSITION_HINTS = {
     shop: {
@@ -7372,17 +7507,8 @@ function metricDepartmentId(item) {
 
 function normalizeMetricCatalogItemTabs(item) {
     if (!item || !item.id) return;
-    const dept = metricDepartmentId(item);
-    const tabs = metricTabsForDept(dept);
-    let tab = item.metric_tab_id || item.section_id || "";
-    if (tab === "main" && dept !== "office" && defaultMetricTabId(dept) !== "main") {
-        tab = defaultMetricTabId(dept);
-    }
-    if (!tabs.some(function (t) { return t.id === tab; })) {
-        tab = defaultMetricTabId(dept);
-    }
-    item.metric_tab_id = tab;
-    item.section_id = tab;
+    normalizeMetricSubmetrics(item);
+    normalizeMetricWorkTabs(item);
 }
 
 function catalogDeptContext() {
@@ -7513,7 +7639,7 @@ function shopWorkMetricDefs() {
             label: it.name,
             type: check ? "check" : (it.fill_type === "money" ? "money" : "number"),
             fill_type: it.fill_type,
-            tabs: [metricTabId(it)],
+            tabs: metricWorkTabIds(it),
             section_id: metricTabId(it),
             active: it.active !== false,
             formula: it.formula || null,
@@ -7545,7 +7671,7 @@ function shopMetricHasMonthData(metricId, month) {
     const facts = shopMetricFactsMonth(m);
     if (Object.keys(facts).some(function (empId) {
         const days = facts[empId];
-        return days && Object.keys(days).some(function (d) { return days[d] && days[d][mid] != null && Number(days[d][mid] || 0); });
+        return days && Object.keys(days).some(function (d) { return recHasMetricHistory(days[d], mid); });
     })) return true;
     const deptFactsRoot = appData.deptMetrics;
     if (deptFactsRoot && typeof deptFactsRoot === "object") {
@@ -7558,6 +7684,7 @@ function shopMetricHasMonthData(metricId, month) {
                     const rec = days[d];
                     if (!rec) return false;
                     if (rec[mid] != null && Number(rec[mid] || 0)) return true;
+                    if (recHasMetricHistory(rec, mid)) return true;
                     return rec[mid + "Mark"] === "done" || rec[mid + "Mark"] === "fail";
                 });
             });
@@ -7597,6 +7724,31 @@ function shopCatalogToField(item) {
         fill_type: fill,
         formula: item.formula || null
     };
+}
+
+function shopCatalogToSubField(item, sub) {
+    const field = shopCatalogToField(item);
+    field.key = metricFactKey(item.id, sub.id);
+    field.label = sub.name;
+    field.parentLabel = item.name;
+    field.submetricId = sub.id;
+    field.parentMetricId = item.id;
+    if (metricDepartmentId(item) === "shop") field.label = item.name + " · " + sub.name;
+    return field;
+}
+
+function catalogWorkFields(item) {
+    if (!item) return [];
+    if (metricStructureType(item) === "with_submetrics") {
+        const subs = metricActiveSubmetrics(item);
+        if (subs.length) return subs.map(function (s) { return shopCatalogToSubField(item, s); });
+    }
+    return [shopCatalogToField(item)];
+}
+
+function workFieldIdentity(field) {
+    return String((field && (field.metricId || METRIC_ID_ALIASES[field.key])) || "")
+        + METRIC_SUBFACT_SEP + String((field && field.submetricId) || "");
 }
 
 function currentWorkMetricsContext() {
@@ -8184,12 +8336,14 @@ function shopRecountExecutorIds(month) {
     return ids;
 }
 
-function shopMetricStoredFact(employeeId, day, metricId, month) {
+function shopMetricStoredFact(employeeId, day, metricId, month, submetricId) {
     const mid = canonicalMetricId(metricId);
     if (!mid || !shopMetricUsesFacts(mid)) return 0;
     const emp = shopMetricFactsMonth(month)[employeeId];
     const rec = emp && emp[String(day)];
-    if (rec && rec[mid] != null && rec[mid] !== "") return Number(rec[mid] || 0);
+    const key = metricFactKey(mid, submetricId);
+    if (rec && rec[key] != null && rec[key] !== "") return Number(rec[key] || 0);
+    if (submetricId) return 0;
     return shopMetricFallbackFact(employeeId, day, mid, month);
 }
 
@@ -9106,13 +9260,13 @@ function shopMetricServiceHeadClass(field) {
     return "metrics-recount-total";
 }
 
-function getShopMetricFact(employeeId, day, metricId, month) {
+function getShopMetricFact(employeeId, day, metricId, month, submetricId) {
     const mid = canonicalMetricId(metricId);
     if (!mid || !shopMetricUsesFacts(mid)) return 0;
-    return shopMetricStoredFact(employeeId, day, mid, month);
+    return shopMetricStoredFact(employeeId, day, mid, month, submetricId);
 }
 
-function setShopMetricFact(employeeId, day, metricId, n) {
+function setShopMetricFact(employeeId, day, metricId, n, submetricId) {
     const mid = canonicalMetricId(metricId);
     if (!mid || !shopMetricUsesFacts(mid)) return;
     if (mid === "metric_recount" && !shopMetricIsRecountExecutor(employeeId, selectedMonth)) return;
@@ -9125,22 +9279,23 @@ function setShopMetricFact(employeeId, day, metricId, n) {
     const rec = monthStore[employeeId][dayKey];
     rec.employee_id = employeeId;
     stampAuthOnRecord(rec);
+    const key = metricFactKey(mid, submetricId);
     if (!n) {
-        delete rec[mid];
+        delete rec[key];
         const keys = Object.keys(rec).filter(function (k) { return k !== "employee_id" && k !== "source"; });
         if (!keys.length) delete monthStore[employeeId][dayKey];
         if (!Object.keys(monthStore[employeeId]).length) delete monthStore[employeeId];
     } else {
-        rec[mid] = n;
+        rec[key] = n;
         rec.source = "manual";
     }
 }
 
-function shopMetricPersonalMonthTotal(employeeId, metricId, month) {
+function shopMetricPersonalMonthTotal(employeeId, metricId, month, submetricId) {
     const m = month || selectedMonth;
     const days = daysInMonthValue(m);
     let sum = 0;
-    for (let day = 1; day <= days; day++) sum += getShopMetricFact(employeeId, day, metricId, m);
+    for (let day = 1; day <= days; day++) sum += getShopMetricFact(employeeId, day, metricId, m, submetricId);
     return sum;
 }
 
@@ -9182,8 +9337,9 @@ function shopMetricStoreMonthTotal(metricId, month) {
 }
 
 function getShopMetricValue(categoryId, employeeId, day, field) {
+    const parsed = parseMetricFactKey(field);
     const spec = shopMetricFieldSpec(categoryId, field);
-    const mid = (spec && spec.metricId) || METRIC_ID_ALIASES[field];
+    const mid = canonicalMetricId(parsed.metricId || (spec && spec.metricId) || METRIC_ID_ALIASES[field]);
     const item = mid ? shopMetricCatalogById(mid) : null;
     if (item && item.fill_type === "auto_calc" && field !== "avgCheck") {
         return shopCatalogAutoValue(employeeId, day, mid);
@@ -9194,7 +9350,7 @@ function getShopMetricValue(categoryId, employeeId, day, field) {
         return shopMetricAvgCheck(sales, receipts);
     }
     if (mid && shopMetricUsesFacts(mid)) {
-        return getShopMetricFact(employeeId, day, mid);
+        return getShopMetricFact(employeeId, day, mid, selectedMonth, parsed.submetricId);
     }
     const store = shopMetricMonthStore(categoryId, selectedMonth);
     const emp = store[employeeId];
@@ -9369,15 +9525,17 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         rec.source = "manual";
         rec.employee_id = employeeId;
         stampAuthOnRecord(rec);
+        const parsed = parseMetricFactKey(field);
         const spec = shopMetricFieldSpec(categoryId, field);
-        const mid = (spec && spec.metricId) || METRIC_ID_ALIASES[field];
+        const mid = canonicalMetricId(parsed.metricId || (spec && spec.metricId) || METRIC_ID_ALIASES[field]);
         if (mid) rec[field + "_metric_id"] = mid;
-        if (mid && shopMetricUsesFacts(mid)) setShopMetricFact(employeeId, day, mid, n);
+        if (mid && shopMetricUsesFacts(mid)) setShopMetricFact(employeeId, day, mid, n, parsed.submetricId);
     }
     if (!n) {
+        const parsed0 = parseMetricFactKey(field);
         const spec0 = shopMetricFieldSpec(categoryId, field);
-        const mid0 = (spec0 && spec0.metricId) || METRIC_ID_ALIASES[field];
-        if (mid0 && shopMetricUsesFacts(mid0)) setShopMetricFact(employeeId, day, mid0, 0);
+        const mid0 = canonicalMetricId(parsed0.metricId || (spec0 && spec0.metricId) || METRIC_ID_ALIASES[field]);
+        if (mid0 && shopMetricUsesFacts(mid0)) setShopMetricFact(employeeId, day, mid0, 0, parsed0.submetricId);
     }
     saveApp();
     const input = document.getElementById("mcell-" + categoryId + "-" + employeeId + "-" + day + "-" + field);
@@ -9716,7 +9874,7 @@ function shopAppendCatalogExtraFields(list, category) {
         if (id) have[id] = true;
     });
     shopMetricCatalogItems().filter(function (it) {
-        return metricDepartmentId(it) === "shop" && metricTabId(it) === category.id && !it.core_column && shopCatalogItemShownInUi(it);
+        return metricDepartmentId(it) === "shop" && metricShowsOnTab(it, category.id) && !it.core_column && shopCatalogItemShownInUi(it);
     }).sort(function (a, b) { return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0); }).forEach(function (it) {
         if (have[it.id]) return;
         if (it.id === "metric_recount" && category.id === "managers") return;
@@ -9733,7 +9891,9 @@ function shopAppendCatalogExtraFields(list, category) {
             return;
         }
         if (!shopWorkMetricPeople(it.id, category).length) return;
-        list.push(shopCatalogToField(it));
+        catalogWorkFields(it).forEach(function (field) {
+            list.push(field);
+        });
         have[it.id] = true;
     });
     return list;
@@ -9746,7 +9906,7 @@ function shopCashierDisplayFields() {
     return fields.filter(function (field, idx, arr) {
         const id = field.metricId || METRIC_ID_ALIASES[field.key];
         if (!id) return true;
-        return arr.findIndex(function (f) { return (f.metricId || METRIC_ID_ALIASES[f.key]) === id; }) === idx;
+        return arr.findIndex(function (f) { return workFieldIdentity(f) === workFieldIdentity(field); }) === idx;
     });
 }
 
@@ -11181,7 +11341,7 @@ function renderShopMetrics() {
         empTotals[employee.id] = shopMetricEmployeeTotals(category, employee.id);
         fields.forEach(function (field) {
             if (!shopMetricFieldUsesFactsOverlay(field)) return;
-            empTotals[employee.id][field.key] = shopMetricPersonalMonthTotal(employee.id, field.metricId || METRIC_ID_ALIASES[field.key]);
+            empTotals[employee.id][field.key] = shopMetricPersonalMonthTotal(employee.id, field.metricId || METRIC_ID_ALIASES[field.key], selectedMonth, field.submetricId);
         });
     });
 
@@ -11453,7 +11613,7 @@ function refreshShopMetricSummary() {
             const cell = document.getElementById("mtot-" + employee.id + "-" + field.key);
             if (!cell) return;
             const val = shopMetricFieldUsesFactsOverlay(field)
-                ? shopMetricPersonalMonthTotal(employee.id, field.metricId || METRIC_ID_ALIASES[field.key])
+                ? shopMetricPersonalMonthTotal(employee.id, field.metricId || METRIC_ID_ALIASES[field.key], selectedMonth, field.submetricId)
                 : (field.type === "avgCheck" ? totals.avgCheck : totals[field.key]);
             if (category.id === "managers" && shopMetricFieldIsCheck(field)) return;
             cell.textContent = formatShopMetricField(field, val);
@@ -13168,6 +13328,9 @@ function stampKpiDef(def) {
     if (!def.id) def.id = nextPrefixedId("kpv", (ensureShopPayroll().kpiDefs || []).map(function (x) { return x && x.id; }));
     def.metric_id = canonicalMetricId(def.metricId || def.metric_id);
     def.metricId = def.metric_id;
+    def.submetric_id = kpiSubmetricId(def) || "";
+    def.submetricId = def.submetric_id;
+    def.source_submetric_id = def.submetric_id;
     def.department_id = def.department_id || def.departmentId || "shop";
     def.departmentId = def.department_id;
     def.work_tab_id = def.work_tab_id != null ? def.work_tab_id : (def.workTabId || "");
@@ -13630,9 +13793,13 @@ function shopKpiFactSourceLabel(rule) {
     const work = shopMetricCatalogById(id);
     if (work) {
         const dept = metricDepartmentId(work);
-        const tab = metricTabLabel(dept, metricTabId(work));
-        if (dept === "warehouse") return "Метрики склада · " + tab;
-        if (dept === "drivers") return "Метрики логистики · " + tab;
+        const tabs = metricWorkTabIds(work).map(function (tid) { return metricTabLabel(dept, tid); }).join(" + ");
+        const sub = catalogSubmetricById(work, kpiSubmetricId(rule));
+        let label = dept === "warehouse" ? "Метрики склада" : (dept === "drivers" ? "Метрики логистики" : "Метрики");
+        if (tabs) label += " · " + tabs;
+        if (sub) label += " · " + sub.name;
+        else if (metricStructureType(work) === "with_submetrics") label += " · подметрика не выбрана";
+        return label;
     }
     return "Метрики";
 }
@@ -13652,7 +13819,7 @@ function shopKpiAssignableMetrics(view) {
     if (arrival) add(arrival);
     catalogItemsForDept(view.departmentId).forEach(function (it) {
         if (!it || it.active === false || it.assignable === false) return;
-        if (view.workTabId && metricTabId(it) !== view.workTabId) return;
+        if (view.workTabId && !metricShowsOnTab(it, view.workTabId)) return;
         add(shopKpiTemplate(it.id) || {
             id: it.id,
             name: it.name,
@@ -13989,12 +14156,28 @@ function shopBonusMetricFact(rule, employeeId, month) {
     } else if (source === "manual") {
         fact = shopManualMetricValue(employeeId, m, metricId);
     } else if (SHOP_QTY_FACT_METRIC_IDS[metricId]) {
-        fact = shopMetricPersonalMonthTotal(employeeId, metricId, m);
+        fact = shopMetricPersonalMonthTotal(employeeId, metricId, m, kpiSubmetricId(rule));
         label = String(fact);
     } else {
         const home = employeeHomeDeptCode(employeeId);
         if (home && home !== "shop") {
-            fact = deptMetricPersonalMonthTotal(home, employeeId, metricId, m);
+            const sid = kpiSubmetricId(rule);
+            const work = shopMetricCatalogById(metricId);
+            if (metricStructureType(work) === "with_submetrics" && !sid) {
+                fact = 0;
+                label = "KPI только по конкретной подметрике";
+            } else {
+                fact = deptMetricPersonalMonthTotal(home, employeeId, metricId, m, sid);
+                label = String(fact);
+            }
+        } else {
+        const sid = kpiSubmetricId(rule);
+        const work = shopMetricCatalogById(metricId);
+        if (metricStructureType(work) === "with_submetrics" && !sid) {
+            fact = 0;
+            label = "KPI только по конкретной подметрике";
+        } else if (shopMetricUsesFacts(metricId)) {
+            fact = shopMetricPersonalMonthTotal(employeeId, metricId, m, sid);
             label = String(fact);
         } else {
         let cat = category;
@@ -14011,6 +14194,7 @@ function shopBonusMetricFact(rule, employeeId, month) {
                 const tot = shopMetricEmployeeTotals(shopMetricCategoryById(cat), employeeId);
                 fact = field === "avgCheck" ? Number(tot.avgCheck || 0) : Number(tot[field] || 0);
             }
+        }
         }
         }
     }
@@ -15133,7 +15317,7 @@ function closeShopKpiDef(kpiId) {
 
 function addShopKpiDef() {
     if (!canEditShopPayrollRules()) return;
-    let html = "<h3>Создать KPI</h3><div class=\"note\" style=\"margin-bottom:12px\">Правило создаётся один раз. Затем его достаточно включить у сотрудников.</div>";
+    let html = "<h3>Создать KPI</h3><div class=\"note\" style=\"margin-bottom:12px\">Правило создаётся один раз. Источник — метрика или конкретная подметрика. Затем включите KPI у сотрудников.</div>";
     shopKpiAssignableMetrics().forEach(function (metric) {
         if (canonicalMetricId(metric.id) === METRIC_SHELF_LABELS_ID) {
             html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
@@ -15142,6 +15326,17 @@ function addShopKpiDef() {
             html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
                 + metric.id + "','derived_recipient')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
                 + ' <span class="note"> · автоматически от товароразборщиков</span></button></div>';
+            return;
+        }
+        const work = shopMetricCatalogById(metric.id);
+        if (metricStructureType(work) === "with_submetrics" && metricActiveSubmetrics(work).length) {
+            html += '<div class="rev-group-card" style="margin-bottom:8px"><div style="font-size:13px;margin-bottom:4px">'
+                + escapeHtml(work.name) + ' <span class="note">· конкретная подметрика</span></div>';
+            metricActiveSubmetrics(work).forEach(function (sub) {
+                html += '<button type="button" class="btn btn-secondary" style="width:100%;text-align:left;margin-bottom:4px" onclick="createShopKpiDef(\''
+                    + work.id + "','','" + sub.id + '\')">' + escapeHtml(sub.name) + "</button>";
+            });
+            html += "</div>";
             return;
         }
         html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
@@ -15153,7 +15348,7 @@ function addShopKpiDef() {
     openShopPayModal(html);
 }
 
-function createShopKpiDef(templateId, participationRole) {
+function createShopKpiDef(templateId, participationRole, submetricId) {
     if (!canEditShopPayrollRules()) return;
     const tpl = shopKpiTemplate(templateId);
     if (!tpl) {
@@ -15162,10 +15357,19 @@ function createShopKpiDef(templateId, participationRole) {
     }
     const view = payrollViewFromSection();
     const metricId = tpl.id;
+    const work = shopMetricCatalogById(metricId);
+    const sid = String(submetricId || "");
+    if (metricStructureType(work) === "with_submetrics") {
+        if (!sid || !catalogSubmetricById(work, sid)) {
+            toast("Для метрики с подметриками выберите конкретную подметрику. Сложение разных единиц не выполняется.", "error");
+            return;
+        }
+    }
     const shelf = metricId === METRIC_SHELF_LABELS_ID;
     const role = participationRole === "derived_recipient" ? "derived_recipient" : (shelf ? "manual_source" : "");
     const exists = (ensureShopPayroll().kpiDefs || []).some(function (d) {
         if (!d || canonicalMetricId(d.metricId || d.metric_id) !== metricId) return false;
+        if ((kpiSubmetricId(d) || "") !== sid) return false;
         if (metricId === "metric_arrival_730") return true;
         if (!kpiDefMatchesView(d, view)) return false;
         if (shelf) return shopShelfParticipation(d) === role;
@@ -15179,12 +15383,16 @@ function createShopKpiDef(templateId, participationRole) {
     const maxLimit = metricId === METRIC_WRITEOFF_LOSSES_ID || tpl.calcType === "max_limit";
     const ts730 = metricId === "metric_arrival_730" || tpl.calcType === "timesheet_730";
     const check = isShopCheckKpi({ metricId: metricId });
+    const kpiName = metricId === METRIC_WRITEOFF_LOSSES_ID
+        ? WRITEOFF_KPI_NAME
+        : (sid ? metricSourceCaption(metricId, sid) : (SHOP_KPI_METRIC_NAMES[metricId] || tpl.name));
     ensureShopPayroll().kpiDefs.push(stampKpiDef({
         kpi_id: generateKpiId(),
         metricId: metricId,
+        submetric_id: sid,
         department_id: ts730 ? "all" : view.departmentId,
         work_tab_id: ts730 ? "" : (view.workTabId || (tpl.category || "")),
-        name: metricId === METRIC_WRITEOFF_LOSSES_ID ? WRITEOFF_KPI_NAME : (SHOP_KPI_METRIC_NAMES[metricId] || tpl.name),
+        name: kpiName,
         type: "plan",
         calcType: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : (check ? "checklist" : "budget_ratio")),
         calculation_type: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : (check ? "checklist" : "")),
@@ -15665,11 +15873,13 @@ function metricControlIsMonthMetric(metricId) {
     return ft === "month_money" || metricId === METRIC_WRITEOFF_LOSSES_ID || metricId === "metric_revision";
 }
 
-function metricControlKpiDef(employeeId, metricId, month) {
+function metricControlKpiDef(employeeId, metricId, month, submetricId) {
     const mid = canonicalMetricId(metricId);
+    const sid = String(submetricId || "");
     let found = null;
     shopKpiDefsCurrent(month).forEach(function (d) {
         if (canonicalMetricId(d.metric_id || d.metricId) !== mid) return;
+        if ((kpiSubmetricId(d) || "") !== sid) return;
         if (!shopKpiAssigned(employeeId, d.kpi_id, month)) return;
         found = d;
     });
@@ -15687,16 +15897,16 @@ function metricControlCheckDayState(employeeId, metricId, day, month) {
     return shopMetricCheckState(cat, employeeId, day, field, month) || "";
 }
 
-function metricControlNumericHasFact(employeeId, metricId, day, month) {
+function metricControlNumericHasFact(employeeId, metricId, day, month, submetricId) {
     const mid = canonicalMetricId(metricId);
     const home = employeeHomeDeptCode(employeeId);
     if (home && home !== "shop") {
         const rec = (deptMetricFactsMonth(home, month)[employeeId] || {})[String(day)];
-        return !!(rec && rec[mid] != null && rec[mid] !== "");
+        return recHasMetricHistory(rec, mid, submetricId);
     }
     if (shopMetricUsesFacts(mid)) {
         const rec = (shopMetricFactsMonth(month)[employeeId] || {})[String(day)];
-        if (rec && rec[mid] != null && rec[mid] !== "") return true;
+        if (recHasMetricHistory(rec, mid, submetricId)) return true;
     }
     const it = metricControlCatalogItem(mid);
     const cat = it && (it.section_id || it.metric_tab_id);
@@ -15765,15 +15975,15 @@ function metricControlCheckStats(employeeId, metricId, month) {
     };
 }
 
-function metricControlNumericStats(employeeId, metricId, month) {
+function metricControlNumericStats(employeeId, metricId, month, submetricId) {
     const m = month || selectedMonth;
     const home = employeeHomeDeptCode(employeeId);
     const keep = selectedMonth;
     selectedMonth = m;
     const fact = home && home !== "shop"
-        ? deptMetricPersonalMonthTotal(home, employeeId, metricId, m)
+        ? deptMetricPersonalMonthTotal(home, employeeId, metricId, m, submetricId)
         : (SHOP_QTY_FACT_METRIC_IDS[metricId] || shopMetricUsesFacts(metricId)
-            ? shopMetricPersonalMonthTotal(employeeId, metricId, m)
+            ? shopMetricPersonalMonthTotal(employeeId, metricId, m, submetricId)
             : (function () {
                 const it = metricControlCatalogItem(metricId);
                 const cat = it && (it.section_id || it.metric_tab_id);
@@ -15789,10 +15999,10 @@ function metricControlNumericStats(employeeId, metricId, month) {
     metricControlDailyLoop(employeeId, m, function (row) {
         if (row.kind !== "eligible") return;
         eligible += 1;
-        if (metricControlNumericHasFact(employeeId, metricId, row.day, m)) filled += 1;
+        if (metricControlNumericHasFact(employeeId, metricId, row.day, m, submetricId)) filled += 1;
         else empty += 1;
     });
-    const def = metricControlKpiDef(employeeId, metricId, m);
+    const def = metricControlKpiDef(employeeId, metricId, m, submetricId);
     const plan = def ? Number(def.plan || def.limit_value || 0) : 0;
     const maxLimit = def && isShopMaxLimitKpi(shopRuleFromKpiDef(def, employeeId));
     let rate = null;
@@ -15914,15 +16124,17 @@ function metricControlLineStatus(line) {
     return "ok";
 }
 
-function metricControlBuildLine(employeeId, metricId, month) {
+function metricControlBuildLine(employeeId, metricId, month, submetricId) {
     const mid = canonicalMetricId(metricId);
     const it = metricControlCatalogItem(mid);
-    const name = (it && it.name) || SHOP_KPI_METRIC_NAMES[mid] || mid;
+    const name = submetricId
+        ? metricSourceCaption(mid, submetricId)
+        : ((it && it.name) || SHOP_KPI_METRIC_NAMES[mid] || mid);
     let stats;
     if (mid === "metric_revision") stats = metricControlRevisionStats(employeeId, month);
     else if (mid === "metric_arrival_730") stats = metricControl730Stats(employeeId, month);
     else if (mid === METRIC_WRITEOFF_LOSSES_ID || (it && it.fill_type === "month_money")) {
-        stats = metricControlNumericStats(employeeId, mid, month);
+        stats = metricControlNumericStats(employeeId, mid, month, submetricId);
         if (mid === METRIC_WRITEOFF_LOSSES_ID) {
             stats.monthResult = shopWriteoffMonthlyInventoryResult(employeeId, month);
             stats.fact = shopWriteoffPersonalLoss(employeeId, month);
@@ -15954,8 +16166,9 @@ function metricControlBuildLine(employeeId, metricId, month) {
             stats.dailyRate = pay.dailyRate;
             stats.monthlyBonus = shopCheckKpiMonthlyBonus(rule);
         }
-    } else stats = metricControlNumericStats(employeeId, mid, month);
+    } else stats = metricControlNumericStats(employeeId, mid, month, submetricId);
     stats.metricId = mid;
+    stats.submetricId = submetricId || "";
     stats.name = name;
     stats.group = "work";
     stats.status = metricControlLineStatus(stats);
@@ -15994,7 +16207,17 @@ function metricControlSalesLine(employeeId, month) {
 function metricControlEmployeeReport(employee, month) {
     const m = month || selectedMonth;
     const ids = shopEmployeeWorkMetricIds(employee.id, m);
-    const work = ids.map(function (id) { return metricControlBuildLine(employee.id, id, m); });
+    const work = [];
+    ids.forEach(function (id) {
+        const it = shopMetricCatalogById(id);
+        if (metricStructureType(it) === "with_submetrics" && metricActiveSubmetrics(it).length) {
+            metricActiveSubmetrics(it).forEach(function (sub) {
+                work.push(metricControlBuildLine(employee.id, id, m, sub.id));
+            });
+        } else {
+            work.push(metricControlBuildLine(employee.id, id, m));
+        }
+    });
     const sales = metricControlSalesLine(employee.id, m);
     const all = work.concat(sales ? [sales] : []);
     let ok = 0;
@@ -16130,7 +16353,7 @@ function metricControlOpenSource(metricId, employeeId) {
         return;
     }
     const it = metricControlCatalogItem(mid);
-    const tab = it ? metricTabId(it) : "";
+    const tab = it ? (metricWorkTabIds(it)[0] || metricTabId(it)) : "";
     if (home === "shop") {
         if (tab === "cashiers") showSection("metrics-cashiers");
         else if (tab === "managers") showSection("metrics-managers");
@@ -16834,7 +17057,7 @@ function shopMetricHasLinkedData(metricId) {
                     const days = emps[empId];
                     return days && Object.keys(days).some(function (d) {
                         const rec = days[d];
-                        return rec && (rec[mid] != null || rec[mid + "Mark"] === "done" || rec[mid + "Mark"] === "fail");
+                        return rec && recHasMetricHistory(rec, mid);
                     });
                 });
             })) return true;
@@ -16883,7 +17106,7 @@ function shopCatalogNextOrder(sectionId, deptCode) {
     let max = 0;
     const dept = deptCode || catalogDeptContext();
     catalogItemsForDept(dept).forEach(function (it) {
-        if (metricTabId(it) !== sectionId) return;
+        if (sectionId && !metricShowsOnTab(it, sectionId) && metricTabId(it) !== sectionId) return;
         max = Math.max(max, Number(it.sort_order || 0));
     });
     return max + 10;
@@ -16908,26 +17131,50 @@ function renderMetricCatalog() {
     const bar = document.getElementById(generic ? "deptMetricsCatalogToolbar" : "metricCatalogToolbar");
     if (!body) return;
     const can = canEditShopMetricCatalog();
+    const dept = generic ? catalogDeptContext() : "shop";
+    const tabs = metricTabsForDept(dept);
     if (bar) {
-        bar.innerHTML = can
+        let html = can
             ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Добавить метрику</button>'
             : '<div class="note">Просмотр. Изменять справочник может администратор.</div>';
+        html += '<select onchange="setMetricCatalogUi(\'tab\',this.value)" style="margin-left:8px">';
+        html += '<option value="">Все вкладки</option>';
+        tabs.forEach(function (t) {
+            html += '<option value="' + t.id + '"' + (metricCatalogUi.tab === t.id ? " selected" : "") + ">"
+                + escapeHtml(t.label) + "</option>";
+        });
+        html += '</select><select onchange="setMetricCatalogUi(\'structure\',this.value)">'
+            + '<option value="">Все структуры</option>'
+            + '<option value="plain"' + (metricCatalogUi.structure === "plain" ? " selected" : "") + ">Обычные</option>"
+            + '<option value="with_submetrics"' + (metricCatalogUi.structure === "with_submetrics" ? " selected" : "") + ">С подметриками</option>"
+            + '</select><select onchange="setMetricCatalogUi(\'active\',this.value)">'
+            + '<option value="active"' + (metricCatalogUi.active === "active" ? " selected" : "") + ">Активные</option>"
+            + '<option value="all"' + (metricCatalogUi.active === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="off"' + (metricCatalogUi.active === "off" ? " selected" : "") + ">Неактивные</option>"
+            + "</select>";
+        bar.innerHTML = html;
     }
-    const dept = generic ? catalogDeptContext() : "shop";
-    const items = catalogItemsForDept(dept).slice().sort(function (a, b) {
+    const items = catalogItemsForDept(dept).filter(function (it) {
+        if (metricCatalogUi.tab && !metricShowsOnTab(it, metricCatalogUi.tab)) return false;
+        if (metricCatalogUi.structure && metricStructureType(it) !== metricCatalogUi.structure) return false;
+        if (metricCatalogUi.active === "active" && it.active === false) return false;
+        if (metricCatalogUi.active === "off" && it.active !== false) return false;
+        return true;
+    }).slice().sort(function (a, b) {
         const s = String(metricTabId(a)).localeCompare(String(metricTabId(b)));
         if (s) return s;
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     });
-    const colSpan = generic ? 6 : 6;
+    const colSpan = 7;
     if (!items.length) {
-        body.innerHTML = '<tr><td colspan="' + colSpan + '"><div class="note">Справочник пуст. Нажмите «+ Создать метрику».</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="' + colSpan + '"><div class="note">Справочник пуст. Нажмите «+ Добавить метрику».</div></td></tr>';
         return;
     }
     body.innerHTML = items.map(function (it) {
         const linked = shopMetricHasLinkedData(it.id);
-        const tabName = metricTabLabel(metricDepartmentId(it), metricTabId(it));
         const on = it.active !== false;
+        const subs = metricSubmetrics(it);
+        const open = !!metricCatalogExpanded[it.id];
         let actions = "";
         if (can) {
             actions = '<details class="mc-more"><summary title="Действия">⋯</summary><div class="mc-more-menu">'
@@ -16937,15 +17184,146 @@ function renderMetricCatalog() {
                 + (it.builtin || linked ? "" : '<button type="button" onclick="deleteShopMetricCatalogItem(\'' + it.id + '\')">Удалить</button>')
                 + "</div></details>";
         }
+        const toggle = metricStructureType(it) === "with_submetrics"
+            ? '<button type="button" class="mc-toggle" onclick="toggleMetricCatalogExpand(\'' + it.id + '\')">'
+                + (open ? "▼" : "▶") + "</button>"
+            : "";
         let row = '<tr class="' + (on ? "" : "is-inactive") + '"'
             + (can ? ' draggable="true" ondragstart="onMetricCatalogDrag(event,\'' + it.id + '\')" ondragover="onMetricCatalogDragOver(event)" ondrop="onMetricCatalogDrop(event,\'' + it.id + '\')"' : "")
-            + "><td>" + escapeHtml(String(it.sort_order || "")) + "</td><td>"
-            + escapeHtml(it.name) + "</td>";
-        row += "<td>" + escapeHtml(tabName) + "</td>";
+            + "><td>" + escapeHtml(String(it.sort_order || "")) + '</td><td class="mc-name">'
+            + toggle + escapeHtml(it.name) + "</td>";
+        row += "<td>" + escapeHtml(metricTabLabelsText(it)) + "</td>";
+        row += "<td>" + (metricStructureType(it) === "with_submetrics" ? String(subs.length) : "—") + "</td>";
         row += "<td>" + escapeHtml(shopMetricFillLabel(it.fill_type)) + "</td><td>"
             + (on ? "Да" : "Нет") + "</td><td>" + actions + "</td></tr>";
+        if (open) {
+            subs.forEach(function (sub) {
+                const subOn = sub.active !== false;
+                row += '<tr class="mc-sub-row' + (subOn ? "" : " is-inactive") + '"><td></td><td colspan="2">';
+                if (can) {
+                    row += '<input type="text" value="' + escapeAttribute(sub.name || "") + '"'
+                        + " onchange=\"saveCatalogSubmetricField('" + it.id + "','" + sub.id + "','name',this.value)\">";
+                } else row += escapeHtml(sub.name || "");
+                row += "</td><td>";
+                if (can) {
+                    row += '<input type="number" value="' + escapeAttribute(String(sub.sort_order || 0)) + '"'
+                        + " onchange=\"saveCatalogSubmetricField('" + it.id + "','" + sub.id + "','sort_order',this.value)\">";
+                } else row += escapeHtml(String(sub.sort_order || ""));
+                row += "</td><td></td><td>";
+                if (can) {
+                    row += '<label class="check"><input type="checkbox"' + (subOn ? " checked" : "")
+                        + " onchange=\"saveCatalogSubmetricField('" + it.id + "','" + sub.id + "', 'active', this.checked)\"></label>";
+                } else row += subOn ? "Да" : "Нет";
+                row += "</td><td>";
+                if (can) {
+                    row += '<button type="button" class="btn btn-secondary btn-small" onclick="removeCatalogSubmetric(\''
+                        + it.id + "','" + sub.id + '\')">×</button>';
+                }
+                row += "</td></tr>";
+            });
+            if (can) {
+                row += '<tr class="mc-sub-row"><td></td><td colspan="6"><button type="button" class="btn btn-secondary btn-small" onclick="addCatalogSubmetricInline(\''
+                    + it.id + '\')">+ Подметрика</button></td></tr>';
+            }
+        }
         return row;
     }).join("");
+}
+
+function setMetricCatalogUi(field, value) {
+    metricCatalogUi[field] = value;
+    renderMetricCatalog();
+}
+
+function toggleMetricCatalogExpand(id) {
+    metricCatalogExpanded[id] = !metricCatalogExpanded[id];
+    renderMetricCatalog();
+}
+
+function catalogSubmetricHasHistory(metricId, subId) {
+    const mid = canonicalMetricId(metricId);
+    const key = metricFactKey(mid, subId);
+    function scanFacts(root) {
+        if (!root || typeof root !== "object") return false;
+        return Object.keys(root).some(function (month) {
+            const emps = root[month];
+            return emps && Object.keys(emps).some(function (empId) {
+                const days = emps[empId];
+                return days && Object.keys(days).some(function (d) {
+                    const rec = days[d];
+                    return rec && (rec[key] != null || rec[key + "Mark"] === "done" || rec[key + "Mark"] === "fail");
+                });
+            });
+        });
+    }
+    if (scanFacts(ensureShopMetrics().facts)) return true;
+    const deptRoot = appData.deptMetrics;
+    if (deptRoot && typeof deptRoot === "object") {
+        if (Object.keys(deptRoot).some(function (dept) {
+            return scanFacts(deptRoot[dept] && deptRoot[dept].facts);
+        })) return true;
+    }
+    const defs = (ensureShopPayroll().kpiDefs || []);
+    return defs.some(function (d) {
+        return canonicalMetricId(d.metricId || d.metric_id) === mid && kpiSubmetricId(d) === subId;
+    });
+}
+
+function saveCatalogSubmetricField(metricId, subId, field, value) {
+    if (!canEditShopMetricCatalog()) return;
+    const it = shopMetricCatalogById(metricId);
+    const sub = catalogSubmetricById(it, subId);
+    if (!it || !sub) return;
+    if (field === "name") {
+        const name = String(value || "").replace(/\s+/g, " ").trim();
+        if (!name) {
+            toast("Укажите название подметрики.", "error");
+            renderMetricCatalog();
+            return;
+        }
+        sub.name = name;
+    } else if (field === "sort_order") sub.sort_order = Number(value || 0);
+    else if (field === "active") sub.active = !!value;
+    saveApp();
+    renderMetricCatalog();
+    refreshMetricsUi();
+}
+
+function addCatalogSubmetricInline(metricId) {
+    if (!canEditShopMetricCatalog()) return;
+    const it = shopMetricCatalogById(metricId);
+    if (!it) return;
+    if (!Array.isArray(it.submetrics)) it.submetrics = [];
+    it.structure_type = "with_submetrics";
+    it.submetrics.push({
+        id: nextSubmetricId(it),
+        name: "Новая",
+        sort_order: (it.submetrics.length + 1) * 10,
+        active: true
+    });
+    metricCatalogExpanded[it.id] = true;
+    saveApp();
+    renderMetricCatalog();
+    refreshMetricsUi();
+}
+
+function removeCatalogSubmetric(metricId, subId) {
+    if (!canEditShopMetricCatalog()) return;
+    const it = shopMetricCatalogById(metricId);
+    const sub = catalogSubmetricById(it, subId);
+    if (!it || !sub) return;
+    if (catalogSubmetricHasHistory(metricId, subId)) {
+        sub.active = false;
+        saveApp();
+        renderMetricCatalog();
+        refreshMetricsUi();
+        toast("Подметрика отключена. История сохранена.");
+        return;
+    }
+    it.submetrics = it.submetrics.filter(function (s) { return s && s.id !== subId; });
+    saveApp();
+    renderMetricCatalog();
+    refreshMetricsUi();
 }
 
 function onMetricCatalogDrag(ev, id) {
@@ -16964,7 +17342,6 @@ function onMetricCatalogDrop(ev, targetId) {
     const src = shopMetricCatalogById(srcId);
     const dst = shopMetricCatalogById(targetId);
     if (!src || !dst || metricDepartmentId(src) !== metricDepartmentId(dst)) return;
-    if (metricTabId(src) !== metricTabId(dst)) return;
     const a = Number(src.sort_order || 0);
     src.sort_order = Number(dst.sort_order || 0);
     dst.sort_order = a;
@@ -17014,22 +17391,69 @@ function catalogFormCanPickDept() {
     return isSummary() && currentSummaryRole === "admin";
 }
 
-function refreshMetricCatalogTabOptions(selectedTab) {
+function refreshMetricCatalogTabOptions(selectedTabs) {
     const deptEl = document.getElementById("mcDept");
-    const tabEl = document.getElementById("mcTab");
-    if (!deptEl || !tabEl) return;
+    const box = document.getElementById("mcTabChecks");
+    if (!deptEl || !box) return;
     const dept = deptEl.value || catalogDeptContext();
     const tabs = metricTabsForDept(dept);
-    let current = selectedTab || tabEl.value;
-    if (!tabs.some(function (t) { return t.id === current; })) current = defaultMetricTabId(dept);
-    tabEl.innerHTML = tabs.map(function (t) {
-        return '<option value="' + t.id + '"' + (t.id === current ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
+    let chosen = selectedTabs;
+    if (!Array.isArray(chosen) || !chosen.length) {
+        chosen = [];
+        box.querySelectorAll("input.mc-tab:checked").forEach(function (el) { chosen.push(el.value); });
+    }
+    if (!chosen.length) chosen = [defaultMetricTabId(dept)];
+    box.innerHTML = tabs.map(function (t) {
+        return '<label class="check"><input type="checkbox" class="mc-tab" value="' + t.id + '"'
+            + (chosen.indexOf(t.id) !== -1 ? " checked" : "") + "> " + escapeHtml(t.label) + "</label>";
     }).join("");
 }
 
 function onMetricCatalogDeptChange() {
-    refreshMetricCatalogTabOptions("");
+    refreshMetricCatalogTabOptions([]);
     refreshMetricCatalogFormulaBox();
+}
+
+function setMetricCatalogStructure(kind) {
+    const withSubs = kind === "with_submetrics";
+    const box = document.getElementById("mcSubBlock");
+    const bPlain = document.getElementById("mcStructPlain");
+    const bSubs = document.getElementById("mcStructSubs");
+    if (bPlain) bPlain.classList.toggle("on", !withSubs);
+    if (bSubs) bSubs.classList.toggle("on", withSubs);
+    if (box) box.style.display = withSubs ? "" : "none";
+    const hidden = document.getElementById("mcStructure");
+    if (hidden) hidden.value = withSubs ? "with_submetrics" : "plain";
+}
+
+function renderMetricCatalogFormSubs() {
+    const box = document.getElementById("mcSubList");
+    if (!box) return;
+    box.innerHTML = metricCatalogFormSubs.map(function (sub, i) {
+        return '<div class="mc-sub-edit"><input type="text" value="' + escapeAttribute(sub.name || "") + '"'
+            + " onchange=\"metricCatalogFormSubs[" + i + "].name=this.value\">"
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="removeMetricCatalogFormSub(' + i + ')">×</button></div>';
+    }).join("") || '<div class="note">Добавьте хотя бы одну подметрику.</div>';
+}
+
+function addMetricCatalogFormSub() {
+    metricCatalogFormSubs.push({ id: nextPrefixedId("sms", metricCatalogFormSubs.map(function (s) { return s && s.id; })), name: "", sort_order: (metricCatalogFormSubs.length + 1) * 10, active: true });
+    renderMetricCatalogFormSubs();
+}
+
+function removeMetricCatalogFormSub(i) {
+    const sub = metricCatalogFormSubs[i];
+    if (sub && sub.id && document.getElementById("mcEditId")) {
+        const metricId = document.getElementById("mcEditId").value;
+        if (metricId && catalogSubmetricHasHistory(metricId, sub.id)) {
+            sub.active = false;
+            toast("Подметрика скрыта: есть история.");
+            renderMetricCatalogFormSubs();
+            return;
+        }
+    }
+    metricCatalogFormSubs.splice(i, 1);
+    renderMetricCatalogFormSubs();
 }
 
 function openMetricCatalogForm(id, dupIgnore) {
@@ -17038,7 +17462,7 @@ function openMetricCatalogForm(id, dupIgnore) {
     const existing = id ? shopMetricCatalogById(id) : null;
     if (id && existing && !catalogFormCanPickDept() && metricDepartmentId(existing) !== contextDept) return;
     const dept = existing ? metricDepartmentId(existing) : contextDept;
-    const tab = existing ? metricTabId(existing) : currentDeptMetricTab(dept);
+    const tab = existing ? (metricWorkTabIds(existing)[0] || metricTabId(existing)) : currentDeptMetricTab(dept);
     const it = existing || {
         id: "",
         name: "",
@@ -17049,23 +17473,34 @@ function openMetricCatalogForm(id, dupIgnore) {
         active: true,
         assignable: true,
         department_id: dept,
+        structure_type: "plain",
+        submetrics: [],
         position_titles: [],
         formula: { op: "div", left: "metric_sales", right: "metric_checks" }
     };
+    const struct = metricStructureType(it);
+    metricCatalogFormSubs = metricSubmetrics(it).map(function (s) {
+        return { id: s.id, name: s.name, sort_order: s.sort_order, active: s.active !== false };
+    });
     const depts = catalogFormDeptList();
     const deptLocked = !catalogFormCanPickDept() || !!(it.builtin);
     let html = "<h3 style=\"margin:0 0 8px\">" + (id ? "Изменить метрику" : "Создать метрику") + "</h3>"
+        + '<input type="hidden" id="mcEditId" value="' + escapeAttribute(it.id || "") + '">'
+        + '<input type="hidden" id="mcStructure" value="' + struct + '">'
         + '<div class="metric-cat-form">'
-        + '<div class="form-group full"><label>Название метрики</label>'
+        + '<div class="form-group full"><label>Название</label>'
         + '<input id="mcName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
-        + '<div class="form-group"><label>Отдел</label><select id="mcDept" onchange="onMetricCatalogDeptChange()"'
+        + '<div class="form-group full"><label>Структура</label><div class="mc-structure">'
+        + '<button type="button" id="mcStructPlain" class="' + (struct === "plain" ? "on" : "") + '" onclick="setMetricCatalogStructure(\'plain\')">Обычная</button>'
+        + '<button type="button" id="mcStructSubs" class="' + (struct === "with_submetrics" ? "on" : "") + '" onclick="setMetricCatalogStructure(\'with_submetrics\')">С подметриками</button>'
+        + "</div></div>"
+        + '<div class="form-group"><label>Подразделение</label><select id="mcDept" onchange="onMetricCatalogDeptChange()"'
         + (deptLocked ? " disabled" : "") + ">";
     depts.forEach(function (d) {
         html += '<option value="' + d.code + '"' + (dept === d.code ? " selected" : "") + ">" + escapeHtml(d.name) + "</option>";
     });
     html += "</select></div>"
-        + '<div class="form-group"><label>Рабочая вкладка</label><select id="mcTab"'
-        + (it.builtin && it.core_column ? " disabled" : "") + "></select></div>"
+        + '<div class="form-group full"><label>Показывать во вкладках</label><div class="mc-tab-checks" id="mcTabChecks"></div></div>'
         + '<div class="form-group"><label>Тип фиксации</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()"'
         + (it.builtin && it.core_column ? " disabled" : "") + ">";
     SHOP_METRIC_FILL_TYPES.forEach(function (s) {
@@ -17075,14 +17510,18 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<div class="form-group"><label>Порядок</label><input id="mcOrder" type="number" step="10" value="' + escapeAttribute(String(it.sort_order || 10)) + '"></div>'
         + '<div class="form-group"><label>Активна</label><label class="check"><input id="mcActive" type="checkbox"'
         + (it.active === false ? "" : " checked") + "> Да</label></div>"
+        + '<div class="form-group full" id="mcSubBlock" style="' + (struct === "with_submetrics" ? "" : "display:none") + '">'
+        + "<label>Подметрики</label><div id=\"mcSubList\"></div>"
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="addMetricCatalogFormSub()">+ Добавить</button></div>'
         + '<div class="form-group full" id="mcFormulaBox"></div>'
-        + '<div class="note full">Кто заполняет показатель, задаётся только в карточке сотрудника: ФИО → Рабочие метрики.</div>'
+        + '<div class="note full">Участники задаются только в карточке сотрудника: ФИО → Рабочие метрики.</div>'
         + '<div class="note full" id="mcDupHint"></div></div>'
         + '<div class="rev-modal-actions" style="margin-top:10px">'
-        + '<button type="button" class="btn btn-primary" onclick="saveMetricCatalogForm(\'' + (it.id || "") + '\',' + (dupIgnore ? "true" : "false") + ')">Сохранить</button>'
-        + '<button type="button" class="btn btn-secondary" onclick="closeMetricCatalogModal()">Отмена</button></div>';
+        + '<button type="button" class="btn btn-secondary" onclick="closeMetricCatalogModal()">Отмена</button>'
+        + '<button type="button" class="btn btn-primary" onclick="saveMetricCatalogForm(\'' + (it.id || "") + '\',' + (dupIgnore ? "true" : "false") + ')">Сохранить</button></div>';
     openMetricCatalogModal(html);
-    refreshMetricCatalogTabOptions(tab);
+    refreshMetricCatalogTabOptions(metricWorkTabIds(it));
+    renderMetricCatalogFormSubs();
     refreshMetricCatalogFormulaBox(it.formula);
 }
 
@@ -17152,11 +17591,15 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     const deptEl = document.getElementById("mcDept");
     const dept = (deptEl && deptEl.value) || catalogDeptContext();
-    const tabEl = document.getElementById("mcTab");
-    let sectionId = (tabEl && tabEl.value) || defaultMetricTabId(dept);
-    if (!metricTabsForDept(dept).some(function (t) { return t.id === sectionId; })) {
-        sectionId = defaultMetricTabId(dept);
+    const tabs = [];
+    document.querySelectorAll("#mcTabChecks input.mc-tab:checked").forEach(function (el) { tabs.push(el.value); });
+    const allowedTabs = metricTabsForDept(dept).map(function (t) { return t.id; });
+    const workTabs = tabs.filter(function (id) { return allowedTabs.indexOf(id) !== -1; });
+    if (!workTabs.length) {
+        toast("Выберите хотя бы одну рабочую вкладку.", "error");
+        return;
     }
+    let sectionId = workTabs[0];
     if (!dupIgnore) {
         const similar = shopMetricSimilarItems(name, id, dept);
         if (similar.length) {
@@ -17180,6 +17623,17 @@ function saveMetricCatalogForm(id, dupIgnore) {
     const fill = (document.getElementById("mcFill") || {}).value || "number";
     const order = Number((document.getElementById("mcOrder") || {}).value || 10);
     const active = !!(document.getElementById("mcActive") && document.getElementById("mcActive").checked);
+    const structEl = document.getElementById("mcStructure");
+    const struct = (structEl && structEl.value) === "with_submetrics" ? "with_submetrics" : "plain";
+    if (struct === "with_submetrics") {
+        const named = metricCatalogFormSubs.filter(function (row) {
+            return String((row && row.name) || "").replace(/\s+/g, " ").trim();
+        });
+        if (!named.length) {
+            toast("Добавьте хотя бы одну подметрику.", "error");
+            return;
+        }
+    }
     const positionTitles = [];
     let formula = null;
     if (fill === "auto_calc") {
@@ -17230,7 +17684,36 @@ function saveMetricCatalogForm(id, dupIgnore) {
         item.assignable = fill !== "auto_sum";
     }
     if (!item.department_id) item.department_id = dept;
-    item.metric_tab_id = item.section_id || item.metric_tab_id;
+    item.metric_tab_id = sectionId;
+    item.section_id = sectionId;
+    item.work_tab_ids = workTabs.slice();
+    item.work_tabs = workTabs.map(function (tid, i) {
+        return { department_id: dept, work_tab_id: tid, sort_order: i, is_active: true };
+    });
+    item.structure_type = struct;
+    if (struct === "with_submetrics") {
+        const prev = {};
+        metricSubmetrics(item).forEach(function (s) { if (s && s.id) prev[s.id] = s; });
+        const next = [];
+        metricCatalogFormSubs.forEach(function (row, i) {
+            const name = String((row && row.name) || "").replace(/\s+/g, " ").trim();
+            if (!name && !(row && row.id && prev[row.id])) return;
+            const old = row && row.id ? prev[row.id] : null;
+            next.push({
+                id: old ? old.id : (row.id || nextPrefixedId("sms", next.concat(metricSubmetrics(item)).map(function (x) { return x && x.id; }))),
+                name: name || (old && old.name) || "Подметрика",
+                sort_order: (i + 1) * 10,
+                active: row && row.active === false ? false : true
+            });
+        });
+        if (!next.length) {
+            toast("Добавьте хотя бы одну подметрику.", "error");
+            return;
+        }
+        item.submetrics = next;
+    }
+    normalizeMetricWorkTabs(item);
+    normalizeMetricSubmetrics(item);
     if (canonicalMetricId(item.id) === METRIC_WRITEOFF_LOSSES_ID) {
         item.fill_type = "month_money";
         item.show_column = false;
@@ -17246,29 +17729,30 @@ function saveMetricCatalogForm(id, dupIgnore) {
     toast("Метрика сохранена.");
 }
 
-function getDeptMetricStored(deptCode, employeeId, day, metricId, month) {
+function getDeptMetricStored(deptCode, employeeId, day, metricId, month, submetricId) {
     const mid = canonicalMetricId(metricId);
     const facts = deptMetricFactsMonth(deptCode, month);
     const rec = facts[employeeId] && facts[employeeId][String(day)];
     if (!rec) return 0;
-    if (rec[mid + "Mark"] === "done") return 1;
-    if (rec[mid + "Mark"] === "fail") return 0;
-    return rec[mid] != null ? Number(rec[mid] || 0) : 0;
+    const key = metricFactKey(mid, submetricId);
+    if (rec[key + "Mark"] === "done") return 1;
+    if (rec[key + "Mark"] === "fail") return 0;
+    return rec[key] != null ? Number(rec[key] || 0) : 0;
 }
 
-function deptMetricPersonalMonthTotal(deptCode, employeeId, metricId, month) {
+function deptMetricPersonalMonthTotal(deptCode, employeeId, metricId, month, submetricId) {
     const m = month || selectedMonth;
     const days = daysInMonthValue(m);
     let sum = 0;
-    for (let day = 1; day <= days; day++) sum += getDeptMetricStored(deptCode, employeeId, day, metricId, m);
+    for (let day = 1; day <= days; day++) sum += getDeptMetricStored(deptCode, employeeId, day, metricId, m, submetricId);
     return sum;
 }
 
-function deptMetricCheckState(deptCode, employeeId, day, metricId, month) {
+function deptMetricCheckState(deptCode, employeeId, day, metricId, month, submetricId) {
     const mid = canonicalMetricId(metricId);
     const facts = deptMetricFactsMonth(deptCode, month);
     const rec = facts[employeeId] && facts[employeeId][String(day)];
-    const mark = rec && rec[mid + "Mark"];
+    const mark = rec && rec[metricFactKey(mid, submetricId) + "Mark"];
     return mark === "done" || mark === "fail" ? mark : "";
 }
 
@@ -17278,10 +17762,7 @@ function deptMetricEmployeeHasData(deptCode, employeeId, metricId) {
     const days = facts[employeeId];
     if (!days || typeof days !== "object") return false;
     return Object.keys(days).some(function (d) {
-        const rec = days[d];
-        if (!rec) return false;
-        if (rec[mid + "Mark"] === "done" || rec[mid + "Mark"] === "fail") return true;
-        return rec[mid] != null && Number(rec[mid] || 0) !== 0;
+        return recHasMetricHistory(days[d], mid);
     });
 }
 
@@ -17305,7 +17786,7 @@ function deptMetricFields(deptCode, tabId) {
     const tab = tabId || currentDeptMetricTab(deptCode);
     const list = [];
     catalogItemsForDept(deptCode).filter(function (it) {
-        return metricTabId(it) === tab && shopCatalogItemShownInUi(it);
+        return metricShowsOnTab(it, tab) && shopCatalogItemShownInUi(it);
     }).sort(function (a, b) {
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     }).forEach(function (it) {
@@ -17319,7 +17800,7 @@ function deptMetricFields(deptCode, tabId) {
             });
             return;
         }
-        list.push(shopCatalogToField(it));
+        catalogWorkFields(it).forEach(function (field) { list.push(field); });
     });
     return list;
 }
@@ -17360,31 +17841,31 @@ function clearDeptMetricDayIfEmpty(deptCode, employeeId, day) {
     if (!Object.keys(facts[employeeId]).length) delete facts[employeeId];
 }
 
-function setDeptMetricValue(deptCode, employeeId, day, metricId, raw) {
+function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricId) {
     if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
     const it = shopMetricCatalogById(metricId);
     if (!it || it.active === false) return;
     const mid = canonicalMetricId(metricId);
     const n = parseShopMetricNumber(raw);
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
+    const key = metricFactKey(mid, submetricId);
     if (!n) {
-        delete rec[mid];
+        delete rec[key];
         clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
     } else {
-        rec[mid] = it.fill_type === "money" ? Math.round(n) : n;
+        rec[key] = it.fill_type === "money" ? Math.round(n) : n;
         stampAuthOnRecord(rec);
     }
     saveApp();
     refreshDeptWorkUi();
 }
 
-function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark) {
+function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark, submetricId) {
     if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
     const it = shopMetricCatalogById(metricId);
     if (!it || it.active === false) return;
-    const mid = canonicalMetricId(metricId);
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
-    rec[mid + "Mark"] = mark === "fail" ? "fail" : "done";
+    rec[metricFactKey(metricId, submetricId) + "Mark"] = mark === "fail" ? "fail" : "done";
     stampAuthOnRecord(rec);
     saveApp();
     refreshDeptWorkUi();
@@ -17402,8 +17883,10 @@ function deptMetricInputHtml(deptCode, employeeId, day, field) {
         const n = shopCatalogAutoValue(employeeId, day, field.metricId);
         return '<span class="metrics-auto-fact">' + formatShopMetricField({ type: field.type === "money" ? "money" : "number" }, n) + "</span>";
     }
+    const sid = field.submetricId || "";
+    const sidAttr = sid ? ",'" + sid + "'" : ",''";
     if (it && (it.fill_type === "check" || it.fill_type === "done_not_done" || it.fill_type === "boolean")) {
-        const state = deptMetricCheckState(deptCode, employeeId, day, field.metricId);
+        const state = deptMetricCheckState(deptCode, employeeId, day, field.metricId, selectedMonth, sid);
         if (!canEdit) {
             if (state === "done") return shopShelfStatusMark("done");
             if (state === "fail") return shopShelfStatusMark("fail");
@@ -17411,24 +17894,24 @@ function deptMetricInputHtml(deptCode, employeeId, day, field) {
         }
         return '<div class="metrics-check-pair">'
             + '<button type="button" class="metrics-check-btn' + (state === "done" ? " on-ok" : "") + '"'
-            + " onclick=\"setDeptMetricCheck('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "','done')\""
+            + " onclick=\"setDeptMetricCheck('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "','done'" + sidAttr + ")\""
             + ' title="Сделано">✓</button>'
             + '<button type="button" class="metrics-check-btn' + (state === "fail" ? " on-fail" : "") + '"'
-            + " onclick=\"setDeptMetricCheck('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "','fail')\""
+            + " onclick=\"setDeptMetricCheck('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "','fail'" + sidAttr + ")\""
             + ' title="Не сделано">✕</button>'
             + "</div>";
     }
-    const n = getDeptMetricStored(deptCode, employeeId, day, field.metricId);
+    const n = getDeptMetricStored(deptCode, employeeId, day, field.metricId, selectedMonth, sid);
     if (!canEdit) {
         return '<span class="metrics-auto-fact">' + formatShopMetricField(field, n) + "</span>";
     }
     const display = field.type === "money" ? formatShopMetricMoney(n) : blankZero(n);
     const inputType = field.type === "money" ? "text" : "number";
-    const idAttr = "dcell-" + deptCode + "-" + employeeId + "-" + day + "-" + field.metricId;
+    const idAttr = "dcell-" + deptCode + "-" + employeeId + "-" + day + "-" + field.metricId + (sid ? "-" + sid : "");
     return '<input class="metrics-input no-spin" id="' + idAttr + '" type="' + inputType + '" min="0" step="1"'
         + ' inputmode="decimal" value="' + display + '" autocomplete="off"'
         + ' onkeydown="onDeptMetricNav(event)" onfocus="this.select()"'
-        + " onchange=\"setDeptMetricValue('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "',this.value)\">";
+        + " onchange=\"setDeptMetricValue('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "',this.value" + sidAttr + ")\">";
 }
 
 function onDeptMetricNav(event) {
@@ -17583,19 +18066,62 @@ function fillDeptWorkTable(dept, tab, ids) {
         return;
     }
     if (head) {
-        let headHtml = '<tr class="metrics-head-metrics"><th class="metrics-date-col" rowspan="2">Дата</th>';
-        fields.forEach(function (field, fi) {
-            if (field.service) {
+        const hasSubs = fields.some(function (f) { return f && f.submetricId; });
+        const dateSpan = hasSubs ? 3 : 2;
+        let headHtml = '<tr class="metrics-head-metrics"><th class="metrics-date-col" rowspan="' + dateSpan + '">Дата</th>';
+        if (!hasSubs) {
+            fields.forEach(function (field, fi) {
+                if (field.service) {
+                    headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
+                        + (fi ? " metrics-group-start" : "") + ' metrics-recount-total" rowspan="2" title="'
+                        + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
+                    return;
+                }
+                const people = deptWorkMetricPeople(dept, field.metricId);
                 headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
-                    + (fi ? " metrics-group-start" : "") + ' metrics-recount-total" rowspan="2" title="'
-                    + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
-                return;
+                    + (fi ? " metrics-group-start" : "") + '" colspan="' + Math.max(people.length, 1)
+                    + '" title="' + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
+            });
+        } else {
+            let fi = 0;
+            while (fi < fields.length) {
+                const field = fields[fi];
+                if (field.service) {
+                    headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
+                        + (fi ? " metrics-group-start" : "") + ' metrics-recount-total" rowspan="3" title="'
+                        + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
+                    fi += 1;
+                    continue;
+                }
+                if (field.submetricId) {
+                    const parentId = field.parentMetricId || field.metricId;
+                    let cols = 0;
+                    const start = fi;
+                    while (fi < fields.length && (fields[fi].parentMetricId || fields[fi].metricId) === parentId && fields[fi].submetricId) {
+                        cols += Math.max(deptWorkMetricPeople(dept, fields[fi].metricId).length, 1);
+                        fi += 1;
+                    }
+                    const parentName = field.parentLabel || field.label;
+                    headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(start)
+                        + (start ? " metrics-group-start" : "") + '" colspan="' + Math.max(cols, 1)
+                        + '" title="' + escapeHtml(parentName) + '">' + escapeHtml(parentName) + "</th>";
+                } else {
+                    const people = deptWorkMetricPeople(dept, field.metricId);
+                    headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
+                        + (fi ? " metrics-group-start" : "") + '" rowspan="2" colspan="' + Math.max(people.length, 1)
+                        + '" title="' + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
+                    fi += 1;
+                }
             }
-            const people = deptWorkMetricPeople(dept, field.metricId);
-            headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
-                + (fi ? " metrics-group-start" : "") + '" colspan="' + Math.max(people.length, 1)
-                + '" title="' + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
-        });
+            headHtml += '</tr><tr class="metrics-head-subs">';
+            fields.forEach(function (field, fi) {
+                if (field.service || !field.submetricId) return;
+                const people = deptWorkMetricPeople(dept, field.metricId);
+                headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start" colspan="' + Math.max(people.length, 1) + '">'
+                    + escapeHtml(field.label) + "</th>";
+            });
+        }
         headHtml += '</tr><tr class="metrics-head-emps">';
         fields.forEach(function (field, fi) {
             if (field.service) return;
@@ -17661,7 +18187,7 @@ function fillDeptWorkTable(dept, tab, ids) {
         const people = deptWorkMetricPeople(dept, field.metricId);
         people.forEach(function (employee, ei) {
             let sum = 0;
-            for (let d = 1; d <= days; d++) sum += Number(getDeptMetricStored(dept, employee.id, d, field.metricId) || 0);
+            for (let d = 1; d <= days; d++) sum += Number(getDeptMetricStored(dept, employee.id, d, field.metricId, selectedMonth, field.submetricId) || 0);
             html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi)
                 + (ei === 0 ? " metrics-group-start" : "") + '">'
                 + formatShopMetricField(field, sum) + "</td>";
