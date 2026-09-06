@@ -310,6 +310,44 @@
             color: white;
         }
 
+        .mgmt-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+        .mgmt-chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0; }
+        .mgmt-chip, .mgmt-tab {
+            border: 1px solid var(--border);
+            background: #fff;
+            padding: 4px 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .mgmt-chip.on, .mgmt-tab.on { background: #0f172a; color: #fff; border-color: #0f172a; }
+        .mgmt-period { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
+        .mgmt-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
+        .mgmt-card {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 8px 10px;
+            cursor: default;
+        }
+        .mgmt-card.clickable { cursor: pointer; }
+        .mgmt-card .k { font-size: 11px; color: var(--muted); }
+        .mgmt-card .v { font-size: 18px; font-weight: 700; margin: 2px 0; }
+        .mgmt-card .s { font-size: 11px; color: var(--muted); }
+        .mgmt-block { margin: 12px 0; }
+        .mgmt-block h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+        .mgmt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .mgmt-table th, .mgmt-table td { border-bottom: 1px solid #e5e7eb; padding: 4px 6px; text-align: left; }
+        .mgmt-table th { background: #f8fafc; position: sticky; top: 0; }
+        .mgmt-ok { background: #ecfdf5; }
+        .mgmt-warn { background: #fffbeb; }
+        .mgmt-bad { background: #fef2f2; }
+        .mgmt-src { font-size: 11px; color: var(--muted); }
+        .mgmt-manual { width: 92px; padding: 3px 6px; }
+        @media (max-width: 1100px) {
+            .mgmt-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+
         .main {
             margin-left: var(--sidebar-w);
             width: calc(100% - var(--sidebar-w));
@@ -2671,6 +2709,10 @@
         <button type="button" class="nav-btn" data-for="summary" data-section="analysis" onclick="showSection('analysis', this)">
             📈 Анализ
         </button>
+        <div class="menu-title" id="mgmtMenuTitle" style="display:none">Управление</div>
+        <button type="button" class="nav-btn" data-for="both" data-section="management" onclick="showSection('management', this)">
+            🗂 Управление
+        </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="fio" onclick="showSection('fio', this)">
             👤 ФИО сотрудника
         </button>
@@ -3645,6 +3687,19 @@
                 </div>
             </section>
 
+            <section id="management" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Управление</div>
+                            <div class="note">Слой над подразделениями: читает существующие факты, не дублирует ввод.</div>
+                        </div>
+                    </div>
+                    <div class="mgmt-tabs" id="mgmtTabs"></div>
+                    <div id="mgmtBody"></div>
+                </div>
+            </section>
+
             <section id="users" class="section">
                 <div class="card">
                     <div class="card-header">
@@ -3691,6 +3746,9 @@
 </div>
 <div id="shopPayModalBack" class="rev-modal-back" onclick="if (event.target === this) closeShopPayModal()">
     <div class="rev-modal" id="shopPayModal" role="dialog" aria-modal="true"></div>
+</div>
+<div id="mgmtModalBack" class="rev-modal-back" onclick="if (event.target === this) closeMgmtModal()">
+    <div class="rev-modal" id="mgmtModal" role="dialog" aria-modal="true"></div>
 </div>
 <div id="shopKpiPrintSheet" class="kpi-print-sheet" aria-hidden="true"></div>
 
@@ -4969,7 +5027,11 @@ const ACCESS_PERM_KEYS = [
     { key: "discipline", label: "Дисциплина" },
     { key: "salary", label: "Зарплата" },
     { key: "kpi", label: "KPI" },
-    { key: "settings", label: "Настройки" }
+    { key: "settings", label: "Настройки" },
+    { key: "management", label: "Управление" },
+    { key: "managementIndicators", label: "Управление · показатели" },
+    { key: "managementTasks", label: "Управление · задачи" },
+    { key: "managementMeetings", label: "Управление · встречи" }
 ];
 
 function accessRoleTemplate(role, legacy) {
@@ -5065,7 +5127,15 @@ function userHasPerm(key, min) {
         if (currentSummaryRole === "pay") return permRank("view") >= permRank(need);
         return false;
     }
-    if (!isSummary() && currentDeptRole === "admin") return key !== "salary";
+    if (!isSummary() && currentDeptRole === "admin") {
+        if (String(key || "").indexOf("management") === 0) {
+            const au = currentAuthUser();
+            if (!au) return false;
+            const v = (au.permissions && au.permissions[key]) || "none";
+            return permRank(v) >= permRank(need);
+        }
+        return key !== "salary";
+    }
     if (!isSummary()) {
         return ["timesheet", "metrics", "revision", "salesPlan", "discipline"].indexOf(key) !== -1;
     }
@@ -5486,6 +5556,7 @@ function createDefaultData() {
         shopSalesPlan: { months: {} },
         deptSalesPlans: {},
         users: [],
+        management: { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [] },
         workspaces: DEPT_DEFAULTS.map(function (d) {
             return createWorkspace(d.name, d.pin, "dept", d.code);
         }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
@@ -7431,6 +7502,8 @@ function applyModeUI() {
         const current = workspace();
         backBtn.style.display = (!summary && current && isTerritoryCode(current.code)) ? "" : "none";
     }
+    const mgmtTitle = document.getElementById("mgmtMenuTitle");
+    if (mgmtTitle) mgmtTitle.style.display = allowed.indexOf("management") !== -1 ? "" : "none";
 
     const stats = document.getElementById("timesheetStats");
     stats.classList.toggle("stats-3", !summary);
@@ -7494,6 +7567,7 @@ function allowedSections() {
         if (userHasPerm("settings", "edit")) list.push("settings", "summaryStaff");
         if (userHasPerm("kpi", "manage") || isAppAdmin()) list.push("metricCatalog");
         if (isAppAdmin()) list.push("users");
+        if (canOpenManagement()) list.push("management");
         return list;
     }
     const list = [];
@@ -7528,6 +7602,7 @@ function allowedSections() {
     }
     if (userHasPerm("settings", "edit")) list.push("settings");
     if (isAppAdmin()) list.push("users");
+    if (canOpenManagement()) list.push("management");
     return list;
 }
 
@@ -7560,7 +7635,8 @@ function sectionTitle(id) {
         users: "Пользователи и доступы",
         settings: "Настройки",
         metricCatalog: "Метрики",
-        deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : "")
+        deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
+        management: "Управление"
     };
     if (isDeptWorkSection(id) && workspace()) {
         return metricTabLabel(workspace().code, deptWorkTabFromSection(id));
@@ -7631,6 +7707,7 @@ function showSection(id, button) {
     if (id === "settings") loadWorkspaceSettings();
     if (id === "metricCatalog") renderMetricCatalog();
     if (id === "deptMetrics") renderDeptMetrics();
+    if (id === "management") renderManagement();
 }
 
 function changeMonth(month) {
@@ -7665,6 +7742,7 @@ function refreshAll() {
     if (currentSection === "metricCatalog") renderMetricCatalog();
     if (currentSection === "deptMetrics") renderDeptMetrics();
     if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
+    if (currentSection === "management") renderManagement();
     updateStats();
 }
 
@@ -19647,6 +19725,1045 @@ function downloadCSV(rows, filename) {
 
 
 /* ============================================================
+   УПРАВЛЕНИЕ: дашборд, план–факт, задачи, встречи
+============================================================ */
+let mgmtTab = "dashboard";
+let mgmtPeriodKind = "month";
+let mgmtAnchorIso = "";
+let mgmtDeptFilter = "";
+
+function canOpenManagement() {
+    return userHasPerm("management", "view")
+        || userHasPerm("managementIndicators", "view")
+        || userHasPerm("managementTasks", "view")
+        || userHasPerm("managementMeetings", "view");
+}
+
+function canEditMgmtIndicators() {
+    return userHasPerm("managementIndicators", "edit");
+}
+
+function canEditMgmtTasks() {
+    return userHasPerm("managementTasks", "edit");
+}
+
+function canEditMgmtMeetings() {
+    return userHasPerm("managementMeetings", "edit");
+}
+
+function ensureManagement() {
+    if (!appData || typeof appData !== "object") return;
+    if (!appData.management || typeof appData.management !== "object") {
+        appData.management = { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [] };
+    }
+    const root = appData.management;
+    if (!Array.isArray(root.indicators)) root.indicators = [];
+    if (!root.plans || typeof root.plans !== "object") root.plans = {};
+    if (!root.manualFacts || typeof root.manualFacts !== "object") root.manualFacts = {};
+    if (!Array.isArray(root.tasks)) root.tasks = [];
+    if (!Array.isArray(root.meetings)) root.meetings = [];
+    if (!root.indicators.length) seedDefaultManagementIndicators();
+}
+
+function seedDefaultManagementIndicators() {
+    const root = appData.management;
+    const add = function (spec) {
+        root.indicators.push(normalizeMgmtIndicator(spec));
+    };
+    add({
+        name: "Персонал",
+        department_id: "",
+        source_type: "timesheet",
+        source_timesheet_agg: "headcount",
+        aggregation_type: "count",
+        unit: "people",
+        show_on_dashboard: true,
+        sort_order: 10
+    });
+    add({
+        name: "Отработано дней",
+        department_id: "",
+        source_type: "timesheet",
+        source_timesheet_agg: "days",
+        aggregation_type: "sum",
+        unit: "days",
+        show_on_dashboard: true,
+        sort_order: 20
+    });
+    DEPT_DEFAULTS.forEach(function (d, i) {
+        add({
+            name: "Персонал",
+            department_id: d.code,
+            source_type: "timesheet",
+            source_timesheet_agg: "headcount",
+            aggregation_type: "count",
+            unit: "people",
+            show_on_dashboard: true,
+            sort_order: 100 + i * 10
+        });
+        add({
+            name: "Отработано дней",
+            department_id: d.code,
+            source_type: "timesheet",
+            source_timesheet_agg: "days",
+            aggregation_type: "sum",
+            unit: "days",
+            show_on_dashboard: true,
+            sort_order: 104 + i * 10
+        });
+    });
+    const views = [
+        { id: "shop", name: "Продажи (факт)", dept: "shop" },
+        { id: "warehouse", name: "Продажи (факт)", dept: "warehouse" },
+        { id: "office", name: "Продажи (факт)", dept: "office" },
+        { id: "sales", name: "Продажи (факт)", dept: "drivers" }
+    ];
+    views.forEach(function (v, i) {
+        add({
+            name: v.name,
+            department_id: v.dept,
+            source_type: "sales_plan",
+            source_sales_plan_view: v.id,
+            source_sales_plan_field: "fact",
+            aggregation_type: "last",
+            unit: "money",
+            show_on_dashboard: true,
+            sort_order: 200 + i * 10
+        });
+    });
+}
+
+function normalizeMgmtIndicator(it) {
+    if (!it || typeof it !== "object") return null;
+    if (!it.indicator_id) it.indicator_id = nextPrefixedId("mind", (appData.management.indicators || []).map(function (x) { return x && x.indicator_id; }));
+    it.name = String(it.name || "").trim() || "Показатель";
+    it.department_id = it.department_id == null ? "" : String(it.department_id);
+    it.source_type = it.source_type || "manual";
+    it.source_metric_id = it.source_metric_id || "";
+    it.source_submetric_id = it.source_submetric_id || "";
+    it.source_timesheet_agg = it.source_timesheet_agg || "days";
+    it.source_kpi_mode = it.source_kpi_mode || "completion";
+    it.source_sales_plan_view = it.source_sales_plan_view || "shop";
+    it.source_sales_plan_field = it.source_sales_plan_field || "fact";
+    it.calc_op = it.calc_op || "ratio";
+    it.calc_left_id = it.calc_left_id || "";
+    it.calc_right_id = it.calc_right_id || "";
+    it.aggregation_type = it.aggregation_type || "sum";
+    it.unit = it.unit || "number";
+    it.period_type = it.period_type || "month";
+    it.owner_employee_id = it.owner_employee_id || "";
+    it.show_on_dashboard = it.show_on_dashboard !== false;
+    it.is_active = it.is_active !== false;
+    it.sort_order = Number(it.sort_order || 10);
+    return it;
+}
+
+function mgmtIndicators() {
+    ensureManagement();
+    return appData.management.indicators.filter(function (x) { return x && x.is_active !== false; })
+        .sort(function (a, b) { return Number(a.sort_order || 0) - Number(b.sort_order || 0); });
+}
+
+function mgmtPad(n) {
+    return n < 10 ? "0" + n : String(n);
+}
+
+function mgmtIsoFromDate(d) {
+    return d.getFullYear() + "-" + mgmtPad(d.getMonth() + 1) + "-" + mgmtPad(d.getDate());
+}
+
+function mgmtParseIso(iso) {
+    const p = String(iso || "").split("-").map(Number);
+    return new Date(p[0], (p[1] || 1) - 1, p[2] || 1);
+}
+
+function mgmtPeriodRange() {
+    if (!mgmtAnchorIso) mgmtAnchorIso = mgmtIsoFromDate(new Date());
+    const d = mgmtParseIso(mgmtAnchorIso);
+    if (mgmtPeriodKind === "today") {
+        const iso = mgmtIsoFromDate(d);
+        return { from: iso, to: iso, kind: "today" };
+    }
+    if (mgmtPeriodKind === "week") {
+        const wd = (d.getDay() + 6) % 7;
+        const from = new Date(d.getFullYear(), d.getMonth(), d.getDate() - wd);
+        const to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 6);
+        return { from: mgmtIsoFromDate(from), to: mgmtIsoFromDate(to), kind: "week" };
+    }
+    const month = d.getFullYear() + "-" + mgmtPad(d.getMonth() + 1);
+    const last = daysInMonthValue(month);
+    return { from: month + "-01", to: month + "-" + mgmtPad(last), kind: "month", month: month };
+}
+
+function mgmtPeriodKey() {
+    const r = mgmtPeriodRange();
+    if (r.kind === "month") return "month:" + r.month;
+    if (r.kind === "week") return "week:" + r.from;
+    return "day:" + r.from;
+}
+
+function mgmtDaysInPeriod() {
+    const r = mgmtPeriodRange();
+    const out = [];
+    const cur = mgmtParseIso(r.from);
+    const end = mgmtParseIso(r.to);
+    while (cur <= end) {
+        const month = cur.getFullYear() + "-" + mgmtPad(cur.getMonth() + 1);
+        out.push({ iso: mgmtIsoFromDate(cur), month: month, day: cur.getDate() });
+        cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+}
+
+function mgmtShiftPeriod(delta) {
+    const r = mgmtPeriodRange();
+    const d = mgmtParseIso(r.from);
+    if (mgmtPeriodKind === "today") d.setDate(d.getDate() + delta);
+    else if (mgmtPeriodKind === "week") d.setDate(d.getDate() + delta * 7);
+    else d.setMonth(d.getMonth() + delta);
+    mgmtAnchorIso = mgmtIsoFromDate(d);
+    if (mgmtPeriodKind === "month") selectedMonth = d.getFullYear() + "-" + mgmtPad(d.getMonth() + 1);
+    renderManagement();
+}
+
+function mgmtFmtRu(iso) {
+    const p = String(iso || "").split("-");
+    if (p.length < 3) return iso || "";
+    return p[2] + "." + p[1] + "." + p[0];
+}
+
+function mgmtDeptName(code) {
+    if (!code) return "Компания";
+    const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
+    return (d && d.name) || code;
+}
+
+function mgmtSourceLabel(type) {
+    if (type === "worktime_metric") return "Метрики";
+    if (type === "timesheet") return "Табель";
+    if (type === "kpi") return "KPI";
+    if (type === "sales_plan") return "План продаж";
+    if (type === "manual") return "Ручной";
+    if (type === "calculated") return "Расчёт";
+    if (type === "one_c_future") return "1С";
+    return type || "—";
+}
+
+function mgmtFormatValue(it, value, status) {
+    if (status === "one_c") return "Источник 1С не подключен";
+    if (value == null || value === "") return "—";
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    if (it.unit === "money") return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
+    if (it.unit === "percent") return (Math.round(n * 10) / 10).toLocaleString("ru-RU") + "%";
+    if (it.unit === "people") return String(Math.round(n));
+    if (it.unit === "days") return (Math.round(n * 10) / 10).toLocaleString("ru-RU");
+    return (Math.round(n * 100) / 100).toLocaleString("ru-RU");
+}
+
+function peekTimesheetDay(w, employeeId, day, month) {
+    const rec = w && w.timesheet && w.timesheet[month]
+        && w.timesheet[month][employeeId]
+        && w.timesheet[month][employeeId][day];
+    return rec || { status: "", hours: "", lateMinutes: 0 };
+}
+
+function mgmtTimesheetFact(deptCode, agg, days) {
+    const codes = deptCode ? [deptCode] : DEPT_DEFAULTS.map(function (d) { return d.code; });
+    let headcount = 0;
+    let ya = 0;
+    let hours = 0;
+    let late = 0;
+    let skip = 0;
+    let sick = 0;
+    let vacation = 0;
+    codes.forEach(function (code) {
+        const w = findWorkspaceByCode(code);
+        if (!w) return;
+        const seen = {};
+        ((w.employees || [])).forEach(function (e) {
+            if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+            seen[e.id] = true;
+            let worked = false;
+            days.forEach(function (d) {
+                const rec = peekTimesheetDay(w, e.id, d.day, d.month);
+                const st = rec.status || "";
+                if (st === "Я" || st === "О") {
+                    worked = true;
+                    ya += 1;
+                    hours += Number(rec.hours || 0);
+                    if (st === "О") late += 1;
+                }
+                if (st === "П") skip += 1;
+                if (st === "Б") sick += 1;
+                if (st === "ОТ") vacation += 1;
+            });
+            if (isWorking(e) || worked) headcount += 1;
+        });
+    });
+    if (agg === "headcount") return headcount;
+    if (agg === "hours") return hours;
+    if (agg === "ya") return ya;
+    if (agg === "late") return late;
+    if (agg === "skip") return skip;
+    if (agg === "sick") return sick;
+    if (agg === "vacation") return vacation;
+    return ya;
+}
+
+function mgmtMetricFact(deptCode, metricId, subId, days) {
+    const mid = canonicalMetricId(metricId);
+    if (!mid) return 0;
+    const codes = deptCode ? [deptCode] : DEPT_DEFAULTS.map(function (d) { return d.code; });
+    let sum = 0;
+    codes.forEach(function (code) {
+        days.forEach(function (d) {
+            if (code === "shop") {
+                if (mid === "metric_recount") {
+                    sum += shopRecountDayExecutorTotal(d.day, d.month);
+                    return;
+                }
+                const ids = shopMetricContributorIds(mid, d.month);
+                ids.forEach(function (id) {
+                    sum += Number(shopMetricStoredFact(id, d.day, mid, d.month, subId) || 0);
+                });
+                return;
+            }
+            const facts = deptMetricFactsMonth(code, d.month);
+            Object.keys(facts || {}).forEach(function (empId) {
+                sum += Number(getDeptMetricStored(code, empId, d.day, mid, d.month, subId) || 0);
+            });
+        });
+    });
+    return sum;
+}
+
+function mgmtSalesPlanFact(it) {
+    const viewId = it.source_sales_plan_view || "shop";
+    const view = SALES_PLAN_VIEWS[viewId] || SALES_PLAN_VIEWS.shop;
+    const r = mgmtPeriodRange();
+    const month = r.month || String(r.to).slice(0, 7);
+    const rec = salesPlanMonth(view, month, false);
+    const field = it.source_sales_plan_field || "fact";
+    if (field === "plan") return Number(rec.plan_sales || 0);
+    if (field === "rate") return salesPlanRate(view, month) * 100;
+    return salesPlanFact(view, month);
+}
+
+function mgmtKpiFact(it) {
+    const r = mgmtPeriodRange();
+    const month = r.month || String(r.to).slice(0, 7);
+    const dept = it.department_id || "shop";
+    let ok = 0;
+    let fail = 0;
+    let amount = 0;
+    try {
+        const w = findWorkspaceByCode(dept);
+        const rules = ((typeof ensureShopPayroll === "function" ? ensureShopPayroll() : {}) || {}).rules || [];
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!e || !e.id) return;
+            rules.forEach(function (rule) {
+                if (!rule || rule.active === false) return;
+                if (typeof shopKpiAssigned === "function" && !shopKpiAssigned(e.id, rule.kpi_id || rule.id, month)) return;
+                const fact = typeof shopBonusMetricFact === "function" ? shopBonusMetricFact(rule, e.id, month) : null;
+                const plan = Number((rule && (rule.plan || rule.plan_value)) || (fact && fact.planAuto) || 0);
+                const val = fact ? Number(fact.fact || 0) : 0;
+                if (plan && val >= plan) ok += 1;
+                else fail += 1;
+                amount += Number((fact && fact.amount) || 0);
+            });
+        });
+    } catch (err) {
+        return { value: null, status: "error" };
+    }
+    const mode = it.source_kpi_mode || "completion";
+    const total = ok + fail;
+    if (mode === "count_ok") return { value: ok };
+    if (mode === "count_fail") return { value: fail };
+    if (mode === "amount") return { value: amount };
+    return { value: total ? (ok / total) * 100 : null };
+}
+
+function mgmtManualFact(indicatorId) {
+    const key = mgmtPeriodKey();
+    const rec = appData.management.manualFacts[key] && appData.management.manualFacts[key][indicatorId];
+    return rec && rec.value != null && rec.value !== "" ? Number(rec.value) : null;
+}
+
+function mgmtPlanValue(indicatorId) {
+    const key = mgmtPeriodKey();
+    const rec = appData.management.plans[key] && appData.management.plans[key][indicatorId];
+    return rec && rec.value != null && rec.value !== "" ? Number(rec.value) : null;
+}
+
+function setMgmtManualFact(indicatorId, value) {
+    ensureManagement();
+    const key = mgmtPeriodKey();
+    if (!appData.management.manualFacts[key]) appData.management.manualFacts[key] = {};
+    const raw = String(value == null ? "" : value).trim().replace(/\s/g, "").replace(",", ".");
+    if (!raw) {
+        delete appData.management.manualFacts[key][indicatorId];
+    } else {
+        appData.management.manualFacts[key][indicatorId] = {
+            indicator_id: indicatorId,
+            period: key,
+            value: String(raw),
+            entered_by_user_id: currentAuthUserId(),
+            updated_at: new Date().toISOString()
+        };
+    }
+    saveApp();
+}
+
+function setMgmtPlanValue(indicatorId, value) {
+    ensureManagement();
+    const key = mgmtPeriodKey();
+    if (!appData.management.plans[key]) appData.management.plans[key] = {};
+    const raw = String(value == null ? "" : value).trim().replace(/\s/g, "").replace(",", ".");
+    if (!raw) delete appData.management.plans[key][indicatorId];
+    else {
+        appData.management.plans[key][indicatorId] = {
+            indicator_id: indicatorId,
+            period: key,
+            value: String(raw),
+            updated_at: new Date().toISOString()
+        };
+    }
+    saveApp();
+}
+
+function mgmtReadIndicator(it, stack) {
+    if (!it) return { value: null, status: "missing" };
+    const days = mgmtDaysInPeriod();
+    const type = it.source_type;
+    if (type === "one_c_future") return { value: null, status: "one_c" };
+    if (type === "manual") return { value: mgmtManualFact(it.indicator_id), status: "manual" };
+    if (type === "timesheet") return { value: mgmtTimesheetFact(it.department_id, it.source_timesheet_agg, days), status: "auto" };
+    if (type === "worktime_metric") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days), status: "auto" };
+    if (type === "sales_plan") return { value: mgmtSalesPlanFact(it), status: "auto" };
+    if (type === "kpi") {
+        const k = mgmtKpiFact(it);
+        return { value: k.value, status: k.status || "auto" };
+    }
+    if (type === "calculated") {
+        const seen = stack || [];
+        if (seen.indexOf(it.indicator_id) !== -1) return { value: null, status: "error" };
+        const left = mgmtIndicators().find(function (x) { return x.indicator_id === it.calc_left_id; });
+        const right = mgmtIndicators().find(function (x) { return x.indicator_id === it.calc_right_id; });
+        const next = seen.concat([it.indicator_id]);
+        const lv = left ? mgmtReadIndicator(left, next).value : null;
+        const rv = right ? mgmtReadIndicator(right, next).value : null;
+        const a = Number(lv);
+        const b = Number(rv);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return { value: null, status: "auto" };
+        const op = it.calc_op || "ratio";
+        if (op === "sum") return { value: a + b, status: "auto" };
+        if (op === "difference") return { value: a - b, status: "auto" };
+        if (op === "average") return { value: (a + b) / 2, status: "auto" };
+        if (op === "percent") return { value: b ? (a / b) * 100 : null, status: "auto" };
+        return { value: b ? a / b : null, status: "auto" };
+    }
+    return { value: null, status: "missing" };
+}
+
+function mgmtSourcePath(it) {
+    if (!it) return "";
+    if (it.source_type === "worktime_metric") {
+        const m = shopMetricCatalogById(it.source_metric_id);
+        const sub = m && it.source_submetric_id
+            ? (metricSubmetrics(m, false).find(function (s) { return s.id === it.source_submetric_id; }) || null)
+            : null;
+        return mgmtDeptName(it.department_id || (m && metricDepartmentId(m))) + " → Метрики"
+            + (m ? " → " + m.name : "")
+            + (sub ? " → " + sub.name : "");
+    }
+    if (it.source_type === "timesheet") return mgmtDeptName(it.department_id) + " → Табель";
+    if (it.source_type === "sales_plan") return mgmtDeptName(it.department_id) + " → План продаж";
+    if (it.source_type === "kpi") return mgmtDeptName(it.department_id) + " → KPI";
+    if (it.source_type === "manual") return "Ручной ввод";
+    if (it.source_type === "calculated") return "Расчёт";
+    if (it.source_type === "one_c_future") return "1С (не подключен)";
+    return mgmtSourceLabel(it.source_type);
+}
+
+function openMgmtSource(indicatorId) {
+    const it = (appData.management.indicators || []).find(function (x) { return x && x.indicator_id === indicatorId; });
+    if (!it) return;
+    toast(mgmtSourcePath(it), "success");
+    const user = currentAuthUser();
+    const dept = it.department_id;
+    if (!dept || it.source_type === "manual" || it.source_type === "calculated" || it.source_type === "one_c_future") return;
+    if (!isAppAdmin() && (!user || !userCanAccessDept(user, dept))) return;
+    try {
+        if (typeof switchUserWorkspace === "function") switchUserWorkspace(dept);
+        if (it.source_type === "worktime_metric") {
+            if (dept === "shop") showSection("metrics-pickers");
+            else if (dept === "warehouse" || dept === "drivers") showSection("dwork-" + defaultMetricTabId(dept));
+            else showSection("deptMetrics");
+        } else if (it.source_type === "timesheet") showSection("timesheet");
+        else if (it.source_type === "sales_plan") showSection("salesPlan");
+    } catch (err) { console.error(err); }
+}
+
+function mgmtVisibleIndicators() {
+    return mgmtIndicators().filter(function (it) {
+        if (mgmtDeptFilter && it.department_id && it.department_id !== mgmtDeptFilter) return false;
+        if (mgmtDeptFilter && !it.department_id) return true;
+        return true;
+    });
+}
+
+function renderManagement() {
+    try {
+        ensureManagement();
+        const tabs = document.getElementById("mgmtTabs");
+        const body = document.getElementById("mgmtBody");
+        if (!tabs || !body) return;
+        const items = [
+            { id: "dashboard", label: "Дашборд", show: userHasPerm("management", "view") || canOpenManagement() },
+            { id: "planfact", label: "План–факт", show: userHasPerm("management", "view") || canOpenManagement() },
+            { id: "tasks", label: "Задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() },
+            { id: "meetings", label: "Встречи", show: userHasPerm("managementMeetings", "view") || isAppAdmin() },
+            { id: "settings", label: "Настройка показателей", show: canEditMgmtIndicators() || isAppAdmin() }
+        ].filter(function (t) { return t.show; });
+        if (!items.length) {
+            body.innerHTML = '<div class="note">Нет доступа к разделу «Управление».</div>';
+            tabs.innerHTML = "";
+            return;
+        }
+        if (!items.some(function (t) { return t.id === mgmtTab; })) mgmtTab = items[0].id;
+        tabs.innerHTML = items.map(function (t) {
+            return '<button type="button" class="mgmt-tab' + (mgmtTab === t.id ? " on" : "") + '" onclick="setMgmtTab(\'' + t.id + '\')">'
+                + escapeHtml(t.label) + "</button>";
+        }).join("");
+        if (mgmtTab === "dashboard") body.innerHTML = renderMgmtDashboardHtml();
+        else if (mgmtTab === "planfact") body.innerHTML = renderMgmtPlanFactHtml();
+        else if (mgmtTab === "tasks") body.innerHTML = renderMgmtTasksHtml();
+        else if (mgmtTab === "meetings") body.innerHTML = renderMgmtMeetingsHtml();
+        else body.innerHTML = renderMgmtSettingsHtml();
+    } catch (err) {
+        console.error(err);
+        const body = document.getElementById("mgmtBody");
+        if (body) body.innerHTML = '<div class="note">Ошибка раздела «Управление»: ' + escapeHtml(err && err.message ? err.message : String(err)) + "</div>";
+    }
+}
+
+function setMgmtTab(id) {
+    mgmtTab = id;
+    renderManagement();
+}
+
+function setMgmtPeriodKind(kind) {
+    mgmtPeriodKind = kind === "today" || kind === "week" ? kind : "month";
+    renderManagement();
+}
+
+function setMgmtDeptFilter(code) {
+    mgmtDeptFilter = code || "";
+    renderManagement();
+}
+
+function mgmtPeriodToolbarHtml() {
+    const r = mgmtPeriodRange();
+    const label = r.from === r.to ? mgmtFmtRu(r.from) : mgmtFmtRu(r.from) + " — " + mgmtFmtRu(r.to);
+    return '<div class="mgmt-period">'
+        + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "today" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'today\')">Сегодня</button>'
+        + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "week" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'week\')">Неделя</button>'
+        + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "month" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'month\')">Месяц</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtShiftPeriod(-1)">←</button>'
+        + "<strong>" + escapeHtml(label) + "</strong>"
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtShiftPeriod(1)">→</button>'
+        + "</div>";
+}
+
+function mgmtDeptChipsHtml() {
+    let html = '<div class="mgmt-chips">'
+        + '<button type="button" class="mgmt-chip' + (!mgmtDeptFilter ? " on" : "") + '" onclick="setMgmtDeptFilter(\'\')">Компания</button>';
+    DEPT_DEFAULTS.forEach(function (d) {
+        html += '<button type="button" class="mgmt-chip' + (mgmtDeptFilter === d.code ? " on" : "") + '" onclick="setMgmtDeptFilter(\'' + d.code + '\')">'
+            + escapeHtml(d.name) + "</button>";
+    });
+    html += "</div>";
+    return html;
+}
+
+function mgmtCardHtml(it) {
+    const read = mgmtReadIndicator(it);
+    const plan = mgmtPlanValue(it.indicator_id);
+    const fact = read.value;
+    let extra = mgmtSourceLabel(it.source_type);
+    if (plan != null && fact != null && Number(plan) !== 0) {
+        const pct = (Number(fact) / Number(plan)) * 100;
+        extra = "План " + mgmtFormatValue(it, plan) + " · " + (Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%";
+    }
+    return '<div class="mgmt-card clickable" onclick="openMgmtSource(\'' + it.indicator_id + '\')">'
+        + '<div class="k">' + escapeHtml(it.name) + "</div>"
+        + '<div class="v">' + escapeHtml(mgmtFormatValue(it, fact, read.status)) + "</div>"
+        + '<div class="s">' + escapeHtml(extra) + "</div></div>";
+}
+
+function renderMgmtDashboardHtml() {
+    const list = mgmtVisibleIndicators().filter(function (it) { return it.show_on_dashboard; });
+    const top = list.filter(function (it) {
+        if (!mgmtDeptFilter) return !it.department_id;
+        return it.department_id === mgmtDeptFilter;
+    });
+    let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
+    html += '<div class="mgmt-cards">';
+    if (!top.length) html += '<div class="note">Нет показателей на дашборде. Добавьте их в настройке.</div>';
+    top.forEach(function (it) { html += mgmtCardHtml(it); });
+    html += "</div>";
+    if (!mgmtDeptFilter) {
+        DEPT_DEFAULTS.forEach(function (d) {
+            const items = list.filter(function (it) { return it.department_id === d.code; });
+            if (!items.length) return;
+            html += '<div class="mgmt-block"><h4>' + escapeHtml(d.name) + "</h4><div class=\"mgmt-cards\">";
+            items.forEach(function (it) { html += mgmtCardHtml(it); });
+            html += "</div></div>";
+        });
+    }
+    return html;
+}
+
+function mgmtRowTone(it, fact, plan) {
+    if (it.source_type === "one_c_future") return "";
+    if (plan == null || fact == null || Number(plan) === 0) return "";
+    const pct = Number(fact) / Number(plan);
+    if (pct >= 1) return "mgmt-ok";
+    if (pct >= 0.8) return "mgmt-warn";
+    return "mgmt-bad";
+}
+
+function renderMgmtPlanFactHtml() {
+    const canPlan = canEditMgmtIndicators();
+    const canManual = canEditMgmtIndicators();
+    let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
+    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + "<th>Показатель</th><th>Подразделение</th><th>План</th><th>Факт</th><th>Отклонение</th><th>%</th><th>Ответственный</th><th>Источник</th>"
+        + "</tr></thead><tbody>";
+    mgmtVisibleIndicators().forEach(function (it) {
+        const read = mgmtReadIndicator(it);
+        const plan = mgmtPlanValue(it.indicator_id);
+        const fact = read.value;
+        const diff = plan != null && fact != null ? Number(fact) - Number(plan) : null;
+        const pct = plan && Number(plan) !== 0 && fact != null ? (Number(fact) / Number(plan)) * 100 : null;
+        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+        html += '<tr class="' + mgmtRowTone(it, fact, plan) + '">'
+            + "<td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
+            + "<td>" + escapeHtml(mgmtDeptName(it.department_id)) + "</td>"
+            + "<td>" + (canPlan
+                ? '<input class="mgmt-manual" value="' + escapeAttribute(plan == null ? "" : String(plan)) + '" onchange="setMgmtPlanValue(\'' + it.indicator_id + "',this.value);renderManagement()\">"
+                : escapeHtml(plan == null ? "—" : mgmtFormatValue(it, plan)))
+            + "</td><td>";
+        if (it.source_type === "manual" && canManual) {
+            html += '<input class="mgmt-manual" value="' + escapeAttribute(fact == null ? "" : String(fact)) + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
+        } else {
+            html += escapeHtml(mgmtFormatValue(it, fact, read.status));
+        }
+        html += "</td><td>" + (diff == null ? "—" : escapeHtml(mgmtFormatValue(it, diff)))
+            + "</td><td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%"))
+            + "</td><td>" + escapeHtml(emp ? emp.name : "—")
+            + "</td><td>" + escapeHtml(mgmtSourceLabel(it.source_type)) + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function mgmtTaskStatus(task) {
+    const st = task.status || "new";
+    if (st === "done" || st === "cancelled") return st;
+    if (task.planned_date && task.planned_date < mgmtIsoFromDate(new Date()) && st !== "done" && st !== "cancelled") return "overdue";
+    return st;
+}
+
+function mgmtTaskStatusLabel(st) {
+    if (st === "new") return "Новая";
+    if (st === "in_progress") return "В работе";
+    if (st === "done") return "Выполнена";
+    if (st === "overdue") return "Просрочена";
+    if (st === "cancelled") return "Отменена";
+    return st;
+}
+
+let mgmtTaskFilter = "all";
+
+function renderMgmtTasksHtml() {
+    const today = mgmtIsoFromDate(new Date());
+    let tasks = (appData.management.tasks || []).filter(function (t) { return t && t.is_active !== false; });
+    const uid = currentAuthUserId();
+    const myEmp = (currentAuthUser() && currentAuthUser().employee_id) || "";
+    if (mgmtTaskFilter === "mine") {
+        tasks = tasks.filter(function (t) {
+            return t.created_by_user_id === uid || (myEmp && t.responsible_employee_id === myEmp);
+        });
+    }
+    if (mgmtTaskFilter === "today") tasks = tasks.filter(function (t) { return t.planned_date === today && mgmtTaskStatus(t) !== "done"; });
+    if (mgmtTaskFilter === "overdue") tasks = tasks.filter(function (t) { return mgmtTaskStatus(t) === "overdue"; });
+    if (mgmtTaskFilter === "done") tasks = tasks.filter(function (t) { return (t.status || "") === "done"; });
+    let html = '<div class="mgmt-chips">'
+        + [["all", "Все"], ["mine", "Мои"], ["today", "Сегодня"], ["overdue", "Просроченные"], ["done", "Выполненные"]].map(function (p) {
+            return '<button type="button" class="mgmt-chip' + (mgmtTaskFilter === p[0] ? " on" : "") + '" onclick="mgmtTaskFilter=\'' + p[0] + "';renderManagement()\">" + p[1] + "</button>";
+        }).join("")
+        + (canEditMgmtTasks() ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\')">+ Задача</button>' : "")
+        + "</div>";
+    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + "<th>Задача</th><th>Подразделение</th><th>Ответственный</th><th>Срок</th><th>Статус</th><th></th></tr></thead><tbody>";
+    if (!tasks.length) html += '<tr><td colspan="6"><div class="empty-row">Нет задач. Регулярные обязанности остаются в Метриках.</div></td></tr>';
+    tasks.sort(function (a, b) { return String(a.planned_date || "").localeCompare(String(b.planned_date || "")); }).forEach(function (t) {
+        const st = mgmtTaskStatus(t);
+        const emp = t.responsible_employee_id ? getEmployee(t.responsible_employee_id) : null;
+        html += '<tr class="' + (st === "overdue" ? "mgmt-bad" : st === "done" ? "mgmt-ok" : "") + '">'
+            + "<td><strong>" + escapeHtml(t.title || "") + "</strong>"
+            + (t.result ? '<div class="mgmt-src">' + escapeHtml(t.result) + "</div>" : "") + "</td>"
+            + "<td>" + escapeHtml(mgmtDeptName(t.department_id)) + "</td>"
+            + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
+            + "<td>" + escapeHtml(t.planned_date ? mgmtFmtRu(t.planned_date) : "—") + "</td>"
+            + "<td>" + escapeHtml(mgmtTaskStatusLabel(st)) + "</td>"
+            + "<td>" + (canEditMgmtTasks() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtTaskForm(\'' + t.task_id + '\')">Изменить</button>' : "")
+            + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function renderMgmtMeetingsHtml() {
+    const meetings = (appData.management.meetings || []).slice().sort(function (a, b) {
+        return String(b.date || "").localeCompare(String(a.date || ""));
+    });
+    let html = canEditMgmtMeetings()
+        ? '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openMgmtMeetingForm(\'\')">+ Встреча</button></div>'
+        : "";
+    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + "<th>Дата</th><th>Тема</th><th>Подразделение</th><th></th></tr></thead><tbody>";
+    if (!meetings.length) html += '<tr><td colspan="4"><div class="empty-row">Нет встреч.</div></td></tr>';
+    meetings.forEach(function (m) {
+        html += "<tr><td>" + escapeHtml(m.date ? mgmtFmtRu(m.date) : "—") + "</td>"
+            + "<td><strong>" + escapeHtml(m.title || "") + "</strong>"
+            + (m.notes ? '<div class="mgmt-src">' + escapeHtml(m.notes) + "</div>" : "") + "</td>"
+            + "<td>" + escapeHtml(mgmtDeptName(m.department_id)) + "</td>"
+            + "<td>"
+            + (canEditMgmtMeetings() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtMeetingForm(\'' + m.meeting_id + '\')">Изменить</button> ' : "")
+            + (canEditMgmtTasks() ? '<button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\',\'' + m.meeting_id + '\')">+ Задача</button>' : "")
+            + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function renderMgmtSettingsHtml() {
+    const all = (appData.management.indicators || []).slice().sort(function (a, b) {
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    });
+    let html = '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openMgmtIndicatorForm(\'\')">+ Показатель</button></div>';
+    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + "<th>Показатель</th><th>Подразделение</th><th>Источник</th><th>Ответственный</th><th>Дашборд</th><th>Активен</th><th></th></tr></thead><tbody>";
+    all.forEach(function (it) {
+        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+        html += "<tr><td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(it.indicator_id) + "</div></td>"
+            + "<td>" + escapeHtml(mgmtDeptName(it.department_id)) + "</td>"
+            + "<td>" + escapeHtml(mgmtSourceLabel(it.source_type)) + "</td>"
+            + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
+            + "<td>" + (it.show_on_dashboard ? "да" : "нет") + "</td>"
+            + "<td>" + (it.is_active === false ? "нет" : "да") + "</td>"
+            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openMgmtIndicatorForm(\'' + it.indicator_id + '\')">⋯</button></td></tr>';
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function mgmtEmployeeOptions(selected) {
+    let html = '<option value="">—</option>';
+    DEPT_DEFAULTS.forEach(function (d) {
+        const w = findWorkspaceByCode(d.code);
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
+            html += '<option value="' + escapeAttribute(e.id) + '"' + (e.id === selected ? " selected" : "") + ">"
+                + escapeHtml((e.name || e.id) + " · " + d.name) + "</option>";
+        });
+    });
+    return html;
+}
+
+function closeMgmtModal() {
+    const back = document.getElementById("mgmtModalBack");
+    if (back) back.classList.remove("show");
+}
+
+function openMgmtModal(html) {
+    const back = document.getElementById("mgmtModalBack");
+    const box = document.getElementById("mgmtModal");
+    if (!back || !box) return;
+    box.innerHTML = html;
+    back.classList.add("show");
+}
+
+function mgmtDeptOptions(selected) {
+    let html = '<option value=""' + (!selected ? " selected" : "") + ">Компания</option>";
+    DEPT_DEFAULTS.forEach(function (d) {
+        html += '<option value="' + d.code + '"' + (selected === d.code ? " selected" : "") + ">" + escapeHtml(d.name) + "</option>";
+    });
+    return html;
+}
+
+function openMgmtIndicatorForm(id) {
+    ensureManagement();
+    const it = id ? (appData.management.indicators || []).find(function (x) { return x.indicator_id === id; }) : {
+        indicator_id: "",
+        name: "",
+        department_id: mgmtDeptFilter || "",
+        source_type: "manual",
+        show_on_dashboard: true,
+        is_active: true,
+        unit: "number",
+        aggregation_type: "sum",
+        sort_order: 10
+    };
+    let html = "<h3>" + (id ? "Показатель" : "Новый показатель") + "</h3>"
+        + '<div class="metric-cat-form">'
+        + '<div class="form-group full"><label>Название</label><input id="miName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
+        + '<div class="form-group"><label>Подразделение</label><select id="miDept" onchange="refreshMgmtIndicatorSourceFields()">' + mgmtDeptOptions(it.department_id) + "</select></div>"
+        + '<div class="form-group"><label>Источник</label><select id="miSource" onchange="refreshMgmtIndicatorSourceFields()">'
+        + [["worktime_metric", "Метрики Work Time"], ["timesheet", "Табель"], ["kpi", "KPI"], ["sales_plan", "План продаж"], ["manual", "Ручной"], ["calculated", "Расчёт"], ["one_c_future", "1С (позже)"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + (it.source_type === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group full" id="miSourceBox"></div>'
+        + '<div class="form-group"><label>Единица</label><select id="miUnit">'
+        + [["number", "Число"], ["money", "₽"], ["percent", "%"], ["days", "Дни"], ["people", "Человек"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + (it.unit === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Агрегация</label><select id="miAgg">'
+        + [["sum", "SUM"], ["average", "AVERAGE"], ["last", "LAST_VALUE"], ["count", "COUNT"], ["ratio", "RATIO"], ["none", "NOT_APPLICABLE"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + (it.aggregation_type === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Ответственный</label><select id="miOwner">' + mgmtEmployeeOptions(it.owner_employee_id) + "</select></div>"
+        + '<div class="form-group"><label>Порядок</label><input id="miOrder" type="number" value="' + escapeAttribute(String(it.sort_order || 10)) + '"></div>'
+        + '<div class="form-group"><label class="check"><input id="miDash" type="checkbox"' + (it.show_on_dashboard !== false ? " checked" : "") + "> На дашборде</label></div>"
+        + '<div class="form-group"><label class="check"><input id="miActive" type="checkbox"' + (it.is_active !== false ? " checked" : "") + "> Активен</label></div>"
+        + "</div>"
+        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + '<button type="button" class="btn btn-primary" onclick="saveMgmtIndicator(\'' + (it.indicator_id || "") + '\')">Сохранить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    openMgmtModal(html);
+    refreshMgmtIndicatorSourceFields(it);
+}
+
+function refreshMgmtIndicatorSourceFields(preset) {
+    const box = document.getElementById("miSourceBox");
+    const type = (document.getElementById("miSource") || {}).value || "manual";
+    const dept = (document.getElementById("miDept") || {}).value || "";
+    const it = preset || {};
+    let html = "";
+    if (type === "worktime_metric") {
+        const items = catalogItemsForDept(dept || "shop");
+        html = "<label>Метрика</label><select id=\"miMetric\" onchange=\"refreshMgmtSubmetricSelect()\">";
+        html += '<option value="">Выберите метрику</option>';
+        items.forEach(function (m) {
+            html += '<option value="' + escapeAttribute(m.id) + '"' + (it.source_metric_id === m.id ? " selected" : "") + ">"
+                + escapeHtml(m.name) + "</option>";
+        });
+        html += '</select><div id="miSubBox"></div>';
+    } else if (type === "timesheet") {
+        html = "<label>Показатель табеля</label><select id=\"miTsAgg\">";
+        [["headcount", "Количество сотрудников"], ["days", "Отработано дней"], ["hours", "Отработано часов"], ["ya", "Явки"], ["late", "Опоздания"], ["skip", "Прогулы"], ["sick", "Больничные"], ["vacation", "Отпуска"]].forEach(function (p) {
+            html += '<option value="' + p[0] + '"' + (it.source_timesheet_agg === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        });
+        html += "</select>";
+    } else if (type === "sales_plan") {
+        html = "<label>План продаж</label><select id=\"miSpView\">";
+        Object.keys(SALES_PLAN_VIEWS).forEach(function (id) {
+            const v = SALES_PLAN_VIEWS[id];
+            html += '<option value="' + id + '"' + (it.source_sales_plan_view === id ? " selected" : "") + ">" + escapeHtml(v.title) + "</option>";
+        });
+        html += '</select><label>Поле</label><select id="miSpField">'
+            + '<option value="fact"' + (it.source_sales_plan_field === "fact" ? " selected" : "") + ">Факт</option>"
+            + '<option value="plan"' + (it.source_sales_plan_field === "plan" ? " selected" : "") + ">План</option>"
+            + '<option value="rate"' + (it.source_sales_plan_field === "rate" ? " selected" : "") + ">% выполнения</option></select>";
+    } else if (type === "kpi") {
+        html = "<label>KPI</label><select id=\"miKpiMode\">"
+            + '<option value="completion">% выполненных</option>'
+            + '<option value="count_ok">Количество выполненных</option>'
+            + '<option value="count_fail">Проблемные</option>'
+            + '<option value="amount">Начисление</option></select>';
+    } else if (type === "calculated") {
+        html = "<label>Операция</label><select id=\"miCalcOp\">"
+            + [["ratio", "RATIO A / B"], ["percent", "PERCENT A / B × 100"], ["sum", "SUM"], ["difference", "DIFFERENCE"], ["average", "AVERAGE"]].map(function (p) {
+                return '<option value="' + p[0] + '"' + (it.calc_op === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+            }).join("") + "</select><label>A</label><select id=\"miCalcLeft\">";
+        mgmtIndicators().forEach(function (x) {
+            html += '<option value="' + x.indicator_id + '"' + (it.calc_left_id === x.indicator_id ? " selected" : "") + ">" + escapeHtml(x.name) + "</option>";
+        });
+        html += '</select><label>B</label><select id="miCalcRight">';
+        mgmtIndicators().forEach(function (x) {
+            html += '<option value="' + x.indicator_id + '"' + (it.calc_right_id === x.indicator_id ? " selected" : "") + ">" + escapeHtml(x.name) + "</option>";
+        });
+        html += "</select>";
+    } else if (type === "manual") {
+        html = '<div class="note">Факт вводится один раз в План–факте за выбранный период.</div>';
+    } else if (type === "one_c_future") {
+        html = '<div class="note">API 1С не подключен. Можно позже сменить источник на 1С, сохранив тот же indicator_id.</div>';
+    }
+    if (box) box.innerHTML = html;
+    if (type === "worktime_metric") refreshMgmtSubmetricSelect(it.source_submetric_id);
+}
+
+function refreshMgmtSubmetricSelect(selected) {
+    const box = document.getElementById("miSubBox");
+    const mid = (document.getElementById("miMetric") || {}).value || "";
+    if (!box) return;
+    const item = shopMetricCatalogById(mid);
+    const subs = item ? metricSubmetrics(item, true) : [];
+    if (!subs.length) {
+        box.innerHTML = "";
+        return;
+    }
+    let html = "<label>Подметрика</label><select id=\"miSub\"><option value=\"\">—</option>";
+    subs.forEach(function (s) {
+        html += '<option value="' + escapeAttribute(s.id) + '"' + (selected === s.id ? " selected" : "") + ">" + escapeHtml(s.name) + "</option>";
+    });
+    html += "</select>";
+    box.innerHTML = html;
+}
+
+function saveMgmtIndicator(id) {
+    if (!canEditMgmtIndicators()) return;
+    ensureManagement();
+    const name = String((document.getElementById("miName") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!name) { toast("Укажите название.", "error"); return; }
+    let it = id ? appData.management.indicators.find(function (x) { return x.indicator_id === id; }) : null;
+    if (!it) {
+        it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
+        appData.management.indicators.push(it);
+    }
+    it.name = name;
+    it.department_id = (document.getElementById("miDept") || {}).value || "";
+    it.source_type = (document.getElementById("miSource") || {}).value || "manual";
+    it.source_metric_id = (document.getElementById("miMetric") || {}).value || "";
+    it.source_submetric_id = (document.getElementById("miSub") || {}).value || "";
+    it.source_timesheet_agg = (document.getElementById("miTsAgg") || {}).value || "days";
+    it.source_sales_plan_view = (document.getElementById("miSpView") || {}).value || "shop";
+    it.source_sales_plan_field = (document.getElementById("miSpField") || {}).value || "fact";
+    it.source_kpi_mode = (document.getElementById("miKpiMode") || {}).value || "completion";
+    it.calc_op = (document.getElementById("miCalcOp") || {}).value || "ratio";
+    it.calc_left_id = (document.getElementById("miCalcLeft") || {}).value || "";
+    it.calc_right_id = (document.getElementById("miCalcRight") || {}).value || "";
+    it.unit = (document.getElementById("miUnit") || {}).value || "number";
+    it.aggregation_type = (document.getElementById("miAgg") || {}).value || "sum";
+    it.owner_employee_id = (document.getElementById("miOwner") || {}).value || "";
+    it.sort_order = Number((document.getElementById("miOrder") || {}).value || 10);
+    it.show_on_dashboard = !!(document.getElementById("miDash") && document.getElementById("miDash").checked);
+    it.is_active = !!(document.getElementById("miActive") && document.getElementById("miActive").checked);
+    normalizeMgmtIndicator(it);
+    saveApp();
+    closeMgmtModal();
+    renderManagement();
+    toast("Показатель сохранён.");
+}
+
+function openMgmtTaskForm(id, meetingId) {
+    ensureManagement();
+    const t = id ? appData.management.tasks.find(function (x) { return x.task_id === id; }) : {
+        task_id: "",
+        title: "",
+        department_id: mgmtDeptFilter || "",
+        responsible_employee_id: "",
+        planned_date: "",
+        status: "new",
+        result: "",
+        priority: "normal",
+        meeting_id: meetingId || ""
+    };
+    const html = "<h3>" + (id ? "Задача" : "Новая задача") + "</h3>"
+        + '<div class="form-group"><label>Название</label><input id="mtTitle" maxlength="200" value="' + escapeAttribute(t.title || "") + '"></div>'
+        + '<div class="form-group"><label>Подразделение</label><select id="mtDept">' + mgmtDeptOptions(t.department_id) + "</select></div>"
+        + '<div class="form-group"><label>Ответственный</label><select id="mtEmp">' + mgmtEmployeeOptions(t.responsible_employee_id) + "</select></div>"
+        + '<div class="form-group"><label>Срок</label><input id="mtDate" type="date" value="' + escapeAttribute(t.planned_date || "") + '"></div>'
+        + '<div class="form-group"><label>Статус</label><select id="mtStatus">'
+        + [["new", "Новая"], ["in_progress", "В работе"], ["done", "Выполнена"], ["cancelled", "Отменена"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + ((t.status || "new") === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Результат</label><input id="mtResult" maxlength="240" value="' + escapeAttribute(t.result || "") + '"></div>'
+        + '<input type="hidden" id="mtMeeting" value="' + escapeAttribute(t.meeting_id || meetingId || "") + '">'
+        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + '<button type="button" class="btn btn-primary" onclick="saveMgmtTask(\'' + (t.task_id || "") + '\')">Сохранить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    openMgmtModal(html);
+}
+
+function saveMgmtTask(id) {
+    if (!canEditMgmtTasks()) return;
+    ensureManagement();
+    const title = String((document.getElementById("mtTitle") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!title) { toast("Укажите название задачи.", "error"); return; }
+    let t = id ? appData.management.tasks.find(function (x) { return x.task_id === id; }) : null;
+    if (!t) {
+        t = {
+            task_id: nextPrefixedId("mtask", appData.management.tasks.map(function (x) { return x && x.task_id; })),
+            created_by_user_id: currentAuthUserId(),
+            created_date: mgmtIsoFromDate(new Date()),
+            is_active: true
+        };
+        appData.management.tasks.push(t);
+    }
+    t.title = title;
+    t.department_id = (document.getElementById("mtDept") || {}).value || "";
+    t.responsible_employee_id = (document.getElementById("mtEmp") || {}).value || "";
+    t.planned_date = (document.getElementById("mtDate") || {}).value || "";
+    t.status = (document.getElementById("mtStatus") || {}).value || "new";
+    t.result = (document.getElementById("mtResult") || {}).value || "";
+    t.meeting_id = (document.getElementById("mtMeeting") || {}).value || t.meeting_id || "";
+    if (t.status === "done" && !t.completed_date) t.completed_date = mgmtIsoFromDate(new Date());
+    saveApp();
+    closeMgmtModal();
+    mgmtTab = "tasks";
+    renderManagement();
+}
+
+function openMgmtMeetingForm(id) {
+    ensureManagement();
+    const m = id ? appData.management.meetings.find(function (x) { return x.meeting_id === id; }) : {
+        meeting_id: "",
+        date: mgmtIsoFromDate(new Date()),
+        title: "",
+        notes: "",
+        department_id: mgmtDeptFilter || ""
+    };
+    const html = "<h3>" + (id ? "Встреча" : "Новая встреча") + "</h3>"
+        + '<div class="form-group"><label>Дата</label><input id="mmDate" type="date" value="' + escapeAttribute(m.date || "") + '"></div>'
+        + '<div class="form-group"><label>Тема</label><input id="mmTitle" maxlength="200" value="' + escapeAttribute(m.title || "") + '"></div>'
+        + '<div class="form-group"><label>Подразделение</label><select id="mmDept">' + mgmtDeptOptions(m.department_id) + "</select></div>"
+        + '<div class="form-group"><label>Заметки / решения</label><textarea id="mmNotes" rows="4">' + escapeHtml(m.notes || "") + "</textarea></div>"
+        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + '<button type="button" class="btn btn-primary" onclick="saveMgmtMeeting(\'' + (m.meeting_id || "") + '\')">Сохранить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    openMgmtModal(html);
+}
+
+function saveMgmtMeeting(id) {
+    if (!canEditMgmtMeetings()) return;
+    ensureManagement();
+    const title = String((document.getElementById("mmTitle") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!title) { toast("Укажите тему встречи.", "error"); return; }
+    let m = id ? appData.management.meetings.find(function (x) { return x.meeting_id === id; }) : null;
+    if (!m) {
+        m = {
+            meeting_id: nextPrefixedId("meet", appData.management.meetings.map(function (x) { return x && x.meeting_id; })),
+            created_by_user_id: currentAuthUserId(),
+            created_at: new Date().toISOString()
+        };
+        appData.management.meetings.push(m);
+    }
+    m.title = title;
+    m.date = (document.getElementById("mmDate") || {}).value || "";
+    m.department_id = (document.getElementById("mmDept") || {}).value || "";
+    m.notes = (document.getElementById("mmNotes") || {}).value || "";
+    saveApp();
+    closeMgmtModal();
+    mgmtTab = "meetings";
+    renderManagement();
+}
+
+
+/* ============================================================
    ЧАСЫ И ЗАПУСК
 ============================================================ */
 function updateClock() {
@@ -19706,6 +20823,7 @@ function init() {
         }
     }
     try { ensureLoginData(); } catch (err) { console.error(err); }
+    try { ensureManagement(); } catch (err) { console.error(err); }
     try { renderLogin(requestedLoginView()); } catch (err) { console.error(err); }
     try { updateClock(); } catch (err) { console.error(err); }
     setInterval(function () { try { updateClock(); } catch (err) {} }, 1000);
