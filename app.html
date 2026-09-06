@@ -2593,6 +2593,11 @@
                 <div class="note">Анна Владимировна · Ольга · Наталья</div>
                 <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('summary')">Открыть</button>
             </div>
+            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('management')">
+                <h3>Управление</h3>
+                <div class="note">Дашборд, план–факт, задачи и встречи над всеми отделами.</div>
+                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('management')">Открыть</button>
+            </div>
             <div class="login-card summary-card" role="button" tabindex="0" onclick="renderLogin('admin')">
                 <h3>Администратор</h3>
                 <div class="note">Отдельный вход. Все подразделения и пользователи.</div>
@@ -2615,6 +2620,11 @@
         <div class="logo">⏱ <span>WorkTime</span></div>
 
         <div class="dept-now" id="deptNow"></div>
+
+        <div class="menu-title" id="mgmtMenuTitle" style="display:none">Управление</div>
+        <button type="button" class="nav-btn" data-for="both" data-section="management" onclick="showSection('management', this)">
+            🗂 Управление
+        </button>
 
         <div class="menu-title">Работа</div>
 
@@ -2708,10 +2718,6 @@
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="analysis" onclick="showSection('analysis', this)">
             📈 Анализ
-        </button>
-        <div class="menu-title" id="mgmtMenuTitle" style="display:none">Управление</div>
-        <button type="button" class="nav-btn" data-for="both" data-section="management" onclick="showSection('management', this)">
-            🗂 Управление
         </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="fio" onclick="showSection('fio', this)">
             👤 ФИО сотрудника
@@ -5159,8 +5165,19 @@ function userAccessDeptCodes(user) {
     return out;
 }
 
+function userCanOpenManagementAccess(user) {
+    if (!user || user.is_active === false) return false;
+    if (user.role === "admin" || user.legacy_role === "admin") return true;
+    const p = user.permissions || {};
+    return permRank(p.management) > 0
+        || permRank(p.managementIndicators) > 0
+        || permRank(p.managementTasks) > 0
+        || permRank(p.managementMeetings) > 0;
+}
+
 function userCanAccessDept(user, code) {
     if (!user || user.is_active === false) return false;
+    if (code === "mgmt" || code === "management") return userCanOpenManagementAccess(user);
     if (user.role === "admin" || user.legacy_role === "admin") return true;
     return userAccessDeptCodes(user).indexOf(code) !== -1;
 }
@@ -5240,6 +5257,8 @@ function applyLegacyRolesFromUser(user, code) {
     currentDeptRole = (user.role === "manager" || userHasPerm("settings", "edit")) ? "admin" : "staff";
 }
 
+let pendingOpenSection = "";
+
 function enterAsUser(user, code) {
     ensureLoginData();
     migrateAppUsers(appData);
@@ -5259,7 +5278,10 @@ function enterAsUser(user, code) {
     setCurrentWorkspace(w);
     applyLegacyRolesFromUser(user, code);
     selectedMonth = currentMonthValue();
-    if (user.legacy_role === "pay") currentSection = "salary";
+    const want = pendingOpenSection;
+    pendingOpenSection = "";
+    if (want && allowedSections().indexOf(want) !== -1) currentSection = want;
+    else if (user.legacy_role === "pay") currentSection = "salary";
     else if (user.legacy_role === "adjust") currentSection = "salary";
     else currentSection = defaultSection();
     clearLoginPinState();
@@ -6888,7 +6910,7 @@ function summaryMonthMoney(monthValue) {
 function renderLogin(view) {
     try {
         console.log("[WorkTime login click]", view);
-        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin") loginView = view;
+        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin" || view === "management") loginView = view;
         ensureLoginData();
         try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
@@ -6957,6 +6979,15 @@ function renderLogin(view) {
             }
             grid.className = "login-grid single-view";
             grid.innerHTML = adminLoginCardHtml();
+        } else if (loginView === "management") {
+            backHome();
+            if (title) title.textContent = "Управление";
+            if (subtitle) {
+                subtitle.innerHTML = "Слой над отделами: дашборд, план–факт, задачи и встречи. Выберите пользователя с правом «Управление»."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = userPinLoginCardHtml("mgmt", "Управление");
         } else {
             if (homeLink) {
                 homeLink.innerHTML = '<a href="index.html">← На главную</a>';
@@ -6967,7 +6998,7 @@ function renderLogin(view) {
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid";
-            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + adminFolderCardHtml();
+            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + managementFolderCardHtml() + adminFolderCardHtml();
         }
 
         restoreAllLoginCardState(grid);
@@ -6981,7 +7012,9 @@ function renderLogin(view) {
                         ? " Общая: 5555 / 6666 / 7777."
                         : loginView === "admin"
                             ? " Админ: 5555."
-                            : " Введите личный PIN пользователя этого раздела.")
+                            : loginView === "management"
+                                ? " Вход пользователей с правом «Управление» (админ — 5555)."
+                                : " Введите личный PIN пользователя этого раздела.")
                 : "";
         }
     } catch (err) {
@@ -7194,6 +7227,10 @@ function adminFolderCardHtml() {
     return folderCardHtml("summary-card", "admin", "Администратор", "Отдельный вход. Все подразделения и пользователи.", "");
 }
 
+function managementFolderCardHtml() {
+    return folderCardHtml("summary-folder", "management", "Управление", "Дашборд, план–факт, задачи и встречи над всеми отделами.", "");
+}
+
 function summaryLoginCardHtml() {
     return userPinLoginCardHtml("summary", "Общая");
 }
@@ -7298,7 +7335,10 @@ function loginByCode(code) {
         }
         clearLoginPinState(code);
         if (input) input.value = "";
-        if (!enterAsUser(user, code)) {
+        const dest = (code === "mgmt" || code === "management") ? "summary" : code;
+        if (dest === "summary" && (code === "mgmt" || code === "management")) pendingOpenSection = "management";
+        if (!enterAsUser(user, dest)) {
+            pendingOpenSection = "";
             showLoginError(code, "Ошибка входа в раздел.");
         }
     } catch (err) {
@@ -7553,9 +7593,12 @@ function closeSidebar() {
 
 function allowedSections() {
     const code = workspace() && workspace().code;
-    if (isSummary()) {
+        if (isSummary()) {
         if (currentSummaryRole === "pay" || (currentAuthUser() && currentAuthUser().legacy_role === "pay")) {
-            return userHasPerm("salary", "view") ? ["salary"] : [];
+            const payList = [];
+            if (userHasPerm("salary", "view")) payList.push("salary");
+            if (canOpenManagement()) payList.push("management");
+            return payList;
         }
         const list = [];
         if (userHasPerm("timesheet", "view")) list.push("timesheet");
@@ -19733,6 +19776,7 @@ let mgmtAnchorIso = "";
 let mgmtDeptFilter = "";
 
 function canOpenManagement() {
+    if (isAppAdmin()) return true;
     return userHasPerm("management", "view")
         || userHasPerm("managementIndicators", "view")
         || userHasPerm("managementTasks", "view")
@@ -20800,7 +20844,7 @@ function verifyRepPayExample() {
 function requestedLoginView() {
     try {
         var hash = String(location.hash || "").replace("#", "");
-        if (hash === "shop" || hash === "territory" || hash === "summary") return hash;
+        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "management") return hash;
         var search = location.search || "";
         if (/(?:^|[?&])view=shop(?:&|$)/.test(search)) return "shop";
         if (/(?:^|[?&])view=territory(?:&|$)/.test(search)) return "territory";
