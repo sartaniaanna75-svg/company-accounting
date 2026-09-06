@@ -803,6 +803,11 @@
             background: #f8fafc;
             color: #94a3b8;
         }
+        .metrics-loss-kpi-table { width: 100%; font-size: 13px; }
+        .metrics-loss-kpi-table th, .metrics-loss-kpi-table td { padding: 6px 8px; text-align: left; }
+        .metrics-loss-kpi-table .is-ok { color: #166534; font-weight: 700; }
+        .metrics-loss-kpi-table .is-fail { color: #b42318; font-weight: 700; }
+        .metrics-loss-kpi-btn { padding: 2px 8px; font-size: 12px; }
         .metrics-resp-hint {
             font-size: 10px;
             line-height: 1.2;
@@ -816,7 +821,7 @@
             font-weight: 700;
             color: #334155;
         }
-        .metrics-inv-loss.is-loss {
+        .metrics-loss-empty { min-height: 18px; display: block; }
             color: #b42318;
             background: #fdecee;
             border-radius: 3px;
@@ -3647,6 +3652,7 @@ let metricControlDaysKey = "";
 let metricControlView = "people";
 let metricsFillViewByKey = {};
 let fioFilterByDept = {};
+let writeoffLossesOpenId = "";
 let revisionFocusGroupId = "";
 let revisionFocusFolderId = "";
 let revisionEscBound = false;
@@ -7547,6 +7553,7 @@ function setMetricsFillView(view_mode) {
 function metricFieldViewMode(field) {
     if (!field) return "";
     if (field.service) return "numeric";
+    if (field.type === "writeoff_personal" || field.key === "_writeoffPersonal") return "numeric";
     if (field.type === "actual" || field.type === "avgCheck" || field.autoCalc) return "numeric";
     const mid = field.metricId || METRIC_ID_ALIASES[field.key];
     const it = mid ? shopMetricCatalogById(mid) : null;
@@ -8184,7 +8191,7 @@ function shopRecountSelectHtml(day) {
     html += "</select>";
     html += '<div class="metrics-resp-hint" id="mrecount-resp-hint-' + day + '"'
         + (empty ? "" : ' style="display:none"') + ">"
-        + (empty ? "Не выбран ответственный" : "") + "</div>";
+        + (empty ? "Не выбран ответственный за пересчёт" : "") + "</div>";
     return html;
 }
 
@@ -8201,7 +8208,7 @@ function refreshShopRecountTotalsUi() {
         const hint = document.getElementById("mrecount-resp-hint-" + day);
         if (hint) {
             const need = shopInventoryFieldNeedsFill(day, "responsible");
-            hint.textContent = need ? "Не выбран ответственный" : "";
+            hint.textContent = need ? "Не выбран ответственный за пересчёт" : "";
             hint.style.display = need ? "" : "none";
         }
         const tdResp = document.getElementById("mrecount-resp-td-" + day);
@@ -8215,6 +8222,7 @@ function refreshShopRecountTotalsUi() {
     const card = document.getElementById("mcard-recount");
     if (card) card.textContent = formatShopMetricField({ type: "number" }, monthSum);
     for (let d = 1; d <= days; d++) refreshShopInventoryUi(d);
+    renderShopWriteoffLossesPanel();
 }
 
 function shopMetricsActorUserId() {
@@ -8440,14 +8448,20 @@ function shopWriteoffLossesMonth(month, create) {
 }
 
 function shopInventoryDayHasValues(day, month) {
+    if (shopInventoryAmountFilled(day, "posting", month) || shopInventoryAmountFilled(day, "writeoff", month)) return true;
     const rec = getShopInventoryDay(day, month);
     return !!(rec.posting || rec.writeoff);
 }
 
+function shopInventoryDayResult(day, month) {
+    if (!shopInventoryDayHasValues(day, month)) return null;
+    return Number(getShopInventoryDay(day, month).result || 0);
+}
+
 function shopInventoryDayLoss(day, month) {
-    const rec = getShopInventoryDay(day, month);
-    if (!rec.posting && !rec.writeoff) return 0;
-    return Math.max(0, -Number(rec.result || 0));
+    const result = shopInventoryDayResult(day, month);
+    if (result == null) return 0;
+    return Math.max(0, -result);
 }
 
 function shopInventoryMonthHasAny(month) {
@@ -8489,34 +8503,342 @@ function shopWriteoffLossesComputedMonth(month) {
     return sum;
 }
 
+function shopWriteoffDailyInventoryResult(employeeId, day, month) {
+    if (!employeeId) return null;
+    if (getShopRecountResponsibleId(day, month) !== employeeId) return null;
+    return shopInventoryDayResult(day, month);
+}
+
+function shopWriteoffMonthlyInventoryResult(employeeId, month) {
+    const days = daysInMonthValue(month || selectedMonth);
+    let sum = 0;
+    for (let day = 1; day <= days; day++) {
+        const result = shopWriteoffDailyInventoryResult(employeeId, day, month);
+        if (result == null) continue;
+        sum += result;
+    }
+    return sum;
+}
+
+function shopWriteoffPersonalLoss(employeeId, month) {
+    return Math.max(0, -shopWriteoffMonthlyInventoryResult(employeeId, month));
+}
+
 function shopWriteoffLossesEmployeeDay(employeeId, day, month) {
-    if (!employeeId || getShopRecountResponsibleId(day, month) !== employeeId) return 0;
-    return shopInventoryDayLoss(day, month);
+    const result = shopWriteoffDailyInventoryResult(employeeId, day, month);
+    return result == null ? 0 : result;
 }
 
 function shopWriteoffLossesEmployeeMonth(employeeId, month) {
-    const days = daysInMonthValue(month || selectedMonth);
-    let sum = 0;
-    for (let day = 1; day <= days; day++) sum += shopWriteoffLossesEmployeeDay(employeeId, day, month);
-    return sum;
+    return shopWriteoffPersonalLoss(employeeId, month);
 }
 
 function shopWriteoffLossesEmployeeDays(employeeId, month) {
     const days = daysInMonthValue(month || selectedMonth);
     const list = [];
     for (let day = 1; day <= days; day++) {
-        const loss = shopWriteoffLossesEmployeeDay(employeeId, day, month);
-        const resp = getShopRecountResponsibleId(day, month);
-        if (!loss && resp !== employeeId) continue;
-        if (resp !== employeeId) continue;
+        const result = shopWriteoffDailyInventoryResult(employeeId, day, month);
+        if (result == null) continue;
         list.push({
             day: day,
-            loss: loss,
-            employee_id: employeeId,
-            result: getShopInventoryDay(day, month).result
+            result: result,
+            loss: Math.max(0, -result),
+            employee_id: employeeId
         });
     }
     return list;
+}
+
+function shopWriteoffKpiLimitTitle(limit) {
+    const n = Math.round(Number(limit || 0));
+    if (!n) return "";
+    return "Потерь/списаний товара не более чем на " + n.toLocaleString("ru-RU") + " рублей в месяц";
+}
+
+function shopSyncWriteoffKpiTitle(def) {
+    if (!def || canonicalMetricId(def.metricId || def.metric_id) !== METRIC_WRITEOFF_LOSSES_ID) return;
+    const title = shopWriteoffKpiLimitTitle(def.plan || def.limit_value);
+    if (!title) return;
+    def.name = title;
+    const item = shopMetricCatalogById(METRIC_WRITEOFF_LOSSES_ID);
+    if (item) item.name = title;
+}
+
+function shopWriteoffPersonalFootHtml(employeeId, month) {
+    const net = shopWriteoffMonthlyInventoryResult(employeeId, month);
+    const loss = Math.max(0, -net);
+    return '<div class="metrics-inv-result ' + shopInventoryResultClass(net) + '">'
+        + formatShopSignedMoney(net, false) + "</div>"
+        + '<div class="shop-kpi-mini" title="Потери для KPI = max(0, −месячный результат)">потери '
+        + Math.round(loss).toLocaleString("ru-RU") + " ₽</div>";
+}
+
+function shopWriteoffLossesColumnLabel() {
+    const def = shopWriteoffLossesKpiDef();
+    const limit = def ? Number(def.plan || def.limit_value || 0) : 0;
+    const titled = shopWriteoffKpiLimitTitle(limit);
+    if (titled) return titled;
+    const named = String((def && def.name) || "").replace(/\s+/g, " ").trim();
+    return named || shopMetricDisplayName(METRIC_WRITEOFF_LOSSES_ID, "Потери списания");
+}
+
+function shopWriteoffLossesColumnPeople(month) {
+    const m = month || selectedMonth;
+    const def = shopWriteoffLossesKpiDef(m);
+    const seen = {};
+    const list = [];
+    function add(id) {
+        if (!id || seen[id]) return;
+        const emp = getEmployee(id);
+        if (!emp) return;
+        seen[id] = true;
+        list.push(emp);
+    }
+    if (def) {
+        const w = findWorkspaceByCode("shop");
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!e || !e.id) return;
+            if (shopKpiAssigned(e.id, def.kpi_id, m)) add(e.id);
+        });
+    }
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function shopWriteoffPersonalCellHtml(employeeId, day, month) {
+    const m = month || selectedMonth;
+    if (shopTimesheetIsDayOff(employeeId, day, m)) {
+        return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
+    }
+    const resp = getShopRecountResponsibleId(day, m);
+    if (resp !== employeeId) {
+        return '<span class="metrics-auto-fact metrics-loss-empty" id="minv-ploss-' + employeeId + "-" + day
+            + '" title="Не ответственный за пересчёт"></span>';
+    }
+    if (!shopInventoryDayHasValues(day, m)) {
+        return '<span class="metrics-auto-fact metrics-loss-empty" id="minv-ploss-' + employeeId + "-" + day
+            + '" title="Нет оприходования/списания"></span>';
+    }
+    const result = shopWriteoffDailyInventoryResult(employeeId, day, m);
+    const n = Number(result || 0);
+    return '<span class="metrics-auto-fact metrics-inv-result ' + shopInventoryResultClass(n)
+        + '" id="minv-ploss-' + employeeId + "-" + day
+        + '" title="Дневной итог инвентаризации ответственного за пересчёт (оприходование − списание).">'
+        + formatShopSignedMoney(n, false) + "</span>";
+}
+
+function shopWriteoffKpiDefsAll(p) {
+    return ((p || ensureShopPayroll()).kpiDefs || []).filter(function (d) {
+        return d && canonicalMetricId(d.metricId || d.metric_id) === METRIC_WRITEOFF_LOSSES_ID;
+    });
+}
+
+function shopPickCanonicalWriteoffKpiId(p) {
+    p = p || ensureShopPayroll();
+    const defs = shopWriteoffKpiDefsAll(p);
+    if (!defs.length) return "";
+    const counts = {};
+    (p.assignments || []).forEach(function (a) {
+        if (!a || a.is_active === false) return;
+        const id = a.kpi_id;
+        if (!id) return;
+        counts[id] = (counts[id] || 0) + 1;
+    });
+    const unique = [];
+    const seen = {};
+    defs.forEach(function (d) {
+        if (!d.kpi_id || seen[d.kpi_id]) return;
+        seen[d.kpi_id] = true;
+        unique.push(d);
+    });
+    unique.sort(function (a, b) {
+        const ca = counts[a.kpi_id] || 0;
+        const cb = counts[b.kpi_id] || 0;
+        if (cb !== ca) return cb - ca;
+        const fa = String(a.validFrom || a.valid_from || "");
+        const fb = String(b.validFrom || b.valid_from || "");
+        if (fa !== fb) return fa.localeCompare(fb);
+        return String(a.kpi_id).localeCompare(String(b.kpi_id));
+    });
+    return unique[0].kpi_id;
+}
+
+function shopPreferPrimaryWriteoffKpi(defs) {
+    const list = defs || [];
+    const wo = list.filter(function (d) {
+        return d && d.active !== false && canonicalMetricId(d.metricId || d.metric_id) === METRIC_WRITEOFF_LOSSES_ID;
+    });
+    if (wo.length <= 1) return list;
+    const primary = shopPickCanonicalWriteoffKpiId();
+    return list.filter(function (d) {
+        if (canonicalMetricId(d.metricId || d.metric_id) !== METRIC_WRITEOFF_LOSSES_ID) return true;
+        return d.kpi_id === primary;
+    });
+}
+
+function shopMetricLooksLikeWriteoffLosses(it) {
+    if (!it) return false;
+    if (canonicalMetricId(it.id) === METRIC_WRITEOFF_LOSSES_ID) return false;
+    if (it.fill_type === "month_money") return true;
+    const n = String(it.name || "").replace(/\s+/g, " ").toLowerCase();
+    return n.indexOf("потер") !== -1 && n.indexOf("списан") !== -1;
+}
+
+function consolidateDuplicateWriteoffKpis(p) {
+    if (shopKpiMigrating) return false;
+    p = p || ensureShopPayroll();
+    const primary = shopPickCanonicalWriteoffKpiId(p);
+    if (!primary) return false;
+    let changed = false;
+    const month = selectedMonth;
+    const ids = {};
+    shopWriteoffKpiDefsAll(p).forEach(function (d) {
+        if (d && d.kpi_id) ids[d.kpi_id] = true;
+    });
+    const live = shopWriteoffKpiDefsAll(p).filter(function (d) {
+        return d && d.active !== false
+            && shopPeriodApplies(d.validFrom || d.valid_from, d.validTo || d.valid_to, month);
+    });
+    live.sort(function (a, b) {
+        return String(b.validFrom || b.valid_from || "").localeCompare(String(a.validFrom || a.valid_from || ""));
+    });
+    const newest = live[0];
+    const primaryLive = live.find(function (d) { return d.kpi_id === primary; })
+        || shopWriteoffKpiDefsAll(p).filter(function (d) { return d && d.kpi_id === primary; })[0];
+    if (newest && primaryLive && newest.kpi_id !== primary && newest !== primaryLive) {
+        primaryLive.plan = newest.plan;
+        primaryLive.limit_value = newest.limit_value != null ? newest.limit_value : newest.plan;
+        primaryLive.budget = newest.budget;
+        primaryLive.amount = newest.amount;
+        primaryLive.calcType = newest.calcType;
+        primaryLive.calculation_type = newest.calculation_type;
+        primaryLive.active = true;
+        shopSyncWriteoffKpiTitle(primaryLive);
+        changed = true;
+    }
+    Object.keys(ids).forEach(function (id) {
+        if (id === primary) return;
+        shopWriteoffKpiDefsAll(p).forEach(function (d) {
+            if (!d || d.kpi_id !== id || d.active === false) return;
+            d.active = false;
+            changed = true;
+        });
+        (p.assignments || []).forEach(function (a) {
+            if (!a || a.kpi_id !== id) return;
+            const emp = a.employee_id || a.employeeId;
+            const already = (p.assignments || []).some(function (x) {
+                return x && x !== a && x.kpi_id === primary
+                    && (x.employee_id || x.employeeId) === emp
+                    && x.is_active !== false;
+            });
+            if (already) {
+                if (a.is_active !== false) {
+                    a.is_active = false;
+                    changed = true;
+                }
+            } else {
+                a.kpi_id = primary;
+                changed = true;
+            }
+        });
+    });
+    shopMetricCatalogItems().forEach(function (it) {
+        if (!shopMetricLooksLikeWriteoffLosses(it)) return;
+        if (it.active === false && it.show_column === false) return;
+        it.active = false;
+        it.show_column = false;
+        it.assignable = false;
+        changed = true;
+    });
+    return changed;
+}
+
+function shopWriteoffLossesKpiDef(month) {
+    const m = month || selectedMonth;
+    return (shopKpiDefsCurrent(m) || []).find(function (d) {
+        return d && d.active !== false && canonicalMetricId(d.metricId || d.metric_id) === METRIC_WRITEOFF_LOSSES_ID;
+    }) || null;
+}
+
+function shopWriteoffLossesPeople(month) {
+    const m = month || selectedMonth;
+    const seen = {};
+    const list = [];
+    function add(id) {
+        if (!id || seen[id]) return;
+        const emp = getEmployee(id);
+        if (!emp) return;
+        seen[id] = true;
+        list.push(emp);
+    }
+    const def = shopWriteoffLossesKpiDef(m);
+    const w = findWorkspaceByCode("shop");
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id) return;
+        if (def && shopKpiAssigned(e.id, def.kpi_id, m)) add(e.id);
+    });
+    const days = daysInMonthValue(m);
+    for (let day = 1; day <= days; day++) add(getShopRecountResponsibleId(day, m));
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function toggleWriteoffLossesOpen(employeeId) {
+    writeoffLossesOpenId = writeoffLossesOpenId === employeeId ? "" : employeeId;
+    renderShopWriteoffLossesPanel();
+}
+
+function renderShopWriteoffLossesPanel() {
+    const box = document.getElementById("shopWriteoffLossesPanel");
+    if (!box) return;
+    const month = selectedMonth;
+    const def = shopWriteoffLossesKpiDef(month);
+    const people = shopWriteoffLossesPeople(month);
+    if (!people.length) {
+        box.innerHTML = '<div class="note">Потери списания считаются персонально по ответственному за пересчёт. Назначьте KPI сотруднику в зарплате или выберите ответственного в таблице.</div>';
+        return;
+    }
+    const limit = def ? Number(def.plan || def.limit_value || 0) : 0;
+    let html = '<div class="card-title" style="margin-bottom:8px">Потери списания по ответственным</div>'
+        + '<div class="note" style="margin-bottom:8px">Лимит и бонус — из общего правила KPI. Месячный результат — сумма всех дневных итогов ответственного. Потери для KPI — только отрицательная часть этого итога. Общая сумма магазина в бонус не входит.</div>'
+        + '<div class="table-wrapper" style="max-height:none"><table class="analysis-table metrics-loss-kpi-table"><thead><tr>'
+        + "<th>Сотрудник</th><th>Результат месяца</th><th>Потери для KPI</th><th>Лимит</th><th>Статус</th><th>Бонус</th></tr></thead><tbody>";
+    people.forEach(function (emp) {
+        const monthResult = shopWriteoffMonthlyInventoryResult(emp.id, month);
+        const fact = shopWriteoffPersonalLoss(emp.id, month);
+        const assigned = !!(def && shopKpiAssigned(emp.id, def.kpi_id, month));
+        const pay = def && assigned
+            ? shopKpiPayout(shopRuleFromKpiDef(def, emp.id), fact, limit, emp.id, month)
+            : { amount: 0 };
+        const passed = Number(fact) <= Number(limit || 0);
+        const open = writeoffLossesOpenId === emp.id;
+        const dayRows = shopWriteoffLossesEmployeeDays(emp.id, month);
+        html += "<tr><td>" + escapeHtml(shopMetricEmployeeCaption(emp))
+            + (assigned ? "" : '<div class="shop-kpi-mini">KPI не назначен</div>') + "</td>"
+            + "<td><button type=\"button\" class=\"btn btn-secondary btn-small metrics-loss-kpi-btn\" onclick=\"toggleWriteoffLossesOpen('"
+            + emp.id + "')\">" + formatShopSignedMoney(monthResult, false) + "</button></td>"
+            + "<td>" + money(fact) + "</td>"
+            + "<td>" + (limit ? money(limit) : "—") + "</td>"
+            + '<td class="' + (passed ? "is-ok" : "is-fail") + '">' + (passed ? "Выполнено" : "Не выполнено") + "</td>"
+            + "<td>" + (assigned ? money(pay.amount || 0) : "—") + "</td></tr>";
+        if (open) {
+            html += '<tr><td colspan="6">';
+            if (!dayRows.length) {
+                html += '<div class="note">Нет дней ответственности с инвентаризацией в этом месяце.</div>';
+            } else {
+                html += '<div class="mc-days">';
+                dayRows.forEach(function (d) {
+                    const label = String(d.day).padStart(2, "0") + "." + month.slice(5, 7);
+                    html += '<span class="mc-day' + (d.result < 0 ? " fail" : "") + '">'
+                        + label + " · " + formatShopSignedMoney(d.result, false) + " ₽</span>";
+                });
+                html += "</div>";
+            }
+            html += "</td></tr>";
+        }
+    });
+    html += "</tbody></table></div>";
+    box.innerHTML = html;
 }
 
 function shopWriteoffLossesFact(month) {
@@ -8625,13 +8947,22 @@ function refreshShopInventoryUi(day) {
         const hint = document.getElementById("mrecount-resp-hint-" + day);
         if (hint) {
             const need = shopInventoryFieldNeedsFill(day, "responsible");
-            hint.textContent = need ? "Не выбран ответственный" : "";
+            hint.textContent = need ? "Не выбран ответственный за пересчёт" : "";
             hint.style.display = need ? "" : "none";
         }
         const tdResult = document.getElementById("minv-result-td-" + day);
         if (tdResult) tdResult.classList.toggle("metrics-inv-idle", !active);
         const tdLoss = document.getElementById("minv-loss-td-" + day);
         if (tdLoss) tdLoss.classList.toggle("metrics-inv-idle", !active);
+        shopWriteoffLossesColumnPeople().forEach(function (emp) {
+            const td = document.getElementById("minv-ploss-td-" + emp.id + "-" + day);
+            if (td) {
+                td.classList.toggle("metrics-off-day", shopTimesheetIsDayOff(emp.id, day));
+                td.innerHTML = shopWriteoffPersonalCellHtml(emp.id, day);
+            }
+            const foot = document.getElementById("mtot-ploss-" + emp.id);
+            if (foot) foot.innerHTML = shopWriteoffPersonalFootHtml(emp.id);
+        });
     }
     const monthTot = shopInventoryMonthTotals();
     const fp = document.getElementById("mtot-_invPosting");
@@ -8646,10 +8977,8 @@ function refreshShopInventoryUi(day) {
         fr.textContent = (monthTot.posting || monthTot.writeoff) ? formatShopSignedMoney(monthTot.result, false) : "0";
     }
     const fl = document.getElementById("mtot-_writeoffLoss");
-    if (fl) {
-        const lossTot = shopWriteoffLossesFact(selectedMonth);
-        fl.textContent = lossTot ? Math.round(lossTot).toLocaleString("ru-RU") : "0";
-    }
+    if (fl) fl.textContent = "—";
+    renderShopWriteoffLossesPanel();
 }
 
 function shopMetricFieldUsesFactsOverlay(field) {
@@ -8986,6 +9315,9 @@ function shopMetricInputHtml(category, employeeId, day, field, value) {
     if (shopMetricFieldIsCheck(field)) {
         return shopCheckCellHtml(category.id, employeeId, day, field.key, true);
     }
+    if (field.type === "writeoff_personal" || canonicalMetricId(field.metricId) === METRIC_WRITEOFF_LOSSES_ID) {
+        return shopWriteoffPersonalCellHtml(employeeId, day);
+    }
     const display = field.type === "money" ? formatShopMetricMoney(value[field.key]) : blankZero(value[field.key]);
     const step = field.type === "money" ? "1" : "1";
     const inputType = field.type === "money" ? "text" : "number";
@@ -9038,7 +9370,7 @@ function renderShopMetricsColgroup(table, fields, employees, category) {
                 + " metrics-col-g-" + (fi % 4) + '">';
             return;
         }
-        const wide = field.type === "money" || field.type === "avgCheck";
+        const wide = field.type === "money" || field.type === "avgCheck" || field.type === "writeoff_personal";
         const people = shopMetricColumnPeople(category, field, employees);
         const n = Math.max(people.length, 1);
         for (let i = 0; i < n; i++) {
@@ -9072,6 +9404,7 @@ function shopWorkMetricPeople(metricId, category) {
 }
 
 function shopMetricColumnPeople(category, field, employees) {
+    if (field && field.type === "writeoff_personal") return shopWriteoffLossesColumnPeople();
     if (field && field.service) return [{ id: "_service", name: "" }];
     const mid = field && (field.metricId || METRIC_ID_ALIASES[field.key]);
     if (category && category.id === "cashiers" && field && !field.extra) {
@@ -9286,7 +9619,7 @@ function shopAppendCatalogExtraFields(list, category) {
     }).sort(function (a, b) { return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0); }).forEach(function (it) {
         if (have[it.id]) return;
         if (it.id === "metric_recount" && category.id === "managers") return;
-        if (it.fill_type === "month_money") return;
+        if (it.id === METRIC_WRITEOFF_LOSSES_ID || it.fill_type === "month_money") return;
         if (it.fill_type === "auto_sum") {
             list.push({
                 key: "_sum_" + it.id,
@@ -10577,7 +10910,12 @@ function shopManagerRecountServiceFields() {
         { key: "_invPosting", label: "Оприходование", type: "money", service: "invPosting" },
         { key: "_invWriteoff", label: "Списание", type: "money", service: "invWriteoff" },
         { key: "_invResult", label: "Итог инвентаризации", type: "computed", service: "invResult" },
-        { key: "_writeoffLoss", label: "Потери списания", type: "money", service: "writeoffLossMonth" }
+        {
+            key: "_writeoffPersonal",
+            label: shopWriteoffLossesColumnLabel(),
+            type: "writeoff_personal",
+            metricId: METRIC_WRITEOFF_LOSSES_ID
+        }
     ];
 }
 
@@ -10712,7 +11050,7 @@ function renderShopMetrics() {
         headHtml += '</tr><tr class="metrics-head-emps">';
         fields.forEach(function (field, fi) {
             if (field.service) return;
-            const wide = field.type === "money" || field.type === "avgCheck";
+            const wide = field.type === "money" || field.type === "avgCheck" || field.type === "writeoff_personal";
             const people = shopMetricColumnPeople(category, field, employees);
             people.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
@@ -10795,11 +11133,25 @@ function renderShopMetrics() {
                     + '" id="minv-result-td-' + day + '">' + shopInventoryResultHtml(day) + "</td>";
                 return;
             }
+            if (field.type === "writeoff_personal") {
+                const people = shopWriteoffLossesColumnPeople();
+                people.forEach(function (employee, ei) {
+                    const fired = !isWorking(employee);
+                    const dayOff = shopTimesheetIsDayOff(employee.id, day);
+                    html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
+                        + (ei === 0 ? " metrics-group-start" : "")
+                        + (fired ? " metrics-fired" : "")
+                        + (dayOff ? " metrics-off-day" : "")
+                        + '" id="minv-ploss-td-' + employee.id + "-" + day + '">'
+                        + shopWriteoffPersonalCellHtml(employee.id, day)
+                        + "</td>";
+                });
+                if (!people.length) {
+                    html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</td>';
+                }
+                return;
+            }
             if (field.service === "writeoffLossMonth") {
-                const idle = !shopInventoryBlockActive(day);
-                html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
-                    + ' metrics-group-start' + (idle ? " metrics-inv-idle" : "")
-                    + '" id="minv-loss-td-' + day + '">' + shopInventoryLossHtml(day) + "</td>";
                 return;
             }
             if (field.service === "catalogSum") {
@@ -10867,11 +11219,20 @@ function renderShopMetrics() {
                 + (has ? formatShopSignedMoney(inv.result, false) : "0") + "</span></td>";
             return;
         }
+        if (field.type === "writeoff_personal") {
+            const people = shopWriteoffLossesColumnPeople();
+            people.forEach(function (employee, ei) {
+                html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
+                    + (ei === 0 ? " metrics-group-start" : "")
+                    + '" id="mtot-ploss-' + employee.id + '">'
+                    + shopWriteoffPersonalFootHtml(employee.id) + "</td>";
+            });
+            if (!people.length) {
+                html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</td>';
+            }
+            return;
+        }
         if (field.service === "writeoffLossMonth") {
-            const lossTot = shopWriteoffLossesFact(selectedMonth);
-            html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
-                + ' metrics-group-start" id="mtot-_writeoffLoss">'
-                + (lossTot ? Math.round(lossTot).toLocaleString("ru-RU") : "0") + "</td>";
             return;
         }
         if (field.service === "catalogSum") {
@@ -10946,11 +11307,14 @@ function renderShopMetricGrand(category, grand) {
     const box = document.getElementById("metricsGrandBox");
     if (!box) return;
     if (category.id === "managers") {
-        box.innerHTML = '<div class="note">Общая <strong>Приёмка</strong> магазина: <strong>'
+        box.style.display = "";
+        box.innerHTML = '<div class="note" style="margin-bottom:10px">Общая <strong>Приёмка</strong> магазина: <strong>'
             + formatShopMetricField({ type: "number" }, shopMetricStoreMonthTotal("metric_receiving"))
             + "</strong> · общий физический пересчёт: <strong>"
             + formatShopMetricField({ type: "number" }, shopMetricStoreMonthTotal("metric_recount"))
-            + "</strong> (сумма исполнителей с рабочей метрикой пересчёта). KPI «Потери списания» — только если правило включено сотруднику в зарплате.</div>";
+            + "</strong>.</div>"
+            + '<div id="shopWriteoffLossesPanel"></div>';
+        renderShopWriteoffLossesPanel();
         return;
     }
     if (category.id !== "cashiers") {
@@ -12673,6 +13037,11 @@ function ensureShopPayroll() {
         seedShopWriteoffLossesKpi(p);
         seedShopArrival730Kpi(p);
         normalizeSharedKpiScopes(p);
+        const duped = consolidateDuplicateWriteoffKpis(p);
+        if (duped) {
+            shopKpiMigrating = true;
+            try { saveApp(); } finally { shopKpiMigrating = false; }
+        }
     }
     return p;
 }
@@ -12803,6 +13172,7 @@ function seedShopWriteoffLossesKpi(p) {
             validTo: null,
             active: true
         }));
+        shopSyncWriteoffKpiTitle(p.kpiDefs[p.kpiDefs.length - 1]);
     } finally {
         shopKpiMigrating = keep;
     }
@@ -12880,7 +13250,7 @@ function shopKpiDefsCurrent(month) {
         const from = d.validFrom || d.valid_from || "";
         if (!prev || String(from) > String(prev.validFrom || prev.valid_from || "")) map[d.kpi_id] = d;
     });
-    return Object.keys(map).map(function (k) { return map[k]; });
+    return shopPreferPrimaryWriteoffKpi(Object.keys(map).map(function (k) { return map[k]; }));
 }
 
 function shopRuleFromKpiDef(def, employeeId) {
@@ -13101,6 +13471,7 @@ function shopKpiSourceType(rule) {
 
 function shopKpiName(rule) {
     const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id));
+    if (id === METRIC_WRITEOFF_LOSSES_ID) return shopWriteoffLossesColumnLabel();
     if (id === "metric_arrival_730" || id === "metric_receiving") {
         if (SHOP_KPI_METRIC_NAMES[id]) return SHOP_KPI_METRIC_NAMES[id];
     }
@@ -13115,7 +13486,7 @@ function shopKpiName(rule) {
 function shopKpiFactSourceLabel(rule) {
     const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id || rule.id));
     if (id === METRIC_WRITEOFF_LOSSES_ID || shopKpiSourceType(rule) === "store_month") {
-        return "Авто из инвентаризации · лимит на магазин";
+        return "Персонально по ответственному за пересчёт · лимит на сотрудника";
     }
     if (id === METRIC_SHELF_LABELS_ID) {
         return shopShelfParticipation(rule) === "derived_recipient"
@@ -13401,10 +13772,11 @@ function shopBonusMetricFact(rule, employeeId, month) {
         fact = extra.fact;
         planAuto = extra.planAuto;
         label = extra.label;
-    } else if (metricId === METRIC_WRITEOFF_LOSSES_ID || source === "store_month") {
-        fact = shopWriteoffLossesFact(m);
+    } else if (metricId === METRIC_WRITEOFF_LOSSES_ID) {
+        const monthResult = shopWriteoffMonthlyInventoryResult(employeeId, m);
+        fact = Math.max(0, -monthResult);
         planAuto = Number(rule.plan || rule.limit_value || 0);
-        extra = { maxLimit: true, passed: Number(fact) <= planAuto };
+        extra = { maxLimit: true, passed: Number(fact) <= planAuto, monthResult: monthResult, personalLoss: fact };
         label = "";
     } else if (isShopCheckKpi(rule)) {
         const st = shopCheckKpiMonthStats(rule, employeeId, m);
@@ -13462,7 +13834,9 @@ function shopBonusMetricFact(rule, employeeId, month) {
         derived: extra ? extra.derived : false,
         timesheet730: !!(extra && extra.timesheet730),
         maxLimit: !!(extra && extra.maxLimit),
-        passed: extra ? extra.passed : null
+        passed: extra ? extra.passed : null,
+        monthResult: extra ? extra.monthResult : null,
+        personalLoss: extra ? extra.personalLoss : null
     };
 }
 
@@ -13538,7 +13912,9 @@ function shopEmployeeBonusLines(employeeId, month) {
             excludedDays: src.excludedDays,
             eligibleDays: src.eligibleDays,
             maxLimit: !!pay.maxLimit || !!src.maxLimit,
-            passed: pay.passed != null ? pay.passed : src.passed
+            passed: pay.passed != null ? pay.passed : src.passed,
+            monthResult: src.monthResult,
+            personalLoss: src.personalLoss
         };
     });
 }
@@ -13546,8 +13922,12 @@ function shopEmployeeBonusLines(employeeId, month) {
 function shopEmployeeActiveRules(employeeId, month) {
     const m = month || selectedMonth;
     const out = [];
+    const seenMetric = {};
     shopKpiDefsCurrent(m).forEach(function (def) {
         if (!shopKpiAssigned(employeeId, def.kpi_id, m)) return;
+        const mid = canonicalMetricId(def.metricId || def.metric_id);
+        if (mid === METRIC_WRITEOFF_LOSSES_ID && seenMetric[mid]) return;
+        seenMetric[mid] = true;
         out.push(shopRuleFromKpiDef(def, employeeId));
     });
     return out;
@@ -13886,7 +14266,9 @@ function shopKpiEarnedRows(employeeId, month) {
             eligibleDays: line.eligibleDays,
             shared: !!line.shared,
             maxLimit: !!line.maxLimit,
-            passed: line.passed
+            passed: line.passed,
+            monthResult: line.monthResult,
+            personalLoss: line.personalLoss
         };
     });
     if (salesPlanBonusForEmployee(employeeId, m) || (function () {
@@ -13934,7 +14316,12 @@ function shopKpiEarnedTableHtml(employeeId) {
                     + (r.skipDays ? ", прогул: " + r.skipDays : "")
                     + " · премия при 100%: " + money(r.budget)
                 : "")
-            + (r.maxLimit ? " · " + (r.passed ? "Выполнено" : "Не выполнено") : "")
+            + (r.maxLimit ? " · " + (r.passed ? "Выполнено" : "Не выполнено")
+                + (r.monthResult != null
+                    ? " · результат месяца: " + formatShopSignedMoney(r.monthResult, false)
+                        + " · потери: " + money(r.personalLoss != null ? r.personalLoss : r.fact)
+                    : "")
+                : "")
             + (r.salesPlan ? " · один процент на весь магазин" : "")
             + "</div></td><td>"
             + (r.plan ? (r.maxLimit ? money(r.plan) : Number(r.plan).toLocaleString("ru-RU")) : "—") + "</td><td>"
@@ -14204,7 +14591,7 @@ function shopKpiDefsForRules(month) {
         const from = d.validFrom || d.valid_from || "";
         if (!prev || String(from) > String(prev.validFrom || prev.valid_from || "")) map[d.kpi_id] = d;
     });
-    return Object.keys(map).map(function (k) { return map[k]; });
+    return shopPreferPrimaryWriteoffKpi(Object.keys(map).map(function (k) { return map[k]; }));
 }
 
 function shopKpiDefCalcSelectHtml(def) {
@@ -14248,7 +14635,7 @@ function renderShopSalaryRules(view) {
         const inactive = def.active === false;
         html += "<tr><td><div class=\"shop-kpi-name\">" + escapeHtml(shopKpiName(def)) + "</div>"
             + '<div class="shop-kpi-mini">' + escapeHtml(shopKpiCalcKindLabel(def))
-        + (isShopMaxLimitKpi(def) ? " · лимит на магазин · факт из итога инвентаризации" : "")
+            + (isShopMaxLimitKpi(def) ? " · лимит персонально по ответственному за пересчёт" : "")
             + (ts730 ? " · тип: автоматический KPI" : "")
             + (check ? " · план из табеля Я/О/П" : "")
             + (inactive ? " · выключен" : "") + "</div>"
@@ -14316,26 +14703,60 @@ function mutateShopKpiDef(kpiId, patch) {
     if (!canEditShopPayrollRules()) return;
     const payroll = ensureShopPayroll();
     const month = selectedMonth;
+    const monthKey = shopPeriodMonthKey(month);
     let def = shopKpiDefForMonth(kpiId, month);
+    if (!def) {
+        const hits = (payroll.kpiDefs || []).filter(function (d) { return d && d.kpi_id === kpiId; });
+        hits.sort(function (a, b) {
+            return String(b.validFrom || b.valid_from || "").localeCompare(String(a.validFrom || a.valid_from || ""));
+        });
+        def = hits[0];
+    }
     if (!def) return;
-    if (shopPeriodMonthKey(def.validFrom || def.valid_from) !== shopPeriodMonthKey(month)) {
+    const from = shopPeriodMonthKey(def.validFrom || def.valid_from);
+    const patchFrom = patch.validFrom != null || patch.valid_from != null
+        ? shopPeriodMonthKey(patch.validFrom || patch.valid_from)
+        : "";
+    const periodOnly = patchFrom && Object.keys(patch).every(function (key) {
+        return key === "validFrom" || key === "valid_from";
+    });
+    const versionForNewMonth = !periodOnly && from && monthKey && from < monthKey
+        && (patch.plan != null || patch.limit_value != null || patch.budget != null || patch.amount != null
+            || patch.calcType != null || patch.calculation_type != null || patch.name != null || patch.active != null);
+    if (versionForNewMonth) {
         def.validTo = shiftMonth(month, -1);
         def.valid_to = def.validTo;
         const copy = shopCloneKpiDefFields(def);
-        def = stampKpiDef({
+        const next = stampKpiDef({
             kpi_id: kpiId,
             metricId: def.metric_id || def.metricId,
             department_id: kpiDefDepartment(def),
             work_tab_id: kpiDefWorkTab(def),
-            validFrom: month,
+            validFrom: monthKey,
             validTo: null,
             active: true
         });
-        Object.keys(copy).forEach(function (key) { def[key] = copy[key]; });
-        payroll.kpiDefs.push(def);
+        Object.keys(copy).forEach(function (key) { next[key] = copy[key]; });
+        next.kpi_id = kpiId;
+        next.validFrom = monthKey;
+        next.valid_from = monthKey;
+        next.validTo = null;
+        next.valid_to = null;
+        next.active = true;
+        payroll.kpiDefs.push(next);
+        def = next;
+    } else if (!from) {
+        def.validFrom = monthKey;
+        def.valid_from = monthKey;
     }
     Object.keys(patch).forEach(function (key) { def[key] = patch[key]; });
+    if (patch.validFrom != null) {
+        def.validFrom = shopPeriodMonthKey(patch.validFrom);
+        def.valid_from = def.validFrom;
+    }
     stampKpiDef(def);
+    def.kpi_id = kpiId;
+    shopSyncWriteoffKpiTitle(def);
     saveApp();
 }
 
@@ -14417,8 +14838,8 @@ function createShopKpiDef(templateId, participationRole) {
     const metricId = tpl.id;
     const shelf = metricId === METRIC_SHELF_LABELS_ID;
     const role = participationRole === "derived_recipient" ? "derived_recipient" : (shelf ? "manual_source" : "");
-    const exists = shopKpiDefsForRules(selectedMonth).some(function (d) {
-        if (canonicalMetricId(d.metricId || d.metric_id) !== metricId) return false;
+    const exists = (ensureShopPayroll().kpiDefs || []).some(function (d) {
+        if (!d || canonicalMetricId(d.metricId || d.metric_id) !== metricId) return false;
         if (metricId === "metric_arrival_730") return true;
         if (!kpiDefMatchesView(d, view)) return false;
         if (shelf) return shopShelfParticipation(d) === role;
@@ -14640,7 +15061,10 @@ function openShopBonusBreakdown(employeeId) {
                     : "")
                 + (line.maxLimit
                     ? '<div class="note" style="margin-top:6px">Лимит: ' + money(line.plan)
-                        + "<br>Факт: " + money(line.fact)
+                        + (line.monthResult != null
+                            ? "<br>Результат месяца: " + formatShopSignedMoney(line.monthResult, false)
+                                + "<br>Потери для KPI: " + money(line.personalLoss != null ? line.personalLoss : line.fact)
+                            : "<br>Факт: " + money(line.fact))
                         + "<br>Результат: " + (line.passed ? "Выполнено" : "Не выполнено")
                         + "<br>Премия: " + money(line.budget)
                         + "<br>Начислено: " + money(line.amount) + "</div>"
@@ -15165,10 +15589,11 @@ function metricControlBuildLine(employeeId, metricId, month) {
     else if (mid === "metric_arrival_730") stats = metricControl730Stats(employeeId, month);
     else if (mid === METRIC_WRITEOFF_LOSSES_ID || (it && it.fill_type === "month_money")) {
         stats = metricControlNumericStats(employeeId, mid, month);
-        if (mid === METRIC_WRITEOFF_LOSSES_ID && typeof shopWriteoffLossesFact === "function") {
-            stats.shopFact = shopWriteoffLossesFact(month);
-            stats.personalFact = shopWriteoffLossesEmployeeMonth(employeeId, month);
-            stats.fact = stats.shopFact;
+        if (mid === METRIC_WRITEOFF_LOSSES_ID) {
+            stats.monthResult = shopWriteoffMonthlyInventoryResult(employeeId, month);
+            stats.fact = shopWriteoffPersonalLoss(employeeId, month);
+            stats.personalFact = stats.fact;
+            stats.personalLoss = stats.fact;
             stats.lossDays = shopWriteoffLossesEmployeeDays(employeeId, month);
             if (stats.plan > 0) {
                 stats.rate = stats.maxLimit
@@ -15430,12 +15855,16 @@ function metricControlLineDoneText(line) {
     if (line.kind === "check" || line.kind === "timesheet730") return line.doneDays + " дн.";
     if (line.kind === "sales") return money(line.fact);
     if (line.kind === "revision") return String(line.fact);
+    if (line.metricId === METRIC_WRITEOFF_LOSSES_ID) return money(line.fact);
     return metricControlFmtNum(line.fact);
 }
 
 function metricControlLineFailText(line) {
     if (line.kind === "check" || line.kind === "timesheet730") return line.failDays ? (line.failDays + " дн.") : "—";
     if (line.kind === "revision") return line.overdue ? (line.overdue + " проср.") : "—";
+    if (line.metricId === METRIC_WRITEOFF_LOSSES_ID) {
+        return Number(line.fact || 0) > Number(line.plan || 0) ? "свыше лимита" : "—";
+    }
     if (line.status === "mid" || line.status === "fail") return "ниже плана";
     return "—";
 }
@@ -15633,15 +16062,17 @@ function metricControlLineRowHtml(employeeId, line, showJump) {
     }
     if (line.kind === "sales") extra = '<div class="note">Коллективный план</div>';
     if (line.metricId === METRIC_WRITEOFF_LOSSES_ID) {
-        extra = '<div class="note">KPI магазина: ' + money(line.shopFact != null ? line.shopFact : line.fact)
-            + " · лимит " + money(line.plan || 0)
-            + " · лично как ответственный: " + money(line.personalFact || 0) + "</div>";
+        extra = '<div class="note">Лимит: ' + money(line.plan || 0)
+            + " · результат месяца: " + formatShopSignedMoney(line.monthResult || 0, false)
+            + " · потери: " + money(line.personalLoss != null ? line.personalLoss : line.fact || 0)
+            + " · " + (Number(line.personalLoss != null ? line.personalLoss : line.fact || 0) <= Number(line.plan || 0) ? "Выполнено" : "Не выполнено")
+            + "</div>";
         if (line.lossDays && line.lossDays.length) {
             extra += '<div class="mc-days">';
             line.lossDays.forEach(function (d) {
                 const label = String(d.day).padStart(2, "0") + "." + selectedMonth.slice(5, 7);
-                extra += '<span class="mc-day' + (d.loss > 0 ? " fail" : "") + '" title="Ответственный за пересчёт">'
-                    + label + " · " + Math.round(d.loss || 0).toLocaleString("ru-RU") + " ₽</span>";
+                extra += '<span class="mc-day' + (Number(d.result) < 0 ? " fail" : "") + '" title="День ответственности">'
+                    + label + " · " + formatShopSignedMoney(d.result, false) + " ₽</span>";
             });
             extra += "</div>";
         }
@@ -16397,6 +16828,20 @@ function saveMetricCatalogForm(id, dupIgnore) {
         formula = { op: "sum", left: (document.getElementById("mcLeft") || {}).value || "" };
     }
     let item = id ? shopMetricCatalogById(id) : null;
+    if (item && shopMetricLooksLikeWriteoffLosses(item)) {
+        const canon = shopMetricCatalogById(METRIC_WRITEOFF_LOSSES_ID);
+        if (canon) {
+            item.active = false;
+            item.show_column = false;
+            item.assignable = false;
+            item = canon;
+            id = canon.id;
+        }
+    }
+    if (!item && /потер/i.test(name) && /списан/i.test(name)) {
+        item = shopMetricCatalogById(METRIC_WRITEOFF_LOSSES_ID);
+        if (item) id = item.id;
+    }
     if (!item) {
         item = {
             id: shopCatalogNextCustomId(),
@@ -16436,6 +16881,19 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     if (!item.department_id) item.department_id = dept;
     item.metric_tab_id = item.section_id || item.metric_tab_id;
+    if (canonicalMetricId(item.id) === METRIC_WRITEOFF_LOSSES_ID) {
+        const def = shopWriteoffLossesKpiDef();
+        const digits = String(name).replace(/\s/g, "").match(/(\d+)/);
+        if (def && digits) {
+            const n = Number(digits[1]);
+            if (n > 0) {
+                def.plan = n;
+                def.limit_value = n;
+            }
+        }
+        if (def) shopSyncWriteoffKpiTitle(def);
+        else item.name = name;
+    }
     if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
     saveApp();
     closeMetricCatalogModal();
