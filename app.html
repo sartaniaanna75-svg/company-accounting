@@ -484,6 +484,11 @@
             border-color: var(--primary);
         }
 
+        .metrics-fill-tabs .metrics-tab {
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+
         .timesheet-group-filter {
             display: flex;
             align-items: center;
@@ -570,6 +575,25 @@
         .metrics-table.metrics-cashiers-table col.metrics-col-emp { width: 64px; }
         .metrics-table.metrics-cashiers-table col.metrics-col-money { width: 72px; }
         .metrics-table.metrics-cashiers-table col.metrics-col-actual { width: 118px; }
+        .metrics-table.metrics-numeric-table col.metrics-col-emp,
+        .metrics-table.metrics-pickers-table.metrics-numeric-table col.metrics-col-emp,
+        .metrics-table.metrics-managers-table.metrics-numeric-table col.metrics-col-emp,
+        .metrics-table.metrics-cashiers-table.metrics-numeric-table col.metrics-col-emp { width: 78px; }
+        .metrics-table.metrics-numeric-table col.metrics-col-money,
+        .metrics-table.metrics-cashiers-table.metrics-numeric-table col.metrics-col-money { width: 90px; }
+        .metrics-table.metrics-numeric-table input.metrics-input {
+            width: 100%;
+            max-width: 82px;
+        }
+        .metrics-table.metrics-checklist-table col.metrics-col-emp,
+        .metrics-table.metrics-pickers-table.metrics-checklist-table col.metrics-col-emp,
+        .metrics-table.metrics-managers-table.metrics-checklist-table col.metrics-col-emp,
+        .metrics-table.metrics-cashiers-table.metrics-checklist-table col.metrics-col-emp { width: 54px; }
+        .metrics-table.metrics-checklist-table .metrics-check-btn {
+            padding: 1px 5px;
+            font-size: 12px;
+            min-width: 22px;
+        }
 
         .metrics-actual-select {
             width: 100%;
@@ -904,6 +928,15 @@
         .metrics-table.metrics-cashiers-table td.metrics-money-col input.metrics-input {
             width: 6.2em;
             max-width: 70px;
+        }
+
+        .metrics-table.metrics-numeric-table input.metrics-input,
+        .metrics-table.metrics-pickers-table.metrics-numeric-table input.metrics-input,
+        .metrics-table.metrics-managers-table.metrics-numeric-table input.metrics-input,
+        .metrics-table.metrics-cashiers-table.metrics-numeric-table input.metrics-input {
+            width: 100%;
+            max-width: 82px;
+            margin: 0 auto;
         }
 
         .metrics-avg {
@@ -1794,6 +1827,8 @@
         .mc-filters .form-group { margin: 0; min-width: 120px; }
         .mc-filters label { font-size: 11px; }
         .mc-view-tabs { margin: 0 0 10px; }
+        .fio-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; }
+        .fio-filters .form-group { margin: 0; min-width: 160px; }
 
         .pick-row {
             display: grid;
@@ -2610,6 +2645,9 @@
                             <div class="card-title" id="metricsPageTitle">Метрики магазина</div>
                             <div class="note" id="metricsMonthNote"></div>
                         </div>
+                        <div class="toolbar">
+                            <div class="metrics-tabs metrics-fill-tabs" id="metricsFillTabs"></div>
+                        </div>
                     </div>
                 </div>
                 <div class="metrics-stats" id="metricsCards"></div>
@@ -2669,6 +2707,9 @@
                         <div>
                             <div class="card-title">Рабочие показатели</div>
                             <div class="note" id="deptMetricsMonthNote"></div>
+                        </div>
+                        <div class="toolbar">
+                            <div class="metrics-tabs metrics-fill-tabs" id="deptMetricsFillTabs"></div>
                         </div>
                     </div>
                     <div class="table-wrapper" id="deptMetricsWrap">
@@ -3254,6 +3295,7 @@
                             </div>
                         </div>
                     </div>
+                    <div class="toolbar fio-filters" id="fioFilters" style="margin: 12px 0 8px;"></div>
                     <div id="fioList"></div>
                     <div class="toolbar" style="margin-top:14px;">
                         <button type="button" class="btn btn-primary" onclick="addEmployee()">+ Добавить ФИО</button>
@@ -3573,6 +3615,8 @@ let metricControlOpenId = "";
 let metricControlOpenMetricId = "";
 let metricControlDaysKey = "";
 let metricControlView = "people";
+let metricsFillViewByKey = {};
+let fioFilterByDept = {};
 let revisionFocusGroupId = "";
 let revisionFocusFolderId = "";
 let revisionEscBound = false;
@@ -7353,14 +7397,15 @@ function shopWorkMetricDefs() {
     }).sort(function (a, b) {
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     }).map(function (it) {
+        const check = it.fill_type === "check" || it.fill_type === "done_not_done" || it.fill_type === "boolean";
         return {
             id: it.id,
             key: it.key || it.id,
             label: it.name,
-            type: it.fill_type === "check" ? "check" : (it.fill_type === "money" ? "money" : "number"),
+            type: check ? "check" : (it.fill_type === "money" ? "money" : "number"),
+            fill_type: it.fill_type,
             tabs: [metricTabId(it)],
             section_id: metricTabId(it),
-            fill_type: it.fill_type,
             active: it.active !== false,
             formula: it.formula || null,
             extra: !it.core_column
@@ -7432,16 +7477,111 @@ function shopMetricHasMonthData(metricId, month) {
 
 function shopCatalogToField(item) {
     const fill = item.fill_type || "number";
+    const isCheck = fill === "check" || fill === "done_not_done" || fill === "boolean";
     return {
         key: item.key || item.id,
         label: item.name,
-        type: fill === "check" ? "check" : (fill === "money" ? "money" : (fill === "auto_calc" ? "avgCheck" : "number")),
+        type: isCheck ? "check" : (fill === "money" ? "money" : (fill === "auto_calc" ? "avgCheck" : "number")),
         metricId: item.id,
         extra: !item.core_column,
         derived: false,
         autoCalc: fill === "auto_calc",
+        fill_type: fill,
         formula: item.formula || null
     };
+}
+
+function currentWorkMetricsContext() {
+    const w = workspace();
+    if (!w) return null;
+    const department_id = w.code;
+    let work_tab_id = "";
+    if (department_id === "shop") work_tab_id = shopMetricCategory;
+    else if (department_id === "office") work_tab_id = "main";
+    else work_tab_id = currentDeptMetricTab(department_id);
+    return { department_id: department_id, work_tab_id: work_tab_id };
+}
+
+function metricsFillViewKey(departmentId, workTabId) {
+    return String(departmentId || "") + ":" + String(workTabId || "");
+}
+
+function setMetricsFillView(view_mode) {
+    const ctx = currentWorkMetricsContext();
+    if (!ctx) return;
+    metricsFillViewByKey[metricsFillViewKey(ctx.department_id, ctx.work_tab_id)] =
+        view_mode === "checklist" ? "checklist" : "numeric";
+    refreshMetricsUi();
+}
+
+function metricFieldViewMode(field) {
+    if (!field) return "";
+    if (field.service) return "numeric";
+    if (field.type === "actual" || field.type === "avgCheck" || field.autoCalc) return "numeric";
+    const mid = field.metricId || METRIC_ID_ALIASES[field.key];
+    const it = mid ? shopMetricCatalogById(mid) : null;
+    const fill = String((it && it.fill_type) || field.fill_type || "");
+    if (fill === "check" || fill === "done_not_done" || fill === "boolean") return "checklist";
+    if (field.type === "check") return "checklist";
+    if (fill === "month_money") return "";
+    return "numeric";
+}
+
+function filterMetricFieldsByView(fields, view) {
+    return (fields || []).filter(function (f) { return metricFieldViewMode(f) === view; });
+}
+
+function fieldsHaveViewMode(fields, mode) {
+    return (fields || []).some(function (f) { return metricFieldViewMode(f) === mode; });
+}
+
+function resolveMetricsFillView(departmentId, workTabId, hasNumeric, hasCheck) {
+    const key = metricsFillViewKey(departmentId, workTabId);
+    let view = metricsFillViewByKey[key];
+    if (hasNumeric && !hasCheck) view = "numeric";
+    else if (!hasNumeric && hasCheck) view = "checklist";
+    else if (view !== "checklist") view = "numeric";
+    metricsFillViewByKey[key] = view;
+    return view;
+}
+
+function renderMetricsFillTabs(hostId, view, hasNumeric, hasCheck) {
+    const host = document.getElementById(hostId || "metricsFillTabs");
+    if (!host) return;
+    if (!(hasNumeric && hasCheck)) {
+        host.innerHTML = "";
+        host.style.display = "none";
+        return;
+    }
+    host.style.display = "";
+    host.className = "metrics-tabs metrics-fill-tabs";
+    host.innerHTML = '<button type="button" class="metrics-tab' + (view === "numeric" ? " active" : "")
+        + '" onclick="setMetricsFillView(\'numeric\')">Числовые показатели</button>'
+        + '<button type="button" class="metrics-tab' + (view === "checklist" ? " active" : "")
+        + '" onclick="setMetricsFillView(\'checklist\')">Чек-лист</button>';
+}
+
+function prepareWorkMetricsView(fields, table, hostId, departmentId, workTabId) {
+    const hasNumeric = fieldsHaveViewMode(fields, "numeric");
+    const hasCheck = fieldsHaveViewMode(fields, "checklist");
+    const view = resolveMetricsFillView(departmentId, workTabId, hasNumeric, hasCheck);
+    renderMetricsFillTabs(hostId, view, hasNumeric, hasCheck);
+    if (table) {
+        table.classList.toggle("metrics-numeric-table", view === "numeric");
+        table.classList.toggle("metrics-checklist-table", view === "checklist");
+    }
+    return {
+        view: view,
+        fields: filterMetricFieldsByView(fields, view),
+        hasNumeric: hasNumeric,
+        hasCheck: hasCheck
+    };
+}
+
+function metricsViewEmptyHtml(view) {
+    return '<tr><td><div class="empty-row">'
+        + (view === "checklist" ? "Нет назначенных показателей чек-листа." : "Нет назначенных числовых показателей.")
+        + "</div></td></tr>";
 }
 
 function shopCatalogOperandValue(employeeId, day, metricId, month) {
@@ -9453,20 +9593,26 @@ function renderShopCashierMetrics() {
     const category = shopMetricCategoryById("cashiers");
     const employees = shopMetricEmployees(category);
     const persons = employees.concat([SHOP_SELF_CHECKOUT]);
-    const extraFields = shopCashierDisplayFields().filter(function (field) {
-        return field.extra || field.key === METRIC_SHELF_LABELS_FIELD || field.service === "catalogSum";
-    });
     const wrap = document.getElementById("metricsWrap");
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
     const table = document.getElementById("metricsTable");
-    const days = daysInMonth();
-    let inputCols = 1;
-    persons.forEach(function (person) {
-        shopCashierCoreFields(person).forEach(function (field) {
-            if (field.type !== "avgCheck" && field.type !== "actual") inputCols += 1;
-        });
+    const extraAll = shopCashierDisplayFields().filter(function (field) {
+        return field.extra || field.key === METRIC_SHELF_LABELS_FIELD || field.service === "catalogSum";
     });
+    const prepared = prepareWorkMetricsView(extraAll.concat([{ type: "money", key: "sales" }]), table, "metricsFillTabs", "shop", "cashiers");
+    const extraFields = filterMetricFieldsByView(extraAll, prepared.view);
+    const checklistOnly = prepared.view === "checklist";
+    const days = daysInMonth();
+    let inputCols = 0;
+    if (!checklistOnly) {
+        inputCols = 1;
+        persons.forEach(function (person) {
+            shopCashierCoreFields(person).forEach(function (field) {
+                if (field.type !== "avgCheck" && field.type !== "actual") inputCols += 1;
+            });
+        });
+    }
     extraFields.forEach(function (field) {
         inputCols += shopCashierFieldPeople(field, employees, persons).length;
     });
@@ -9498,14 +9644,17 @@ function renderShopCashierMetrics() {
         table.setAttribute("data-metric-cols", String(inputCols));
         const prev = table.querySelector("colgroup");
         if (prev) prev.remove();
-        let cols = '<colgroup><col class="metrics-col-date"><col class="metrics-col-visitors">';
-        persons.forEach(function (person) {
-            shopCashierCoreFields(person).forEach(function (field) {
-                if (field.type === "actual") cols += '<col class="metrics-col-actual">';
-                else if (field.type === "money" || field.type === "avgCheck") cols += '<col class="metrics-col-emp metrics-col-money">';
-                else cols += '<col class="metrics-col-emp">';
+        let cols = '<colgroup><col class="metrics-col-date">';
+        if (!checklistOnly) {
+            cols += '<col class="metrics-col-visitors">';
+            persons.forEach(function (person) {
+                shopCashierCoreFields(person).forEach(function (field) {
+                    if (field.type === "actual") cols += '<col class="metrics-col-actual">';
+                    else if (field.type === "money" || field.type === "avgCheck") cols += '<col class="metrics-col-emp metrics-col-money">';
+                    else cols += '<col class="metrics-col-emp">';
+                });
             });
-        });
+        }
         extraFields.forEach(function (field) {
             const people = shopCashierFieldPeople(field, employees, persons);
             const n = Math.max(people.length, 1);
@@ -9518,17 +9667,18 @@ function renderShopCashierMetrics() {
     const head = document.getElementById("metricsHead");
     if (head) {
         let gi = 0;
-        let headHtml = '<tr class="metrics-head-metrics">'
-            + '<th class="metrics-date-col" rowspan="2">Дата</th>'
-            + '<th class="metrics-visitors-col" rowspan="2">Покупатели</th>';
-        persons.forEach(function (person) {
-            const core = shopCashierCoreFields(person);
-            headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(gi)
-                + ' metrics-group-start" colspan="' + core.length
-                + '" title="' + escapeHtml(shopMetricEmployeeTitle(person)) + '">'
-                + escapeHtml(shopMetricEmployeeCaption(person)) + "</th>";
-            gi += 1;
-        });
+        let headHtml = '<tr class="metrics-head-metrics"><th class="metrics-date-col" rowspan="2">Дата</th>';
+        if (!checklistOnly) {
+            headHtml += '<th class="metrics-visitors-col" rowspan="2">Покупатели</th>';
+            persons.forEach(function (person) {
+                const core = shopCashierCoreFields(person);
+                headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(gi)
+                    + ' metrics-group-start" colspan="' + core.length
+                    + '" title="' + escapeHtml(shopMetricEmployeeTitle(person)) + '">'
+                    + escapeHtml(shopMetricEmployeeCaption(person)) + "</th>";
+                gi += 1;
+            });
+        }
         extraFields.forEach(function (field) {
             const people = shopCashierFieldPeople(field, employees, persons);
             headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(gi)
@@ -9538,6 +9688,7 @@ function renderShopCashierMetrics() {
         });
         headHtml += '</tr><tr class="metrics-head-emps">';
         gi = 0;
+        if (!checklistOnly) {
         persons.forEach(function (person) {
             shopCashierCoreFields(person).forEach(function (field) {
                 const wide = field.type === "money" || field.type === "avgCheck";
@@ -9549,6 +9700,7 @@ function renderShopCashierMetrics() {
             });
             gi += 1;
         });
+        }
         extraFields.forEach(function (field) {
             const people = shopCashierFieldPeople(field, employees, persons);
             people.forEach(function (person) {
@@ -9570,23 +9722,28 @@ function renderShopCashierMetrics() {
     if (!body) return;
 
     let html = "";
-    if (!employees.length) {
+    if (!employees.length && !checklistOnly) {
         html += '<tr><td class="metrics-date-col"></td><td class="metrics-visitors-col" colspan="8"><div class="note" style="padding:8px 4px">'
             + "Кассиров с должностью «Кассир» пока нет. Касса самообслуживания — не сотрудник, её можно заполнять отдельно."
             + "</div></td></tr>";
     }
+    if (checklistOnly && !extraFields.length) {
+        html = metricsViewEmptyHtml("checklist");
+    }
+    if (!(checklistOnly && !extraFields.length))
     for (let day = 1; day <= days; day++) {
         const rowCls = ["metrics-data-row", isWeekend(day) ? "metrics-weekend" : "", isToday(day) ? "metrics-today" : ""]
             .filter(Boolean).join(" ");
         const dayValues = {};
         persons.forEach(function (person) { dayValues[person.id] = shopCashierDayValues(person, day); });
         html += '<tr class="' + rowCls + '"><td class="metrics-date-col">' + shopMetricDateLabel(day) + "</td>";
+        let gi = 0;
+        if (!checklistOnly) {
         html += '<td class="metrics-visitors-col"><input class="metrics-input no-spin" id="mstore-' + day
             + '-visitors" type="number" min="0" step="1" inputmode="numeric" autocomplete="off"'
             + ' value="' + blankZero(getShopStoreValue(day, "visitors")) + '"'
             + ' onkeydown="onShopMetricNav(event)" onfocus="this.select()"'
             + " onchange=\"setShopStoreValue(" + day + ",'visitors',this.value)\"></td>";
-        let gi = 0;
         persons.forEach(function (person) {
             shopCashierCoreFields(person).forEach(function (field) {
                 html += '<td class="' + slotCellClass(person, field, gi, day) + '">'
@@ -9595,6 +9752,7 @@ function renderShopCashierMetrics() {
             });
             gi += 1;
         });
+        }
         extraFields.forEach(function (field) {
             if (field.service === "catalogSum") {
                 const tot = shopCatalogDaySum(day, field.metricId);
@@ -9619,10 +9777,12 @@ function renderShopCashierMetrics() {
         html += "</tr>";
     }
 
+    if (!(checklistOnly && !extraFields.length)) {
     html += '<tr class="metrics-totals-row"><td class="metrics-date-col">ИТОГО</td>';
+    let gi = 0;
+    if (!checklistOnly) {
     html += '<td class="metrics-visitors-col" id="mtot-store-visitors">'
         + formatShopMetricField({ type: "number" }, shopStoreVisitorsTotal(selectedMonth)) + "</td>";
-    let gi = 0;
     persons.forEach(function (person) {
         const totals = shopCashierPersonTotals(person);
         shopCashierCoreFields(person).forEach(function (field) {
@@ -9638,6 +9798,7 @@ function renderShopCashierMetrics() {
         });
         gi += 1;
     });
+    }
     extraFields.forEach(function (field) {
         if (field.service === "catalogSum") {
             let monthSum = 0;
@@ -9662,11 +9823,19 @@ function renderShopCashierMetrics() {
         gi += 1;
     });
     html += "</tr>";
+    }
     body.innerHTML = html;
 
     const grand = shopCashierShopTotals();
-    renderShopMetricCards(category, grand);
-    renderShopCashierSummary(employees, grand);
+    if (checklistOnly) {
+        const cards = document.getElementById("metricsCards");
+        if (cards) cards.style.display = "none";
+        const grandBox = document.getElementById("metricsGrandBox");
+        if (grandBox) { grandBox.style.display = "none"; grandBox.innerHTML = ""; }
+    } else {
+        renderShopMetricCards(category, grand);
+        renderShopCashierSummary(employees, grand);
+    }
     if (wrap) {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
@@ -9747,7 +9916,7 @@ function shopTimesheetLockLabel(employeeId, day, month) {
 }
 
 function shopMetricFieldIsCheck(field) {
-    return !!(field && (field.type === "check" || field.key === "walks" || field.key === METRIC_SHELF_LABELS_FIELD));
+    return metricFieldViewMode(field) === "checklist";
 }
 
 function shopMetricFieldIsDerived(field) {
@@ -10218,7 +10387,7 @@ function renderShopMetrics() {
     const pageTitle = document.getElementById("metricsPageTitle");
     if (pageTitle) pageTitle.textContent = category.label;
 
-    const fields = (function () {
+    const allFields = (function () {
         const list = [];
         const core = ((category.fields) || []).slice();
         if (category.id !== "managers") {
@@ -10245,6 +10414,8 @@ function renderShopMetrics() {
         shopAppendCatalogExtraFields(list, category);
         return list;
     })();
+    const prepared = prepareWorkMetricsView(allFields, table, "metricsFillTabs", "shop", category.id);
+    const fields = prepared.fields;
     const employees = (function () {
         const seen = {};
         const list = [];
@@ -10277,6 +10448,19 @@ function renderShopMetrics() {
     const head = document.getElementById("metricsHead");
     const body = document.getElementById("metricsBody");
     if (!body) return;
+
+    if (!fields.length) {
+        if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
+        body.innerHTML = metricsViewEmptyHtml(prepared.view);
+        const cards = document.getElementById("metricsCards");
+        if (cards && prepared.view === "checklist") cards.style.display = "none";
+        const grand = document.getElementById("metricsGrandBox");
+        if (grand && prepared.view === "checklist") { grand.style.display = "none"; grand.innerHTML = ""; }
+        renderShopShelfMetric();
+        renderShopMetricAccessPanel();
+        renderShopDayRoles();
+        return;
+    }
 
     if (!employees.length && !fields.some(function (f) { return f.service; })) {
         if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
@@ -10486,8 +10670,15 @@ function renderShopMetrics() {
 
     body.innerHTML = html;
     const grand = shopMetricGrandTotals(category, employees);
-    renderShopMetricCards(category, grand);
-    renderShopMetricGrand(category, grand);
+    if (prepared.view === "checklist") {
+        const cards = document.getElementById("metricsCards");
+        if (cards) { cards.style.display = "none"; cards.innerHTML = ""; }
+        const grandBox = document.getElementById("metricsGrandBox");
+        if (grandBox) { grandBox.style.display = "none"; grandBox.innerHTML = ""; }
+    } else {
+        renderShopMetricCards(category, grand);
+        renderShopMetricGrand(category, grand);
+    }
     if (wrap) {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
@@ -16157,7 +16348,7 @@ function deptMetricInputHtml(deptCode, employeeId, day, field) {
         const n = shopCatalogAutoValue(employeeId, day, field.metricId);
         return '<span class="metrics-auto-fact">' + formatShopMetricField({ type: field.type === "money" ? "money" : "number" }, n) + "</span>";
     }
-    if (it && it.fill_type === "check") {
+    if (it && (it.fill_type === "check" || it.fill_type === "done_not_done" || it.fill_type === "boolean")) {
         const state = deptMetricCheckState(deptCode, employeeId, day, field.metricId);
         if (!canEdit) {
             if (state === "done") return shopShelfStatusMark("done");
@@ -16231,7 +16422,8 @@ function deptWorkDom(kind) {
             head: "deptMetricsHead",
             body: "deptMetricsBody",
             title: "deptMetricsPageTitle",
-            note: "deptMetricsMonthNote"
+            note: "deptMetricsMonthNote",
+            fillTabs: "deptMetricsFillTabs"
         };
     }
     return {
@@ -16240,7 +16432,8 @@ function deptWorkDom(kind) {
         head: "metricsHead",
         body: "metricsBody",
         title: "metricsPageTitle",
-        note: "metricsMonthNote"
+        note: "metricsMonthNote",
+        fillTabs: "metricsFillTabs"
     };
 }
 
@@ -16275,7 +16468,9 @@ function fillDeptWorkTable(dept, tab, ids) {
         monthNote.textContent = monthLabel(selectedMonth) + ". «" + tabLabel
             + "». Колонки у тех, кому метрика назначена в ФИО → Рабочие метрики. Выходной (В) из Табеля.";
     }
-    const fields = deptMetricFields(dept, tab);
+    const fieldsAll = deptMetricFields(dept, tab);
+    const prepared = prepareWorkMetricsView(fieldsAll, table, ids.fillTabs || "metricsFillTabs", dept, tab);
+    const fields = prepared.fields;
     const employees = [];
     const seen = {};
     fields.forEach(function (field) {
@@ -16315,9 +16510,18 @@ function fillDeptWorkTable(dept, tab, ids) {
     const head = document.getElementById(ids.head);
     const body = document.getElementById(ids.body);
     if (!body) return;
-    if (!fields.length) {
+    if (!fieldsAll.length) {
         if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
         body.innerHTML = '<tr><td><div class="empty-row">Создайте метрику в справочнике «Метрики» и при необходимости назначьте её в карточке ФИО → Рабочие метрики.</div></td></tr>';
+        if (wrap) {
+            wrap.scrollLeft = scrollLeft;
+            wrap.scrollTop = scrollTop;
+        }
+        return;
+    }
+    if (!fields.length) {
+        if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
+        body.innerHTML = metricsViewEmptyHtml(prepared.view);
         if (wrap) {
             wrap.scrollLeft = scrollLeft;
             wrap.scrollTop = scrollTop;
@@ -16452,15 +16656,74 @@ function shopExtraFunctionsHtml(employee) {
 function renderFio() {
     if (currentWorkspaceIndex === null || isSummary()) return;
 
-    const pool = (workspace().employees || []).slice();
+    const w = workspace();
+    const code = w && w.code;
+    const pool = (w.employees || []).slice();
     const list = document.getElementById("fioList");
+    const filterHost = document.getElementById("fioFilters");
+    const tabs = timesheetGroupFilterTabs(code);
+    if (!fioFilterByDept[code] || typeof fioFilterByDept[code] !== "object") {
+        fioFilterByDept[code] = { tab: "", position: "" };
+    }
+    const filters = fioFilterByDept[code];
+    if (filters.tab && !tabs.some(function (t) { return t.id === filters.tab; })) filters.tab = "";
+
+    const positionOpts = [];
+    const posSeen = {};
+    positionsForWorkspace(w).forEach(function (title) {
+        const t = String(title || "").replace(/\s+/g, " ").trim();
+        if (!t || posSeen[t]) return;
+        posSeen[t] = true;
+        positionOpts.push(t);
+    });
+    pool.forEach(function (employee) {
+        const t = String(employee.position || "").replace(/\s+/g, " ").trim();
+        if (!t || posSeen[t]) return;
+        posSeen[t] = true;
+        positionOpts.push(t);
+    });
+
+    if (filterHost) {
+        let fh = "";
+        if (tabs.length) {
+            fh += '<div class="form-group"><label>Должность</label><select onchange="setFioTabFilter(this.value)">'
+                + '<option value="">Все</option>';
+            tabs.forEach(function (tab) {
+                fh += '<option value="' + escapeAttribute(tab.id) + '"'
+                    + (filters.tab === tab.id ? " selected" : "") + ">"
+                    + escapeHtml(tab.label) + "</option>";
+            });
+            fh += "</select></div>";
+        } else {
+            fh += '<div class="form-group"><label>Должность</label><select onchange="setFioPositionFilter(this.value)">'
+                + '<option value="">Все</option>';
+            positionOpts.forEach(function (title) {
+                fh += '<option value="' + escapeAttribute(title) + '"'
+                    + (filters.position === title ? " selected" : "") + ">"
+                    + escapeHtml(title) + "</option>";
+            });
+            fh += "</select></div>";
+        }
+        filterHost.innerHTML = fh;
+    }
+
     if (!pool.length) {
         list.innerHTML = '<div class="empty-row">В этом отделе пока нет сотрудников. Нажмите «Добавить ФИО» внизу.</div>';
         renderPositionList();
         return;
     }
 
-    const html = pool.map(function (employee) {
+    const shown = pool.filter(function (employee) {
+        if (employee.id === justAddedEmployeeId) return true;
+        if (tabs.length) {
+            if (!filters.tab) return true;
+            return employeeWorkTabId(employee, code) === filters.tab;
+        }
+        if (!filters.position) return true;
+        return String(employee.position || "").replace(/\s+/g, " ").trim() === filters.position;
+    });
+
+    const html = shown.map(function (employee) {
         const fired = !isWorking(employee);
         const added = employee.id === justAddedEmployeeId;
         const tabSel = workTabSelect(employee);
@@ -16476,8 +16739,30 @@ function renderFio() {
             + '<div class="emp-actions"><button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>'
             + "</div>";
     }).join("");
-    withShopUiQuiet(function () { list.innerHTML = html; });
+    withShopUiQuiet(function () {
+        list.innerHTML = html || '<div class="empty-row">Нет сотрудников выбранной должности.</div>';
+    });
     renderPositionList();
+}
+
+function setFioTabFilter(tabId) {
+    const w = workspace();
+    if (!w) return;
+    if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
+        fioFilterByDept[w.code] = { tab: "", position: "" };
+    }
+    fioFilterByDept[w.code].tab = tabId || "";
+    renderFio();
+}
+
+function setFioPositionFilter(position) {
+    const w = workspace();
+    if (!w) return;
+    if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
+        fioFilterByDept[w.code] = { tab: "", position: "" };
+    }
+    fioFilterByDept[w.code].position = position || "";
+    renderFio();
 }
 
 function renderEmployees() {
