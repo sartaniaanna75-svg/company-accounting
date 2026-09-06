@@ -88,7 +88,7 @@
 
         .login-grid {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(2, 1fr);
             gap: 16px;
         }
 
@@ -1710,7 +1710,7 @@
         .mc-table th,
         .mc-table td {
             font-size: 12px;
-            padding: 6px 8px;
+            padding: 5px 8px;
             height: 34px;
             text-align: center;
             white-space: nowrap;
@@ -1732,23 +1732,58 @@
         .mc-st-fail { color: #b91c1c; font-weight: 700; }
         .mc-st-warn { color: #a16207; font-weight: 700; }
         .mc-st-muted { color: #64748b; }
-        tr.mc-row-fail td { background: #fef2f2; }
-        tr.mc-row-warn td { background: #fffbeb; }
-        tr.mc-row-open td { outline: 1px solid #cbd5e1; }
-        tr.mc-expand td { height: auto; white-space: normal; text-align: left; background: #f8fafc; padding: 8px; }
-        .mc-detail {
+        .mc-st-mid { color: #c2410c; font-weight: 700; }
+        tr.mc-row-open td { background: #f8fafc; }
+        tr.mc-expand td { height: auto; white-space: normal; text-align: left; background: #f8fafc; padding: 8px 10px; }
+        tr.mc-line-ok td:last-child { background: #ecfdf3; }
+        tr.mc-line-fail td:last-child { background: #fef2f2; }
+        tr.mc-line-warn td:last-child { background: #fffbeb; }
+        tr.mc-line-mid td:last-child { background: #fff7ed; }
+        .mc-kpis {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(120px, 1fr));
+            gap: 8px;
             margin: 0 0 10px;
-            padding: 10px 12px;
+        }
+        .mc-kpi {
             border: 1px solid var(--border);
             border-radius: 8px;
+            padding: 8px 10px;
+            background: #fff;
+        }
+        .mc-kpi .note { margin: 0; }
+        .mc-kpi strong { display: block; font-size: 16px; margin-top: 2px; }
+        .mc-top5, .mc-rank {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(140px, 1fr));
+            gap: 8px;
+            margin: 0 0 12px;
+        }
+        .mc-mini {
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 7px 9px;
             background: #f8fafc;
+            font-size: 12px;
         }
-        .mc-detail table th,
-        .mc-detail table td {
-            font-size: 11px;
-            padding: 5px 6px;
-            text-align: left;
+        .mc-mini b { display: block; font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 2px; }
+        .mc-days {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 6px;
         }
+        .mc-day {
+            font-size: 10px;
+            border-radius: 4px;
+            padding: 2px 5px;
+            background: #f1f5f9;
+            color: #475569;
+        }
+        .mc-day.ok { background: #ecfdf3; color: #166534; }
+        .mc-day.fail { background: #fef2f2; color: #b91c1c; }
+        .mc-day.warn { background: #fffbeb; color: #a16207; }
+        .mc-day.off { background: #f3eee6; color: #78716c; }
         .mc-filters {
             display: flex;
             flex-wrap: wrap;
@@ -1758,6 +1793,7 @@
         }
         .mc-filters .form-group { margin: 0; min-width: 120px; }
         .mc-filters label { font-size: 11px; }
+        .mc-view-tabs { margin: 0 0 10px; }
 
         .pick-row {
             display: grid;
@@ -1811,6 +1847,36 @@
             align-items: center;
         }
         .pin-row input { flex: 1; min-width: 0; }
+        .admin-mode-banner {
+            display: none;
+            font-size: 11px;
+            font-weight: 700;
+            color: #166534;
+            background: #ecfdf3;
+            border: 1px solid #bbf7d0;
+            border-radius: 8px;
+            padding: 4px 8px;
+            margin-top: 6px;
+        }
+        .admin-mode-banner.on { display: inline-block; }
+        .dept-switch {
+            margin-top: 8px;
+            width: 100%;
+            font-size: 12px;
+        }
+        .access-perm-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(140px, 1fr));
+            gap: 6px 12px;
+            margin-top: 8px;
+        }
+        .access-dept-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 12px;
+            margin-top: 8px;
+        }
+        .users-table td.users-pin { letter-spacing: 2px; color: var(--muted); }
 
         /* =========================================================
            Уведомления
@@ -2265,6 +2331,11 @@
                 <div class="note">Анна Владимировна · Ольга · Наталья</div>
                 <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('summary')">Открыть</button>
             </div>
+            <div class="login-card summary-card" role="button" tabindex="0" onclick="renderLogin('admin')">
+                <h3>Администратор</h3>
+                <div class="note">Отдельный вход. Все подразделения и пользователи.</div>
+                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('admin')">Войти</button>
+            </div>
         </div>
     </div>
 </div>
@@ -2384,6 +2455,9 @@
         </button>
         <button type="button" class="nav-btn" data-for="both" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
             📚 Метрики
+        </button>
+        <button type="button" class="nav-btn" data-for="both" data-section="users" onclick="showSection('users', this)">
+            👥 Пользователи и доступы
         </button>
         <button type="button" class="nav-btn" data-for="both" data-section="settings" onclick="showSection('settings', this)">
             ⚙️ Настройки
@@ -3109,23 +3183,14 @@
                         </div>
                     </div>
                     <div class="mc-filters" id="metricControlFilters"></div>
-                    <div id="metricControlDetail"></div>
-                    <div class="table-wrapper">
-                        <table class="analysis-table mc-table" id="metricControlTable">
-                            <thead>
-                                <tr>
-                                    <th>Сотрудник</th>
-                                    <th>Назначено</th>
-                                    <th>Выполняет</th>
-                                    <th>Не выполняет</th>
-                                    <th>Нет данных</th>
-                                    <th>Выполнение %</th>
-                                    <th>Статус</th>
-                                </tr>
-                            </thead>
-                            <tbody id="metricControlBody"></tbody>
-                        </table>
+                    <div id="metricControlSummary"></div>
+                    <div id="metricControlRank"></div>
+                    <div id="metricControlTop5"></div>
+                    <div class="metrics-tabs mc-view-tabs">
+                        <button type="button" class="metrics-tab" id="mcViewPeople" onclick="setMetricControlView('people')">По сотрудникам</button>
+                        <button type="button" class="metrics-tab" id="mcViewMetrics" onclick="setMetricControlView('metrics')">По метрикам</button>
                     </div>
+                    <div id="metricControlHost"></div>
                 </div>
             </section>
 
@@ -3264,10 +3329,10 @@
                         <div class="form-group">
                             <label for="workspaceNameSetting">Название</label>
                             <input type="text" id="workspaceNameSetting" maxlength="80" readonly>
-                            <div class="note" style="margin-top:6px;">Имя отдела фиксировано. PIN можно сменить.</div>
+                            <div class="note" style="margin-top:6px;">Имя отдела фиксировано. Вход — по личному PIN пользователя.</div>
                         </div>
-                        <div class="form-group" id="deptPinBox">
-                            <label for="workspacePinSetting">PIN-код</label>
+                        <div class="form-group" id="deptPinBox" style="display:none">
+                            <label for="workspacePinSetting">PIN-код отдела (служебный)</label>
                             <input type="password" id="workspacePinSetting" maxlength="32" autocomplete="off">
                         </div>
                         <div class="form-group" data-for="dept">
@@ -3284,22 +3349,12 @@
                 </div>
 
                 <div class="card" id="summaryUsersCard" style="display:none;">
-                    <div class="card-title">Пользователи</div>
+                    <div class="card-title">Пользователи и доступы</div>
                     <div class="note" style="margin-top:8px;">
-                        Можно изменить отображаемое имя и PIN. Права привязаны к внутреннему ID, а не к имени.
+                        Управление всеми учётными записями — в разделе «Пользователи и доступы». Права привязаны к user_id, не к имени.
                     </div>
-                    <div class="table-wrapper" style="margin-top:12px;">
-                        <table class="users-table">
-                            <thead>
-                                <tr>
-                                    <th>Пользователь</th>
-                                    <th>Имя</th>
-                                    <th>PIN-код</th>
-                                    <th>Действие</th>
-                                </tr>
-                            </thead>
-                            <tbody id="summaryUsersBody"></tbody>
-                        </table>
+                    <div class="settings-actions" style="margin-top:12px;">
+                        <button type="button" class="btn btn-primary" onclick="showSection('users')">Открыть пользователей</button>
                     </div>
                 </div>
 
@@ -3355,11 +3410,44 @@
                 </div>
             </section>
 
+            <section id="users" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Пользователи и доступы</div>
+                            <div class="note">Один человек — один user_id и свой PIN. Можно выдать несколько подразделений. employee_id не равен user_id.</div>
+                        </div>
+                        <div class="toolbar">
+                            <button type="button" class="btn btn-primary" onclick="openAccessUserEditor('')">+ Добавить пользователя</button>
+                        </div>
+                    </div>
+                    <div class="table-wrapper">
+                        <table class="users-table">
+                            <thead>
+                                <tr>
+                                    <th>Пользователь</th>
+                                    <th>Роль</th>
+                                    <th>Отделы</th>
+                                    <th>Права</th>
+                                    <th>Активен</th>
+                                    <th>PIN</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="accessUsersBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
         </div>
     </main>
 </div>
 
 
+<div id="accessUserModalBack" class="rev-modal-back" onclick="if (event.target === this) closeAccessUserEditor()">
+    <div class="rev-modal" id="accessUserModal" role="dialog" aria-modal="true"></div>
+</div>
 <div id="metricCatalogModalBack" class="rev-modal-back" onclick="if (event.target === this) closeMetricCatalogModal()">
     <div class="rev-modal metric-cat-modal" id="metricCatalogModal" role="dialog" aria-modal="true"></div>
 </div>
@@ -3463,6 +3551,7 @@ let summaryDeptFilter = "";
 let summarySortMode = "dept";
 let currentSummaryRole = null;
 let currentDeptRole = null;
+let currentUserId = "";
 let loginView = "home";
 let shopMetricCategory = "pickers";
 let deptMetricTab = "";
@@ -3472,12 +3561,18 @@ let disciplinePanel = "late";
 let metricControlFilters = {
     dept: "",
     workTab: "",
+    position: "",
     employeeId: "",
+    metricId: "",
     status: "all",
     attention: false,
-    sort: "name"
+    sort: "name",
+    metricSort: "worst"
 };
 let metricControlOpenId = "";
+let metricControlOpenMetricId = "";
+let metricControlDaysKey = "";
+let metricControlView = "people";
 let revisionFocusGroupId = "";
 let revisionFocusFolderId = "";
 let revisionEscBound = false;
@@ -3556,6 +3651,7 @@ const SALES_PLAN_VIEWS = {
 let justAddedEmployeeId = null;
 let editingSummaryUserRole = null;
 let summaryUserPinVisible = {};
+let accessUserPinVisible = false;
 let shopUiQuiet = 0;
 
 const METRIC_SHELF_LABELS_ID = "metric_shelf_labels_ok";
@@ -4516,6 +4612,350 @@ function pinsMatch(entered, stored) {
     return a !== "" && a === b;
 }
 
+const ACCESS_PERM_KEYS = [
+    { key: "timesheet", label: "Табель" },
+    { key: "metrics", label: "Метрики" },
+    { key: "revision", label: "Ревизия" },
+    { key: "salesPlan", label: "План продаж" },
+    { key: "discipline", label: "Дисциплина" },
+    { key: "salary", label: "Зарплата" },
+    { key: "kpi", label: "KPI" },
+    { key: "settings", label: "Настройки" }
+];
+
+function accessRoleTemplate(role, legacy) {
+    const p = {};
+    ACCESS_PERM_KEYS.forEach(function (x) { p[x.key] = "none"; });
+    if (role === "admin" || legacy === "admin") {
+        ACCESS_PERM_KEYS.forEach(function (x) { p[x.key] = "edit"; });
+        p.settings = "edit";
+        return p;
+    }
+    if (legacy === "adjust") {
+        p.timesheet = "view";
+        p.salary = "edit";
+        p.kpi = "view";
+        return p;
+    }
+    if (legacy === "pay") {
+        p.salary = "view";
+        return p;
+    }
+    if (role === "manager") {
+        p.timesheet = "edit";
+        p.metrics = "edit";
+        p.revision = "edit";
+        p.salesPlan = "edit";
+        p.discipline = "edit";
+        return p;
+    }
+    p.timesheet = "edit";
+    p.metrics = "edit";
+    p.revision = "view";
+    p.salesPlan = "view";
+    p.discipline = "view";
+    return p;
+}
+
+function appUsers(data) {
+    const root = data || appData;
+    if (!root || typeof root !== "object") return [];
+    if (!Array.isArray(root.users)) root.users = [];
+    return root.users;
+}
+
+function findAccessUser(userId, data) {
+    if (!userId) return null;
+    return appUsers(data).find(function (u) { return u && u.user_id === userId; }) || null;
+}
+
+function currentAuthUser() {
+    return findAccessUser(currentUserId);
+}
+
+function currentAuthUserId() {
+    const u = currentAuthUser();
+    if (u && u.user_id) return u.user_id;
+    return currentUserId || "";
+}
+
+function currentAuthUserName() {
+    const u = currentAuthUser();
+    if (u && u.display_name) return u.display_name;
+    if (currentSummaryRole) {
+        const info = summaryRoleInfo(currentSummaryRole);
+        return (info && info.name) || "";
+    }
+    return "";
+}
+
+function isAppAdmin() {
+    const u = currentAuthUser();
+    if (u && u.is_active !== false && (u.role === "admin" || u.legacy_role === "admin")) return true;
+    return currentSummaryRole === "admin" && !u;
+}
+
+function permRank(value) {
+    if (value === "manage") return 3;
+    if (value === "edit") return 2;
+    if (value === "view") return 1;
+    return 0;
+}
+
+function userHasPerm(key, min) {
+    if (isAppAdmin()) return true;
+    const need = min || "view";
+    const u = currentAuthUser();
+    if (u) {
+        const v = (u.permissions && u.permissions[key]) || "none";
+        return permRank(v) >= permRank(need);
+    }
+    if (currentSummaryRole === "admin") return true;
+    if (key === "salary") {
+        if (currentSummaryRole === "adjust") return permRank("edit") >= permRank(need);
+        if (currentSummaryRole === "pay") return permRank("view") >= permRank(need);
+        return false;
+    }
+    if (!isSummary() && currentDeptRole === "admin") return key !== "salary";
+    if (!isSummary()) {
+        return ["timesheet", "metrics", "revision", "salesPlan", "discipline"].indexOf(key) !== -1;
+    }
+    return false;
+}
+
+function userCanAccessDept(user, code) {
+    if (!user || user.is_active === false) return false;
+    if (user.role === "admin" || user.legacy_role === "admin") return true;
+    return (user.departments || []).indexOf(code) !== -1;
+}
+
+function userSwitchCodes(user) {
+    if (!user) return [];
+    if (user.role === "admin" || user.legacy_role === "admin") {
+        return DEPT_DEFAULTS.map(function (d) { return d.code; }).concat(["summary"]);
+    }
+    return (user.departments || []).filter(Boolean);
+}
+
+function findActiveUserByPin(entered) {
+    const pin = pinString(entered);
+    if (!pin) return null;
+    const hits = appUsers().filter(function (u) {
+        return u && u.is_active !== false && pinsMatch(pin, u.pin);
+    });
+    return hits.length === 1 ? hits[0] : (hits[0] || null);
+}
+
+function pinTakenByOther(pin, userId) {
+    const v = pinString(pin);
+    if (!v) return false;
+    return appUsers().some(function (u) {
+        return u && u.is_active !== false && u.user_id !== userId && pinsMatch(v, u.pin);
+    });
+}
+
+function stampAuthOnRecord(rec) {
+    if (!rec || typeof rec !== "object") return rec;
+    rec.updated_by_user_id = currentAuthUserId();
+    rec.entered_by_user_id = rec.entered_by_user_id || currentAuthUserId();
+    rec.updated_at = new Date().toISOString();
+    return rec;
+}
+
+function accessUserDisplayName(userId) {
+    const u = findAccessUser(userId);
+    return (u && u.display_name) || userId || "";
+}
+
+function applyLegacyRolesFromUser(user, code) {
+    if (!user) return;
+    if (user.role === "admin" || user.legacy_role === "admin") {
+        if (code === "summary") {
+            currentSummaryRole = "admin";
+            currentDeptRole = null;
+        } else {
+            currentSummaryRole = null;
+            currentDeptRole = "admin";
+        }
+        return;
+    }
+    if (code === "summary") {
+        currentDeptRole = null;
+        if (user.legacy_role === "adjust") currentSummaryRole = "adjust";
+        else if (user.legacy_role === "pay") currentSummaryRole = "pay";
+        else if (userHasPerm("salary", "edit")) currentSummaryRole = "adjust";
+        else if (userHasPerm("salary", "view")) currentSummaryRole = "pay";
+        else currentSummaryRole = "admin";
+        return;
+    }
+    currentSummaryRole = null;
+    currentDeptRole = (user.role === "manager" || userHasPerm("settings", "edit")) ? "admin" : "staff";
+}
+
+function enterAsUser(user, code) {
+    ensureLoginData();
+    migrateAppUsers(appData);
+    let w = findWorkspaceByCode(code);
+    if (!w && code === "summary") {
+        w = createWorkspace(SUMMARY_DEFAULT.name, "5555", "summary", "summary");
+        appData.workspaces.push(w);
+        ensureSummaryPins(w);
+    }
+    const def = DEPT_DEFAULTS.find(function (d) { return d.code === code; });
+    if (!w && def) {
+        w = createWorkspace(def.name, String(def.pin), "dept", code);
+        appData.workspaces.push(w);
+    }
+    if (!w) return false;
+    currentUserId = user.user_id;
+    setCurrentWorkspace(w);
+    applyLegacyRolesFromUser(user, code);
+    selectedMonth = currentMonthValue();
+    if (user.legacy_role === "pay") currentSection = "salary";
+    else if (user.legacy_role === "adjust") currentSection = "salary";
+    else currentSection = defaultSection();
+    saveSession();
+    openApp();
+    return true;
+}
+
+function switchUserWorkspace(code) {
+    const user = currentAuthUser();
+    if (!user || !userCanAccessDept(user, code)) return;
+    const w = findWorkspaceByCode(code);
+    if (!w) return;
+    const keepMonth = selectedMonth;
+    const keepSection = currentSection;
+    currentUserId = user.user_id;
+    setCurrentWorkspace(w);
+    applyLegacyRolesFromUser(user, code);
+    selectedMonth = keepMonth;
+    currentSection = keepSection;
+    saveSession();
+    loadWorkspace();
+}
+
+function normalizeAccessUser(u) {
+    if (!u || typeof u !== "object") return null;
+    if (!u.user_id) return null;
+    u.display_name = String(u.display_name || u.name || "").replace(/\s+/g, " ").trim();
+    u.pin = pinString(u.pin);
+    u.role = u.role === "admin" || u.role === "manager" ? u.role : "user";
+    if (!u.legacy_role) u.legacy_role = u.role === "admin" ? "admin" : "staff";
+    if (u.employee_id == null) u.employee_id = "";
+    if (u.is_active == null) u.is_active = true;
+    if (!Array.isArray(u.departments)) u.departments = [];
+    if (!u.permissions || typeof u.permissions !== "object") {
+        u.permissions = accessRoleTemplate(u.role, u.legacy_role);
+    }
+    ACCESS_PERM_KEYS.forEach(function (p) {
+        if (!u.permissions[p.key]) u.permissions[p.key] = "none";
+    });
+    return u;
+}
+
+function upsertAccessUser(data, spec) {
+    const list = appUsers(data);
+    let prev = list.find(function (u) { return u && u.user_id === spec.user_id; });
+    if (prev) {
+        if (!pinIsSet(prev.pin) && pinIsSet(spec.pin)) prev.pin = pinString(spec.pin);
+        if (!prev.display_name && spec.display_name) prev.display_name = spec.display_name;
+        if (!prev.permissions) prev.permissions = spec.permissions;
+        if (!Array.isArray(prev.departments) || !prev.departments.length) prev.departments = spec.departments || [];
+        if (!prev.role) prev.role = spec.role;
+        if (!prev.legacy_role) prev.legacy_role = spec.legacy_role;
+        if (prev.is_active == null) prev.is_active = true;
+        if (prev.employee_id == null) prev.employee_id = spec.employee_id || "";
+        return normalizeAccessUser(prev);
+    }
+    const created = normalizeAccessUser(Object.assign({}, spec));
+    list.push(created);
+    return created;
+}
+
+function syncLegacyPinsFromUsers(data) {
+    const summary = (data.workspaces || []).find(function (w) {
+        return w && (w.code === "summary" || w.type === "summary");
+    });
+    if (summary) {
+        if (!summary.roleUsers || typeof summary.roleUsers !== "object") summary.roleUsers = {};
+        if (!summary.rolePins || typeof summary.rolePins !== "object") summary.rolePins = {};
+        SUMMARY_ROLES.forEach(function (r) {
+            const uid = (summary.roleUsers[r.role] && summary.roleUsers[r.role].user_id) || ("user_" + r.role);
+            const u = findAccessUser(uid, data);
+            if (!u) return;
+            summary.roleUsers[r.role] = Object.assign({}, summary.roleUsers[r.role] || {}, {
+                id: r.role,
+                user_id: u.user_id,
+                role: r.role,
+                name: u.display_name || r.name,
+                pin: pinString(u.pin)
+            });
+            summary.rolePins[r.role] = pinString(u.pin);
+        });
+        if (summary.rolePins.admin) summary.pin = summary.rolePins.admin;
+    }
+    DEPT_DEFAULTS.forEach(function (def) {
+        const u = findAccessUser("user_dept_" + def.code, data);
+        const w = (data.workspaces || []).find(function (x) {
+            return x && x.code === def.code && x.type !== "summary";
+        });
+        if (u && w && pinIsSet(u.pin)) w.pin = pinString(u.pin);
+    });
+}
+
+function migrateAppUsers(data) {
+    if (!data || typeof data !== "object") return;
+    if (!Array.isArray(data.users)) data.users = [];
+    data.users.forEach(normalizeAccessUser);
+    const summary = (data.workspaces || []).find(function (w) {
+        return w && (w.code === "summary" || w.type === "summary");
+    });
+    if (summary) {
+        ensureSummaryUsers(summary);
+        SUMMARY_ROLES.forEach(function (r) {
+            const stored = summary.roleUsers[r.role] || {};
+            const pin = pinString(stored.pin != null ? stored.pin : ((summary.rolePins && summary.rolePins[r.role]) || r.pin));
+            const role = r.role === "admin" ? "admin" : (r.role === "adjust" ? "manager" : "user");
+            upsertAccessUser(data, {
+                user_id: stored.user_id || ("user_" + r.role),
+                display_name: stored.name || r.name,
+                pin: pin,
+                role: role,
+                legacy_role: r.role,
+                employee_id: stored.employee_id || "",
+                is_active: true,
+                departments: r.role === "admin"
+                    ? DEPT_DEFAULTS.map(function (d) { return d.code; }).concat(["summary"])
+                    : ["summary"],
+                permissions: accessRoleTemplate(role, r.role)
+            });
+        });
+    }
+    DEPT_DEFAULTS.forEach(function (def) {
+        const w = (data.workspaces || []).find(function (x) {
+            return x && x.code === def.code && x.type !== "summary";
+        });
+        const pin = pinString((w && w.pin) || def.pin);
+        upsertAccessUser(data, {
+            user_id: "user_dept_" + def.code,
+            display_name: def.name,
+            pin: pin,
+            role: "user",
+            legacy_role: "staff",
+            employee_id: "",
+            is_active: true,
+            departments: [def.code],
+            permissions: accessRoleTemplate("user", "staff")
+        });
+    });
+    syncLegacyPinsFromUsers(data);
+}
+
+function generateAccessUserId() {
+    return nextPrefixedId("usr", appUsers().map(function (u) { return u && u.user_id; }));
+}
+
 function summaryRoleInfo(role) {
     const base = SUMMARY_ROLES.find(function (r) { return r.role === role; }) || SUMMARY_ROLES[0];
     const w = findWorkspaceByCode("summary");
@@ -4536,8 +4976,9 @@ function canEditStaff() {
 }
 
 function isTableAdmin() {
-    if (isSummary()) return currentSummaryRole === "admin";
-    return currentDeptRole === "admin";
+    if (isAppAdmin()) return true;
+    if (isSummary()) return false;
+    return userHasPerm("settings", "edit");
 }
 
 function adminPin() {
@@ -4550,12 +4991,15 @@ function adminPin() {
 }
 
 function canEditSalaryField(field) {
-    if (currentSummaryRole !== "adjust") return false;
+    if (isAppAdmin()) return true;
+    if (!userHasPerm("salary", "edit")) return false;
     return ["fines", "skipFine", "products", "advance", "taxes", "bonus", "vacationPay"].indexOf(field) !== -1;
 }
 
 function canMarkIssued() {
-    return currentSummaryRole === "pay";
+    if (isAppAdmin()) return true;
+    const u = currentAuthUser();
+    return currentSummaryRole === "pay" || !!(u && u.legacy_role === "pay");
 }
 
 function summaryEmployeeGroups() {
@@ -4662,6 +5106,7 @@ function createDefaultData() {
         shopPayroll: { departmentId: "shop", salaries: [], rules: [], manual: {}, metrics: [] },
         shopSalesPlan: { months: {} },
         deptSalesPlans: {},
+        users: [],
         workspaces: DEPT_DEFAULTS.map(function (d) {
             return createWorkspace(d.name, d.pin, "dept", d.code);
         }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
@@ -4741,7 +5186,7 @@ function restoreCanonicalPins(data) {
         const w = data.workspaces.find(function (x) {
             return x && x.code === def.code && x.type !== "summary";
         });
-        if (w) w.pin = String(def.pin);
+        if (w && !pinIsSet(w.pin)) w.pin = String(def.pin);
     });
     const summary = data.workspaces.find(function (w) {
         return w && (w.code === "summary" || w.type === "summary");
@@ -4753,16 +5198,19 @@ function restoreCanonicalPins(data) {
             const prev = summary.roleUsers[r.role] && typeof summary.roleUsers[r.role] === "object"
                 ? summary.roleUsers[r.role]
                 : {};
+            const pin = pinString(prev.pin != null ? prev.pin : (summary.rolePins[r.role] || r.pin)) || r.pin;
             summary.roleUsers[r.role] = {
                 id: r.role,
                 user_id: prev.user_id || ("user_" + r.role),
                 role: r.role,
                 name: String(prev.name || r.name).replace(/\s+/g, " ").trim() || r.name,
-                pin: String(r.pin)
+                pin: pin,
+                employee_id: prev.employee_id || ""
             };
-            summary.rolePins[r.role] = String(r.pin);
+            if (!pinIsSet(summary.rolePins[r.role])) summary.rolePins[r.role] = pin;
+            else summary.rolePins[r.role] = pinString(summary.rolePins[r.role]);
         });
-        summary.pin = String(summary.rolePins.admin);
+        summary.pin = pinString(summary.rolePins.admin) || summary.pin;
     }
 }
 
@@ -5162,23 +5610,36 @@ function renderDeptNow() {
 
     const code = current.code || (isSummary() ? "summary" : "");
     const hint = isSummary()
-        ? (currentSummaryRole === "admin"
-            ? summaryRoleInfo("admin").name + " · ставка за день и такси"
+        ? (isAppAdmin()
+            ? currentAuthUserName() + " · режим администратора"
             : currentSummaryRole === "adjust"
-                ? summaryRoleInfo("adjust").name + " · штрафы, прогулы, продукты, аванс и налоги"
+                ? currentAuthUserName() + " · штрафы, прогулы, продукты, аванс и налоги"
                 : currentSummaryRole === "pay"
-                    ? summaryRoleInfo("pay").name + " · только отметка «Выдано»"
-                    : "Сводка по Магазину Володарского, Офису, Складу и Логистике + Торговые")
-        : (currentDeptRole === "admin"
-            ? summaryRoleInfo("admin").name + " · админ. Настройки доступны."
-            : "Свои сотрудники. Другие отделы сюда не входят.");
+                    ? currentAuthUserName() + " · только отметка «Выдано»"
+                    : (currentAuthUserName() || "Общая"))
+        : (isAppAdmin()
+            ? currentAuthUserName() + " · режим администратора"
+            : (currentAuthUserName() ? currentAuthUserName() + " · " + officialName(current) : "Свои сотрудники. Другие отделы сюда не входят."));
 
     const title = isSummary() ? "Общая" : officialName(current);
+    const user = currentAuthUser();
+    const codes = userSwitchCodes(user);
+    let switchHtml = "";
+    if (codes.length > 1) {
+        switchHtml = '<select class="dept-switch" onchange="switchUserWorkspace(this.value)">';
+        codes.forEach(function (c) {
+            const label = c === "summary" ? "Общая" : officialName(findWorkspaceByCode(c)) || c;
+            switchHtml += '<option value="' + c + '"' + ((current.code === c) ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
+        });
+        switchHtml += "</select>";
+    }
 
     box.innerHTML = ""
         + '<div class="dept-now-label">Сейчас открыт</div>'
         + '<div class="dept-now-current ' + escapeHtml(code) + '">' + escapeHtml(title) + "</div>"
-        + '<div class="dept-now-hint">' + hint + "</div>";
+        + '<div class="dept-now-hint">' + escapeHtml(hint) + "</div>"
+        + (isAppAdmin() ? '<div class="admin-mode-banner on">Режим администратора</div>' : "")
+        + switchHtml;
 }
 
 function migrateAppData(data) {
@@ -5257,6 +5718,7 @@ function migrateAppData(data) {
     });
     migrateStableIds(data);
     restoreCanonicalPins(data);
+    migrateAppUsers(data);
     return data;
 }
 
@@ -5974,18 +6436,20 @@ function summaryMonthMoney(monthValue) {
    ВХОД И СЕССИЯ
 ============================================================ */
 function renderLogin(view) {
-    if (view === "home" || view === "shop" || view === "territory" || view === "summary") loginView = view;
+    if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin") loginView = view;
+    ensureLoginData();
+    migrateAppUsers(appData);
 
     const defs = DEPT_DEFAULTS;
     const summary = findWorkspaceByCode("summary");
     if (summary) ensureSummaryPins(summary);
     const showHint = defs.every(function (d) {
         const w = findWorkspaceByCode(d.code);
-        return w && pinsMatch(w.pin, d.pin);
-    }) && summary && summary.rolePins
-        && pinsMatch(summary.rolePins.admin, "5555")
-        && pinsMatch(summary.rolePins.adjust, "6666")
-        && pinsMatch(summary.rolePins.pay, "7777");
+        const u = findAccessUser("user_dept_" + d.code);
+        return (u && pinsMatch(u.pin, d.pin)) || (w && pinsMatch(w.pin, d.pin));
+    }) && summary && findAccessUser("user_admin") && pinsMatch(findAccessUser("user_admin").pin, "5555")
+        && findAccessUser("user_adjust") && pinsMatch(findAccessUser("user_adjust").pin, "6666")
+        && findAccessUser("user_pay") && pinsMatch(findAccessUser("user_pay").pin, "7777");
 
     const homeLink = document.getElementById("loginHomeLink");
     const title = document.getElementById("loginTitle");
@@ -6002,7 +6466,7 @@ function renderLogin(view) {
         backHome();
         if (title) title.textContent = "Магазин Володарского";
         if (subtitle) {
-            subtitle.innerHTML = "Только табель магазина."
+            subtitle.innerHTML = "Введите свой PIN."
                 + ' <span id="defaultPinHint"></span>';
         }
         grid.className = "login-grid single-view";
@@ -6011,7 +6475,7 @@ function renderLogin(view) {
         backHome();
         if (title) title.textContent = "ТЕРРИТОРИЯ";
         if (subtitle) {
-            subtitle.innerHTML = "Офис, Склад и Логистика + Торговые. Магазина здесь нет."
+            subtitle.innerHTML = "Офис, Склад и Логистика + Торговые. Введите свой PIN."
                 + ' <span id="defaultPinHint"></span>';
         }
         grid.className = "login-grid territory-view";
@@ -6022,32 +6486,43 @@ function renderLogin(view) {
         backHome();
         if (title) title.textContent = "Общая";
         if (subtitle) {
-            subtitle.innerHTML = "Выберите, кто входит, и введите PIN."
+            subtitle.innerHTML = "Введите свой PIN."
                 + ' <span id="defaultPinHint"></span>';
         }
         grid.className = "login-grid single-view";
         grid.innerHTML = summaryLoginCardHtml();
+    } else if (loginView === "admin") {
+        backHome();
+        if (title) title.textContent = "Администратор";
+        if (subtitle) {
+            subtitle.innerHTML = "Отдельный вход администратора. Все подразделения."
+                + ' <span id="defaultPinHint"></span>';
+        }
+        grid.className = "login-grid single-view";
+        grid.innerHTML = adminLoginCardHtml();
     } else {
         if (homeLink) {
             homeLink.innerHTML = '<a href="index.html">← На главную</a>';
         }
         if (title) title.textContent = "⏱ Табель сотрудников";
         if (subtitle) {
-            subtitle.innerHTML = "Выберите раздел: Магазин Володарского, Территория или Общая."
+            subtitle.innerHTML = "Выберите раздел или вход администратора."
                 + ' <span id="defaultPinHint"></span>';
         }
         grid.className = "login-grid";
-        grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml();
+        grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + adminFolderCardHtml();
     }
 
     const hint = document.getElementById("defaultPinHint");
     if (hint) {
         hint.textContent = showHint
             ? (loginView === "home"
-                ? " Отделы: сотрудник — PIN отдела, админ — 5555. Общая: 5555 / 6666 / 7777."
+                ? " PIN: магазин 1111 · офис 2222 · склад 3333 · логистика 4444 · админ 5555 · Ольга 6666 · Наталья 7777."
                 : loginView === "summary"
                     ? " Общая: 5555 / 6666 / 7777."
-                    : " Отделы: сотрудник — PIN отдела, админ — 5555.")
+                    : loginView === "admin"
+                        ? " Админ: 5555."
+                        : " Введите личный PIN пользователя этого раздела.")
             : "";
     }
 }
@@ -6057,11 +6532,7 @@ function deptLoginCardHtml(d) {
     return ""
         + '<div class="login-card ' + d.code + '" id="loginCard_' + d.code + '">'
         +   "<h3>" + escapeHtml(d.name) + "</h3>"
-        +   '<div class="note">Выберите, кто входит</div>'
-        +   '<select id="loginWho_' + d.code + '">'
-        +     '<option value="staff">Сотрудник отдела</option>'
-        +     '<option value="admin">' + escapeHtml(summaryRoleInfo("admin").name) + " — админ</option>"
-        +   "</select>"
+        +   '<div class="note">Личный PIN пользователя</div>'
         +   '<input type="password" id="loginPin_' + d.code + '" placeholder="PIN" maxlength="32" autocomplete="off"'
         +   ' onkeydown="if(event.key===\'Enter\'){loginByCode(\'' + d.code + '\')}">'
         +   '<div class="login-error" id="loginError_' + d.code + '"></div>'
@@ -6105,20 +6576,31 @@ function summaryFolderCardHtml() {
     );
 }
 
+function adminFolderCardHtml() {
+    return folderCardHtml("summary-card", "admin", "Администратор", "Отдельный вход. Все подразделения и пользователи.", "");
+}
+
 function summaryLoginCardHtml() {
     return ""
         + '<div class="login-card summary summary-card" id="loginCard_summary">'
         +   "<h3>Общая</h3>"
-        +   '<div class="note">Выберите, кто входит, и введите PIN</div>'
-        +   '<select id="loginSummaryWho">'
-        +     '<option value="admin">' + escapeHtml(summaryRoleInfo("admin").name) + " — админ</option>"
-        +     '<option value="adjust">' + escapeHtml(summaryRoleInfo("adjust").name) + " — удержания</option>"
-        +     '<option value="pay">' + escapeHtml(summaryRoleInfo("pay").name) + " — выдача</option>"
-        +   "</select>"
+        +   '<div class="note">Введите свой PIN</div>'
         +   '<input type="password" id="loginPin_summary" placeholder="PIN" maxlength="32" autocomplete="off"'
         +   ' onkeydown="if(event.key===\'Enter\'){loginSummary()}">'
         +   '<div class="login-error" id="loginError_summary"></div>'
         +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginSummary()">Войти</button>'
+        + "</div>";
+}
+
+function adminLoginCardHtml() {
+    return ""
+        + '<div class="login-card summary summary-card" id="loginCard_admin">'
+        +   "<h3>Вход администратора</h3>"
+        +   '<div class="note">PIN администратора</div>'
+        +   '<input type="password" id="loginPin_admin" placeholder="PIN" maxlength="32" autocomplete="off"'
+        +   ' onkeydown="if(event.key===\'Enter\'){loginAdmin()}">'
+        +   '<div class="login-error" id="loginError_admin"></div>'
+        +   '<button type="button" class="btn btn-primary" style="width:100%;" onclick="loginAdmin()">Войти</button>'
         + "</div>";
 }
 
@@ -6149,107 +6631,79 @@ function ensureLoginData() {
     const summary = findWorkspaceByCode("summary");
     if (summary) ensureSummaryPins(summary);
     try { restoreCanonicalPins(appData); } catch (err) { console.error(err); }
+    try { migrateAppUsers(appData); } catch (err) { console.error(err); }
+}
+
+function showLoginError(code, message) {
+    const error = document.getElementById("loginError_" + code);
+    const card = document.getElementById("loginCard_" + code);
+    const input = document.getElementById("loginPin_" + code);
+    if (card) card.classList.add("error");
+    if (error) error.textContent = message;
+    if (input) {
+        input.focus();
+        input.select();
+    }
 }
 
 function loginByCode(code) {
     ensureLoginData();
+    migrateAppUsers(appData);
     const input = document.getElementById("loginPin_" + code);
-    const error = document.getElementById("loginError_" + code);
     const card = document.getElementById("loginCard_" + code);
-    const who = document.getElementById("loginWho_" + code);
-    const role = (who && who.value) || "staff";
+    const error = document.getElementById("loginError_" + code);
     const entered = pinString(input && input.value);
-    let w = findWorkspaceByCode(code);
-    const def = DEPT_DEFAULTS.find(function (d) { return d.code === code; });
-
     if (card) card.classList.remove("error");
     if (error) error.textContent = "";
 
-    const candidates = role === "admin"
-        ? [adminPin(), "5555"]
-        : [w && w.pin, def && def.pin];
-    if (!anyPinMatch(entered, candidates)) {
-        if (card) card.classList.add("error");
-        if (error) error.textContent = "Неверный PIN-код.";
-        if (input) {
-            input.focus();
-            input.select();
-        }
+    const user = findActiveUserByPin(entered);
+    if (!user) {
+        showLoginError(code, "Неверный PIN-код.");
         return;
     }
-
-    if (!w && def) {
-        w = createWorkspace(def.name, String(def.pin), "dept", code);
-        appData.workspaces.push(w);
-    }
-    if (!w) {
-        if (card) card.classList.add("error");
-        if (error) error.textContent = "Неверный PIN-код.";
+    if (!userCanAccessDept(user, code)) {
+        showLoginError(code, "Нет доступа к этому подразделению.");
         return;
     }
-
-    w.code = code;
-    if (code === "summary") {
-        loginSummary();
-        return;
-    }
-    w.type = "dept";
-    if (def) w.name = def.name;
-    setCurrentWorkspace(w);
-    currentSummaryRole = null;
-    currentDeptRole = role === "admin" ? "admin" : "staff";
-    selectedMonth = currentMonthValue();
-    currentSection = "timesheet";
-    saveSession();
-    openApp();
+    enterAsUser(user, code);
 }
 
 function loginSummary() {
     ensureLoginData();
-    const who = document.getElementById("loginSummaryWho");
-    const role = (who && who.value) || "admin";
-    const info = summaryRoleInfo(role);
+    migrateAppUsers(appData);
     const input = document.getElementById("loginPin_summary");
-    const error = document.getElementById("loginError_summary");
     const card = document.getElementById("loginCard_summary");
+    const error = document.getElementById("loginError_summary");
     const entered = pinString(input && input.value);
-    let w = findWorkspaceByCode("summary");
-    if (w) ensureSummaryPins(w);
-
     if (card) card.classList.remove("error");
     if (error) error.textContent = "";
-
-    const candidates = [
-        info.pin,
-        w && w.rolePins && w.rolePins[info.role],
-        w && w.roleUsers && w.roleUsers[info.role] && w.roleUsers[info.role].pin
-    ];
-    if (!anyPinMatch(entered, candidates)) {
-        if (card) card.classList.add("error");
-        if (error) error.textContent = "Неверный PIN-код.";
-        if (input) {
-            input.focus();
-            input.select();
-        }
+    const user = findActiveUserByPin(entered);
+    if (!user) {
+        showLoginError("summary", "Неверный PIN-код.");
         return;
     }
-
-    if (!w) {
-        w = createWorkspace(SUMMARY_DEFAULT.name, "5555", "summary", "summary");
-        appData.workspaces.push(w);
-        ensureSummaryPins(w);
+    if (!userCanAccessDept(user, "summary")) {
+        showLoginError("summary", "Нет доступа к Общей.");
+        return;
     }
+    enterAsUser(user, "summary");
+}
 
-    w.code = "summary";
-    w.type = "summary";
-    w.name = SUMMARY_DEFAULT.name;
-    setCurrentWorkspace(w);
-    currentSummaryRole = info.role;
-    currentDeptRole = null;
-    selectedMonth = currentMonthValue();
-    currentSection = info.role === "pay" ? "salary" : (info.role === "adjust" ? "salary" : "timesheet");
-    saveSession();
-    openApp();
+function loginAdmin() {
+    ensureLoginData();
+    migrateAppUsers(appData);
+    const input = document.getElementById("loginPin_admin");
+    const entered = pinString(input && input.value);
+    const card = document.getElementById("loginCard_admin");
+    const error = document.getElementById("loginError_admin");
+    if (card) card.classList.remove("error");
+    if (error) error.textContent = "";
+    const user = findActiveUserByPin(entered);
+    if (!user || (user.role !== "admin" && user.legacy_role !== "admin")) {
+        showLoginError("admin", "Неверный PIN администратора.");
+        return;
+    }
+    enterAsUser(user, "summary");
 }
 
 function loginById(id) {
@@ -6290,7 +6744,8 @@ function saveSession() {
             month: selectedMonth,
             section: currentSection,
             summaryRole: currentSummaryRole,
-            deptRole: currentDeptRole
+            deptRole: currentDeptRole,
+            userId: currentUserId
         }));
     } catch (err) {}
 }
@@ -6299,6 +6754,7 @@ function leaveWorkspace() {
     setCurrentWorkspace(null);
     currentSummaryRole = null;
     currentDeptRole = null;
+    currentUserId = "";
     currentSection = "timesheet";
     selectedMonth = currentMonthValue();
     try { sessionStorage.removeItem(SESSION_KEY); } catch (err) {}
@@ -6335,6 +6791,7 @@ function tryRestoreSession() {
             if (saved.section) currentSection = saved.section;
             if (saved.summaryRole) currentSummaryRole = saved.summaryRole;
             if (saved.deptRole) currentDeptRole = saved.deptRole;
+            if (saved.userId) currentUserId = saved.userId;
             if (saved.index !== undefined && !id && !code) {
                 currentWorkspaceIndex = Number(saved.index);
             }
@@ -6349,10 +6806,19 @@ function tryRestoreSession() {
         if (!w && currentWorkspaceIndex !== null) w = appData.workspaces[currentWorkspaceIndex] || null;
         if (!w) return;
         setCurrentWorkspace(w);
-        if (w.type === "summary" && !currentSummaryRole) currentSummaryRole = "admin";
-        if (w.type !== "summary") {
-            currentSummaryRole = null;
-            if (!currentDeptRole) currentDeptRole = "staff";
+        if (!currentUserId) {
+            if (currentSummaryRole) currentUserId = "user_" + currentSummaryRole;
+            else if (currentDeptRole === "admin") currentUserId = "user_admin";
+            else if (w.code) currentUserId = "user_dept_" + w.code;
+        }
+        const user = currentAuthUser();
+        if (user) applyLegacyRolesFromUser(user, w.code || (w.type === "summary" ? "summary" : ""));
+        else {
+            if (w.type === "summary" && !currentSummaryRole) currentSummaryRole = "admin";
+            if (w.type !== "summary") {
+                currentSummaryRole = null;
+                if (!currentDeptRole) currentDeptRole = "staff";
+            }
         }
         openApp();
     } catch (err) {}
@@ -6445,31 +6911,56 @@ function closeSidebar() {
 }
 
 function allowedSections() {
-    if (!isSummary()) {
-        const list = currentDeptRole === "admin"
-            ? ["timesheet", "discipline", "fio", "employees", "settings"]
-            : ["timesheet", "discipline", "fio", "employees"];
-        if (workspace() && workspace().code === "shop") {
-            list.splice(1, 0, "metrics-pickers", "metrics-cashiers", "metrics-managers", "revision", "salesPlan");
-            if (currentDeptRole === "admin") list.push("metricCatalog");
-        } else if (workspace() && workspace().code === "warehouse") {
-            list.splice(1, 0, "salesPlan", "revision");
-            list.splice.apply(list, [3, 0].concat(deptWorkNavSections("warehouse")));
-            if (currentDeptRole === "admin") list.push("deptMetrics");
-        } else if (workspace() && workspace().code === "drivers") {
-            list.splice(1, 0, "salesPlan");
-            list.splice.apply(list, [2, 0].concat(deptWorkNavSections("drivers")));
-            if (currentDeptRole === "admin") list.push("deptMetrics");
-        } else if (workspace() && workspace().code === "office") {
-            list.splice(1, 0, "deptMetrics", "salesPlan");
+    const code = workspace() && workspace().code;
+    if (isSummary()) {
+        if (currentSummaryRole === "pay" || (currentAuthUser() && currentAuthUser().legacy_role === "pay")) {
+            return userHasPerm("salary", "view") ? ["salary"] : [];
         }
+        const list = [];
+        if (userHasPerm("timesheet", "view")) list.push("timesheet");
+        if (userHasPerm("salary", "view")) {
+            list.push("salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary");
+        }
+        if (userHasPerm("discipline", "view")) list.push("discipline");
+        if (userHasPerm("timesheet", "view")) list.push("analysis");
+        if (userHasPerm("settings", "edit")) list.push("settings", "summaryStaff");
+        if (userHasPerm("kpi", "manage") || isAppAdmin()) list.push("metricCatalog");
+        if (isAppAdmin()) list.push("users");
         return list;
     }
-    if (currentSummaryRole === "pay") return ["salary"];
-    if (currentSummaryRole === "admin") {
-        return ["timesheet", "salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary", "discipline", "analysis", "settings", "metricCatalog", "summaryStaff"];
+    const list = [];
+    if (userHasPerm("timesheet", "view")) list.push("timesheet");
+    if (userHasPerm("discipline", "view")) list.push("discipline");
+    if (userHasPerm("timesheet", "edit")) {
+        list.push("fio", "employees");
     }
-    return ["timesheet", "salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary", "analysis"];
+    if (code === "shop") {
+        if (userHasPerm("metrics", "view")) {
+            list.splice(list.indexOf("timesheet") + 1, 0, "metrics-pickers", "metrics-cashiers", "metrics-managers");
+        }
+        if (userHasPerm("revision", "view")) list.push("revision");
+        if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
+        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("metricCatalog");
+    } else if (code === "warehouse") {
+        if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
+        if (userHasPerm("revision", "view")) list.push("revision");
+        if (userHasPerm("metrics", "view")) {
+            list.push.apply(list, deptWorkNavSections("warehouse"));
+        }
+        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("deptMetrics");
+    } else if (code === "drivers") {
+        if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
+        if (userHasPerm("metrics", "view")) {
+            list.push.apply(list, deptWorkNavSections("drivers"));
+        }
+        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("deptMetrics");
+    } else if (code === "office") {
+        if (userHasPerm("metrics", "view")) list.push("deptMetrics");
+        if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
+    }
+    if (userHasPerm("settings", "edit")) list.push("settings");
+    if (isAppAdmin()) list.push("users");
+    return list;
 }
 
 function defaultSection() {
@@ -6498,6 +6989,7 @@ function sectionTitle(id) {
         analysis: "Анализ",
         fio: "ФИО сотрудника",
         employees: "В табель",
+        users: "Пользователи и доступы",
         settings: "Настройки",
         metricCatalog: "Метрики",
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : "")
@@ -6564,6 +7056,7 @@ function showSection(id, button) {
     if (id === "driversSalary") renderPayrollView(PAYROLL_VIEWS.drivers);
     if (id === "summaryStaff") renderSummaryStaff();
     if (id === "discipline") renderDiscipline();
+    if (id === "users") renderAccessUsers();
     if (id === "analysis") renderAnalysis();
     if (id === "fio") renderFio();
     if (id === "employees") renderEmployees();
@@ -7510,9 +8003,7 @@ function refreshShopRecountTotalsUi() {
 }
 
 function shopMetricsActorUserId() {
-    const w = workspace() || findWorkspaceByCode("shop");
-    const role = currentDeptRole || "staff";
-    return (w && w.id ? w.id : "shop") + ":" + role;
+    return currentAuthUserId() || "";
 }
 
 function shopInventoryMonth(month) {
@@ -7843,6 +8334,7 @@ function setShopMetricFact(employeeId, day, metricId, n) {
     }
     const rec = monthStore[employeeId][dayKey];
     rec.employee_id = employeeId;
+    stampAuthOnRecord(rec);
     if (!n) {
         delete rec[mid];
         const keys = Object.keys(rec).filter(function (k) { return k !== "employee_id" && k !== "source"; });
@@ -8086,6 +8578,7 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         rec[field] = field === "sales" ? Math.round(n) : n;
         rec.source = "manual";
         rec.employee_id = employeeId;
+        stampAuthOnRecord(rec);
         const spec = shopMetricFieldSpec(categoryId, field);
         const mid = (spec && spec.metricId) || METRIC_ID_ALIASES[field];
         if (mid) rec[field + "_metric_id"] = mid;
@@ -9294,6 +9787,7 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
     rec[field + "Mark"] = mark === "fail" ? "fail" : "done";
     rec.source = "manual";
     rec.employee_id = employeeId;
+    stampAuthOnRecord(rec);
     const spec = shopMetricFieldSpec(categoryId, field);
     if (spec && spec.metricId) rec[field + "_metric_id"] = spec.metricId;
     if (field === METRIC_SHELF_LABELS_FIELD) rec.metric_id = METRIC_SHELF_LABELS_ID;
@@ -10317,6 +10811,14 @@ function revisionShopEmployees() {
 }
 
 function revisionActor() {
+    const u = currentAuthUser();
+    if (u) {
+        return {
+            role: u.legacy_role || u.role || "",
+            name: u.display_name || "",
+            user_id: u.user_id
+        };
+    }
     if (isSummary() && currentSummaryRole) {
         const info = summaryRoleInfo(currentSummaryRole);
         const w = findWorkspaceByCode("summary");
@@ -10335,7 +10837,7 @@ function revisionActor() {
     return {
         role: currentDeptRole || "staff",
         name: officialName(w) || "Сотрудник магазина",
-        user_id: (w && w.code ? ("dept_" + w.code + "_" + (currentDeptRole || "staff")) : "dept_staff")
+        user_id: currentAuthUserId() || (w && w.code ? ("dept_" + w.code + "_" + (currentDeptRole || "staff")) : "dept_staff")
     };
 }
 
@@ -10534,6 +11036,7 @@ function revisionCellTitle(folder, day, task, status, dayOff) {
         if (group && group.name) s += ". Группа: " + group.name;
         if (folder && folder.name) s += ". Папка: " + folder.name;
         if (task.changed_at) s += ". Изменено: " + revisionDateTimeLabel(task.changed_at);
+        if (task.changed_by_user_id) s += ". Кто: " + accessUserDisplayName(task.changed_by_user_id);
         if (task.change_reason) s += ". Причина: " + task.change_reason;
         return s;
     }
@@ -10547,6 +11050,7 @@ function revisionCellTitle(folder, day, task, status, dayOff) {
         if (group && group.name) s += ". Группа: " + group.name;
         if (folder && folder.name) s += ". Папка: " + folder.name;
         if (task.changed_at) s += ". Изменено: " + revisionDateTimeLabel(task.changed_at);
+        if (task.changed_by_user_id) s += ". Кто: " + accessUserDisplayName(task.changed_by_user_id);
         if (task.change_reason) s += ". Причина: " + task.change_reason;
         return s;
     }
@@ -11297,6 +11801,7 @@ function setStatus(employeeId, day, status) {
         record.lateMinutes = 0;
     }
 
+    stampAuthOnRecord(record);
     saveApp();
     refreshAll();
 }
@@ -11306,6 +11811,7 @@ function setHours(employeeId, day, value) {
     const record = getDayRecord(employeeId, day);
     record.hours = value === "" ? "" : parseHours(value, "");
     if (value !== "" && !record.status) record.status = "Я";
+    stampAuthOnRecord(record);
     saveApp();
     refreshAll();
 }
@@ -11321,6 +11827,7 @@ function setLateMinutes(employeeId, day, value) {
     } else if (record.status === "О") {
         record.status = "Я";
     }
+    stampAuthOnRecord(record);
     saveApp();
     refreshAll();
 }
@@ -11331,6 +11838,7 @@ function setEarlyArrival(employeeId, day, checked) {
     const record = getDayRecord(employeeId, day);
     if (record.status !== "Я") return;
     record.early730 = !!checked;
+    stampAuthOnRecord(record);
     saveApp();
     refreshAll();
 }
@@ -12018,11 +12526,11 @@ function shopKpiAssigned(employeeId, kpiId, month) {
 }
 
 function canEditShopPayrollRules() {
-    return isSummary() && currentSummaryRole === "admin";
+    return isAppAdmin() || userHasPerm("kpi", "manage");
 }
 
 function canEditShopSalaryAdj() {
-    return isSummary() && (currentSummaryRole === "admin" || currentSummaryRole === "adjust");
+    return isAppAdmin() || userHasPerm("salary", "edit");
 }
 
 function shopPeriodMonthKey(value) {
@@ -13950,8 +14458,8 @@ function setDisciplinePanel(id) {
 }
 
 function metricControlCanView() {
-    if (isSummary()) return currentSummaryRole === "admin";
-    return currentWorkspaceIndex !== null;
+    if (isSummary()) return isAppAdmin() || currentSummaryRole === "admin";
+    return currentWorkspaceIndex !== null && userHasPerm("discipline", "view");
 }
 
 function metricControlCatalogItem(metricId) {
@@ -14037,18 +14545,25 @@ function metricControlCheckStats(employeeId, metricId, month) {
     let noData = 0;
     let excluded = 0;
     let eligible = 0;
+    const days = [];
     metricControlDailyLoop(employeeId, m, function (row) {
         if (row.kind === "excluded") {
             excluded += 1;
+            days.push({ day: row.day, ts: row.ts, mark: "excluded" });
             return;
         }
-        if (row.kind !== "eligible") return;
+        if (row.kind !== "eligible") {
+            days.push({ day: row.day, ts: row.ts, mark: "empty-ts" });
+            return;
+        }
         eligible += 1;
         const mark = metricControlCheckDayState(employeeId, metricId, row.day, m);
         if (mark === "done") done += 1;
         else if (mark === "fail") fail += 1;
         else noData += 1;
+        days.push({ day: row.day, ts: row.ts, mark: mark || "nodata" });
     });
+    const hasMarks = done + fail > 0;
     return {
         kind: "check",
         doneDays: done,
@@ -14058,7 +14573,10 @@ function metricControlCheckStats(employeeId, metricId, month) {
         eligibleDays: eligible,
         plan: eligible,
         fact: done,
-        rate: eligible ? done / eligible : null
+        rate: eligible ? done / eligible : null,
+        rateForAvg: hasMarks && eligible ? done / eligible : null,
+        days: days,
+        violations: fail
     };
 }
 
@@ -14108,23 +14626,45 @@ function metricControlNumericStats(employeeId, metricId, month) {
         noDataDays: empty,
         eligibleDays: eligible,
         maxLimit: !!maxLimit,
-        hasKpiPlan: plan > 0
+        hasKpiPlan: plan > 0,
+        rateForAvg: plan > 0 ? rate : null,
+        violations: plan > 0 && rate != null && rate < 1 ? 1 : 0
     };
 }
 
 function metricControlRevisionStats(employeeId, month) {
-    const st = shopRevisionEmployeeMetrics(employeeId, month);
-    const plan = Number(st.assigned || 0);
-    const fact = Number(st.done || 0);
-    const overdue = Number(st.overdue || 0);
+    const m = month || selectedMonth;
+    const dept = employeeHomeDeptCode(employeeId) === "warehouse" ? "warehouse" : "shop";
+    let plan = 0;
+    let fact = 0;
+    let overdue = 0;
+    let moved = 0;
+    let cancelled = 0;
+    revisionMonthTaskList(m, dept).forEach(function (t) {
+        const performer = t.completedEmployeeId || (t.status === "done" ? (t.employeeId || t.employee_id) : "");
+        const assignee = t.assignedEmployeeId || t.employeeId || t.employee_id;
+        const st = revisionTaskStatus(t, m);
+        if (assignee === employeeId) {
+            if (st === "moved") moved += 1;
+            if (st === "cancelled") cancelled += 1;
+            if (revisionIsActiveStatus(st)) plan += 1;
+            if (st === "overdue") overdue += 1;
+        }
+        if (performer === employeeId && st === "done") fact += 1;
+    });
+    const rate = plan ? fact / plan : (fact ? 1 : null);
     return {
         kind: "revision",
         plan: plan,
         fact: fact,
         overdue: overdue,
-        rate: plan ? fact / plan : (fact ? 1 : null),
+        moved: moved,
+        cancelled: cancelled,
+        rate: rate,
+        rateForAvg: plan ? rate : null,
         failDays: overdue,
-        noDataDays: plan || fact ? 0 : 1
+        noDataDays: plan || fact || moved || cancelled ? 0 : 1,
+        violations: overdue
     };
 }
 
@@ -14134,15 +14674,18 @@ function metricControl730Stats(employeeId, month) {
     const eligible = Number(extra.doneDays || 0) + Number(extra.laterDays || 0)
         + Number(extra.skipDays || 0) + Number(extra.noDataDays || 0);
     const fact = Number(extra.fact || 0);
+    const hasMarks = Number(extra.doneDays || 0) + Number(extra.failDays || 0) > 0;
     return {
         kind: "timesheet730",
         plan: eligible,
         fact: fact,
         rate: eligible ? fact / eligible : null,
+        rateForAvg: hasMarks && eligible ? fact / eligible : null,
         doneDays: extra.doneDays,
         failDays: extra.failDays,
         noDataDays: extra.noDataDays,
-        eligibleDays: eligible
+        eligibleDays: eligible,
+        violations: Number(extra.failDays || 0)
     };
 }
 
@@ -14166,19 +14709,19 @@ function metricControlLineStatus(line) {
     }
     if (line.kind === "sales") {
         if (!line.plan) return "empty";
-        if (line.rate < 1) return "fail";
+        if (line.rate < 1) return "mid";
         return "ok";
     }
     if (line.kind === "month") {
         if (line.hasKpiPlan) {
             if (line.maxLimit) return Number(line.fact) <= Number(line.plan) ? "ok" : "fail";
-            return line.rate >= 1 ? "ok" : "fail";
+            return line.rate >= 1 ? "ok" : "mid";
         }
         return Number(line.fact) ? "ok" : "nodata";
     }
     if (line.hasKpiPlan) {
         if (line.maxLimit) return line.rate >= 1 ? "ok" : "fail";
-        if (line.rate != null && line.rate < 1) return "fail";
+        if (line.rate != null && line.rate < 1) return "mid";
         return "ok";
     }
     if (line.noDataDays > 0 && line.filledDays === 0) return "nodata";
@@ -14212,8 +14755,11 @@ function metricControlBuildLine(employeeId, metricId, month) {
     stats.name = name;
     stats.group = "work";
     stats.status = metricControlLineStatus(stats);
-    if ((stats.kind === "numeric" || stats.kind === "month") && !stats.hasKpiPlan) stats.rateForAvg = null;
-    else stats.rateForAvg = stats.rate;
+    if (stats.rateForAvg == null) {
+        if ((stats.kind === "numeric" || stats.kind === "month") && !stats.hasKpiPlan) stats.rateForAvg = null;
+        else if (stats.kind !== "check" && stats.kind !== "timesheet730") stats.rateForAvg = stats.rate;
+    }
+    if (stats.violations == null) stats.violations = stats.status === "fail" || stats.status === "mid" ? (stats.failDays || 1) : 0;
     return stats;
 }
 
@@ -14234,7 +14780,8 @@ function metricControlSalesLine(employeeId, month) {
         rate: plan ? rate : null,
         rateForAvg: plan ? rate : null,
         noDataDays: 0,
-        failDays: plan && rate < 1 ? 1 : 0
+        failDays: plan && rate < 1 ? 1 : 0,
+        violations: plan && rate < 1 ? 1 : 0
     };
     line.status = metricControlLineStatus(line);
     return line;
@@ -14249,19 +14796,37 @@ function metricControlEmployeeReport(employee, month) {
     let ok = 0;
     let fail = 0;
     let nodata = 0;
+    let mid = 0;
+    let violations = 0;
+    let noDataTotal = 0;
     const rates = [];
     work.forEach(function (line) {
         if (line.status === "fail") fail += 1;
+        else if (line.status === "mid") mid += 1;
         else if (line.status === "nodata") nodata += 1;
         else if (line.status === "ok") ok += 1;
+        violations += Number(line.violations || 0);
+        noDataTotal += Number(line.noDataDays || 0);
         if (line.rateForAvg != null && Number.isFinite(line.rateForAvg)) rates.push(line.rateForAvg);
     });
     if (sales && sales.rateForAvg != null && Number.isFinite(sales.rateForAvg)) rates.push(sales.rateForAvg);
+    if (sales) {
+        if (sales.status === "fail") fail += 1;
+        else if (sales.status === "mid") mid += 1;
+        violations += Number(sales.violations || 0);
+    }
     const pct = rates.length ? rates.reduce(function (a, b) { return a + b; }, 0) / rates.length : null;
     let status = "ok";
-    if (fail || (sales && sales.status === "fail")) status = "fail";
-    else if (nodata || (sales && sales.status === "nodata")) status = "nodata";
+    if (fail) status = "fail";
+    else if (mid) status = "mid";
+    else if (nodata) status = "nodata";
     else if (!all.length) status = "empty";
+    let weakest = null;
+    work.concat(sales ? [sales] : []).forEach(function (line) {
+        if (line.rateForAvg == null) return;
+        if (!weakest || line.rateForAvg < weakest.rateForAvg) weakest = line;
+    });
+    const home = findWorkspaceByCode(employeeHomeDeptCode(employee.id));
     return {
         employee: employee,
         work: work,
@@ -14271,8 +14836,16 @@ function metricControlEmployeeReport(employee, month) {
         ok: ok,
         fail: fail,
         nodata: nodata,
+        mid: mid,
+        problem: fail + mid,
         pct: pct,
-        status: status
+        status: status,
+        violations: violations,
+        noDataTotal: noDataTotal,
+        weakest: weakest,
+        deptName: officialName(home) || "",
+        deptCode: employeeHomeDeptCode(employee.id),
+        position: employee.position || ""
     };
 }
 
@@ -14288,6 +14861,9 @@ function metricControlPeople() {
         people = directoryEmployees().slice();
     }
     people = people.filter(function (e) { return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID; });
+    if (f.position) {
+        people = people.filter(function (e) { return String(e.position || "") === f.position; });
+    }
     if (f.workTab) {
         people = people.filter(function (e) {
             const home = employeeHomeDeptCode(e.id);
@@ -14300,19 +14876,34 @@ function metricControlPeople() {
 }
 
 function metricControlStatusLabel(status) {
-    if (status === "fail") return "Есть невыполненные метрики";
+    if (status === "fail") return "Есть нарушения";
+    if (status === "mid") return "Ниже плана";
     if (status === "nodata") return "Есть незаполненные данные";
     if (status === "empty") return "Нет назначенных метрик";
-    return "Все метрики выполнены";
+    return "В норме";
 }
 
 function metricControlLineStatusLabel(line) {
     if (line.status === "empty") return "Нет рабочих дней";
+    if (line.kind === "revision" && line.overdue > 0) return "Есть просрочка";
     if (line.kind === "check" && line.failDays > 0) return "Есть нарушения";
-    if (line.status === "nodata") return "Нет данных";
-    if (line.rate != null && line.rate > 0 && line.rate < 1) return "Частично";
-    if (line.status === "fail") return "Не выполнено";
+    if (line.status === "nodata") {
+        return (line.kind === "numeric" || line.kind === "month") && !line.hasKpiPlan
+            ? "Только контроль заполнения"
+            : "Нет данных";
+    }
+    if (line.status === "mid") return "Ниже плана";
+    if (line.rate != null && line.rate >= 1) return "Выполнено";
+    if (line.rate != null && line.rate >= 0.9) return "Хорошо";
+    if (line.status === "fail") return "Проблема";
     return "Выполнено";
+}
+
+function metricControlLineTone(line) {
+    if (line.status === "fail") return "fail";
+    if (line.status === "nodata") return "warn";
+    if (line.status === "mid") return "mid";
+    return "ok";
 }
 
 function metricControlOpenSource(metricId, employeeId) {
@@ -14354,8 +14945,22 @@ function setMetricControlFilter(field, value) {
     metricControlFilters[field] = value;
     if (field === "dept") {
         metricControlFilters.workTab = "";
+        metricControlFilters.position = "";
         metricControlFilters.employeeId = "";
+        metricControlFilters.metricId = "";
     }
+    if (field === "position") metricControlFilters.employeeId = "";
+    if (field === "metricId" && value) metricControlView = "metrics";
+    renderMetricControl();
+}
+
+function setMetricControlView(id) {
+    metricControlView = id === "metrics" ? "metrics" : "people";
+    renderMetricControl();
+}
+
+function setMetricControlMetricSort(mode) {
+    metricControlFilters.metricSort = mode;
     renderMetricControl();
 }
 
@@ -14368,6 +14973,112 @@ function setMetricControlMonth(year, monthNum) {
 function toggleMetricControlRow(employeeId) {
     metricControlOpenId = metricControlOpenId === employeeId ? "" : employeeId;
     renderMetricControl();
+}
+
+function toggleMetricControlMetric(metricId) {
+    metricControlOpenMetricId = metricControlOpenMetricId === metricId ? "" : metricId;
+    renderMetricControl();
+}
+
+function toggleMetricControlDays(employeeId, metricId) {
+    const key = employeeId + ":" + metricId;
+    metricControlDaysKey = metricControlDaysKey === key ? "" : key;
+    renderMetricControl();
+}
+
+function metricControlFmtPct(ratio) {
+    if (ratio == null || !Number.isFinite(ratio)) return "—";
+    return formatShopCoefPct(ratio);
+}
+
+function metricControlFmtNum(n) {
+    const v = Number(n || 0);
+    return v.toLocaleString("ru-RU");
+}
+
+function metricControlLineDoneText(line) {
+    if (line.kind === "check" || line.kind === "timesheet730") return line.doneDays + " дн.";
+    if (line.kind === "sales") return money(line.fact);
+    if (line.kind === "revision") return String(line.fact);
+    return metricControlFmtNum(line.fact);
+}
+
+function metricControlLineFailText(line) {
+    if (line.kind === "check" || line.kind === "timesheet730") return line.failDays ? (line.failDays + " дн.") : "—";
+    if (line.kind === "revision") return line.overdue ? (line.overdue + " проср.") : "—";
+    if (line.status === "mid" || line.status === "fail") return "ниже плана";
+    return "—";
+}
+
+function metricControlLineNoDataText(line) {
+    if (line.kind === "numeric" && !line.hasKpiPlan) return (line.noDataDays || 0) + " дн.";
+    if (line.noDataDays) return line.noDataDays + (line.kind === "check" || line.kind === "timesheet730" || line.kind === "numeric" ? " дн." : "");
+    return "—";
+}
+
+function metricControlLineNeedsAttention(line) {
+    return line.status === "fail" || line.status === "mid" || line.status === "nodata" || (line.overdue || 0) > 0
+        || (line.rateForAvg != null && line.rateForAvg < 1 && line.hasKpiPlan);
+}
+
+function metricControlFilterReports(reports) {
+    const f = metricControlFilters;
+    return reports.filter(function (r) {
+        if (f.employeeId && r.employee.id !== f.employeeId) return false;
+        if (f.metricId) {
+            const has = r.all.some(function (line) { return line.metricId === f.metricId; });
+            if (!has) return false;
+        }
+        if (f.status === "ok" && r.status !== "ok") return false;
+        if (f.status === "fail" && r.status !== "fail" && r.status !== "mid") return false;
+        if (f.status === "nodata" && r.status !== "nodata") return false;
+        if (f.attention) {
+            const hit = r.all.some(metricControlLineNeedsAttention);
+            if (!hit) return false;
+        }
+        return true;
+    });
+}
+
+function metricControlCollectMetrics(reports) {
+    const map = {};
+    reports.forEach(function (r) {
+        r.all.forEach(function (line) {
+            const id = line.metricId;
+            if (!map[id]) {
+                map[id] = {
+                    metricId: id,
+                    name: line.name,
+                    group: line.group,
+                    kind: line.kind,
+                    people: [],
+                    assigned: 0,
+                    checks: 0,
+                    done: 0,
+                    fail: 0,
+                    nodata: 0,
+                    violations: 0,
+                    rates: []
+                };
+            }
+            const g = map[id];
+            g.assigned += 1;
+            g.people.push({ report: r, line: line });
+            g.checks += Number(line.eligibleDays || ((line.kind === "revision" || line.kind === "sales" || line.kind === "month") ? 1 : 0));
+            if (line.kind === "check" || line.kind === "timesheet730") g.done += Number(line.doneDays || 0);
+            else if (line.status === "ok") g.done += 1;
+            g.fail += Number(line.failDays || 0);
+            g.nodata += Number(line.noDataDays || 0);
+            g.violations += Number(line.violations || 0);
+            if (line.rateForAvg != null && Number.isFinite(line.rateForAvg)) g.rates.push(line.rateForAvg);
+        });
+    });
+    return Object.keys(map).map(function (id) {
+        const g = map[id];
+        g.pct = g.rates.length ? g.rates.reduce(function (a, b) { return a + b; }, 0) / g.rates.length : null;
+        g.status = g.violations ? "fail" : (g.nodata ? "nodata" : "ok");
+        return g;
+    });
 }
 
 function renderMetricControlFilters() {
@@ -14391,86 +15102,226 @@ function renderMetricControlFilters() {
         html += '<option value="' + mm + '"' + (mm === monthNum ? " selected" : "") + ">" + name + "</option>";
     });
     html += "</select></div>";
+    html += '<div class="form-group"><label>Подразделение</label><select ' + (deptLocked ? "disabled" : "") + " onchange=\"setMetricControlFilter('dept',this.value)\">"
+        + '<option value="">' + (deptLocked ? escapeHtml((workspace() && officialName(workspace())) || "Отдел") : "Все") + "</option>";
     if (!deptLocked) {
-        html += '<div class="form-group"><label>Подразделение</label><select onchange="setMetricControlFilter(\'dept\',this.value)">'
-            + '<option value="">Все</option>';
         DEPT_DEFAULTS.forEach(function (d) {
             html += '<option value="' + d.code + '"' + (f.dept === d.code ? " selected" : "") + ">" + escapeHtml(d.name) + "</option>";
         });
-        html += "</select></div>";
     }
-    const tabs = metricTabsForDept(deptCode || "shop");
-    html += '<div class="form-group"><label>Рабочая группа</label><select onchange="setMetricControlFilter(\'workTab\',this.value)">'
+    html += "</select></div>";
+    const people = metricControlPeople();
+    const positions = [];
+    people.forEach(function (e) {
+        const p = String(e.position || "").trim();
+        if (p && positions.indexOf(p) === -1) positions.push(p);
+    });
+    positions.sort(function (a, b) { return a.localeCompare(b, "ru"); });
+    html += '<div class="form-group"><label>Должность</label><select onchange="setMetricControlFilter(\'position\',this.value)">'
         + '<option value="">Все</option>';
-    tabs.forEach(function (t) {
-        html += '<option value="' + t.id + '"' + (f.workTab === t.id ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
+    positions.forEach(function (p) {
+        html += '<option value="' + escapeAttribute(p) + '"' + (f.position === p ? " selected" : "") + ">" + escapeHtml(p) + "</option>";
     });
     html += "</select></div><div class=\"form-group\"><label>Сотрудник</label><select onchange=\"setMetricControlFilter('employeeId',this.value)\">"
         + '<option value="">Все</option>';
-    const empKeep = f.employeeId;
-    f.employeeId = "";
-    metricControlPeople().forEach(function (e) {
-        html += '<option value="' + e.id + '"' + (empKeep === e.id ? " selected" : "") + ">" + escapeHtml(e.name) + "</option>";
+    people.forEach(function (e) {
+        html += '<option value="' + e.id + '"' + (f.employeeId === e.id ? " selected" : "") + ">" + escapeHtml(e.name) + "</option>";
     });
-    f.employeeId = empKeep;
+    const metricOpts = {};
+    people.forEach(function (e) {
+        shopEmployeeWorkMetricIds(e.id, selectedMonth).forEach(function (id) {
+            const it = metricControlCatalogItem(id);
+            metricOpts[id] = (it && it.name) || SHOP_KPI_METRIC_NAMES[id] || id;
+        });
+    });
+    html += "</select></div><div class=\"form-group\"><label>Метрика</label><select onchange=\"setMetricControlFilter('metricId',this.value)\">"
+        + '<option value="">Все</option>';
+    Object.keys(metricOpts).sort(function (a, b) {
+        return String(metricOpts[a]).localeCompare(metricOpts[b], "ru");
+    }).forEach(function (id) {
+        html += '<option value="' + id + '"' + (f.metricId === id ? " selected" : "") + ">" + escapeHtml(metricOpts[id]) + "</option>";
+    });
     html += "</select></div><div class=\"form-group\"><label>Статус</label><select onchange=\"setMetricControlFilter('status',this.value)\">"
         + '<option value="all"' + (f.status === "all" ? " selected" : "") + ">Все</option>"
-        + '<option value="ok"' + (f.status === "ok" ? " selected" : "") + ">Выполняет</option>"
+        + '<option value="ok"' + (f.status === "ok" ? " selected" : "") + ">В норме</option>"
         + '<option value="fail"' + (f.status === "fail" ? " selected" : "") + ">Есть нарушения</option>"
         + '<option value="nodata"' + (f.status === "nodata" ? " selected" : "") + ">Нет данных</option>"
-        + "</select></div><div class=\"form-group\"><label>Сортировка</label><select onchange=\"setMetricControlFilter('sort',this.value)\">"
-        + '<option value="name"' + (f.sort === "name" ? " selected" : "") + ">По ФИО</option>"
-        + '<option value="pct"' + (f.sort === "pct" ? " selected" : "") + ">По % выполнения</option>"
-        + '<option value="fail"' + (f.sort === "fail" ? " selected" : "") + ">Сначала с нарушениями</option>"
-        + '<option value="nodata"' + (f.sort === "nodata" ? " selected" : "") + ">Сначала нет данных</option>"
         + "</select></div><div class=\"form-group\"><label class=\"check\"><input type=\"checkbox\""
-        + (f.attention ? " checked" : "") + " onchange=\"setMetricControlFilter('attention',this.checked)\"> Требует внимания</label></div>";
+        + (f.attention ? " checked" : "") + " onchange=\"setMetricControlFilter('attention',this.checked)\"> Только требует внимания</label></div>";
     box.innerHTML = html;
+}
+
+function metricControlDaysHtml(employeeId, line) {
+    if (!line.days || !line.days.length) return "";
+    const key = employeeId + ":" + line.metricId;
+    const open = metricControlDaysKey === key;
+    let html = '<button type="button" class="btn btn-secondary btn-small" onclick="toggleMetricControlDays(\''
+        + employeeId + "','" + line.metricId + "')\">" + (open ? "Скрыть дни" : "Дни") + "</button>";
+    if (!open) return html;
+    html += '<div class="mc-days">';
+    line.days.forEach(function (d) {
+        const label = String(d.day).padStart(2, "0") + "." + selectedMonth.slice(5, 7);
+        let cls = "mc-day";
+        let mark = "";
+        if (d.mark === "excluded") { cls += " off"; mark = d.ts || "В"; }
+        else if (d.mark === "done") { cls += " ok"; mark = "✓"; }
+        else if (d.mark === "fail") { cls += " fail"; mark = "✕"; }
+        else if (d.mark === "nodata") { cls += " warn"; mark = "—"; }
+        else { cls += ""; mark = d.ts || ""; }
+        html += '<span class="' + cls + '" title="' + label + '">' + label + " " + mark + "</span>";
+    });
+    html += "</div>";
+    return html;
+}
+
+function metricControlLineRowHtml(employeeId, line, showJump) {
+    const tone = metricControlLineTone(line);
+    const pct = line.rateForAvg != null ? metricControlFmtPct(line.rateForAvg)
+        : (line.kind === "numeric" && !line.hasKpiPlan
+            ? ("заполнение " + metricControlFmtPct(line.fillRate))
+            : metricControlFmtPct(line.rate));
+    const jump = showJump && !isSummary()
+        ? '<button type="button" class="btn btn-secondary btn-small" onclick="metricControlOpenSource(\''
+            + line.metricId + "','" + employeeId + "')\">Открыть</button>"
+        : "";
+    let extra = "";
+    if (line.kind === "numeric" && !line.hasKpiPlan) {
+        extra = '<div class="note">План KPI не назначен · заполнено ' + line.filledDays + " из " + line.eligibleDays + " раб. дн.</div>";
+    }
+    if (line.kind === "revision") {
+        extra = '<div class="note">План ' + line.plan + " · выполнено " + line.fact
+            + " · просрочено " + (line.overdue || 0)
+            + " · перенесено " + (line.moved || 0)
+            + " · снято " + (line.cancelled || 0) + "</div>";
+    }
+    if (line.kind === "check" || line.kind === "timesheet730") {
+        extra = '<div class="note">Контрольных дней: ' + line.eligibleDays
+            + " · сделано " + line.doneDays
+            + " · не сделано " + line.failDays
+            + " · нет данных " + line.noDataDays + "</div>"
+            + metricControlDaysHtml(employeeId, line);
+    }
+    if (line.kind === "sales") extra = '<div class="note">Коллективный план</div>';
+    return '<tr class="mc-line-' + tone + '"><td>' + escapeHtml(line.name) + extra + "</td>"
+        + "<td>" + metricControlLineDoneText(line) + "</td>"
+        + "<td>" + metricControlLineFailText(line) + "</td>"
+        + "<td>" + metricControlLineNoDataText(line) + "</td>"
+        + "<td>" + pct + "</td>"
+        + "<td class=\"mc-st-" + (tone === "mid" ? "mid" : (tone === "fail" ? "fail" : (tone === "warn" ? "warn" : "ok"))) + "\">"
+        + metricControlLineStatusLabel(line) + "</td>"
+        + "<td>" + jump + "</td></tr>";
 }
 
 function metricControlDetailHtml(rep) {
     let html = '<div class="mc-detail"><strong>' + escapeHtml(rep.employee.name) + "</strong> · "
-        + escapeHtml(monthLabel(selectedMonth))
-        + '<div class="note" style="margin:6px 0 8px">Рабочие метрики — только назначенные этому сотруднику. Коллективный план продаж, если сотрудник участник, показан отдельно.</div>';
+        + escapeHtml(rep.position || "без должности") + " · " + escapeHtml(rep.deptName || "")
+        + " · " + escapeHtml(monthLabel(selectedMonth));
+    if (rep.weakest) html += '<div class="note">Самая слабая метрика: ' + escapeHtml(rep.weakest.name)
+        + " · " + metricControlFmtPct(rep.weakest.rateForAvg) + "</div>";
     if (!rep.work.length && !rep.sales) {
         html += '<div class="empty-row">На этот месяц рабочие метрики не назначены.</div></div>';
         return html;
     }
-    html += '<table class="analysis-table" style="width:100%"><thead><tr>'
-        + "<th>Метрика</th><th>План / дни</th><th>Факт</th><th>Выполнение</th><th>Статус</th><th></th></tr></thead><tbody>";
-    function rowHtml(line) {
-        const planTxt = (line.kind === "check" || line.kind === "timesheet730")
-            ? (line.eligibleDays + " дн.")
-            : (line.plan ? (line.kind === "sales" ? money(line.plan) : String(line.plan)) : "—");
-        const factTxt = line.kind === "check" || line.kind === "timesheet730"
-            ? ("Сделано " + line.doneDays + " · не сделано " + line.failDays + " · нет данных " + line.noDataDays)
-            : (line.kind === "sales" ? money(line.fact) : String(line.fact));
-        const pct = line.rateForAvg != null || line.rate != null
-            ? formatShopCoefPct(line.rate != null ? line.rate : line.rateForAvg)
-            : (line.kind === "numeric" && !line.hasKpiPlan
-                ? ("заполнение " + (line.fillRate != null ? formatShopCoefPct(line.fillRate) : "—"))
-                : "—");
-        const stCls = line.status === "fail" ? "mc-st-fail" : (line.status === "nodata" ? "mc-st-warn" : "mc-st-ok");
-        const jump = isSummary() ? "" : '<button type="button" class="btn btn-secondary btn-small" onclick="metricControlOpenSource(\''
-            + line.metricId + "','" + rep.employee.id + "')\">Открыть</button>";
-        return "<tr><td>" + escapeHtml(line.name)
-            + (line.group === "plan" ? '<div class="note">Коллективный план</div>' : "")
-            + (line.kind === "numeric" && !line.hasKpiPlan
-                ? '<div class="note">KPI не назначен · контроль заполнения: ' + line.filledDays + " из " + line.eligibleDays + "</div>"
-                : "")
-            + (line.kind === "revision" && line.overdue
-                ? '<div class="note">Просрочено: ' + line.overdue + "</div>" : "")
-            + "</td><td>" + planTxt + "</td><td>" + factTxt + "</td><td>" + pct
-            + "</td><td class=\"" + stCls + "\">" + metricControlLineStatusLabel(line) + "</td><td>" + jump + "</td></tr>";
+    html += '<table class="analysis-table mc-table" style="width:100%"><thead><tr>'
+        + "<th>Метрика</th><th>Выполнено</th><th>Не выполнено</th><th>Нет данных</th><th>Результат</th><th>Статус</th><th></th></tr></thead><tbody>";
+    const lines = metricControlFilters.metricId
+        ? rep.all.filter(function (line) { return line.metricId === metricControlFilters.metricId; })
+        : rep.all;
+    const work = lines.filter(function (line) { return line.group !== "plan"; });
+    const plan = lines.filter(function (line) { return line.group === "plan"; });
+    if (work.length) {
+        html += '<tr class="subhead"><th colspan="7">Рабочие метрики</th></tr>';
+        work.forEach(function (line) { html += metricControlLineRowHtml(rep.employee.id, line, true); });
     }
-    if (rep.work.length) {
-        html += '<tr class="subhead"><th colspan="6">Рабочие метрики</th></tr>';
-        rep.work.forEach(function (line) { html += rowHtml(line); });
+    if (plan.length) {
+        html += '<tr class="subhead"><th colspan="7">Коллективные KPI / планы</th></tr>';
+        plan.forEach(function (line) { html += metricControlLineRowHtml(rep.employee.id, line, true); });
     }
-    if (rep.sales) {
-        html += '<tr class="subhead"><th colspan="6">Коллективные KPI / планы</th></tr>';
-        html += rowHtml(rep.sales);
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function metricControlPeopleTableHtml(list) {
+    if (!list.length) {
+        return '<div class="empty-row">Нет сотрудников по выбранным фильтрам.</div>';
     }
+    let html = '<div class="table-wrapper"><table class="analysis-table mc-table"><thead><tr>'
+        + "<th>Сотрудник</th><th>Подразделение</th><th>Должность</th><th>Назначено</th>"
+        + "<th>Проблемных</th><th>Без данных</th><th>Среднее %</th><th>Статус</th></tr></thead><tbody>";
+    list.forEach(function (r) {
+        const open = r.employee.id === metricControlOpenId;
+        html += '<tr class="' + (open ? "mc-row-open" : "") + '"><td>'
+            + '<button type="button" class="mc-name-btn" onclick="toggleMetricControlRow(\'' + r.employee.id + "')\">"
+            + (open ? "▼ " : "▶ ") + escapeHtml(r.employee.name) + "</button>"
+            + (isWorking(r.employee) ? "" : '<div class="note">уволен</div>') + "</td>"
+            + "<td>" + escapeHtml(r.deptName) + "</td>"
+            + "<td>" + escapeHtml(r.position || "—") + "</td>"
+            + "<td>" + r.assigned + "</td>"
+            + "<td>" + r.problem + "</td>"
+            + "<td>" + r.nodata + "</td>"
+            + "<td>" + metricControlFmtPct(r.pct) + "</td>"
+            + "<td class=\"mc-st-" + (r.status === "fail" ? "fail" : (r.status === "nodata" ? "warn" : (r.status === "mid" ? "mid" : "ok"))) + "\">"
+            + metricControlStatusLabel(r.status) + "</td></tr>";
+        if (open) html += '<tr class="mc-expand"><td colspan="8">' + metricControlDetailHtml(r) + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function metricControlMetricsTableHtml(groups) {
+    if (!groups.length) return '<div class="empty-row">Нет метрик по выбранным фильтрам.</div>';
+    const sort = metricControlFilters.metricSort || "worst";
+    groups = groups.slice();
+    groups.sort(function (a, b) {
+        if (sort === "best") return (b.pct == null ? -1 : b.pct) - (a.pct == null ? -1 : a.pct);
+        return (a.pct == null ? 2 : a.pct) - (b.pct == null ? 2 : b.pct) || b.violations - a.violations;
+    });
+    let html = '<div class="note" style="margin:0 0 8px">Сортировка метрик: сначала самые проблемные. Раскройте строку, чтобы сравнить сотрудников.</div>';
+    html += '<div class="table-wrapper"><table class="analysis-table mc-table"><thead><tr>'
+        + "<th>Метрика</th><th>Сотрудников</th><th>Проверок</th><th>Выполнено</th><th>Не выполнено</th>"
+        + "<th>Нет данных</th><th>%</th><th>Статус</th></tr></thead><tbody>";
+    groups.forEach(function (g) {
+        const open = metricControlOpenMetricId === g.metricId;
+        const tone = g.status === "fail" ? "fail" : (g.status === "nodata" ? "warn" : "ok");
+        html += '<tr class="' + (open ? "mc-row-open" : "") + '"><td>'
+            + '<button type="button" class="mc-name-btn" onclick="toggleMetricControlMetric(\'' + g.metricId + "')\">"
+            + (open ? "▼ " : "▶ ") + escapeHtml(g.name) + "</button>"
+            + (g.group === "plan" ? '<div class="note">Коллективный план</div>' : "") + "</td>"
+            + "<td>" + g.assigned + "</td><td>" + g.checks + "</td><td>" + g.done + "</td><td>" + g.fail
+            + "</td><td>" + g.nodata + "</td><td>" + metricControlFmtPct(g.pct)
+            + "</td><td class=\"mc-st-" + tone + "\">" + metricControlStatusLabel(g.status) + "</td></tr>";
+        if (open) {
+            let people = g.people.slice();
+            const ps = metricControlFilters.metricSort;
+            people.sort(function (a, b) {
+                const la = a.line;
+                const lb = b.line;
+                if (ps === "best") return (lb.rateForAvg == null ? -1 : lb.rateForAvg) - (la.rateForAvg == null ? -1 : la.rateForAvg);
+                if (ps === "fail") return Number(lb.failDays || 0) - Number(la.failDays || 0);
+                if (ps === "nodata") return Number(lb.noDataDays || 0) - Number(la.noDataDays || 0);
+                return (la.rateForAvg == null ? 2 : la.rateForAvg) - (lb.rateForAvg == null ? 2 : lb.rateForAvg);
+            });
+            html += '<tr class="mc-expand"><td colspan="8"><div class="toolbar" style="margin-bottom:8px">'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="setMetricControlMetricSort(\'best\')">Лучшие</button> '
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="setMetricControlMetricSort(\'worst\')">Худшие</button> '
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="setMetricControlMetricSort(\'fail\')">Больше нарушений</button> '
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="setMetricControlMetricSort(\'nodata\')">Больше нет данных</button>'
+                + '</div><table class="analysis-table mc-table" style="width:100%"><thead><tr>'
+                + "<th>Сотрудник</th><th>Выполнено</th><th>Не выполнено</th><th>Нет данных</th><th>%</th><th>Статус</th></tr></thead><tbody>";
+            people.forEach(function (p) {
+                const line = p.line;
+                const tone2 = metricControlLineTone(line);
+                html += "<tr class=\"mc-line-" + tone2 + "\"><td>" + escapeHtml(p.report.employee.name) + "</td>"
+                    + "<td>" + metricControlLineDoneText(line) + "</td>"
+                    + "<td>" + metricControlLineFailText(line) + "</td>"
+                    + "<td>" + metricControlLineNoDataText(line) + "</td>"
+                    + "<td>" + (line.rateForAvg != null ? metricControlFmtPct(line.rateForAvg) : metricControlFmtPct(line.rate)) + "</td>"
+                    + "<td class=\"mc-st-" + (tone2 === "ok" ? "ok" : (tone2 === "fail" ? "fail" : (tone2 === "mid" ? "mid" : "warn"))) + "\">"
+                    + metricControlLineStatusLabel(line) + "</td></tr>";
+            });
+            html += "</tbody></table></td></tr>";
+        }
+    });
     html += "</tbody></table></div>";
     return html;
 }
@@ -14485,50 +15336,73 @@ function renderMetricControl() {
     const tabMet = document.getElementById("discTabMetrics");
     if (tabLate) tabLate.classList.toggle("active", disciplinePanel !== "metrics");
     if (tabMet) tabMet.classList.toggle("active", disciplinePanel === "metrics");
+    const viewPeople = document.getElementById("mcViewPeople");
+    const viewMetrics = document.getElementById("mcViewMetrics");
+    if (viewPeople) viewPeople.classList.toggle("active", metricControlView !== "metrics");
+    if (viewMetrics) viewMetrics.classList.toggle("active", metricControlView === "metrics");
     if (disciplinePanel !== "metrics") return;
     renderMetricControlFilters();
     const reports = metricControlPeople().map(function (e) {
         return metricControlEmployeeReport(e, selectedMonth);
     });
-    const f = metricControlFilters;
-    let list = reports.filter(function (r) {
-        if (f.status === "ok" && r.status !== "ok") return false;
-        if (f.status === "fail" && r.status !== "fail") return false;
-        if (f.status === "nodata" && r.status !== "nodata") return false;
-        if (f.attention) {
-            const lowPlan = r.pct != null && r.pct < 1;
-            if (r.status !== "fail" && r.status !== "nodata" && !lowPlan) return false;
-        }
-        return true;
+    const list = metricControlFilterReports(reports);
+    if (metricControlFilters.employeeId) metricControlOpenId = metricControlFilters.employeeId;
+    if (metricControlFilters.metricId) metricControlOpenMetricId = metricControlFilters.metricId;
+    const groups = metricControlCollectMetrics(list);
+    groups.sort(function (a, b) {
+        return b.violations - a.violations || (a.pct == null ? 2 : a.pct) - (b.pct == null ? 2 : b.pct);
     });
-    if (f.sort === "pct") {
-        list.sort(function (a, b) { return (a.pct == null ? 2 : a.pct) - (b.pct == null ? 2 : b.pct); });
-    } else if (f.sort === "fail") {
-        list.sort(function (a, b) { return b.fail - a.fail || (a.pct == null ? 0 : a.pct) - (b.pct == null ? 0 : b.pct); });
-    } else if (f.sort === "nodata") {
-        list.sort(function (a, b) { return b.nodata - a.nodata || b.fail - a.fail; });
+    let problemMetrics = 0;
+    let violations = 0;
+    let nodata = 0;
+    let staffFail = 0;
+    list.forEach(function (r) {
+        if (r.status === "fail" || r.status === "mid") staffFail += 1;
+        violations += r.violations;
+        nodata += r.noDataTotal;
+        problemMetrics += r.problem;
+    });
+    const sumBox = document.getElementById("metricControlSummary");
+    if (sumBox) {
+        sumBox.innerHTML = '<div class="mc-kpis">'
+            + '<div class="mc-kpi"><div class="note">Проблемных метрик у сотрудников</div><strong>' + problemMetrics + "</strong></div>"
+            + '<div class="mc-kpi"><div class="note">Нарушений</div><strong>' + violations + "</strong></div>"
+            + '<div class="mc-kpi"><div class="note">Нет данных (дни/факты)</div><strong>' + nodata + "</strong></div>"
+            + '<div class="mc-kpi"><div class="note">Сотрудников с нарушениями</div><strong>' + staffFail + "</strong></div>"
+            + "</div>";
     }
-    const detailHost = document.getElementById("metricControlDetail");
-    if (detailHost) detailHost.innerHTML = "";
-    const body = document.getElementById("metricControlBody");
-    if (!body) return;
-    if (!list.length) {
-        body.innerHTML = '<tr><td colspan="7"><div class="empty-row">Нет сотрудников по выбранным фильтрам.</div></td></tr>';
-        return;
+    const withPct = list.filter(function (r) { return r.pct != null; });
+    const best = withPct.slice().sort(function (a, b) { return b.pct - a.pct; })[0];
+    const worst = withPct.slice().sort(function (a, b) { return a.pct - b.pct; })[0];
+    const mostFail = list.slice().sort(function (a, b) { return b.violations - a.violations; })[0];
+    const mostEmpty = list.slice().sort(function (a, b) { return b.noDataTotal - a.noDataTotal; })[0];
+    const rank = document.getElementById("metricControlRank");
+    if (rank) {
+        rank.innerHTML = '<div class="note" style="margin:0 0 6px">Рейтинг сотрудников</div><div class="mc-rank">'
+            + '<div class="mc-mini"><b>Лучшее выполнение</b>' + (best ? escapeHtml(best.employee.name) + " — " + metricControlFmtPct(best.pct) : "—") + "</div>"
+            + '<div class="mc-mini"><b>Требует внимания</b>' + (worst ? escapeHtml(worst.employee.name) + " — " + metricControlFmtPct(worst.pct) : "—") + "</div>"
+            + '<div class="mc-mini"><b>Больше всего нарушений</b>' + (mostFail && mostFail.violations ? escapeHtml(mostFail.employee.name) + " — " + mostFail.violations : "—") + "</div>"
+            + '<div class="mc-mini"><b>Больше всего «Нет данных»</b>' + (mostEmpty && mostEmpty.noDataTotal ? escapeHtml(mostEmpty.employee.name) + " — " + mostEmpty.noDataTotal : "—") + "</div>"
+            + "</div>";
     }
-    body.innerHTML = list.map(function (r) {
-        const open = r.employee.id === metricControlOpenId;
-        const cls = (r.status === "fail" ? "mc-row-fail" : (r.status === "nodata" ? "mc-row-warn" : ""))
-            + (open ? " mc-row-open" : "");
-        const stCls = r.status === "fail" ? "mc-st-fail" : (r.status === "nodata" ? "mc-st-warn" : (r.status === "ok" ? "mc-st-ok" : "mc-st-muted"));
-        return '<tr class="' + cls + '"><td><button type="button" class="mc-name-btn" onclick="toggleMetricControlRow(\''
-            + r.employee.id + "')\">" + escapeHtml(r.employee.name) + "</button>"
-            + (isWorking(r.employee) ? "" : '<div class="note">уволен</div>') + "</td>"
-            + "<td>" + r.assigned + "</td><td>" + r.ok + "</td><td>" + r.fail + "</td><td>" + r.nodata
-            + "</td><td>" + (r.pct == null ? "—" : formatShopCoefPct(r.pct))
-            + "</td><td class=\"" + stCls + "\">" + metricControlStatusLabel(r.status) + "</td></tr>"
-            + (open ? '<tr class="mc-expand"><td colspan="7">' + metricControlDetailHtml(r) + "</td></tr>" : "");
-    }).join("");
+    const topBox = document.getElementById("metricControlTop5");
+    if (topBox) {
+        const top = groups.filter(function (g) { return g.violations || g.nodata || (g.pct != null && g.pct < 1); }).slice(0, 5);
+        if (!top.length) topBox.innerHTML = "";
+        else {
+            let t = '<div class="note" style="margin:0 0 6px">ТОП-5 проблемных метрик</div><div class="mc-top5">';
+            top.forEach(function (g, i) {
+                t += '<div class="mc-mini"><b>' + (i + 1) + ". " + escapeHtml(g.name) + "</b>"
+                    + g.violations + " нарушений · " + g.nodata + " нет данных · " + metricControlFmtPct(g.pct) + "</div>";
+            });
+            t += "</div>";
+            topBox.innerHTML = t;
+        }
+    }
+    const host = document.getElementById("metricControlHost");
+    if (!host) return;
+    if (metricControlView === "metrics") host.innerHTML = metricControlMetricsTableHtml(groups);
+    else host.innerHTML = metricControlPeopleTableHtml(list);
 }
 
 function renderDiscipline() {
@@ -15253,6 +16127,7 @@ function setDeptMetricValue(deptCode, employeeId, day, metricId, raw) {
         clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
     } else {
         rec[mid] = it.fill_type === "money" ? Math.round(n) : n;
+        stampAuthOnRecord(rec);
     }
     saveApp();
     refreshDeptWorkUi();
@@ -15265,6 +16140,7 @@ function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark) {
     const mid = canonicalMetricId(metricId);
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
     rec[mid + "Mark"] = mark === "fail" ? "fail" : "done";
+    stampAuthOnRecord(rec);
     saveApp();
     refreshDeptWorkUi();
 }
@@ -16101,13 +16977,9 @@ function loadWorkspaceSettings() {
     document.getElementById("workspacePinSetting").value = w.pin;
     document.getElementById("defaultHoursSetting").value = w.defaultHours;
     const summary = isSummary();
-    document.getElementById("deptPinBox").style.display = summary ? "none" : "";
+    document.getElementById("deptPinBox").style.display = "none";
     const usersCard = document.getElementById("summaryUsersCard");
-    if (usersCard) usersCard.style.display = (summary && currentSummaryRole === "admin") ? "" : "none";
-    if (summary && currentSummaryRole === "admin") {
-        ensureSummaryUsers(w);
-        renderSummaryUsers();
-    }
+    if (usersCard) usersCard.style.display = isAppAdmin() ? "" : "none";
     const posCard = document.getElementById("positionsSettingsCard");
     if (posCard) posCard.style.display = (!summary && isTableAdmin()) ? "" : "none";
     if (!summary) renderPositionList();
@@ -16122,9 +16994,6 @@ function saveWorkspaceSettings() {
     else if (def) w.name = def.name;
 
     if (!isSummary()) {
-        const pin = pinString(document.getElementById("workspacePinSetting").value);
-        if (!pin) { toast("PIN-код не может быть пустым.", "error"); return; }
-        w.pin = pin;
         w.defaultHours = hours;
     }
 
@@ -16225,6 +17094,206 @@ function saveSummaryUser(role) {
     renderSummaryUsers();
     renderDeptNow();
     toast("Пользователь сохранён. Новый вход — по обновлённым данным.");
+}
+
+function accessRoleLabel(user) {
+    if (!user) return "Пользователь";
+    if (user.role === "admin" || user.legacy_role === "admin") return "Администратор";
+    if (user.legacy_role === "adjust") return "Руководитель";
+    if (user.legacy_role === "pay") return "Пользователь";
+    if (user.role === "manager") return "Руководитель";
+    return "Пользователь";
+}
+
+function accessDeptLabels(user) {
+    return userSwitchCodes(user).map(function (c) {
+        if (c === "summary") return "Общая";
+        const d = DEPT_DEFAULTS.find(function (x) { return x.code === c; });
+        return (d && d.name) || c;
+    }).join(", ") || "—";
+}
+
+function accessPermLabels(user) {
+    if (!user || !user.permissions) return "—";
+    return ACCESS_PERM_KEYS.filter(function (p) {
+        return permRank(user.permissions[p.key]) > 0;
+    }).map(function (p) { return p.label; }).join(", ") || "—";
+}
+
+function renderAccessUsers() {
+    if (!isAppAdmin()) return;
+    migrateAppUsers(appData);
+    const body = document.getElementById("accessUsersBody");
+    if (!body) return;
+    const list = appUsers().slice().sort(function (a, b) {
+        return String(a.display_name || "").localeCompare(String(b.display_name || ""), "ru");
+    });
+    if (!list.length) {
+        body.innerHTML = '<tr><td colspan="7"><div class="empty-row">Пользователей пока нет.</div></td></tr>';
+        return;
+    }
+    body.innerHTML = list.map(function (u) {
+        return "<tr><td><strong>" + escapeHtml(u.display_name || "") + "</strong>"
+            + '<div class="note">' + escapeHtml(u.user_id) + "</div></td>"
+            + "<td>" + escapeHtml(accessRoleLabel(u)) + "</td>"
+            + "<td>" + escapeHtml(accessDeptLabels(u)) + "</td>"
+            + "<td>" + escapeHtml(accessPermLabels(u)) + "</td>"
+            + "<td>" + (u.is_active === false ? "Нет" : "Да") + "</td>"
+            + '<td class="users-pin">••••</td>'
+            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openAccessUserEditor(\''
+            + u.user_id + "')\">Редактировать</button></td></tr>";
+    }).join("");
+}
+
+function closeAccessUserEditor() {
+    const back = document.getElementById("accessUserModalBack");
+    if (back) back.classList.remove("show");
+}
+
+function applyAccessRoleTemplateInForm() {
+    const roleEl = document.getElementById("accessUserRole");
+    const role = roleEl ? roleEl.value : "user";
+    const tpl = accessRoleTemplate(role, role === "admin" ? "admin" : "staff");
+    ACCESS_PERM_KEYS.forEach(function (p) {
+        const el = document.getElementById("accessPerm_" + p.key);
+        if (el) el.checked = permRank(tpl[p.key]) > 0;
+    });
+    if (role === "admin") {
+        DEPT_DEFAULTS.concat([{ code: "summary" }]).forEach(function (d) {
+            const el = document.getElementById("accessDept_" + d.code);
+            if (el) el.checked = true;
+        });
+    }
+}
+
+function openAccessUserEditor(userId) {
+    if (!isAppAdmin()) return;
+    migrateAppUsers(appData);
+    accessUserPinVisible = false;
+    const isNew = !userId;
+    const user = isNew ? {
+        user_id: "",
+        display_name: "",
+        pin: "",
+        role: "user",
+        legacy_role: "staff",
+        employee_id: "",
+        is_active: true,
+        departments: [],
+        permissions: accessRoleTemplate("user", "staff")
+    } : findAccessUser(userId);
+    if (!user) return;
+    const modal = document.getElementById("accessUserModal");
+    const back = document.getElementById("accessUserModalBack");
+    if (!modal || !back) return;
+    let deptHtml = "";
+    DEPT_DEFAULTS.forEach(function (d) {
+        const on = userCanAccessDept(user, d.code) || (user.departments || []).indexOf(d.code) !== -1;
+        deptHtml += '<label class="check"><input type="checkbox" id="accessDept_' + d.code + '"'
+            + (on || user.role === "admin" ? " checked" : "") + "> " + escapeHtml(d.name) + "</label>";
+    });
+    deptHtml += '<label class="check"><input type="checkbox" id="accessDept_summary"'
+        + ((user.departments || []).indexOf("summary") !== -1 || user.role === "admin" ? " checked" : "")
+        + "> Общая</label>";
+    let permHtml = "";
+    ACCESS_PERM_KEYS.forEach(function (p) {
+        const on = permRank((user.permissions && user.permissions[p.key]) || "none") > 0;
+        permHtml += '<label class="check"><input type="checkbox" id="accessPerm_' + p.key + '"'
+            + (on ? " checked" : "") + "> " + escapeHtml(p.label) + "</label>";
+    });
+    modal.innerHTML = "<h3>" + (isNew ? "Новый пользователь" : "Редактировать пользователя") + "</h3>"
+        + '<div class="note">user_id не меняется. Это не employee_id.</div>'
+        + (user.user_id ? '<div class="note">ID: ' + escapeHtml(user.user_id) + "</div>" : "")
+        + '<div class="form-group"><label>Имя пользователя</label>'
+        + '<input id="accessUserName" maxlength="80" value="' + escapeAttribute(user.display_name || "") + '"></div>'
+        + '<div class="form-group"><label>PIN</label><div class="pin-row">'
+        + '<input id="accessUserPin" maxlength="32" autocomplete="off" type="password" value="'
+        + escapeAttribute(user.pin || "") + '">'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="toggleAccessUserPin()">Показать</button></div></div>'
+        + '<div class="form-group"><label>Роль</label><select id="accessUserRole" onchange="applyAccessRoleTemplateInForm()">'
+        + '<option value="admin"' + (user.role === "admin" ? " selected" : "") + ">Администратор</option>"
+        + '<option value="manager"' + (user.role === "manager" ? " selected" : "") + ">Руководитель</option>"
+        + '<option value="user"' + (user.role === "user" || !user.role ? " selected" : "") + ">Пользователь</option>"
+        + "</select></div>"
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="accessUserActive"'
+        + (user.is_active === false ? "" : " checked") + "> Активен</label></div>"
+        + '<div class="form-group"><label>Доступ к подразделениям</label><div class="access-dept-grid">' + deptHtml + "</div></div>"
+        + '<div class="form-group"><label>Доступы</label><div class="access-perm-grid">' + permHtml + "</div></div>"
+        + '<div class="toolbar" style="margin-top:12px">'
+        + '<button type="button" class="btn btn-primary" onclick="saveAccessUser(\'' + (user.user_id || "") + "')\">Сохранить</button> "
+        + '<button type="button" class="btn btn-secondary" onclick="closeAccessUserEditor()">Отмена</button></div>';
+    back.classList.add("show");
+}
+
+function toggleAccessUserPin() {
+    const el = document.getElementById("accessUserPin");
+    if (!el) return;
+    accessUserPinVisible = !accessUserPinVisible;
+    el.type = accessUserPinVisible ? "text" : "password";
+}
+
+function saveAccessUser(userId) {
+    if (!isAppAdmin()) return;
+    const name = String((document.getElementById("accessUserName") && document.getElementById("accessUserName").value) || "").replace(/\s+/g, " ").trim();
+    const pin = pinString(document.getElementById("accessUserPin") && document.getElementById("accessUserPin").value);
+    const role = (document.getElementById("accessUserRole") && document.getElementById("accessUserRole").value) || "user";
+    const active = !!(document.getElementById("accessUserActive") && document.getElementById("accessUserActive").checked);
+    if (!name) { toast("Введите имя пользователя.", "error"); return; }
+    if (!pin) { toast("Введите PIN.", "error"); return; }
+    const id = userId || generateAccessUserId();
+    if (active && pinTakenByOther(pin, id)) {
+        toast("Этот PIN уже используется другим пользователем.", "error");
+        return;
+    }
+    const departments = [];
+    DEPT_DEFAULTS.forEach(function (d) {
+        const el = document.getElementById("accessDept_" + d.code);
+        if (el && el.checked) departments.push(d.code);
+    });
+    if (document.getElementById("accessDept_summary") && document.getElementById("accessDept_summary").checked) {
+        departments.push("summary");
+    }
+    const permissions = {};
+    ACCESS_PERM_KEYS.forEach(function (p) {
+        const el = document.getElementById("accessPerm_" + p.key);
+        permissions[p.key] = el && el.checked ? "edit" : "none";
+    });
+    if (permissions.salary !== "none" && departments.indexOf("summary") === -1) departments.push("summary");
+    if (role === "admin") {
+        DEPT_DEFAULTS.forEach(function (d) {
+            if (departments.indexOf(d.code) === -1) departments.push(d.code);
+        });
+        if (departments.indexOf("summary") === -1) departments.push("summary");
+        ACCESS_PERM_KEYS.forEach(function (p) { permissions[p.key] = "edit"; });
+    }
+    let prev = findAccessUser(id);
+    if (!prev) {
+        prev = {
+            user_id: id,
+            legacy_role: role === "admin" ? "admin" : "staff",
+            employee_id: ""
+        };
+        appUsers().push(prev);
+    }
+    prev.display_name = name;
+    prev.pin = pin;
+    prev.role = role;
+    prev.is_active = active;
+    prev.departments = departments;
+    prev.permissions = permissions;
+    if (role === "admin") prev.legacy_role = "admin";
+    else if (prev.legacy_role === "admin") prev.legacy_role = "staff";
+    normalizeAccessUser(prev);
+    syncLegacyPinsFromUsers(appData);
+    saveApp();
+    closeAccessUserEditor();
+    renderAccessUsers();
+    renderDeptNow();
+    toast("Пользователь сохранён. Вход — по PIN, user_id не изменился.");
+}
+
+function renderSummaryUsers() {
+    renderAccessUsers();
 }
 
 
