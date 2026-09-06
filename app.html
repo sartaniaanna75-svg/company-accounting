@@ -1240,10 +1240,81 @@
         .shop-kpi-settings-table td:nth-child(2),
         .shop-kpi-settings-table td:nth-child(3),
         .shop-kpi-settings-table td:nth-child(4) { text-align: right; white-space: nowrap; }
-        .shop-kpi-settings-table input[type="number"] { height: 28px; padding: 2px 6px; }
+        .shop-kpi-settings-table td.kpi-check-cell { text-align: left; white-space: normal; vertical-align: top; }
         .shop-kpi-settings-table select,
         .shop-kpi-settings-table input[type="date"] { width: auto; max-width: 148px; height: 28px; }
         .shop-kpi-mini { font-size: 11px; color: var(--muted); line-height: 1.3; }
+        .kpi-inline {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 4px 8px;
+            white-space: nowrap;
+        }
+        .kpi-inline label { font-size: 11px; color: var(--muted); margin: 0; }
+        .kpi-seg {
+            display: inline-flex;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            overflow: hidden;
+            height: 28px;
+            vertical-align: middle;
+        }
+        .kpi-seg button {
+            border: 0;
+            background: #fff;
+            font-size: 11px;
+            padding: 0 8px;
+            height: 28px;
+            line-height: 28px;
+            cursor: pointer;
+            color: var(--text);
+        }
+        .kpi-seg button.is-on {
+            background: #e8eef7;
+            font-weight: 600;
+        }
+        .num-plan { width: 64px !important; max-width: 64px !important; }
+        .num-rate { width: 100px !important; max-width: 100px !important; }
+        .num-sum { width: 110px !important; max-width: 110px !important; }
+        .kpi-hint-line { font-size: 11px; color: var(--muted); line-height: 1.35; margin-top: 4px; }
+        .mc-more { position: relative; display: inline-block; }
+        .mc-more > summary {
+            list-style: none;
+            cursor: pointer;
+            width: 28px;
+            height: 28px;
+            line-height: 26px;
+            text-align: center;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #fff;
+            font-size: 16px;
+        }
+        .mc-more > summary::-webkit-details-marker { display: none; }
+        .mc-more .mc-more-menu {
+            position: absolute;
+            right: 0;
+            top: 32px;
+            z-index: 8;
+            min-width: 140px;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+            padding: 4px;
+        }
+        .mc-more .mc-more-menu button {
+            display: block;
+            width: 100%;
+            text-align: left;
+            border: 0;
+            background: none;
+            padding: 6px 8px;
+            font-size: 12px;
+            border-radius: 6px;
+        }
+        .mc-more .mc-more-menu button:hover { background: #f3f4f6; }
         .shop-work-metrics-compact { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 4px; }
         .shop-kpi-assign { display: flex; flex-direction: column; gap: 8px; }
         .shop-kpi-assign .check { align-items: flex-start; gap: 8px; }
@@ -3736,6 +3807,8 @@ let shopUiQuiet = 0;
 
 const METRIC_SHELF_LABELS_ID = "metric_shelf_labels_ok";
 const METRIC_WRITEOFF_LOSSES_ID = "metric_writeoff_losses";
+const WRITEOFF_METRIC_NAME = "Потери/списания по инвентаризации";
+const WRITEOFF_KPI_NAME = "Лимит потерь/списаний";
 const METRIC_SHELF_LABELS_FIELD = "shelfLabels";
 const METRIC_SHELF_LABELS_NAME = "Товар выставлен на все полки без нареканий, ценники везде присутствуют";
 const METRIC_SHELF_PLAN_DAYS = 22;
@@ -3858,7 +3931,7 @@ const SHOP_KPI_METRIC_NAMES = {
     metric_supplier_orders: "Кол-во заказов поставщикам",
     metric_order_positions: "Кол-во позиций в заказе",
     metric_receipts_posted: "Количество поставленных поступлений",
-    metric_writeoff_losses: "Потери списания"
+    metric_writeoff_losses: WRITEOFF_KPI_NAME
 };
 const SHOP_KPI_METRIC_IDS = Object.keys(SHOP_KPI_METRIC_NAMES);
 const DEFAULT_METRIC_CATALOG = [
@@ -3890,7 +3963,7 @@ const DEFAULT_METRIC_CATALOG = [
     { id: "metric_supplier_orders", name: "Кол-во заказов поставщикам", sourceType: "store_metrics", category: "managers", field: "supplierOrders", calcType: "budget_ratio", active: true },
     { id: "metric_order_positions", name: "Кол-во позиций в заказе", sourceType: "store_metrics", category: "managers", field: "orderPositions", calcType: "budget_ratio", active: true },
     { id: "metric_receipts_posted", name: "Количество поставленных поступлений", sourceType: "store_metrics", category: "managers", field: "receiptsPosted", calcType: "budget_ratio", active: true },
-    { id: METRIC_WRITEOFF_LOSSES_ID, name: "Потери списания", sourceType: "store_month", category: "managers", field: "writeoffLosses", calcType: "max_limit", active: true }
+    { id: METRIC_WRITEOFF_LOSSES_ID, name: WRITEOFF_KPI_NAME, sourceType: "store_month", category: "managers", field: "writeoffLosses", calcType: "max_limit", active: true }
 ];
 const SHOP_BONUS_METRICS = DEFAULT_METRIC_CATALOG;
 const SHOP_EXTRA_METRIC_DEFS = [
@@ -4177,7 +4250,7 @@ function shopMetricCatalogSeed() {
         { id: "metric_order_positions", key: "orderPositions", name: "Кол-во позиций в заказе", section_id: "managers", fill_type: "number", sort_order: 20, assignable: true, core_column: true },
         { id: "metric_receiving", key: "receiving", name: "Количество принятого товара", section_id: "managers", fill_type: "number", sort_order: 30, assignable: true, core_column: true },
         { id: "metric_receipts_posted", key: "receiptsPosted", name: "Количество поставленных поступлений", section_id: "managers", fill_type: "number", sort_order: 40, assignable: true, core_column: true },
-        { id: METRIC_WRITEOFF_LOSSES_ID, key: "writeoffLosses", name: "Потери списания", section_id: "managers", fill_type: "month_money", sort_order: 55, assignable: true, core_column: false, show_column: false },
+        { id: METRIC_WRITEOFF_LOSSES_ID, key: "writeoffLosses", name: WRITEOFF_METRIC_NAME, section_id: "managers", fill_type: "month_money", sort_order: 55, assignable: true, core_column: false, show_column: false },
         { id: "metric_mgr_inventory_by_11", key: "inventoryBy11", name: "Инвентаризация сделана по графику до 11:00", section_id: "managers", fill_type: "check", sort_order: 60, assignable: true, core_column: true },
         { id: "metric_mgr_goods_placed_ok", key: "goodsPlaced", name: "Товар поставлен верно", section_id: "managers", fill_type: "check", sort_order: 70, assignable: true, core_column: true },
         { id: "metric_mgr_goods_received_ok", key: "goodsReceived", name: "Товар принят верно", section_id: "managers", fill_type: "check", sort_order: 80, assignable: true, core_column: true },
@@ -7463,8 +7536,7 @@ function shopMetricUsesFacts(metricId) {
 
 function shopCatalogItemShownInUi(item) {
     if (!item || item.show_column === false) return false;
-    if (item.active !== false) return true;
-    return shopMetricHasMonthData(item.id, selectedMonth);
+    return item.active !== false;
 }
 
 function shopMetricHasMonthData(metricId, month) {
@@ -8549,37 +8621,65 @@ function shopWriteoffLossesEmployeeDays(employeeId, month) {
     return list;
 }
 
-function shopWriteoffKpiLimitTitle(limit) {
-    const n = Math.round(Number(limit || 0));
-    if (!n) return "";
-    return "Потерь/списаний товара не более чем на " + n.toLocaleString("ru-RU") + " рублей в месяц";
+function shopWriteoffNameLooksLikeLimitTitle(name) {
+    const n = String(name || "");
+    if (/не более/i.test(n)) return true;
+    return /потер/i.test(n) && /списан/i.test(n) && /\d/.test(n) && /руб/i.test(n);
 }
 
-function shopSyncWriteoffKpiTitle(def) {
-    if (!def || canonicalMetricId(def.metricId || def.metric_id) !== METRIC_WRITEOFF_LOSSES_ID) return;
-    const title = shopWriteoffKpiLimitTitle(def.plan || def.limit_value);
-    if (!title) return;
-    def.name = title;
+function shopWriteoffMetricIsActive() {
     const item = shopMetricCatalogById(METRIC_WRITEOFF_LOSSES_ID);
-    if (item) item.name = title;
+    return !item || item.active !== false;
+}
+
+function shopNormalizeWriteoffIdentity(p) {
+    p = p || ensureShopPayroll();
+    let changed = false;
+    const item = shopMetricCatalogById(METRIC_WRITEOFF_LOSSES_ID);
+    if (item) {
+        if (!item.name || shopWriteoffNameLooksLikeLimitTitle(item.name) || item.name === "Потери списания") {
+            item.name = WRITEOFF_METRIC_NAME;
+            changed = true;
+        }
+        item.fill_type = "month_money";
+        item.show_column = false;
+        if (item.assignable === false) {
+            item.assignable = true;
+            changed = true;
+        }
+        if (!item.section_id) item.section_id = "managers";
+        item.metric_tab_id = item.section_id || "managers";
+    }
+    shopWriteoffKpiDefsAll(p).forEach(function (d) {
+        if (!d) return;
+        if (!d.name || shopWriteoffNameLooksLikeLimitTitle(d.name) || d.name === "Потери списания") {
+            d.name = WRITEOFF_KPI_NAME;
+            changed = true;
+        }
+        d.metric_id = METRIC_WRITEOFF_LOSSES_ID;
+        d.metricId = METRIC_WRITEOFF_LOSSES_ID;
+    });
+    return changed;
 }
 
 function shopWriteoffPersonalFootHtml(employeeId, month) {
-    const net = shopWriteoffMonthlyInventoryResult(employeeId, month);
+    const m = month || selectedMonth;
+    const net = shopWriteoffMonthlyInventoryResult(employeeId, m);
     const loss = Math.max(0, -net);
+    const def = shopWriteoffLossesKpiDef(m);
+    const limit = def ? Number(def.plan || def.limit_value || 0) : 0;
+    const assigned = !!(def && shopKpiAssigned(employeeId, def.kpi_id, m));
+    const passed = Number(loss) <= Number(limit || 0);
     return '<div class="metrics-inv-result ' + shopInventoryResultClass(net) + '">'
         + formatShopSignedMoney(net, false) + "</div>"
-        + '<div class="shop-kpi-mini" title="Потери для KPI = max(0, −месячный результат)">потери '
-        + Math.round(loss).toLocaleString("ru-RU") + " ₽</div>";
+        + '<div class="shop-kpi-mini">потери ' + Math.round(loss).toLocaleString("ru-RU")
+        + (limit ? " · лимит " + Math.round(limit).toLocaleString("ru-RU") : "")
+        + (assigned ? (passed ? " · выполнено" : " · не выполнено") : "")
+        + "</div>";
 }
 
 function shopWriteoffLossesColumnLabel() {
-    const def = shopWriteoffLossesKpiDef();
-    const limit = def ? Number(def.plan || def.limit_value || 0) : 0;
-    const titled = shopWriteoffKpiLimitTitle(limit);
-    if (titled) return titled;
-    const named = String((def && def.name) || "").replace(/\s+/g, " ").trim();
-    return named || shopMetricDisplayName(METRIC_WRITEOFF_LOSSES_ID, "Потери списания");
+    return WRITEOFF_KPI_NAME;
 }
 
 function shopWriteoffLossesColumnPeople(month) {
@@ -8713,7 +8813,6 @@ function consolidateDuplicateWriteoffKpis(p) {
         primaryLive.calcType = newest.calcType;
         primaryLive.calculation_type = newest.calculation_type;
         primaryLive.active = true;
-        shopSyncWriteoffKpiTitle(primaryLive);
         changed = true;
     }
     Object.keys(ids).forEach(function (id) {
@@ -8744,12 +8843,14 @@ function consolidateDuplicateWriteoffKpis(p) {
     });
     shopMetricCatalogItems().forEach(function (it) {
         if (!shopMetricLooksLikeWriteoffLosses(it)) return;
+        if (canonicalMetricId(it.id) === METRIC_WRITEOFF_LOSSES_ID) return;
         if (it.active === false && it.show_column === false) return;
         it.active = false;
         it.show_column = false;
         it.assignable = false;
         changed = true;
     });
+    if (shopNormalizeWriteoffIdentity(p)) changed = true;
     return changed;
 }
 
@@ -8799,8 +8900,8 @@ function renderShopWriteoffLossesPanel() {
         return;
     }
     const limit = def ? Number(def.plan || def.limit_value || 0) : 0;
-    let html = '<div class="card-title" style="margin-bottom:8px">Потери списания по ответственным</div>'
-        + '<div class="note" style="margin-bottom:8px">Лимит и бонус — из общего правила KPI. Месячный результат — сумма всех дневных итогов ответственного. Потери для KPI — только отрицательная часть этого итога. Общая сумма магазина в бонус не входит.</div>'
+    let html = '<div class="card-title" style="margin-bottom:8px">' + escapeHtml(WRITEOFF_KPI_NAME) + "</div>"
+        + '<div class="note" style="margin-bottom:8px">Метрика — источник факта. Лимит и бонус — в KPI. Факт — по ответственному за пересчёт, персонально.</div>'
         + '<div class="table-wrapper" style="max-height:none"><table class="analysis-table metrics-loss-kpi-table"><thead><tr>'
         + "<th>Сотрудник</th><th>Результат месяца</th><th>Потери для KPI</th><th>Лимит</th><th>Статус</th><th>Бонус</th></tr></thead><tbody>";
     people.forEach(function (emp) {
@@ -10916,7 +11017,10 @@ function shopManagerRecountServiceFields() {
             type: "writeoff_personal",
             metricId: METRIC_WRITEOFF_LOSSES_ID
         }
-    ];
+    ].filter(function (field) {
+        if (field.type === "writeoff_personal") return shopWriteoffMetricIsActive();
+        return true;
+    });
 }
 
 function renderShopMetrics() {
@@ -13038,7 +13142,8 @@ function ensureShopPayroll() {
         seedShopArrival730Kpi(p);
         normalizeSharedKpiScopes(p);
         const duped = consolidateDuplicateWriteoffKpis(p);
-        if (duped) {
+        const named = shopNormalizeWriteoffIdentity(p);
+        if (duped || named) {
             shopKpiMigrating = true;
             try { saveApp(); } finally { shopKpiMigrating = false; }
         }
@@ -13081,6 +13186,18 @@ function stampKpiDef(def) {
     if (shopKpiCalcType(def) === "max_limit") {
         if (def.limit_value == null) def.limit_value = Number(def.plan || 0);
         def.plan = Number(def.limit_value);
+    }
+    if (isShopCheckKpi(def)) {
+        if (!def.accrual_mode && !def.accrualMode) def.accrual_mode = "monthly_proportional";
+        def.accrual_mode = def.accrual_mode || def.accrualMode;
+        def.accrualMode = def.accrual_mode;
+        if (def.plan_days == null && def.plan != null && def.plan !== "") def.plan_days = Number(def.plan);
+        if (def.plan_days != null && def.plan_days !== "") def.plan = Number(def.plan_days);
+        if (def.monthly_bonus == null && shopCheckKpiAccrualMode(def) === "monthly_proportional") {
+            def.monthly_bonus = shopKpiBudget(def);
+        }
+        if (def.daily_rate === undefined && def.dailyRate !== undefined) def.daily_rate = def.dailyRate;
+        def.dailyRate = def.daily_rate;
     }
     return def;
 }
@@ -13158,7 +13275,7 @@ function seedShopWriteoffLossesKpi(p) {
             kpi_id: generateKpiId(),
             metricId: METRIC_WRITEOFF_LOSSES_ID,
             department_id: "shop",
-            name: "Потери списания",
+            name: WRITEOFF_KPI_NAME,
             type: "plan",
             calcType: "max_limit",
             calculation_type: "max_limit",
@@ -13172,7 +13289,7 @@ function seedShopWriteoffLossesKpi(p) {
             validTo: null,
             active: true
         }));
-        shopSyncWriteoffKpiTitle(p.kpiDefs[p.kpiDefs.length - 1]);
+        shopNormalizeWriteoffIdentity(p);
     } finally {
         shopKpiMigrating = keep;
     }
@@ -13270,9 +13387,15 @@ function shopRuleFromKpiDef(def, employeeId) {
         participationRole: def.participationRole,
         sourceKey: def.sourceKey || "",
         sourceCategory: def.sourceCategory || "",
-        plan: def.plan || def.limit_value || 0,
+        plan: def.plan_days != null && def.plan_days !== "" ? Number(def.plan_days) : (def.plan || def.limit_value || 0),
+        plan_days: def.plan_days != null ? def.plan_days : def.plan,
         limit_value: def.limit_value != null ? def.limit_value : (def.plan || 0),
         calculation_type: def.calculation_type || def.calcType,
+        accrual_mode: def.accrual_mode || def.accrualMode || "",
+        accrualMode: def.accrual_mode || def.accrualMode || "",
+        daily_rate: def.daily_rate != null ? def.daily_rate : def.dailyRate,
+        dailyRate: def.daily_rate != null ? def.daily_rate : def.dailyRate,
+        monthly_bonus: def.monthly_bonus != null ? def.monthly_bonus : shopKpiBudget(def),
         budget: shopKpiBudget(def),
         amount: shopKpiBudget(def),
         maxCoefPercent: shopKpiMaxCoef(def),
@@ -13471,7 +13594,11 @@ function shopKpiSourceType(rule) {
 
 function shopKpiName(rule) {
     const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id));
-    if (id === METRIC_WRITEOFF_LOSSES_ID) return shopWriteoffLossesColumnLabel();
+    if (id === METRIC_WRITEOFF_LOSSES_ID) {
+        const named = String((rule && rule.name) || "").replace(/\s+/g, " ").trim();
+        if (named && !shopWriteoffNameLooksLikeLimitTitle(named)) return named;
+        return WRITEOFF_KPI_NAME;
+    }
     if (id === "metric_arrival_730" || id === "metric_receiving") {
         if (SHOP_KPI_METRIC_NAMES[id]) return SHOP_KPI_METRIC_NAMES[id];
     }
@@ -13486,7 +13613,8 @@ function shopKpiName(rule) {
 function shopKpiFactSourceLabel(rule) {
     const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id || rule.id));
     if (id === METRIC_WRITEOFF_LOSSES_ID || shopKpiSourceType(rule) === "store_month") {
-        return "Персонально по ответственному за пересчёт · лимит на сотрудника";
+        return shopMetricDisplayName(METRIC_WRITEOFF_LOSSES_ID, WRITEOFF_METRIC_NAME)
+            + " · персонально по ответственному за пересчёт";
     }
     if (id === METRIC_SHELF_LABELS_ID) {
         return shopShelfParticipation(rule) === "derived_recipient"
@@ -13684,6 +13812,66 @@ function isShopCheckKpi(rule) {
     return false;
 }
 
+function shopCheckKpiAccrualMode(rule) {
+    const v = String((rule && (rule.accrual_mode || rule.accrualMode)) || "");
+    if (v === "per_completed_day" || v === "per_day" || v === "daily") return "per_completed_day";
+    return "monthly_proportional";
+}
+
+function shopCheckKpiPlanDays(rule) {
+    if (!rule) return 0;
+    if (rule.plan_days != null && rule.plan_days !== "") return Number(rule.plan_days);
+    return Number(rule.plan || 0);
+}
+
+function shopCheckKpiMonthlyBonus(rule) {
+    if (!rule) return 0;
+    if (rule.monthly_bonus != null && rule.monthly_bonus !== "") return Number(rule.monthly_bonus);
+    return shopKpiBudget(rule);
+}
+
+function shopCheckKpiDailyRate(rule) {
+    if (!rule) return null;
+    if (rule.daily_rate === null || rule.daily_rate === undefined || rule.daily_rate === "") {
+        if (rule.dailyRate === null || rule.dailyRate === undefined || rule.dailyRate === "") return null;
+        return Number(rule.dailyRate);
+    }
+    return Number(rule.daily_rate);
+}
+
+function shopCheckKpiPayout(rule, doneDays, planDays) {
+    const plan = Number(planDays != null ? planDays : shopCheckKpiPlanDays(rule)) || 0;
+    const done = Number(doneDays || 0);
+    const mode = shopCheckKpiAccrualMode(rule);
+    const coef = plan > 0 ? Math.min(done, plan) / plan : 0;
+    if (mode === "per_completed_day") {
+        const daily = shopCheckKpiDailyRate(rule);
+        if (daily == null) {
+            return { coef: coef, amount: 0, budget: 0, checkKpi: true, accrualMode: mode, missing: "daily_rate" };
+        }
+        return {
+            coef: coef,
+            amount: roundMoney2(done * Number(daily)),
+            budget: plan ? roundMoney2(plan * Number(daily)) : Number(daily),
+            checkKpi: true,
+            accrualMode: mode,
+            dailyRate: Number(daily)
+        };
+    }
+    const bonus = shopCheckKpiMonthlyBonus(rule);
+    if (!plan) {
+        return { coef: 0, amount: 0, budget: Number(bonus || 0), checkKpi: true, accrualMode: mode, missing: plan ? "" : "plan_days" };
+    }
+    const effective = Math.min(done, plan);
+    return {
+        coef: coef,
+        amount: roundMoney2(Number(bonus || 0) * effective / plan),
+        budget: Number(bonus || 0),
+        checkKpi: true,
+        accrualMode: mode
+    };
+}
+
 function shopCheckKpiFieldInfo(rule) {
     const metricId = canonicalMetricId(rule && (rule.metricId || rule.metric_id));
     const tpl = shopKpiTemplate(metricId);
@@ -13719,6 +13907,7 @@ function shopCheckKpiMonthStats(rule, employeeId, month) {
     let eligible = 0;
     let done = 0;
     let fail = 0;
+    let noData = 0;
     let excluded = 0;
     for (let day = 1; day <= days; day++) {
         if (!shopTimesheetIsKpiEligibleDay(employeeId, day, m)) {
@@ -13735,21 +13924,26 @@ function shopCheckKpiMonthStats(rule, employeeId, month) {
             }
         }
         eligible += 1;
-        if (shopCheckKpiDayState(rule, employeeId, day, m) === "done") done += 1;
-        else fail += 1;
+        const state = shopCheckKpiDayState(rule, employeeId, day, m);
+        if (state === "done") done += 1;
+        else if (state === "fail") fail += 1;
+        else noData += 1;
     }
-    const rate = eligible ? done / eligible : 0;
+    const planDays = shopCheckKpiPlanDays(rule);
+    const rate = planDays ? Math.min(done, planDays) / planDays : 0;
     return {
         fact: done,
-        planAuto: eligible,
+        planAuto: planDays,
+        planDays: planDays,
         doneDays: done,
         failDays: fail,
+        noDataDays: noData,
         excludedDays: excluded,
         eligibleDays: eligible,
         completionRate: rate,
         derived: derived,
         checkKpi: true,
-        label: eligible ? (done + " из " + eligible) : "нет рабочих дней"
+        label: done + " из " + (planDays || "—")
     };
 }
 
@@ -13781,9 +13975,12 @@ function shopBonusMetricFact(rule, employeeId, month) {
     } else if (isShopCheckKpi(rule)) {
         const st = shopCheckKpiMonthStats(rule, employeeId, m);
         fact = st.fact;
-        planAuto = st.planAuto;
+        planAuto = st.planDays;
         label = st.label + (st.derived ? " · автоматически" : "");
         extra = st;
+        extra.accrualMode = shopCheckKpiAccrualMode(rule);
+        extra.dailyRate = shopCheckKpiDailyRate(rule);
+        extra.monthlyBonus = shopCheckKpiMonthlyBonus(rule);
     } else if (source === "revision" || metricId === "metric_revision") {
         const st = shopRevisionEmployeeMetrics(employeeId, m);
         fact = st.done;
@@ -13836,7 +14033,11 @@ function shopBonusMetricFact(rule, employeeId, month) {
         maxLimit: !!(extra && extra.maxLimit),
         passed: extra ? extra.passed : null,
         monthResult: extra ? extra.monthResult : null,
-        personalLoss: extra ? extra.personalLoss : null
+        personalLoss: extra ? extra.personalLoss : null,
+        accrualMode: extra ? extra.accrualMode : null,
+        dailyRate: extra ? extra.dailyRate : null,
+        monthlyBonus: extra ? extra.monthlyBonus : null,
+        planDays: extra ? extra.planDays : null
     };
 }
 
@@ -13856,6 +14057,9 @@ function shopKpiPayout(rule, fact, plan, employeeId, month) {
             maxLimit: true,
             passed: ok
         };
+    }
+    if (isShopCheckKpi(rule)) {
+        return shopCheckKpiPayout(rule, fact, plan != null ? plan : shopCheckKpiPlanDays(rule));
     }
     const budget = shopKpiBudget(rule);
     const maxP = shopKpiMaxCoef(rule) / 100;
@@ -13888,7 +14092,7 @@ function shopEmployeeBonusLines(employeeId, month) {
     return shopEmployeeActiveRules(employeeId, m).map(function (rule) {
         const src = shopBonusMetricFact(rule, employeeId, m);
         const check = isShopCheckKpi(rule) || !!src.checkKpi;
-        const plan = check ? Number(src.planAuto || 0) : (Number(rule.plan || 0) || Number(src.planAuto || 0));
+        const plan = check ? shopCheckKpiPlanDays(rule) : (Number(rule.plan || 0) || Number(src.planAuto || 0));
         const fact = Number(src.fact || 0);
         const pay = shopKpiPayout(rule, fact, plan, employeeId, m);
         return {
@@ -13914,7 +14118,11 @@ function shopEmployeeBonusLines(employeeId, month) {
             maxLimit: !!pay.maxLimit || !!src.maxLimit,
             passed: pay.passed != null ? pay.passed : src.passed,
             monthResult: src.monthResult,
-            personalLoss: src.personalLoss
+            personalLoss: src.personalLoss,
+            accrualMode: pay.accrualMode || src.accrualMode,
+            dailyRate: pay.dailyRate != null ? pay.dailyRate : src.dailyRate,
+            monthlyBonus: src.monthlyBonus,
+            planDays: src.planDays != null ? src.planDays : plan
         };
     });
 }
@@ -14104,7 +14312,7 @@ function renderPayrollView(view) {
             + "<td>" + formatShopDays(row.workedDays) + "</td>"
             + "<td>" + money(row.oklad) + "</td>"
             + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusBreakdown('" + employee.id + "')\">"
-            + money(row.metricBonus) + "</button></td>"
+            + moneyFlex(row.metricBonus) + "</button></td>"
             + payrollAdjMoneyCell(employee.id, "products", row.products, canAdj)
             + payrollAdjMoneyCell(employee.id, "taxes", row.taxes, canAdj)
             + payrollAdjMoneyCell(employee.id, "vacationPay", row.vacationPay, canAdj)
@@ -14189,12 +14397,16 @@ function renderShopSalarySettings(view) {
             + " onclick=\"toggleShopKpiAssignment('" + employee.id + "','" + def.kpi_id + "',this.checked)\">"
             + "<span><strong>" + escapeHtml(shopKpiName(def)) + "</strong>"
             + '<div class="shop-kpi-mini">'
-            + (check ? "План из табеля (Я/О/П)" : (isShopTimesheet730Kpi(def)
+            + (check ? "План: " + (shopCheckKpiPlanDays(def) || "—") + " дн. · "
+                + (shopCheckKpiAccrualMode(def) === "per_completed_day"
+                    ? ("За день" + (shopCheckKpiDailyRate(def) == null ? "" : (" · " + moneyFlex(shopCheckKpiDailyRate(def)) + "/день")))
+                    : ("За месяц · " + moneyFlex(shopCheckKpiMonthlyBonus(def))))
+                : (isShopTimesheet730Kpi(def)
                 ? ("План: " + Number(def.plan || 0).toLocaleString("ru-RU") + " дн. · " + shopKpiControlTime(def))
                 : (isShopMaxLimitKpi(def)
                 ? ("Лимит: " + money(def.plan || def.limit_value || 0))
                 : ("План: " + Number(def.plan || 0).toLocaleString("ru-RU")))))
-            + " · Премия: " + money(shopKpiBudget(def))
+            + (check ? "" : (" · Премия: " + money(shopKpiBudget(def))))
             + (on ? "" : " · не выбран, не начисляется")
             + "</div></span></label>";
     });
@@ -14224,7 +14436,7 @@ function renderShopSalarySettings(view) {
     html += "</div>";
     html += '<div class="shop-kpi-col"><h4>Начислено по KPI за месяц</h4>'
         + '<div class="shop-kpi-earned-total' + (row.metricBonus ? "" : " zero") + '">Заработано по KPI: '
-        + money(row.metricBonus) + "</div>"
+        + moneyFlex(row.metricBonus) + "</div>"
         + '<div class="note">Совпадает с «Бонус по метрикам» в зарплате. Факт из метрик / табеля / ревизии / плана продаж.</div>'
         + shopKpiEarnedTableHtml(employee.id)
         + '<div class="note" style="margin-top:8px">Оклад ' + money(row.oklad)
@@ -14268,7 +14480,11 @@ function shopKpiEarnedRows(employeeId, month) {
             maxLimit: !!line.maxLimit,
             passed: line.passed,
             monthResult: line.monthResult,
-            personalLoss: line.personalLoss
+            personalLoss: line.personalLoss,
+            accrualMode: line.accrualMode,
+            dailyRate: line.dailyRate,
+            monthlyBonus: line.monthlyBonus,
+            planDays: line.planDays
         };
     });
     if (salesPlanBonusForEmployee(employeeId, m) || (function () {
@@ -14305,8 +14521,11 @@ function shopKpiEarnedTableHtml(employeeId) {
         html += "<tr><td title=\"" + escapeAttribute(r.name) + "\"><div class=\"shop-kpi-name\">" + escapeHtml(r.name)
             + '</div><div class="shop-kpi-mini">' + escapeHtml(r.kind)
             + (r.checkKpi
-                ? " · план " + (r.eligibleDays || 0) + ", сделано " + (r.doneDays || 0)
-                    + ", не сделано " + (r.failDays || 0) + ", исключено " + (r.excludedDays || 0)
+                ? " · план " + (r.planDays != null ? r.planDays : r.plan)
+                    + ", сделано " + (r.doneDays || 0)
+                    + ", не сделано " + (r.failDays || 0)
+                    + (r.noDataDays ? ", нет данных " + r.noDataDays : "")
+                    + " · " + (r.accrualMode === "per_completed_day" ? "за день" : "за месяц")
                 : "")
             + (r.timesheet730
                 ? " · план " + Number(r.plan || 0)
@@ -14327,7 +14546,8 @@ function shopKpiEarnedTableHtml(employeeId) {
             + (r.plan ? (r.maxLimit ? money(r.plan) : Number(r.plan).toLocaleString("ru-RU")) : "—") + "</td><td>"
             + (r.label ? escapeHtml(r.label) : (r.maxLimit ? money(r.fact) : (Math.round(Number(r.fact || 0) * 100) / 100).toLocaleString("ru-RU")))
             + "</td><td class=\"" + (fail ? "shop-kpi-fail" : "") + "\">" + formatShopCoefPct(r.coef) + "</td><td>"
-            + money(r.budget) + "</td><td>" + money(r.amount) + "</td></tr>";
+            + (r.checkKpi ? moneyFlex(r.budget) : money(r.budget)) + "</td><td>"
+            + (r.checkKpi ? moneyFlex(r.amount) : money(r.amount)) + "</td></tr>";
     });
     const total = shopSalaryRowData(getEmployee(employeeId)).metricBonus;
     html += '<tr><td><strong>Итого по KPI</strong></td><td></td><td></td><td></td><td></td><td><strong>'
@@ -14594,6 +14814,72 @@ function shopKpiDefsForRules(month) {
     return shopPreferPrimaryWriteoffKpi(Object.keys(map).map(function (k) { return map[k]; }));
 }
 
+function shopCheckKpiSettingsHtml(def) {
+    const kpiId = def.kpi_id;
+    const mode = shopCheckKpiAccrualMode(def);
+    const plan = shopCheckKpiPlanDays(def);
+    const daily = shopCheckKpiDailyRate(def);
+    const bonus = shopCheckKpiMonthlyBonus(def);
+    function seg(id, label, title) {
+        return "<button type=\"button\" class=\"" + (mode === id ? "is-on" : "") + "\" title=\"" + escapeAttribute(title)
+            + "\" onclick=\"setShopKpiDefField('" + kpiId + "','accrualMode','" + id + "')\">" + label + "</button>";
+    }
+    let html = '<div class="kpi-inline">'
+        + "<label>План</label>"
+        + '<input class="num-plan no-spin" type="number" min="0" step="1" value="' + (plan ? blankZero(plan) : "")
+        + "\" title=\"План дней KPI. Ручной норматив, не из Табеля.\""
+        + " onchange=\"setShopKpiDefField('" + kpiId + "','planDays',this.value)\">"
+        + "<label>Начисление</label>"
+        + '<span class="kpi-seg">'
+        + seg("monthly_proportional", "За месяц", "Сумма KPI × min(сделано, план) / план дней")
+        + seg("per_completed_day", "За день", "Сделано × ставка за день")
+        + "</span>";
+    if (mode === "per_completed_day") {
+        html += "<label>Ставка</label>"
+            + '<input class="num-rate no-spin" type="number" min="0" step="0.01" value="'
+            + (daily == null ? "" : blankZero(daily))
+            + "\" title=\"Ставка за каждый выполненный день\""
+            + " onchange=\"setShopKpiDefField('" + kpiId + "','dailyRate',this.value)\">"
+            + '<span class="shop-kpi-mini">₽/день</span>';
+    } else {
+        html += "<label>Сумма</label>"
+            + '<input class="num-sum no-spin" type="number" min="0" step="0.01" value="'
+            + (bonus ? blankZero(bonus) : "")
+            + "\" title=\"Сумма KPI при 100% плана\""
+            + " onchange=\"setShopKpiDefField('" + kpiId + "','monthlyBonus',this.value)\">"
+            + '<span class="shop-kpi-mini">₽</span>';
+    }
+    html += "</div>" + shopCheckKpiHintHtml(def);
+    return html;
+}
+
+function shopCheckKpiHintHtml(def) {
+    const plan = shopCheckKpiPlanDays(def);
+    const mode = shopCheckKpiAccrualMode(def);
+    const view = payrollViewFromSection();
+    const empId = (view && payrollEditEmployeeByView[view.id]) || shopSalaryEditEmployeeId || "";
+    const assigned = empId && shopKpiAssigned(empId, def.kpi_id, selectedMonth);
+    if (assigned) {
+        const st = shopCheckKpiMonthStats(def, empId, selectedMonth);
+        const pay = shopCheckKpiPayout(def, st.doneDays, plan);
+        let line = "План " + (plan || "—") + " • Сделано " + st.doneDays + " • " + formatShopCoefPct(pay.coef);
+        if (mode === "per_completed_day") {
+            const daily = shopCheckKpiDailyRate(def);
+            line += daily == null ? " • укажите ставку" : (" • " + moneyFlex(daily) + "/день");
+        }
+        line += " • Начислено <b>" + moneyFlex(pay.amount) + "</b>";
+        return '<div class="kpi-hint-line">' + line + "</div>";
+    }
+    if (mode === "per_completed_day") {
+        const daily = shopCheckKpiDailyRate(def);
+        return '<div class="kpi-hint-line">План ' + (plan || "—")
+            + " • сделано × " + (daily == null ? "ставка" : moneyFlex(daily) + "/день") + "</div>";
+    }
+    const bonus = shopCheckKpiMonthlyBonus(def);
+    return '<div class="kpi-hint-line">План ' + (plan || "—")
+        + " • " + moneyFlex(bonus) + " × min(сделано, план) / план</div>";
+}
+
 function shopKpiDefCalcSelectHtml(def) {
     const kpiId = def.kpi_id;
     if (isShopTimesheet730Kpi(def)) {
@@ -14637,9 +14923,8 @@ function renderShopSalaryRules(view) {
             + '<div class="shop-kpi-mini">' + escapeHtml(shopKpiCalcKindLabel(def))
             + (isShopMaxLimitKpi(def) ? " · лимит персонально по ответственному за пересчёт" : "")
             + (ts730 ? " · тип: автоматический KPI" : "")
-            + (check ? " · план из табеля Я/О/П" : "")
             + (inactive ? " · выключен" : "") + "</div>"
-            + shopKpiDefCalcSelectHtml(def)
+            + (check ? "" : shopKpiDefCalcSelectHtml(def))
             + (ts730
                 ? '<label class="shop-kpi-mini" style="display:block;margin-top:4px">Время <input type="time" value="'
                     + shopKpiControlTime(def)
@@ -14657,14 +14942,14 @@ function renderShopSalaryRules(view) {
                 : "")
             + "</td>"
             + (check
-                ? "<td>—</td>"
+                ? '<td colspan="3" class="kpi-check-cell">' + shopCheckKpiSettingsHtml(def) + "</td>"
                 : '<td><input class="num-7" type="number" min="0" step="0.01" value="' + blankZero(def.plan || 0)
-                    + "\" onchange=\"setShopKpiDefField('" + kpiId + "','plan',this.value)\"></td>")
+                    + "\" onchange=\"setShopKpiDefField('" + kpiId + "','plan',this.value)\"></td>"
             + '<td><input class="num-7" type="number" min="0" step="1" value="' + blankZeroInt(shopKpiBudget(def))
             + "\" onchange=\"setShopKpiDefField('" + kpiId + "','budget',this.value)\"></td>"
             + '<td><input class="num-pct" type="number" min="0" step="1" value="' + blankZeroInt(shopKpiMaxCoef(def))
             + "\" onchange=\"setShopKpiDefField('" + kpiId + "','maxCoefPercent',this.value)\""
-            + (isShopMaxLimitKpi(def) ? " disabled" : "") + "> %</td>"
+            + (isShopMaxLimitKpi(def) ? " disabled" : "") + "> %</td>")
             + '<td><input type="date" value="' + fromDate
             + "\" onchange=\"setShopKpiDefField('" + kpiId + "','validFrom',this.value)\" title=\"Действует с\"></td>"
             + '<td><button type="button" class="btn btn-danger btn-small" onclick="closeShopKpiDef(\'' + kpiId + "')\">×</button></td></tr>";
@@ -14687,11 +14972,15 @@ function shopCloneKpiDefFields(def) {
         budget: shopKpiBudget(def),
         maxCoefPercent: shopKpiMaxCoef(def),
         plan: def.plan || 0,
+        plan_days: def.plan_days != null ? def.plan_days : def.plan,
         limit_value: def.limit_value != null ? def.limit_value : (def.plan || 0),
         percent: def.percent || 0,
         paysBonus: def.paysBonus !== false,
         controlTime: shopKpiControlTime(def),
         control_time: shopKpiControlTime(def),
+        accrual_mode: def.accrual_mode || def.accrualMode || "",
+        daily_rate: def.daily_rate != null ? def.daily_rate : def.dailyRate,
+        monthly_bonus: def.monthly_bonus != null ? def.monthly_bonus : shopKpiBudget(def),
         department_id: kpiDefDepartment(def),
         work_tab_id: kpiDefWorkTab(def),
         active: def.active !== false,
@@ -14722,7 +15011,9 @@ function mutateShopKpiDef(kpiId, patch) {
     });
     const versionForNewMonth = !periodOnly && from && monthKey && from < monthKey
         && (patch.plan != null || patch.limit_value != null || patch.budget != null || patch.amount != null
-            || patch.calcType != null || patch.calculation_type != null || patch.name != null || patch.active != null);
+            || patch.calcType != null || patch.calculation_type != null || patch.name != null || patch.active != null
+            || patch.accrual_mode != null || patch.daily_rate !== undefined || patch.monthly_bonus != null
+            || patch.plan_days != null);
     if (versionForNewMonth) {
         def.validTo = shiftMonth(month, -1);
         def.valid_to = def.validTo;
@@ -14756,7 +15047,9 @@ function mutateShopKpiDef(kpiId, patch) {
     }
     stampKpiDef(def);
     def.kpi_id = kpiId;
-    shopSyncWriteoffKpiTitle(def);
+    if (canonicalMetricId(def.metricId || def.metric_id) === METRIC_WRITEOFF_LOSSES_ID) {
+        if (shopWriteoffNameLooksLikeLimitTitle(def.name) || !def.name) def.name = WRITEOFF_KPI_NAME;
+    }
     saveApp();
 }
 
@@ -14764,7 +15057,40 @@ function setShopKpiDefField(kpiId, field, value) {
     const patch = {};
     if (field === "plan") {
         patch.plan = parseDecimal(value, 0);
+        patch.plan_days = patch.plan;
         patch.limit_value = patch.plan;
+    } else if (field === "planDays") {
+        const text = String(value == null ? "" : value).trim();
+        if (text === "") {
+            toast("Укажите план дней.", "error");
+            renderShopSalaryRules(payrollViewFromSection());
+            return;
+        }
+        patch.plan = parseDecimal(value, 0);
+        patch.plan_days = patch.plan;
+    } else if (field === "accrualMode") {
+        patch.accrual_mode = value === "per_completed_day" ? "per_completed_day" : "monthly_proportional";
+        patch.accrualMode = patch.accrual_mode;
+    } else if (field === "dailyRate") {
+        const text = String(value == null ? "" : value).trim();
+        if (text === "") {
+            patch.daily_rate = null;
+            patch.dailyRate = null;
+            toast("Укажите ставку за день.", "error");
+        } else {
+            patch.daily_rate = parseMoney(value, 0);
+            patch.dailyRate = patch.daily_rate;
+        }
+    } else if (field === "monthlyBonus") {
+        const text = String(value == null ? "" : value).trim();
+        if (text === "") {
+            toast("Укажите сумму KPI.", "error");
+            renderShopSalaryRules(payrollViewFromSection());
+            return;
+        }
+        patch.monthly_bonus = parseMoney(value, 0);
+        patch.budget = patch.monthly_bonus;
+        patch.amount = patch.monthly_bonus;
     } else if (field === "budget" || field === "amount") {
         patch.budget = parseMoney(value, 0);
         patch.amount = patch.budget;
@@ -14852,15 +15178,16 @@ function createShopKpiDef(templateId, participationRole) {
     }
     const maxLimit = metricId === METRIC_WRITEOFF_LOSSES_ID || tpl.calcType === "max_limit";
     const ts730 = metricId === "metric_arrival_730" || tpl.calcType === "timesheet_730";
+    const check = isShopCheckKpi({ metricId: metricId });
     ensureShopPayroll().kpiDefs.push(stampKpiDef({
         kpi_id: generateKpiId(),
         metricId: metricId,
         department_id: ts730 ? "all" : view.departmentId,
         work_tab_id: ts730 ? "" : (view.workTabId || (tpl.category || "")),
-        name: SHOP_KPI_METRIC_NAMES[metricId] || tpl.name,
+        name: metricId === METRIC_WRITEOFF_LOSSES_ID ? WRITEOFF_KPI_NAME : (SHOP_KPI_METRIC_NAMES[metricId] || tpl.name),
         type: "plan",
-        calcType: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : (isShopCheckKpi({ metricId: metricId }) ? "checklist" : "budget_ratio")),
-        calculation_type: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : ""),
+        calcType: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : (check ? "checklist" : "budget_ratio")),
+        calculation_type: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : (check ? "checklist" : "")),
         sourceType: ts730 ? "timesheet" : (maxLimit ? "store_month" : (shelf ? (role === "derived_recipient" ? "derived" : "manual") : canonicalSourceType(tpl.sourceType || "store_metrics"))),
         participationRole: role,
         sourceKey: tpl.field || "",
@@ -14868,8 +15195,12 @@ function createShopKpiDef(templateId, participationRole) {
         amount: ts730 ? 3000 : 0,
         budget: ts730 ? 3000 : 0,
         maxCoefPercent: 100,
-        plan: ts730 ? 22 : (maxLimit ? 20000 : 0),
-        limit_value: ts730 ? 22 : (maxLimit ? 20000 : 0),
+        plan: ts730 ? 22 : (maxLimit ? 0 : 0),
+        plan_days: check ? null : undefined,
+        limit_value: ts730 ? 22 : (maxLimit ? 0 : 0),
+        accrual_mode: check ? "monthly_proportional" : "",
+        daily_rate: check ? null : undefined,
+        monthly_bonus: check ? 0 : undefined,
         controlTime: ts730 ? "07:30" : "",
         control_time: ts730 ? "07:30" : "",
         validFrom: selectedMonth,
@@ -15070,13 +15401,16 @@ function openShopBonusBreakdown(employeeId) {
                         + "<br>Начислено: " + money(line.amount) + "</div>"
                     : "")
                 + (line.checkKpi
-                    ? '<div class="note" style="margin-top:6px">План дней: ' + (line.eligibleDays || 0)
+                    ? '<div class="note" style="margin-top:6px">План: ' + (line.planDays != null ? line.planDays : line.plan)
                         + "<br>Сделано: " + (line.doneDays || 0)
                         + "<br>Не сделано: " + (line.failDays || 0)
-                        + "<br>Исключено по Табелю: " + (line.excludedDays || 0)
+                        + (line.noDataDays ? "<br>Нет данных: " + line.noDataDays : "")
                         + "<br>Выполнение: " + formatShopCoefPct(line.coef)
-                        + "<br>Бюджет KPI: " + money(line.budget)
-                        + "<br>Начислено: " + money(line.amount) + "</div>"
+                        + "<br>Тип: " + (line.accrualMode === "per_completed_day" ? "За день" : "За месяц")
+                        + (line.accrualMode === "per_completed_day"
+                            ? (line.dailyRate == null ? "<br>Ставка: не задана" : "<br>Ставка: " + moneyFlex(line.dailyRate) + "/день")
+                            : "<br>Сумма KPI: " + moneyFlex(line.monthlyBonus != null ? line.monthlyBonus : line.budget))
+                        + "<br>Начислено: " + moneyFlex(line.amount) + "</div>"
                     : "")
                 + "</td><td>"
                 + (line.shared ? "—" : (line.plan ? line.plan.toLocaleString("ru-RU") : "—")) + "</td><td>"
@@ -15604,8 +15938,23 @@ function metricControlBuildLine(employeeId, metricId, month) {
             stats.noDataDays = 0;
         }
         stats.kind = "month";
-    } else if (metricControlIsCheck(mid)) stats = metricControlCheckStats(employeeId, mid, month);
-    else stats = metricControlNumericStats(employeeId, mid, month);
+    } else if (metricControlIsCheck(mid)) {
+        stats = metricControlCheckStats(employeeId, mid, month);
+        const def = metricControlKpiDef(employeeId, mid, month);
+        if (def) {
+            const rule = shopRuleFromKpiDef(def, employeeId);
+            const planDays = shopCheckKpiPlanDays(rule);
+            const pay = shopCheckKpiPayout(rule, stats.doneDays, planDays);
+            stats.plan = planDays;
+            stats.rate = pay.coef;
+            stats.rateForAvg = planDays ? pay.coef : null;
+            stats.hasKpiPlan = !!planDays;
+            stats.accrualMode = pay.accrualMode;
+            stats.payout = pay.amount;
+            stats.dailyRate = pay.dailyRate;
+            stats.monthlyBonus = shopCheckKpiMonthlyBonus(rule);
+        }
+    } else stats = metricControlNumericStats(employeeId, mid, month);
     stats.metricId = mid;
     stats.name = name;
     stats.group = "work";
@@ -16053,7 +16402,19 @@ function metricControlLineRowHtml(employeeId, line, showJump) {
             + " · перенесено " + (line.moved || 0)
             + " · снято " + (line.cancelled || 0) + "</div>";
     }
-    if (line.kind === "check" || line.kind === "timesheet730") {
+    if (line.kind === "check") {
+        extra = '<div class="note">План: ' + (line.plan || "—")
+            + " · сделано: " + line.doneDays
+            + " · не сделано: " + line.failDays
+            + " · нет данных: " + line.noDataDays
+            + " · " + metricControlFmtPct(line.rate)
+            + (line.accrualMode
+                ? (" · " + (line.accrualMode === "per_completed_day" ? "за день" : "за месяц")
+                    + (line.payout != null ? " · начислено " + moneyFlex(line.payout) : ""))
+                : "")
+            + "</div>"
+            + metricControlDaysHtml(employeeId, line);
+    } else if (line.kind === "timesheet730") {
         extra = '<div class="note">Контрольных дней: ' + line.eligibleDays
             + " · сделано " + line.doneDays
             + " · не сделано " + line.failDays
@@ -16549,7 +16910,7 @@ function renderMetricCatalog() {
     const can = canEditShopMetricCatalog();
     if (bar) {
         bar.innerHTML = can
-            ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Создать метрику</button>'
+            ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Добавить метрику</button>'
             : '<div class="note">Просмотр. Изменять справочник может администратор.</div>';
     }
     const dept = generic ? catalogDeptContext() : "shop";
@@ -16566,20 +16927,23 @@ function renderMetricCatalog() {
     body.innerHTML = items.map(function (it) {
         const linked = shopMetricHasLinkedData(it.id);
         const tabName = metricTabLabel(metricDepartmentId(it), metricTabId(it));
-        let row = '<tr class="' + (it.active === false ? "is-inactive" : "") + '"'
+        const on = it.active !== false;
+        let actions = "";
+        if (can) {
+            actions = '<details class="mc-more"><summary title="Действия">⋯</summary><div class="mc-more-menu">'
+                + '<button type="button" onclick="openMetricCatalogForm(\'' + it.id + '\')">Редактировать</button>'
+                + '<button type="button" onclick="setShopMetricCatalogActive(\'' + it.id + "'," + (!on) + ')">'
+                + (on ? "Отключить" : "Включить") + "</button>"
+                + (it.builtin || linked ? "" : '<button type="button" onclick="deleteShopMetricCatalogItem(\'' + it.id + '\')">Удалить</button>')
+                + "</div></details>";
+        }
+        let row = '<tr class="' + (on ? "" : "is-inactive") + '"'
             + (can ? ' draggable="true" ondragstart="onMetricCatalogDrag(event,\'' + it.id + '\')" ondragover="onMetricCatalogDragOver(event)" ondrop="onMetricCatalogDrop(event,\'' + it.id + '\')"' : "")
             + "><td>" + escapeHtml(String(it.sort_order || "")) + "</td><td>"
             + escapeHtml(it.name) + "</td>";
         row += "<td>" + escapeHtml(tabName) + "</td>";
         row += "<td>" + escapeHtml(shopMetricFillLabel(it.fill_type)) + "</td><td>"
-            + (it.active === false ? "Нет" : "Да") + "</td><td>"
-            + (can ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMetricCatalogForm(\'' + it.id + '\')">Изменить</button>'
-                + (it.builtin || linked
-                    ? ' <button type="button" class="btn btn-secondary btn-small" onclick="setShopMetricCatalogActive(\'' + it.id + "'," + (it.active === false) + ')">'
-                        + (it.active === false ? "Включить" : "Отключить") + "</button>"
-                    : ' <button type="button" class="btn btn-danger btn-small" onclick="deleteShopMetricCatalogItem(\'' + it.id + '\')">Удалить</button>')
-                : "")
-            + "</td></tr>";
+            + (on ? "Да" : "Нет") + "</td><td>" + actions + "</td></tr>";
         return row;
     }).join("");
 }
@@ -16828,20 +17192,6 @@ function saveMetricCatalogForm(id, dupIgnore) {
         formula = { op: "sum", left: (document.getElementById("mcLeft") || {}).value || "" };
     }
     let item = id ? shopMetricCatalogById(id) : null;
-    if (item && shopMetricLooksLikeWriteoffLosses(item)) {
-        const canon = shopMetricCatalogById(METRIC_WRITEOFF_LOSSES_ID);
-        if (canon) {
-            item.active = false;
-            item.show_column = false;
-            item.assignable = false;
-            item = canon;
-            id = canon.id;
-        }
-    }
-    if (!item && /потер/i.test(name) && /списан/i.test(name)) {
-        item = shopMetricCatalogById(METRIC_WRITEOFF_LOSSES_ID);
-        if (item) id = item.id;
-    }
     if (!item) {
         item = {
             id: shopCatalogNextCustomId(),
@@ -16882,17 +17232,10 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (!item.department_id) item.department_id = dept;
     item.metric_tab_id = item.section_id || item.metric_tab_id;
     if (canonicalMetricId(item.id) === METRIC_WRITEOFF_LOSSES_ID) {
-        const def = shopWriteoffLossesKpiDef();
-        const digits = String(name).replace(/\s/g, "").match(/(\d+)/);
-        if (def && digits) {
-            const n = Number(digits[1]);
-            if (n > 0) {
-                def.plan = n;
-                def.limit_value = n;
-            }
-        }
-        if (def) shopSyncWriteoffKpiTitle(def);
-        else item.name = name;
+        item.fill_type = "month_money";
+        item.show_column = false;
+        item.assignable = true;
+        if (shopWriteoffNameLooksLikeLimitTitle(item.name)) item.name = WRITEOFF_METRIC_NAME;
     }
     if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
     saveApp();
