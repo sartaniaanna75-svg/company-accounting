@@ -314,7 +314,7 @@
             color: white;
         }
 
-        .mgmt-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+        .mgmt-tabs { display: none; }
         .mgmt-chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
         .mgmt-chip, .mgmt-tab {
             border: 1px solid var(--border);
@@ -2692,8 +2692,27 @@
         <button type="button" class="nav-btn" data-for="summary" data-section="timesheet" onclick="showSection('timesheet', this)">
             📊 Сводка
         </button>
-        <button type="button" class="nav-btn" data-for="summary" data-section="management" onclick="showSection('management', this)">
-            📋 Панель управления
+        <div class="menu-title" data-for="summary" data-spu="1">СПУ</div>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management" onclick="showSection('management', this)">
+            Панель управления
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-planfact" onclick="showSection('management-planfact', this)">
+            План–факт компании
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-finance" onclick="showSection('management-finance', this)">
+            Финансовые показатели
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-meetings" onclick="showSection('management-meetings', this)">
+            Протокол встреч
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-tasks" onclick="showSection('management-tasks', this)">
+            Задачи
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-events" onclick="showSection('management-events', this)">
+            График мероприятий
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-settings" onclick="showSection('management-settings', this)">
+            Показатели
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="salary" onclick="showSection('salary', this)">
             💰 Зарплата
@@ -7604,7 +7623,7 @@ function tryRestoreSession() {
         }
         if (w.type === "summary" || w.code === "summary") {
             if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "summary") {
-                if (currentSection === "management") currentEntry = "spu";
+                if (isMgmtNavSection(currentSection)) currentEntry = "spu";
                 else if (currentSection === "users") currentEntry = "admin";
                 else currentEntry = "summary";
             }
@@ -7646,13 +7665,17 @@ function applyModeUI() {
                 show = false;
             }
             if (isSpuMode()) {
-                show = sec === "management" && allowed.indexOf("management") !== -1;
+                show = el.getAttribute("data-spu") === "1" && sec && allowed.indexOf(sec) !== -1;
             } else if (isAdminEntry()) {
                 show = (sec === "users" || sec === "settings" || sec === "metricCatalog") && allowed.indexOf(sec) !== -1;
             } else if (summary) {
-                if (sec === "management") show = false;
+                if (sec === "management" || String(sec || "").indexOf("management-") === 0) show = false;
                 if (sec === "users") show = false;
+                if (el.getAttribute("data-spu") === "1") show = false;
             }
+        }
+        if (el.getAttribute("data-spu") === "1" && !el.classList.contains("nav-btn")) {
+            show = isSpuMode();
         }
         el.style.display = show ? "" : "none";
     });
@@ -7709,10 +7732,38 @@ function closeSidebar() {
     document.getElementById("sidebarOverlay").classList.remove("show");
 }
 
+function isMgmtNavSection(id) {
+    return id === "management" || String(id || "").indexOf("management-") === 0;
+}
+
+function mgmtTabFromSection(id) {
+    if (!id || id === "management") return "dashboard";
+    if (String(id).indexOf("management-") === 0) return String(id).slice("management-".length);
+    return "dashboard";
+}
+
+function mgmtSectionFromTab(tab) {
+    if (!tab || tab === "dashboard") return "management";
+    return "management-" + tab;
+}
+
+function allowedSpuSections() {
+    const list = [];
+    const open = canOpenManagement() || userHasPerm("management", "view");
+    if (open) {
+        list.push("management", "management-planfact", "management-finance");
+        if (userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement()) list.push("management-meetings");
+        if (userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement()) list.push("management-tasks");
+        if (canOpenManagement()) list.push("management-events");
+    }
+    if (canEditMgmtIndicators() || isAppAdmin()) list.push("management-settings");
+    return list;
+}
+
 function allowedSections() {
     const code = workspace() && workspace().code;
     if (isSpuMode()) {
-        return canOpenManagement() ? ["management"] : [];
+        return allowedSpuSections();
     }
     if (isAdminEntry()) {
         const list = [];
@@ -7802,7 +7853,13 @@ function sectionTitle(id) {
         settings: "Настройки",
         metricCatalog: "Метрики",
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
-        management: "СПУ"
+        management: "Панель управления",
+        "management-planfact": "План–факт компании",
+        "management-finance": "Финансовые показатели",
+        "management-meetings": "Протокол встреч",
+        "management-tasks": "Задачи",
+        "management-events": "График мероприятий",
+        "management-settings": "Показатели"
     };
     if (isDeptWorkSection(id) && workspace()) {
         return metricTabLabel(workspace().code, deptWorkTabFromSection(id));
@@ -7833,19 +7890,20 @@ function showSection(id, button) {
     if (id === "metrics-pickers") shopMetricCategory = "pickers";
     if (id === "metrics-cashiers") shopMetricCategory = "cashiers";
     if (id === "metrics-managers") shopMetricCategory = "managers";
+    if (isMgmtNavSection(id)) mgmtTab = mgmtTabFromSection(id);
     currentSection = id;
     saveSession();
 
     document.querySelectorAll(".section").forEach(function (section) {
         section.classList.remove("active");
     });
-    const sectionId = (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers" || isDeptWorkSection(id))
-        ? "metrics"
-        : id;
+    let sectionId = id;
+    if (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers" || isDeptWorkSection(id)) sectionId = "metrics";
+    else if (isMgmtNavSection(id)) sectionId = "management";
     const host = document.getElementById(sectionId);
     if (host) host.classList.add("active");
     const monthBar = document.querySelector(".month-bar");
-    if (monthBar) monthBar.style.display = id === "management" ? "none" : "";
+    if (monthBar) monthBar.style.display = isMgmtNavSection(id) ? "none" : "";
 
     document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         const visible = btn.style.display !== "none";
@@ -7875,7 +7933,7 @@ function showSection(id, button) {
     if (id === "settings") loadWorkspaceSettings();
     if (id === "metricCatalog") renderMetricCatalog();
     if (id === "deptMetrics") renderDeptMetrics();
-    if (id === "management") renderManagement();
+    if (isMgmtNavSection(id)) renderManagement();
 }
 
 function changeMonth(month) {
@@ -7910,7 +7968,7 @@ function refreshAll() {
     if (currentSection === "metricCatalog") renderMetricCatalog();
     if (currentSection === "deptMetrics") renderDeptMetrics();
     if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
-    if (currentSection === "management") renderManagement();
+    if (isMgmtNavSection(currentSection)) renderManagement();
     updateStats();
 }
 
@@ -20544,21 +20602,24 @@ function renderManagement() {
             return;
         }
         if (!items.some(function (t) { return t.id === mgmtTab; })) mgmtTab = items[0].id;
+        if (isSpuMode()) {
+            const sec = mgmtSectionFromTab(mgmtTab);
+            if (currentSection !== sec && allowedSections().indexOf(sec) !== -1) {
+                currentSection = sec;
+            }
+        }
         const titles = {
-            dashboard: "СПУ — Панель управления",
-            planfact: "СПУ — План–факт компании",
-            finance: "СПУ — Финансовые показатели",
-            meetings: "СПУ — Протокол встреч",
-            tasks: "СПУ — Задачи",
-            events: "СПУ — График мероприятий",
-            settings: "СПУ — Настройка показателей"
+            dashboard: "Панель управления",
+            planfact: "План–факт компании",
+            finance: "Финансовые показатели",
+            meetings: "Протокол встреч",
+            tasks: "Задачи",
+            events: "График мероприятий",
+            settings: "Показатели"
         };
         const head = document.getElementById("mgmtPageTitle");
         if (head) head.textContent = titles[mgmtTab] || "СПУ";
-        tabs.innerHTML = items.map(function (t) {
-            return '<button type="button" class="mgmt-tab' + (mgmtTab === t.id ? " on" : "") + '" onclick="setMgmtTab(\'' + t.id + '\')">'
-                + escapeHtml(t.label) + "</button>";
-        }).join("");
+        tabs.innerHTML = "";
         if (mgmtTab === "dashboard") body.innerHTML = renderMgmtDashboardHtml();
         else if (mgmtTab === "planfact") body.innerHTML = renderMgmtPlanFactHtml();
         else if (mgmtTab === "finance") body.innerHTML = renderMgmtFinanceHtml();
@@ -20575,6 +20636,17 @@ function renderManagement() {
 
 function setMgmtTab(id) {
     mgmtTab = id;
+    if (isSpuMode()) {
+        const sec = mgmtSectionFromTab(id);
+        if (allowedSections().indexOf(sec) !== -1) currentSection = sec;
+        saveSession();
+        document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
+            const visible = btn.style.display !== "none";
+            btn.classList.toggle("active", visible && btn.getAttribute("data-section") === currentSection);
+        });
+        const title = document.getElementById("pageTitle");
+        if (title) title.textContent = sectionTitle(currentSection);
+    }
     renderManagement();
 }
 
