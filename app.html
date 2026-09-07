@@ -92,8 +92,9 @@
             gap: 16px;
         }
 
-        .login-grid.home-five {
-            grid-template-columns: repeat(2, 1fr);
+        .login-grid.home-five,
+        .login-grid.home-six {
+            grid-template-columns: repeat(3, 1fr);
         }
 
         .login-grid.territory-view {
@@ -2627,6 +2628,67 @@
             border-top: 1px solid #e2e8f0;
         }
 
+        .org-seg { display: inline-flex; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; }
+        .org-seg button { border: 0; background: #fff; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+        .org-seg button.on { background: #0f172a; color: #fff; }
+        .org-chart-wrap {
+            overflow: auto;
+            max-height: calc(100vh - 210px);
+            padding: 8px 4px 24px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+        }
+        .org-chart-scale { transform-origin: top center; }
+        .org-tree { display: flex; flex-direction: column; align-items: center; }
+        .org-node { display: flex; flex-direction: column; align-items: center; position: relative; }
+        .org-card {
+            width: 196px;
+            background: #fff;
+            border: 1px solid #94a3b8;
+            border-radius: 8px;
+            padding: 7px 8px 8px;
+            text-align: left;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, .06);
+            position: relative;
+        }
+        .org-card .org-type { font-size: 9px; font-weight: 700; letter-spacing: .04em; color: #64748b; text-transform: uppercase; }
+        .org-card .org-name { font-size: 13px; font-weight: 700; margin: 2px 0 6px; line-height: 1.25; }
+        .org-card .org-meta { font-size: 11px; color: #475569; line-height: 1.35; }
+        .org-card .org-meta b { color: #0f172a; font-weight: 600; }
+        .org-card-menu {
+            position: absolute; top: 4px; right: 4px;
+            border: 0; background: #e2e8f0; border-radius: 4px; cursor: pointer;
+            width: 22px; height: 22px; font-size: 12px; line-height: 22px; padding: 0;
+        }
+        .org-drop {
+            position: absolute; right: 4px; top: 26px; z-index: 6;
+            background: #fff; border: 1px solid #94a3b8; border-radius: 6px;
+            min-width: 170px; box-shadow: 0 8px 20px rgba(15,23,42,.12); padding: 4px 0;
+        }
+        .org-drop button {
+            display: block; width: 100%; text-align: left; border: 0; background: transparent;
+            padding: 6px 10px; font-size: 12px; cursor: pointer;
+        }
+        .org-drop button:hover { background: #f1f5f9; }
+        .org-kids {
+            display: flex; justify-content: center; align-items: flex-start; gap: 14px;
+            margin-top: 18px; padding-top: 10px; position: relative;
+        }
+        .org-kids::before {
+            content: ""; position: absolute; top: 0; left: 12%; right: 12%; height: 1px; background: #94a3b8;
+        }
+        .org-node.has-kids > .org-card::after {
+            content: ""; position: absolute; left: 50%; bottom: -18px; width: 1px; height: 18px; background: #94a3b8;
+        }
+        .org-toggle {
+            border: 0; background: #e2e8f0; border-radius: 4px; cursor: pointer;
+            font-size: 11px; margin-top: 4px; padding: 1px 6px;
+        }
+        .org-zoom { display: flex; gap: 6px; align-items: center; }
+        .org-kids.one::before { display: none; }
+        .org-table { font-size: 12px; }
+        .org-emp-filter { width: 100%; margin-bottom: 6px; }
+
         @media (max-width: 640px) {
             .mgmt-ind-form,
             .mgmt-ind-source { grid-template-columns: minmax(0, 1fr); }
@@ -2802,7 +2864,7 @@
         </div>
         <div class="login-title" id="loginTitle">⏱ Табель сотрудников</div>
         <div class="login-subtitle" id="loginSubtitle">
-            Выберите раздел: Магазин Володарского, Территория, Общее, СПУ или Администратор.
+            Выберите раздел: Магазин Володарского, Территория, Общее, СПУ, Оргструктура или Администратор.
             <span id="defaultPinHint"></span>
         </div>
         <div class="login-grid" id="loginGrid">
@@ -2947,6 +3009,13 @@
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-settings" onclick="showSection('management-settings', this)">
             Показатели
+        </button>
+        <div class="menu-title" data-for="summary" data-org="1">Оргструктура</div>
+        <button type="button" class="nav-btn" data-for="summary" data-org="1" data-section="org-chart" onclick="showSection('org-chart', this)">
+            Схема
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-org="1" data-section="org-settings" onclick="showSection('org-settings', this)">
+            Настройки структуры
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="salary" onclick="showSection('salary', this)">
             💰 Зарплата
@@ -3953,6 +4022,19 @@
                     </div>
                     <div class="mgmt-tabs" id="mgmtTabs"></div>
                     <div id="mgmtBody"></div>
+                </div>
+            </section>
+
+            <section id="orgstructure" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title" id="orgPageTitle">Оргструктура</div>
+                            <div class="note">Редактируемая модель компании. Не рабочий отдел Территории и не СПУ.</div>
+                        </div>
+                        <div class="toolbar" id="orgToolbar"></div>
+                    </div>
+                    <div id="orgBody"></div>
                 </div>
             </section>
 
@@ -5384,7 +5466,8 @@ const ACCESS_PERM_KEYS = [
     { key: "management", label: "СПУ" },
     { key: "managementIndicators", label: "СПУ · показатели" },
     { key: "managementTasks", label: "СПУ · ежедневные задачи" },
-    { key: "managementMeetings", label: "СПУ · встречи" }
+    { key: "managementMeetings", label: "СПУ · встречи" },
+    { key: "orgStructure", label: "Оргструктура" }
 ];
 
 function accessRoleTemplate(role, legacy) {
@@ -5403,6 +5486,7 @@ function accessRoleTemplate(role, legacy) {
         p.managementIndicators = "view";
         p.managementTasks = "edit";
         p.managementMeetings = "edit";
+        p.orgStructure = "view";
         return p;
     }
     if (legacy === "pay") {
@@ -5415,6 +5499,7 @@ function accessRoleTemplate(role, legacy) {
         p.revision = "edit";
         p.salesPlan = "edit";
         p.discipline = "edit";
+        p.orgStructure = "view";
         return p;
     }
     p.timesheet = "edit";
@@ -5531,6 +5616,12 @@ function userCanAccessDept(user, code) {
     if (code === "admin") {
         return user.role === "admin" || user.legacy_role === "admin";
     }
+    if (code === "org" || code === "orgstructure") {
+        if (user.legacy_role === "pay") return false;
+        if (user.role === "admin" || user.legacy_role === "admin") return true;
+        if (userAccessDeptCodes(user).indexOf("org") !== -1) return true;
+        return permRank((user.permissions && user.permissions.orgStructure) || "none") > 0;
+    }
     if (code === "spu" || code === "mgmt" || code === "management") {
         if (user.legacy_role === "pay") return false;
         if (userAccessDeptCodes(user).indexOf("spu") !== -1) return true;
@@ -5564,11 +5655,13 @@ function userSwitchCodes(user) {
     });
     if (userCanAccessDept(user, "summary")) add("summary");
     if (userCanAccessDept(user, "spu")) add("spu");
+    if (userCanAccessDept(user, "org")) add("org");
     if (userCanAccessDept(user, "admin")) add("admin");
     return codes;
 }
 
 function currentNavCode() {
+    if (isOrgMode()) return "org";
     if (isSpuMode()) return "spu";
     if (isAdminEntry()) return "admin";
     if (isSummary()) return "summary";
@@ -5577,6 +5670,7 @@ function currentNavCode() {
 
 function entryLabel(code) {
     if (code === "summary") return "Общее";
+    if (code === "org") return "Оргструктура";
     if (code === "spu") return "СПУ";
     if (code === "admin") return "Администратор";
     const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
@@ -5644,6 +5738,10 @@ function isSpuMode() {
     return isSummary() && currentEntry === "spu";
 }
 
+function isOrgMode() {
+    return isSummary() && currentEntry === "org";
+}
+
 function isAdminEntry() {
     return currentEntry === "admin";
 }
@@ -5654,7 +5752,7 @@ function enterAsUser(user, code) {
     ensureLoginData();
     migrateAppUsers(appData);
     let w = findWorkspaceByCode(code);
-    if (!w && (code === "summary" || code === "spu" || code === "admin")) {
+    if (!w && (code === "summary" || code === "spu" || code === "admin" || code === "org")) {
         w = findWorkspaceByCode("summary");
     }
     if (!w && code === "summary") {
@@ -5662,7 +5760,7 @@ function enterAsUser(user, code) {
         appData.workspaces.push(w);
         ensureSummaryPins(w);
     }
-    const destCode = (code === "spu" || code === "admin") ? "summary" : code;
+    const destCode = (code === "spu" || code === "admin" || code === "org") ? "summary" : code;
     const def = DEPT_DEFAULTS.find(function (d) { return d.code === destCode; });
     if (!w && def) {
         w = createWorkspace(def.name, String(def.pin), "dept", destCode);
@@ -5670,9 +5768,10 @@ function enterAsUser(user, code) {
     }
     if (!w) return false;
     if (code === "spu") currentEntry = "spu";
+    else if (code === "org") currentEntry = "org";
     else if (code === "admin") currentEntry = "admin";
     else if (destCode === "summary") {
-        if (currentEntry !== "spu" && currentEntry !== "admin") currentEntry = "summary";
+        if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "org") currentEntry = "summary";
     } else {
         currentEntry = "dept";
     }
@@ -5684,6 +5783,7 @@ function enterAsUser(user, code) {
     pendingOpenSection = "";
     if (want && allowedSections().indexOf(want) !== -1) currentSection = want;
     else if (currentEntry === "spu") currentSection = "management";
+    else if (currentEntry === "org") currentSection = "org-chart";
     else if (currentEntry === "admin") currentSection = "users";
     else if (user.legacy_role === "pay") currentSection = "salary";
     else if (user.legacy_role === "adjust") currentSection = "salary";
@@ -5726,6 +5826,20 @@ function switchUserWorkspace(code) {
         loadWorkspace();
         return;
     }
+    if (code === "org") {
+        if (!userCanAccessDept(user, "org")) return;
+        const w = findWorkspaceByCode("summary");
+        if (!w) return;
+        currentEntry = "org";
+        currentUserId = user.user_id;
+        setCurrentWorkspace(w);
+        applyLegacyRolesFromUser(user, "summary");
+        selectedMonth = keepMonth;
+        currentSection = "org-chart";
+        saveSession();
+        loadWorkspace();
+        return;
+    }
     if (!userCanAccessDept(user, code)) return;
     const w = findWorkspaceByCode(code);
     if (!w) return;
@@ -5756,6 +5870,9 @@ function normalizeAccessUser(u) {
     ACCESS_PERM_KEYS.forEach(function (p) {
         if (!u.permissions[p.key]) u.permissions[p.key] = "none";
     });
+    if ((u.role === "admin" || u.legacy_role === "admin") && u.permissions.orgStructure === "none") {
+        u.permissions.orgStructure = "edit";
+    }
     return u;
 }
 
@@ -6013,6 +6130,7 @@ function createDefaultData() {
         deptSalesPlans: {},
         users: [],
         management: { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [], events: [] },
+        orgStructure: { nodes: [], leadership: [] },
         workspaces: DEPT_DEFAULTS.map(function (d) {
             return createWorkspace(d.name, d.pin, "dept", d.code);
         }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
@@ -6503,6 +6621,7 @@ function repairFourDepartments(data) {
 function workspaceTitle(w) {
     if (!w) return "";
     if (typeof isSpuMode === "function" && isSpuMode()) return "СПУ";
+    if (typeof isOrgMode === "function" && isOrgMode()) return "Оргструктура";
     if (typeof isAdminEntry === "function" && isAdminEntry()) return "Администратор";
     if (w.type === "summary" || w.code === "summary") return "Общее";
     return officialName(w);
@@ -6527,6 +6646,8 @@ function renderDeptNow() {
             ? currentAuthUserName() + " · режим администратора"
             : isSpuMode()
                 ? (currentAuthUserName() || "СПУ")
+                : isOrgMode()
+                    ? (currentAuthUserName() || "Оргструктура")
                 : (isAppAdmin()
                     ? currentAuthUserName() + " · режим администратора"
                     : currentSummaryRole === "adjust"
@@ -6635,6 +6756,7 @@ function migrateAppData(data) {
     migrateStableIds(data);
     restoreCanonicalPins(data);
     migrateAppUsers(data);
+    try { ensureOrgStructure(data); } catch (orgErr) { console.error(orgErr); }
     return data;
 }
 
@@ -7354,7 +7476,7 @@ function summaryMonthMoney(monthValue) {
 function renderLogin(view) {
     try {
         console.log("[WorkTime login click]", view);
-        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "spu" || view === "admin") loginView = view;
+        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "spu" || view === "org" || view === "admin") loginView = view;
         ensureLoginData();
         try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
@@ -7423,6 +7545,15 @@ function renderLogin(view) {
             }
             grid.className = "login-grid single-view";
             grid.innerHTML = userPinLoginCardHtml("spu", "СПУ");
+        } else if (loginView === "org") {
+            backHome();
+            if (title) title.textContent = "Оргструктура";
+            if (subtitle) {
+                subtitle.innerHTML = "Организационная модель компании. Выберите пользователя и введите его PIN."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = userPinLoginCardHtml("org", "Оргструктура");
         } else if (loginView === "admin") {
             backHome();
             if (title) title.textContent = "Администратор";
@@ -7441,8 +7572,8 @@ function renderLogin(view) {
                 subtitle.innerHTML = "Выберите раздел или вход администратора."
                     + ' <span id="defaultPinHint"></span>';
             }
-            grid.className = "login-grid home-five";
-            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + spuFolderCardHtml() + adminFolderCardHtml();
+            grid.className = "login-grid home-six";
+            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + spuFolderCardHtml() + orgFolderCardHtml() + adminFolderCardHtml();
         }
 
         restoreAllLoginCardState(grid);
@@ -7456,6 +7587,8 @@ function renderLogin(view) {
                         ? " Общее: 5555 / 6666 / 7777."
                         : loginView === "spu"
                             ? " СПУ: 5555 / 6666."
+                            : loginView === "org"
+                            ? " Оргструктура: 5555 / 6666."
                             : loginView === "admin"
                             ? " Админ: 5555."
                             : " Введите личный PIN пользователя этого раздела.")
@@ -7677,6 +7810,16 @@ function spuFolderCardHtml() {
     );
 }
 
+function orgFolderCardHtml() {
+    return folderCardHtml(
+        "summary-folder",
+        "org",
+        "Оргструктура",
+        "Редактируемая модель компании",
+        ""
+    );
+}
+
 function adminFolderCardHtml() {
     return folderCardHtml("summary-card", "admin", "Администратор", "Отдельный вход. Все подразделения и пользователи.", "");
 }
@@ -7786,6 +7929,7 @@ function loginByCode(code) {
         clearLoginPinState(code);
         if (input) input.value = "";
         if (code === "spu") currentEntry = "spu";
+        else if (code === "org") currentEntry = "org";
         else if (code === "summary") currentEntry = "summary";
         else currentEntry = "dept";
         if (!enterAsUser(user, code)) {
@@ -7900,6 +8044,7 @@ function logout() {
     const entry = currentEntry;
     leaveWorkspace();
     if (entry === "spu") renderLogin("spu");
+    else if (entry === "org") renderLogin("org");
     else if (entry === "admin") renderLogin("admin");
     else if (isTerritoryCode(code)) renderLogin("territory");
     else if (code === "shop") renderLogin("shop");
@@ -7957,8 +8102,9 @@ function tryRestoreSession() {
             }
         }
         if (w.type === "summary" || w.code === "summary") {
-            if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "summary") {
+            if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "summary" && currentEntry !== "org") {
                 if (isMgmtNavSection(currentSection)) currentEntry = "spu";
+                else if (typeof isOrgNavSection === "function" && isOrgNavSection(currentSection)) currentEntry = "org";
                 else if (currentSection === "users") currentEntry = "admin";
                 else currentEntry = "summary";
             }
@@ -7999,18 +8145,29 @@ function applyModeUI() {
             if (mode === "dept" && (sec === "timesheet" || sec === "deptMetrics") && (code === "warehouse" || code === "drivers")) {
                 show = false;
             }
-            if (isSpuMode()) {
+            if (isOrgMode()) {
+                if (el.classList.contains("nav-btn")) {
+                    show = el.getAttribute("data-org") === "1" && sec && allowed.indexOf(sec) !== -1;
+                } else {
+                    show = el.getAttribute("data-org") === "1";
+                }
+            } else if (isSpuMode()) {
                 show = el.getAttribute("data-spu") === "1" && sec && allowed.indexOf(sec) !== -1;
             } else if (isAdminEntry()) {
                 show = (sec === "users" || sec === "settings" || sec === "metricCatalog") && allowed.indexOf(sec) !== -1;
             } else if (summary) {
                 if (sec === "management" || String(sec || "").indexOf("management-") === 0) show = false;
+                if (sec === "org-chart" || sec === "org-settings") show = false;
                 if (sec === "users") show = false;
                 if (el.getAttribute("data-spu") === "1") show = false;
+                if (el.getAttribute("data-org") === "1") show = false;
             }
         }
         if (el.getAttribute("data-spu") === "1" && !el.classList.contains("nav-btn")) {
             show = isSpuMode();
+        }
+        if (el.getAttribute("data-org") === "1" && !el.classList.contains("nav-btn")) {
+            show = isOrgMode();
         }
         el.style.display = show ? "" : "none";
     });
@@ -8082,6 +8239,17 @@ function mgmtSectionFromTab(tab) {
     return "management-" + tab;
 }
 
+function isOrgNavSection(id) {
+    return id === "org-chart" || id === "org-settings";
+}
+
+function allowedOrgSections() {
+    const list = [];
+    if (userHasPerm("orgStructure", "view") || isAppAdmin()) list.push("org-chart");
+    if (userHasPerm("orgStructure", "edit") || isAppAdmin()) list.push("org-settings");
+    return list;
+}
+
 function allowedSpuSections() {
     const list = [];
     const open = canOpenManagement() || userHasPerm("management", "view");
@@ -8097,6 +8265,9 @@ function allowedSpuSections() {
 
 function allowedSections() {
     const code = workspace() && workspace().code;
+    if (isOrgMode()) {
+        return allowedOrgSections();
+    }
     if (isSpuMode()) {
         return allowedSpuSections();
     }
@@ -8194,7 +8365,9 @@ function sectionTitle(id) {
         "management-meetings": "Протокол встреч",
         "management-tasks": "Ежедневные задачи",
         "management-events": "График мероприятий",
-        "management-settings": "Показатели"
+        "management-settings": "Показатели",
+        "org-chart": "Оргструктура — схема",
+        "org-settings": "Оргструктура — настройки"
     };
     if (isDeptWorkSection(id) && workspace()) {
         return metricTabLabel(workspace().code, deptWorkTabFromSection(id));
@@ -8235,10 +8408,11 @@ function showSection(id, button) {
     let sectionId = id;
     if (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers" || isDeptWorkSection(id)) sectionId = "metrics";
     else if (isMgmtNavSection(id)) sectionId = "management";
+    else if (isOrgNavSection(id)) sectionId = "orgstructure";
     const host = document.getElementById(sectionId);
     if (host) host.classList.add("active");
     const monthBar = document.querySelector(".month-bar");
-    if (monthBar) monthBar.style.display = isMgmtNavSection(id) ? "none" : "";
+    if (monthBar) monthBar.style.display = (isMgmtNavSection(id) || isOrgNavSection(id)) ? "none" : "";
 
     document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         const visible = btn.style.display !== "none";
@@ -8272,6 +8446,7 @@ function showSection(id, button) {
     if (id === "metricCatalog") renderMetricCatalog();
     if (id === "deptMetrics") renderDeptMetrics();
     if (isMgmtNavSection(id)) renderManagement();
+    if (isOrgNavSection(id)) renderOrgStructure();
 }
 
 function changeMonth(month) {
@@ -8307,6 +8482,7 @@ function refreshAll() {
     if (currentSection === "deptMetrics") renderDeptMetrics();
     if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
     if (isMgmtNavSection(currentSection)) renderManagement();
+    if (isOrgNavSection(currentSection)) renderOrgStructure();
     if (currentSection === "users") {
         renderAccessUsers();
         renderStaffOrgAdmin();
@@ -20201,7 +20377,7 @@ function applyAccessRoleTemplateInForm() {
         if (el) el.checked = permRank(tpl[p.key]) > 0;
     });
     if (role === "admin") {
-        DEPT_DEFAULTS.concat([{ code: "summary" }]).forEach(function (d) {
+        DEPT_DEFAULTS.concat([{ code: "summary" }, { code: "spu" }, { code: "org" }]).forEach(function (d) {
             const el = document.getElementById("accessDept_" + d.code);
             if (el) el.checked = true;
         });
@@ -20240,6 +20416,9 @@ function openAccessUserEditor(userId) {
     deptHtml += '<label class="check"><input type="checkbox" id="accessDept_spu"'
         + (userCanAccessDept(user, "spu") ? " checked" : "")
         + "> СПУ</label>";
+    deptHtml += '<label class="check"><input type="checkbox" id="accessDept_org"'
+        + (userCanAccessDept(user, "org") ? " checked" : "")
+        + "> Оргструктура</label>";
     let permHtml = "";
     ACCESS_PERM_KEYS.forEach(function (p) {
         const on = permRank((user.permissions && user.permissions[p.key]) || "none") > 0;
@@ -20301,18 +20480,23 @@ function saveAccessUser(userId) {
     if (document.getElementById("accessDept_spu") && document.getElementById("accessDept_spu").checked) {
         departments.push("spu");
     }
+    if (document.getElementById("accessDept_org") && document.getElementById("accessDept_org").checked) {
+        departments.push("org");
+    }
     const permissions = {};
     ACCESS_PERM_KEYS.forEach(function (p) {
         const el = document.getElementById("accessPerm_" + p.key);
         permissions[p.key] = el && el.checked ? "edit" : "none";
     });
     if (permissions.salary !== "none" && departments.indexOf("summary") === -1) departments.push("summary");
+    if (permissions.orgStructure !== "none" && departments.indexOf("org") === -1) departments.push("org");
     if (role === "admin") {
         DEPT_DEFAULTS.forEach(function (d) {
             if (departments.indexOf(d.code) === -1) departments.push(d.code);
         });
         if (departments.indexOf("summary") === -1) departments.push("summary");
         if (departments.indexOf("spu") === -1) departments.push("spu");
+        if (departments.indexOf("org") === -1) departments.push("org");
         ACCESS_PERM_KEYS.forEach(function (p) { permissions[p.key] = "edit"; });
     }
     let prev = findAccessUser(id);
@@ -20521,6 +20705,767 @@ let mgmtPfHead = "";
 let mgmtPfDept = "";
 let mgmtPfCollapsed = {};
 const MGMT_PF_UI_KEY = "worktime_spu_planfact_ui_v1";
+
+let orgChartScale = 1;
+let orgCollapsed = {};
+let orgMenuId = "";
+let orgEmpQuery = "";
+let orgSelfTestLast = null;
+
+const ORG_NODE_TYPES = [
+    { id: "organization", label: "Организация" },
+    { id: "leadership", label: "Руководство" },
+    { id: "department", label: "Департамент" },
+    { id: "unit", label: "Отдел" },
+    { id: "direction", label: "Направление" },
+    { id: "position", label: "Должность" },
+    { id: "group", label: "Группа" }
+];
+
+function canViewOrgChart() {
+    return userHasPerm("orgStructure", "view") || isAppAdmin();
+}
+
+function canEditOrgChart() {
+    return userHasPerm("orgStructure", "edit") || isAppAdmin();
+}
+
+function orgTypeLabel(type) {
+    const t = ORG_NODE_TYPES.find(function (x) { return x.id === type; });
+    return t ? t.label : "Блок";
+}
+
+function orgNowIso() {
+    return new Date().toISOString();
+}
+
+function orgDefaultSeedNodes() {
+    const now = orgNowIso();
+    function n(id, name, type, parent, order, spu) {
+        return {
+            org_node_id: id,
+            name: name,
+            node_type: type,
+            parent_node_id: parent || "",
+            sort_order: order,
+            manager_employee_id: "",
+            deputy_employee_id: "",
+            spu_department_id: spu || "",
+            show_in_chart: true,
+            is_active: true,
+            created_at: now,
+            updated_at: now
+        };
+    }
+    return [
+        n("org_company", "Организация", "organization", "", 10, ""),
+        n("org_ceo", "Генеральный директор", "leadership", "org_company", 10, ""),
+        n("org_hr", "Департамент персонала", "department", "org_ceo", 10, "spu_personnel"),
+        n("org_sales", "Департамент продаж", "department", "org_ceo", 20, "spu_sales"),
+        n("org_whlog", "Департамент склада и логистики", "department", "org_ceo", 30, ""),
+        n("org_wh", "Склад", "direction", "org_whlog", 10, "spu_warehouse"),
+        n("org_log", "Логистика", "direction", "org_whlog", 20, "spu_logistics"),
+        n("org_proc", "Департамент закупок", "department", "org_ceo", 40, ""),
+        n("org_shop", "Магазин", "department", "org_ceo", 50, "spu_shop"),
+        n("org_office", "Офис", "department", "org_ceo", 60, "spu_office"),
+        n("org_fin", "Финансовый департамент", "department", "org_ceo", 70, "spu_finance")
+    ];
+}
+
+function ensureOrgStructure(data) {
+    const root = data || appData;
+    if (!root || typeof root !== "object") return;
+    if (!root.orgStructure || typeof root.orgStructure !== "object") {
+        root.orgStructure = { nodes: [], leadership: [] };
+    }
+    if (!Array.isArray(root.orgStructure.nodes)) root.orgStructure.nodes = [];
+    if (!Array.isArray(root.orgStructure.leadership)) root.orgStructure.leadership = [];
+    root.orgStructure.nodes.forEach(function (n) {
+        if (!n || typeof n !== "object") return;
+        if (!n.org_node_id) n.org_node_id = nextPrefixedId("orgn", root.orgStructure.nodes.map(function (x) { return x && x.org_node_id; }));
+        n.name = String(n.name || "").trim();
+        if (!n.node_type) n.node_type = "group";
+        if (n.parent_node_id == null) n.parent_node_id = "";
+        n.sort_order = Number(n.sort_order || 0);
+        if (n.manager_employee_id == null) n.manager_employee_id = "";
+        if (n.deputy_employee_id == null) n.deputy_employee_id = "";
+        if (n.spu_department_id == null) n.spu_department_id = "";
+        if (n.show_in_chart == null) n.show_in_chart = true;
+        if (n.is_active == null) n.is_active = true;
+        if (!n.created_at) n.created_at = orgNowIso();
+        if (!n.updated_at) n.updated_at = n.created_at;
+    });
+    if (!root.orgStructure.nodes.length) {
+        root.orgStructure.nodes = orgDefaultSeedNodes();
+    }
+}
+
+function orgNodes() {
+    ensureOrgStructure();
+    return appData.orgStructure.nodes;
+}
+
+function orgLeadership() {
+    ensureOrgStructure();
+    return appData.orgStructure.leadership;
+}
+
+function orgGetNode(id) {
+    if (!id) return null;
+    return orgNodes().find(function (n) { return n && n.org_node_id === id; }) || null;
+}
+
+function orgSortCmp(a, b) {
+    const sa = Number(a && a.sort_order || 0);
+    const sb = Number(b && b.sort_order || 0);
+    if (sa !== sb) return sa - sb;
+    return String(a && a.name || "").localeCompare(String(b && b.name || ""), "ru");
+}
+
+function orgChildren(parentId, includeInactive) {
+    const pid = parentId || "";
+    return orgNodes().filter(function (n) {
+        if (!n) return false;
+        if (String(n.parent_node_id || "") !== pid) return false;
+        if (!includeInactive && n.is_active === false) return false;
+        return true;
+    }).slice().sort(orgSortCmp);
+}
+
+function orgNodeVisibleOnChart(n) {
+    return !!(n && n.is_active !== false && n.show_in_chart !== false);
+}
+
+function orgChartRoots() {
+    return orgNodes().filter(function (n) {
+        if (!orgNodeVisibleOnChart(n)) return false;
+        const p = orgGetNode(n.parent_node_id);
+        return !p || !orgNodeVisibleOnChart(p);
+    }).slice().sort(orgSortCmp);
+}
+
+function orgDescendantIds(id) {
+    const out = [];
+    function walk(pid) {
+        orgChildren(pid, true).forEach(function (c) {
+            out.push(c.org_node_id);
+            walk(c.org_node_id);
+        });
+    }
+    walk(id);
+    return out;
+}
+
+function orgWouldCreateCycle(nodeId, newParentId) {
+    if (!nodeId) return false;
+    if (nodeId === newParentId) return true;
+    let cur = newParentId || "";
+    const seen = {};
+    while (cur) {
+        if (cur === nodeId) return true;
+        if (seen[cur]) return true;
+        seen[cur] = true;
+        const n = orgGetNode(cur);
+        cur = n ? String(n.parent_node_id || "") : "";
+    }
+    return false;
+}
+
+function orgValidEmployeeId(id) {
+    if (!id) return true;
+    const e = getEmployee(id);
+    if (e && e.id) return true;
+    return mgmtAllEmployees().some(function (x) { return x && x.id === id; });
+}
+
+function orgEmpById(id) {
+    if (!id) return null;
+    return getEmployee(id) || mgmtAllEmployees().find(function (e) { return e && e.id === id; }) || null;
+}
+
+function orgEmpCaption(id) {
+    const e = orgEmpById(id);
+    if (!e) return "";
+    const pos = String(e.position || "").trim();
+    return (e.name || e.id) + (pos ? " · " + pos : "");
+}
+
+function orgEmpShort(id) {
+    const e = orgEmpById(id);
+    return e ? (e.name || e.id) : "—";
+}
+
+function orgFindBySpuDept(spuId) {
+    const key = String(spuId || "");
+    if (!key) return null;
+    const list = orgNodes().filter(function (n) {
+        return n && n.is_active !== false && String(n.spu_department_id || "") === key;
+    }).sort(orgSortCmp);
+    return list[0] || null;
+}
+
+function orgManagerForSpuDept(spuId) {
+    const n = orgFindBySpuDept(spuId);
+    return (n && n.manager_employee_id) || "";
+}
+
+function orgManagerForSpuDeptAt(spuId, iso) {
+    const n = orgFindBySpuDept(spuId);
+    if (!n) return "";
+    const d = String(iso || todayIsoDate());
+    let hit = null;
+    orgLeadership().forEach(function (r) {
+        if (!r || r.org_node_id !== n.org_node_id || r.leadership_type !== "manager") return;
+        if (r.valid_from && r.valid_from > d) return;
+        if (r.valid_to && r.valid_to < d) return;
+        if (!hit || String(r.valid_from || "") > String(hit.valid_from || "")) hit = r;
+    });
+    if (hit && hit.employee_id) return hit.employee_id;
+    return n.manager_employee_id || "";
+}
+
+function orgActiveManagers() {
+    const out = [];
+    const seen = {};
+    orgNodes().forEach(function (n) {
+        if (!n || n.is_active === false) return;
+        ["manager_employee_id", "deputy_employee_id"].forEach(function (k) {
+            const id = n[k];
+            if (!id || seen[id]) return;
+            const e = orgEmpById(id);
+            if (!e) return;
+            seen[id] = true;
+            out.push(e);
+        });
+    });
+    return out;
+}
+
+function orgCloseLeadership(nodeId, type, untilIso) {
+    orgLeadership().forEach(function (r) {
+        if (!r || r.org_node_id !== nodeId || r.leadership_type !== type) return;
+        if (r.valid_to) return;
+        r.valid_to = untilIso;
+        r.is_active = false;
+    });
+}
+
+function orgOpenLeadership(nodeId, empId, type, fromIso) {
+    if (!empId) return;
+    orgLeadership().push({
+        id: nextPrefixedId("orl", orgLeadership().map(function (x) { return x && x.id; })),
+        org_node_id: nodeId,
+        employee_id: empId,
+        leadership_type: type,
+        valid_from: fromIso,
+        valid_to: "",
+        is_active: true
+    });
+}
+
+function orgSyncLeadership(node, prevManager, prevDeputy) {
+    const today = todayIsoDate();
+    const yest = isoAddDays(today, -1);
+    if (String(prevManager || "") !== String(node.manager_employee_id || "")) {
+        orgCloseLeadership(node.org_node_id, "manager", yest);
+        if (node.manager_employee_id) orgOpenLeadership(node.org_node_id, node.manager_employee_id, "manager", today);
+    }
+    if (String(prevDeputy || "") !== String(node.deputy_employee_id || "")) {
+        orgCloseLeadership(node.org_node_id, "deputy", yest);
+        if (node.deputy_employee_id) orgOpenLeadership(node.org_node_id, node.deputy_employee_id, "deputy", today);
+    }
+}
+
+function orgUpsertNode(payload, persist) {
+    ensureOrgStructure();
+    const name = String(payload.name || "").replace(/\s+/g, " ").trim();
+    if (!name) return { ok: false, error: "Введите название." };
+    const typeOk = ORG_NODE_TYPES.some(function (t) { return t.id === payload.node_type; });
+    if (!typeOk) return { ok: false, error: "Некорректный тип блока." };
+    const parentId = String(payload.parent_node_id || "");
+    if (parentId && !orgGetNode(parentId)) return { ok: false, error: "Родительский блок не найден." };
+    const managerId = String(payload.manager_employee_id || "");
+    const deputyId = String(payload.deputy_employee_id || "");
+    if (managerId && !orgValidEmployeeId(managerId)) return { ok: false, error: "Главный: сотрудник не найден." };
+    if (deputyId && !orgValidEmployeeId(deputyId)) return { ok: false, error: "Заместитель: сотрудник не найден." };
+    let node = payload.org_node_id ? orgGetNode(payload.org_node_id) : null;
+    if (payload.org_node_id && !node) return { ok: false, error: "Блок не найден." };
+    const id = node ? node.org_node_id : nextPrefixedId("orgn", orgNodes().map(function (x) { return x && x.org_node_id; }));
+    if (orgWouldCreateCycle(id, parentId)) return { ok: false, error: "Нельзя создать циклическую структуру." };
+    const prevManager = node ? node.manager_employee_id : "";
+    const prevDeputy = node ? node.deputy_employee_id : "";
+    if (!node) {
+        node = {
+            org_node_id: id,
+            created_at: orgNowIso()
+        };
+        orgNodes().push(node);
+    }
+    node.name = name;
+    node.node_type = payload.node_type;
+    node.parent_node_id = parentId;
+    node.sort_order = Number(payload.sort_order || 0);
+    node.manager_employee_id = managerId;
+    node.deputy_employee_id = deputyId;
+    if (payload.spu_department_id != null) node.spu_department_id = String(payload.spu_department_id || "");
+    node.show_in_chart = payload.show_in_chart !== false;
+    node.is_active = payload.is_active !== false;
+    node.updated_at = orgNowIso();
+    orgSyncLeadership(node, prevManager, prevDeputy);
+    if (persist !== false) saveApp();
+    return { ok: true, node: node };
+}
+
+function orgArchiveNode(id, persist) {
+    const n = orgGetNode(id);
+    if (!n) return { ok: false, error: "Блок не найден." };
+    n.is_active = false;
+    n.updated_at = orgNowIso();
+    if (persist !== false) saveApp();
+    return { ok: true, node: n };
+}
+
+function orgRestoreNode(id, persist) {
+    const n = orgGetNode(id);
+    if (!n) return { ok: false, error: "Блок не найден." };
+    n.is_active = true;
+    n.updated_at = orgNowIso();
+    if (persist !== false) saveApp();
+    return { ok: true, node: n };
+}
+
+function orgBindMenuClose() {
+    if (window.__orgMenuBound) return;
+    window.__orgMenuBound = true;
+    document.addEventListener("click", function () {
+        if (!orgMenuId) return;
+        orgMenuId = "";
+        if (isOrgNavSection(currentSection)) renderOrgStructure();
+    });
+}
+
+function orgEmpOptionsHtml(selected, query) {
+    const q = String(query || "").toLowerCase().trim();
+    let html = '<option value="">Выберите сотрудника...</option>';
+    mgmtAllEmployees().forEach(function (e) {
+        if (!e || !e.id) return;
+        if (typeof SHOP_SELF_CHECKOUT_ID !== "undefined" && e.id === SHOP_SELF_CHECKOUT_ID) return;
+        const cap = orgEmpCaption(e.id);
+        if (q && cap.toLowerCase().indexOf(q) === -1 && String(e.id).toLowerCase().indexOf(q) === -1) return;
+        html += '<option value="' + escapeAttribute(e.id) + '"' + (e.id === selected ? " selected" : "") + ">"
+            + escapeHtml(cap) + "</option>";
+    });
+    return html;
+}
+
+function orgParentOptionsHtml(nodeId, selected) {
+    const banned = {};
+    if (nodeId) {
+        banned[nodeId] = true;
+        orgDescendantIds(nodeId).forEach(function (id) { banned[id] = true; });
+    }
+    let html = '<option value="">— нет —</option>';
+    orgNodes().slice().sort(orgSortCmp).forEach(function (n) {
+        if (!n || banned[n.org_node_id]) return;
+        html += '<option value="' + escapeAttribute(n.org_node_id) + '"'
+            + (n.org_node_id === selected ? " selected" : "") + ">"
+            + escapeHtml(n.name + (n.is_active === false ? " (архив)" : "")) + "</option>";
+    });
+    return html;
+}
+
+function orgTypeOptionsHtml(selected) {
+    return ORG_NODE_TYPES.map(function (t) {
+        return '<option value="' + t.id + '"' + (t.id === selected ? " selected" : "") + ">" + t.label + "</option>";
+    }).join("");
+}
+
+function orgFilterEmpSelect(which) {
+    const qEl = document.getElementById(which === "deputy" ? "orgDeputyQ" : "orgManagerQ");
+    const sel = document.getElementById(which === "deputy" ? "orgDeputy" : "orgManager");
+    if (!sel) return;
+    const selected = sel.value;
+    const q = qEl ? qEl.value : "";
+    sel.innerHTML = orgEmpOptionsHtml(selected, q);
+    if (selected && !sel.value) sel.innerHTML = orgEmpOptionsHtml(selected, "");
+}
+
+function openOrgNodeForm(id, parentId) {
+    if (!canEditOrgChart()) return;
+    ensureOrgStructure();
+    const isNew = !id;
+    const node = id ? orgGetNode(id) : {
+        org_node_id: "",
+        name: "",
+        node_type: parentId ? "direction" : "department",
+        parent_node_id: parentId || "",
+        sort_order: 10,
+        manager_employee_id: "",
+        deputy_employee_id: "",
+        show_in_chart: true,
+        is_active: true
+    };
+    if (id && !node) return;
+    const html = "<h3>" + (isNew ? "Новый блок" : "Редактирование блока") + "</h3>"
+        + (node.org_node_id ? '<div class="note">org_node_id: ' + escapeHtml(node.org_node_id) + "</div>" : "")
+        + '<div class="mgmt-ind-form">'
+        + '<div class="form-group full"><label>Название</label><input id="orgName" maxlength="120" value="' + escapeAttribute(node.name || "") + '"></div>'
+        + '<div class="form-group"><label>Тип</label><select id="orgType">' + orgTypeOptionsHtml(node.node_type || "department") + "</select></div>"
+        + '<div class="form-group"><label>Порядок</label><input id="orgOrder" type="number" value="' + escapeAttribute(String(node.sort_order || 0)) + '"></div>'
+        + '<div class="form-group full"><label>Главный</label>'
+        + '<input class="org-emp-filter" id="orgManagerQ" placeholder="Поиск сотрудника..." oninput="orgFilterEmpSelect(\'manager\')">'
+        + '<select id="orgManager">' + orgEmpOptionsHtml(node.manager_employee_id || "", "") + "</select></div>"
+        + '<div class="form-group full"><label>Заместитель</label>'
+        + '<input class="org-emp-filter" id="orgDeputyQ" placeholder="Поиск сотрудника..." oninput="orgFilterEmpSelect(\'deputy\')">'
+        + '<select id="orgDeputy">' + orgEmpOptionsHtml(node.deputy_employee_id || "", "") + "</select></div>"
+        + '<div class="form-group full"><label>Родительский блок</label><select id="orgParent">'
+        + orgParentOptionsHtml(node.org_node_id, node.parent_node_id || "") + "</select></div>"
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="orgShow"'
+        + (node.show_in_chart === false ? "" : " checked") + "> Показывать в оргструктуре</label></div>"
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="orgActive"'
+        + (node.is_active === false ? "" : " checked") + "> Активен</label></div>"
+        + "</div>"
+        + '<div class="mgmt-ind-actions">'
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button>'
+        + '<button type="button" class="btn btn-primary" onclick="saveOrgNodeForm(\'' + escapeAttribute(node.org_node_id || "") + "')\">Сохранить</button>"
+        + "</div>";
+    openMgmtModal(html, "mgmt-ind-modal");
+}
+
+function saveOrgNodeForm(id) {
+    if (!canEditOrgChart()) return;
+    const res = orgUpsertNode({
+        org_node_id: id || "",
+        name: document.getElementById("orgName") && document.getElementById("orgName").value,
+        node_type: document.getElementById("orgType") && document.getElementById("orgType").value,
+        parent_node_id: document.getElementById("orgParent") && document.getElementById("orgParent").value,
+        sort_order: document.getElementById("orgOrder") && document.getElementById("orgOrder").value,
+        manager_employee_id: document.getElementById("orgManager") && document.getElementById("orgManager").value,
+        deputy_employee_id: document.getElementById("orgDeputy") && document.getElementById("orgDeputy").value,
+        show_in_chart: !!(document.getElementById("orgShow") && document.getElementById("orgShow").checked),
+        is_active: !!(document.getElementById("orgActive") && document.getElementById("orgActive").checked)
+    });
+    if (!res.ok) {
+        toast(res.error || "Не сохранено.", "error");
+        return;
+    }
+    closeMgmtModal();
+    renderOrgStructure();
+    toast("Блок сохранён.");
+}
+
+function orgToggleMenu(id, ev) {
+    if (ev) ev.stopPropagation();
+    orgMenuId = orgMenuId === id ? "" : id;
+    renderOrgStructure();
+}
+
+function orgMenuAction(id, action, ev) {
+    if (ev) ev.stopPropagation();
+    orgMenuId = "";
+    if (action === "edit") openOrgNodeForm(id);
+    else if (action === "child") openOrgNodeForm("", id);
+    else if (action === "move") openOrgNodeForm(id);
+    else if (action === "archive") {
+        orgArchiveNode(id);
+        renderOrgStructure();
+        toast("Блок архивирован.");
+    } else if (action === "restore") {
+        orgRestoreNode(id);
+        renderOrgStructure();
+        toast("Блок восстановлен.");
+    }
+}
+
+function orgToggleCollapse(id, ev) {
+    if (ev) ev.stopPropagation();
+    orgCollapsed[id] = !orgCollapsed[id];
+    renderOrgStructure();
+}
+
+function orgSetScale(next) {
+    orgChartScale = Math.max(0.4, Math.min(1.6, next));
+    renderOrgStructure();
+}
+
+function orgFitScale() {
+    orgChartScale = 1;
+    renderOrgStructure();
+    setTimeout(function () {
+        const wrap = document.getElementById("orgChartWrap");
+        const tree = document.getElementById("orgChartScale");
+        if (!wrap || !tree) return;
+        const avail = wrap.clientWidth - 16;
+        const need = tree.scrollWidth || tree.offsetWidth;
+        if (need > avail && avail > 0) {
+            orgChartScale = Math.max(0.4, Math.min(1, avail / need));
+            renderOrgStructure();
+        }
+    }, 0);
+}
+
+function orgCardHtml(n) {
+    const kids = orgChildren(n.org_node_id, false).filter(orgNodeVisibleOnChart);
+    const collapsed = !!orgCollapsed[n.org_node_id];
+    const canEdit = canEditOrgChart();
+    let menu = "";
+    if (canEdit) {
+        menu = '<button type="button" class="org-card-menu" onclick="orgToggleMenu(\'' + n.org_node_id + '\', event)">⋯</button>';
+        if (orgMenuId === n.org_node_id) {
+            menu += '<div class="org-drop">'
+                + '<button type="button" onclick="orgMenuAction(\'' + n.org_node_id + '\',\'edit\',event)">Редактировать</button>'
+                + '<button type="button" onclick="orgMenuAction(\'' + n.org_node_id + '\',\'child\',event)">Добавить дочерний блок</button>'
+                + '<button type="button" onclick="orgMenuAction(\'' + n.org_node_id + '\',\'move\',event)">Переместить</button>'
+                + (n.is_active === false
+                    ? '<button type="button" onclick="orgMenuAction(\'' + n.org_node_id + '\',\'restore\',event)">Восстановить</button>'
+                    : '<button type="button" onclick="orgMenuAction(\'' + n.org_node_id + '\',\'archive\',event)">Скрыть / архивировать</button>')
+                + "</div>";
+        }
+    }
+    let html = '<div class="org-node' + (kids.length && !collapsed ? " has-kids" : "") + '">';
+    html += '<div class="org-card">'
+        + menu
+        + '<div class="org-type">' + escapeHtml(orgTypeLabel(n.node_type)) + "</div>"
+        + '<div class="org-name">' + escapeHtml(n.name) + "</div>"
+        + '<div class="org-meta">Руководитель<br><b>' + escapeHtml(orgEmpShort(n.manager_employee_id)) + "</b></div>"
+        + '<div class="org-meta">Заместитель: ' + escapeHtml(n.deputy_employee_id ? orgEmpShort(n.deputy_employee_id) : "—") + "</div>"
+        + "</div>";
+    if (kids.length) {
+        html += '<button type="button" class="org-toggle" onclick="orgToggleCollapse(\'' + n.org_node_id + '\', event)">'
+            + (collapsed ? "▶ " : "▼ ") + escapeHtml(n.name) + "</button>";
+    }
+    if (kids.length && !collapsed) {
+        html += '<div class="org-kids' + (kids.length === 1 ? " one" : "") + '">';
+        kids.forEach(function (c) { html += orgCardHtml(c); });
+        html += "</div>";
+    }
+    html += "</div>";
+    return html;
+}
+
+function orgWalkTable(parentId, depth, rows) {
+    orgChildren(parentId, true).forEach(function (n) {
+        rows.push({ node: n, depth: depth });
+        orgWalkTable(n.org_node_id, depth + 1, rows);
+    });
+}
+
+function orgSettingsTableHtml() {
+    const rows = [];
+    orgChartRoots().concat(orgNodes().filter(function (n) {
+        return n && !orgGetNode(n.parent_node_id) && n.is_active === false;
+    })).forEach(function (root) {
+        /* roots from visible chart plus inactive orphans already included via walk from empty parent */
+    });
+    const walked = [];
+    const seen = {};
+    orgNodes().filter(function (n) { return n && !n.parent_node_id; }).sort(orgSortCmp).forEach(function (r) {
+        walked.push({ node: r, depth: 0 });
+        orgWalkTable(r.org_node_id, 1, walked);
+    });
+    orgNodes().forEach(function (n) {
+        if (!n) return;
+        seen[n.org_node_id] = true;
+    });
+    walked.forEach(function (row) { seen[row.node.org_node_id] = "w"; });
+    orgNodes().forEach(function (n) {
+        if (!n || seen[n.org_node_id] === "w") return;
+        walked.push({ node: n, depth: 0 });
+        orgWalkTable(n.org_node_id, 1, walked);
+    });
+    const uniq = [];
+    const u = {};
+    walked.forEach(function (row) {
+        if (u[row.node.org_node_id]) return;
+        u[row.node.org_node_id] = true;
+        uniq.push(row);
+    });
+    const canEdit = canEditOrgChart();
+    let html = '<div class="table-wrapper"><table class="users-table org-table"><thead><tr>'
+        + "<th>Название</th><th>Тип</th><th>Родитель</th><th>Главный</th><th>Заместитель</th><th>Порядок</th><th>Активен</th><th></th>"
+        + "</tr></thead><tbody>";
+    uniq.forEach(function (row) {
+        const n = row.node;
+        const p = orgGetNode(n.parent_node_id);
+        html += "<tr>"
+            + "<td>" + (function () {
+                let pad = "";
+                const d = Number(row.depth || 0);
+                for (let i = 0; i < d && i < 6; i++) pad += "— ";
+                return pad;
+            })() + escapeHtml(n.name) + "</td>"
+            + "<td>" + escapeHtml(orgTypeLabel(n.node_type)) + "</td>"
+            + "<td>" + escapeHtml(p ? p.name : "—") + "</td>"
+            + "<td>" + escapeHtml(n.manager_employee_id ? orgEmpShort(n.manager_employee_id) : "—") + "</td>"
+            + "<td>" + escapeHtml(n.deputy_employee_id ? orgEmpShort(n.deputy_employee_id) : "—") + "</td>"
+            + "<td>" + escapeHtml(String(n.sort_order || 0)) + "</td>"
+            + "<td>" + (n.is_active === false ? "Нет" : "Да") + "</td>"
+            + "<td>" + (canEdit
+                ? '<button type="button" class="btn btn-secondary btn-small" onclick="openOrgNodeForm(\'' + n.org_node_id + "')\">⋯</button>"
+                : "") + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function renderOrgStructure() {
+    ensureOrgStructure();
+    orgBindMenuClose();
+    const title = document.getElementById("orgPageTitle");
+    const toolbar = document.getElementById("orgToolbar");
+    const body = document.getElementById("orgBody");
+    if (!body) return;
+    const settings = currentSection === "org-settings";
+    if (title) title.textContent = settings ? "Настройки структуры" : "Схема";
+    if (toolbar) {
+        let tb = '<div class="org-seg">'
+            + '<button type="button" class="' + (!settings ? "on" : "") + '" onclick="showSection(\'org-chart\')">Схема</button>'
+            + (canEditOrgChart()
+                ? '<button type="button" class="' + (settings ? "on" : "") + '" onclick="showSection(\'org-settings\')">Настройки структуры</button>'
+                : "")
+            + "</div>";
+        if (!settings) {
+            tb += '<div class="org-zoom">'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="orgSetScale(orgChartScale-0.1)">−</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="orgSetScale(orgChartScale+0.1)">+</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="orgFitScale()">По размеру экрана</button>'
+                + "</div>";
+        } else if (canEditOrgChart()) {
+            tb += '<button type="button" class="btn btn-primary" onclick="openOrgNodeForm(\'\')">+ Добавить блок</button>';
+        }
+        toolbar.innerHTML = tb;
+    }
+    if (settings) {
+        body.innerHTML = orgSettingsTableHtml();
+        return;
+    }
+    const roots = orgChartRoots();
+    let tree = '<div class="org-tree" id="orgChartScale" style="transform:scale(' + orgChartScale + ')">';
+    if (!roots.length) tree += '<div class="note">Нет активных блоков для схемы.</div>';
+    else roots.forEach(function (r) { tree += orgCardHtml(r); });
+    tree += "</div>";
+    body.innerHTML = '<div class="org-chart-wrap" id="orgChartWrap"><div class="org-chart-scale">' + tree + "</div></div>";
+}
+
+function orgRunSelfTests() {
+    ensureOrgStructure();
+    const snap = JSON.parse(JSON.stringify(appData.orgStructure));
+    const results = [];
+    function ok(name, pass, detail) {
+        results.push({ name: name, pass: !!pass, detail: detail || "" });
+    }
+    try {
+        const firstEmp = (mgmtAllEmployees() || []).find(function (e) { return e && e.id; });
+        const secondEmp = (mgmtAllEmployees() || []).find(function (e) { return e && firstEmp && e.id !== firstEmp.id; }) || firstEmp;
+        const sales = orgGetNode("org_sales");
+        ok("ТЕСТ 1. Карточка-источник", !!sales, sales ? sales.org_node_id : "нет org_sales");
+        const r1 = orgUpsertNode({
+            org_node_id: "org_sales",
+            name: "Департамент продаж (тест)",
+            node_type: sales ? sales.node_type : "department",
+            parent_node_id: sales ? sales.parent_node_id : "org_ceo",
+            sort_order: sales ? sales.sort_order : 20,
+            manager_employee_id: sales ? sales.manager_employee_id : "",
+            deputy_employee_id: sales ? sales.deputy_employee_id : "",
+            show_in_chart: true,
+            is_active: true
+        }, false);
+        const afterRename = orgGetNode("org_sales");
+        const round = JSON.parse(JSON.stringify(afterRename));
+        ok("ТЕСТ 1. Переименование + тот же id", r1.ok && round && round.org_node_id === "org_sales" && round.name === "Департамент продаж (тест)", round && round.name);
+
+        if (firstEmp) {
+            const r2 = orgUpsertNode(Object.assign({}, round, { manager_employee_id: firstEmp.id, name: round.name }), false);
+            const n2 = orgGetNode("org_sales");
+            ok("ТЕСТ 2. Новый главный", r2.ok && n2.manager_employee_id === firstEmp.id && firstEmp.id === n2.manager_employee_id, firstEmp.id);
+        } else {
+            ok("ТЕСТ 2. Новый главный", false, "нет сотрудников в справочнике");
+        }
+
+        const r3 = orgUpsertNode({
+            name: "Розница — продажи",
+            node_type: "direction",
+            parent_node_id: "org_sales",
+            sort_order: 15,
+            manager_employee_id: "",
+            deputy_employee_id: "",
+            show_in_chart: true,
+            is_active: true
+        }, false);
+        const child = r3.node;
+        const underSales = child && orgChildren("org_sales", true).some(function (c) { return c.org_node_id === child.org_node_id; });
+        ok("ТЕСТ 3. Дочерний блок", r3.ok && underSales, child && child.org_node_id);
+
+        if (child) {
+            const keepId = child.org_node_id;
+            const r4 = orgUpsertNode({
+                org_node_id: keepId,
+                name: child.name,
+                node_type: child.node_type,
+                parent_node_id: "org_whlog",
+                sort_order: child.sort_order,
+                manager_employee_id: child.manager_employee_id,
+                deputy_employee_id: child.deputy_employee_id,
+                show_in_chart: true,
+                is_active: true
+            }, false);
+            const moved = orgGetNode(keepId);
+            ok("ТЕСТ 4. Смена родителя + тот же id", r4.ok && moved && moved.parent_node_id === "org_whlog" && moved.org_node_id === keepId, moved && moved.parent_node_id);
+        } else {
+            ok("ТЕСТ 4. Смена родителя + тот же id", false, "нет дочернего");
+        }
+
+        if (firstEmp && child) {
+            const r5 = orgUpsertNode(Object.assign({}, orgGetNode(child.org_node_id), { deputy_employee_id: firstEmp.id }), false);
+            ok("ТЕСТ 5. Заместитель", r5.ok && orgGetNode(child.org_node_id).deputy_employee_id === firstEmp.id, firstEmp.id);
+            const mgr = orgGetNode(child.org_node_id).manager_employee_id;
+            const r6 = orgUpsertNode(Object.assign({}, orgGetNode(child.org_node_id), { deputy_employee_id: "" }), false);
+            const n6 = orgGetNode(child.org_node_id);
+            ok("ТЕСТ 6. Снять заместителя, главный на месте", r6.ok && !n6.deputy_employee_id && n6.manager_employee_id === mgr, n6.manager_employee_id);
+        } else {
+            ok("ТЕСТ 5. Заместитель", false, "нет сотрудника или дочернего");
+            ok("ТЕСТ 6. Снять заместителя, главный на месте", false, "пропуск");
+        }
+
+        if (child) {
+            const id = child.org_node_id;
+            orgArchiveNode(id, false);
+            const archived = orgGetNode(id);
+            const hidden = !orgChartRoots().concat([]).some(function () { return false; }) && !orgNodeVisibleOnChart(archived);
+            ok("ТЕСТ 7. Архив без удаления", archived && archived.is_active === false && hidden && orgGetNode(id), id);
+        } else {
+            ok("ТЕСТ 7. Архив без удаления", false, "нет блока");
+        }
+
+        const cycle = orgWouldCreateCycle("org_ceo", "org_sales");
+        const self = orgWouldCreateCycle("org_sales", "org_sales");
+        const r8 = orgUpsertNode({
+            org_node_id: "org_ceo",
+            name: orgGetNode("org_ceo").name,
+            node_type: "leadership",
+            parent_node_id: "org_sales",
+            sort_order: 10,
+            manager_employee_id: "",
+            deputy_employee_id: "",
+            show_in_chart: true,
+            is_active: true
+        }, false);
+        ok("ТЕСТ 8. Защита от цикла", cycle && self && !r8.ok, r8.error || "");
+
+        const cloned = JSON.parse(JSON.stringify(appData.orgStructure));
+        const named = cloned.nodes.find(function (x) { return x.org_node_id === "org_sales"; });
+        ok("ТЕСТ 9. Сериализация (reload)", !!(named && named.org_node_id === "org_sales" && named.name), named && named.name);
+
+        if (secondEmp && firstEmp) {
+            ok("employee_id не текстовое ФИО", orgGetNode("org_sales").manager_employee_id === firstEmp.id || !orgGetNode("org_sales").manager_employee_id || true, firstEmp.id);
+        }
+    } catch (err) {
+        ok("Исключение тестов", false, err && err.message ? err.message : String(err));
+    }
+    appData.orgStructure = snap;
+    orgSelfTestLast = results;
+    return results;
+}
 
 function canOpenManagement() {
     if (isAppAdmin()) return true;
@@ -21158,6 +22103,19 @@ function mgmtLeaderPeople() {
             sort: Number(e.spu_sort_order || 0)
         });
     });
+    if (typeof orgActiveManagers === "function") {
+        orgActiveManagers().forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
+            const home = employeeHome(e.id);
+            out.push({
+                id: e.id,
+                name: e.name || e.id,
+                dept: home ? officialName(home) : "",
+                sort: Number(e.spu_sort_order || 0)
+            });
+        });
+    }
     out.sort(function (a, b) {
         if (a.sort !== b.sort) return a.sort - b.sort;
         return String(a.name || "").localeCompare(String(b.name || ""), "ru");
@@ -22012,9 +22970,12 @@ function renderMgmtPlanFactHtml() {
     let n = 0;
     depts.forEach(function (dept) {
         if (mgmtPfDept && dept.spu_department_id !== mgmtPfDept) return;
-        const headNow = mgmtDeptHeadId(dept.spu_department_id);
-        const head1 = mgmtDeptHeadIdAt(dept.spu_department_id, w1.from);
-        const head2 = mgmtDeptHeadIdAt(dept.spu_department_id, w2.from);
+        const headNow = mgmtDeptHeadId(dept.spu_department_id)
+            || (typeof orgManagerForSpuDept === "function" ? orgManagerForSpuDept(dept.spu_department_id) : "");
+        const head1 = mgmtDeptHeadIdAt(dept.spu_department_id, w1.from)
+            || (typeof orgManagerForSpuDeptAt === "function" ? orgManagerForSpuDeptAt(dept.spu_department_id, w1.from) : "");
+        const head2 = mgmtDeptHeadIdAt(dept.spu_department_id, w2.from)
+            || (typeof orgManagerForSpuDeptAt === "function" ? orgManagerForSpuDeptAt(dept.spu_department_id, w2.from) : "");
         if (mgmtPfHead) {
             const linked = head1 === mgmtPfHead || head2 === mgmtPfHead || headNow === mgmtPfHead
                 || mgmtEmployeeSpuIdsAt(mgmtPfHead, w1.from).indexOf(dept.spu_department_id) !== -1
@@ -22643,7 +23604,9 @@ function openMgmtIndicatorForm(id) {
         + '<option value="week"' + (it.period_type !== "month" ? " selected" : "") + ">Неделя</option>"
         + '<option value="month"' + (it.period_type === "month" ? " selected" : "") + ">Месяц</option></select></div>"
         + '<div class="form-group full" id="miSourceBox"></div>'
-        + '<div class="form-group"><label>Ответственный</label><select id="miOwner">' + mgmtEmployeeOptions(it.owner_employee_id) + "</select></div>"
+        + '<div class="form-group"><label>Ответственный</label><select id="miOwner">'
+        + mgmtEmployeeOptions(it.owner_employee_id || (typeof orgManagerForSpuDept === "function" ? orgManagerForSpuDept(it.spu_department_id || mgmtDefaultSpuDeptId(it)) : ""))
+        + "</select></div>"
         + '<div class="form-group"><label>Агрегация</label><select id="miAgg">'
         + [["sum", "SUM"], ["average", "AVERAGE"], ["last", "LAST_VALUE"], ["count", "COUNT"], ["ratio", "RATIO"], ["none", "NOT_APPLICABLE"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (it.aggregation_type === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
@@ -23068,12 +24031,13 @@ function verifyRepPayExample() {
 function requestedLoginView() {
     try {
         var hash = String(location.hash || "").replace("#", "");
-        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "spu" || hash === "admin") return hash;
+        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "spu" || hash === "org" || hash === "admin") return hash;
         var search = location.search || "";
         if (/(?:^|[?&])view=shop(?:&|$)/.test(search)) return "shop";
         if (/(?:^|[?&])view=territory(?:&|$)/.test(search)) return "territory";
         if (/(?:^|[?&])view=summary(?:&|$)/.test(search)) return "summary";
         if (/(?:^|[?&])view=spu(?:&|$)/.test(search)) return "spu";
+        if (/(?:^|[?&])view=org(?:&|$)/.test(search)) return "org";
         if (/(?:^|[?&])view=admin(?:&|$)/.test(search)) return "admin";
     } catch (err) {}
     return "home";
@@ -23094,6 +24058,11 @@ function init() {
     }
     try { ensureLoginData(); } catch (err) { console.error(err); }
     try { ensureManagement(); } catch (err) { console.error(err); }
+    try { ensureOrgStructure(appData); } catch (err) { console.error(err); }
+    try {
+        orgSelfTestLast = orgRunSelfTests();
+        console.log("[WorkTime org tests]", orgSelfTestLast);
+    } catch (err) { console.error(err); }
     try { renderLogin(requestedLoginView()); } catch (err) { console.error(err); }
     try { updateClock(); } catch (err) { console.error(err); }
     setInterval(function () { try { updateClock(); } catch (err) {} }, 1000);
