@@ -332,7 +332,8 @@
         }
         .mgmt-card.clickable { cursor: pointer; }
         .mgmt-card .k { font-size: 11px; color: var(--muted); }
-        .mgmt-card .v { font-size: 18px; font-weight: 700; margin: 2px 0; }
+        .mgmt-card .v { font-size: 15px; font-weight: 700; margin: 1px 0; }
+        .mgmt-page-h { font-size: 13px; font-weight: 700; margin: 0 0 8px; }
         .mgmt-card .s { font-size: 11px; color: var(--muted); }
         .mgmt-block { margin: 12px 0; }
         .mgmt-block h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
@@ -2590,13 +2591,8 @@
             </div>
             <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('summary')">
                 <h3>Общая</h3>
-                <div class="note">Анна Владимировна · Ольга · Наталья</div>
+                <div class="note">Сводка, зарплата и СПУ (управление компанией)</div>
                 <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('summary')">Открыть</button>
-            </div>
-            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('management')">
-                <h3>Управление</h3>
-                <div class="note">Дашборд, план–факт, задачи и встречи над всеми отделами.</div>
-                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('management')">Открыть</button>
             </div>
             <div class="login-card summary-card" role="button" tabindex="0" onclick="renderLogin('admin')">
                 <h3>Администратор</h3>
@@ -2620,11 +2616,6 @@
         <div class="logo">⏱ <span>WorkTime</span></div>
 
         <div class="dept-now" id="deptNow"></div>
-
-        <div class="menu-title" id="mgmtMenuTitle" style="display:none">Управление</div>
-        <button type="button" class="nav-btn" data-for="both" data-section="management" onclick="showSection('management', this)">
-            🗂 Управление
-        </button>
 
         <div class="menu-title">Работа</div>
 
@@ -2697,6 +2688,9 @@
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="timesheet" onclick="showSection('timesheet', this)">
             📊 Сводка
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="management" onclick="showSection('management', this)">
+            📋 СПУ — управление
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="salary" onclick="showSection('salary', this)">
             💰 Зарплата
@@ -3697,8 +3691,8 @@
                 <div class="card">
                     <div class="card-header">
                         <div>
-                            <div class="card-title">Управление</div>
-                            <div class="note">Слой над подразделениями: читает существующие факты, не дублирует ввод.</div>
+                            <div class="card-title" id="mgmtPageTitle">СПУ — Панель управления</div>
+                            <div class="note">Система планирования и управления. Факты читаются из отделов; повторный ввод не нужен.</div>
                         </div>
                     </div>
                     <div class="mgmt-tabs" id="mgmtTabs"></div>
@@ -5034,10 +5028,10 @@ const ACCESS_PERM_KEYS = [
     { key: "salary", label: "Зарплата" },
     { key: "kpi", label: "KPI" },
     { key: "settings", label: "Настройки" },
-    { key: "management", label: "Управление" },
-    { key: "managementIndicators", label: "Управление · показатели" },
-    { key: "managementTasks", label: "Управление · задачи" },
-    { key: "managementMeetings", label: "Управление · встречи" }
+    { key: "management", label: "СПУ" },
+    { key: "managementIndicators", label: "СПУ · показатели" },
+    { key: "managementTasks", label: "СПУ · задачи" },
+    { key: "managementMeetings", label: "СПУ · встречи" }
 ];
 
 function accessRoleTemplate(role, legacy) {
@@ -5052,6 +5046,10 @@ function accessRoleTemplate(role, legacy) {
         p.timesheet = "view";
         p.salary = "edit";
         p.kpi = "view";
+        p.management = "view";
+        p.managementIndicators = "view";
+        p.managementTasks = "edit";
+        p.managementMeetings = "edit";
         return p;
     }
     if (legacy === "pay") {
@@ -6910,7 +6908,7 @@ function summaryMonthMoney(monthValue) {
 function renderLogin(view) {
     try {
         console.log("[WorkTime login click]", view);
-        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin" || view === "management") loginView = view;
+        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin") loginView = view;
         ensureLoginData();
         try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
@@ -6979,15 +6977,6 @@ function renderLogin(view) {
             }
             grid.className = "login-grid single-view";
             grid.innerHTML = adminLoginCardHtml();
-        } else if (loginView === "management") {
-            backHome();
-            if (title) title.textContent = "Управление";
-            if (subtitle) {
-                subtitle.innerHTML = "Слой над отделами: дашборд, план–факт, задачи и встречи. Выберите пользователя с правом «Управление»."
-                    + ' <span id="defaultPinHint"></span>';
-            }
-            grid.className = "login-grid single-view";
-            grid.innerHTML = userPinLoginCardHtml("mgmt", "Управление");
         } else {
             if (homeLink) {
                 homeLink.innerHTML = '<a href="index.html">← На главную</a>';
@@ -6998,7 +6987,7 @@ function renderLogin(view) {
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid";
-            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + managementFolderCardHtml() + adminFolderCardHtml();
+            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + adminFolderCardHtml();
         }
 
         restoreAllLoginCardState(grid);
@@ -7012,9 +7001,7 @@ function renderLogin(view) {
                         ? " Общая: 5555 / 6666 / 7777."
                         : loginView === "admin"
                             ? " Админ: 5555."
-                            : loginView === "management"
-                                ? " Вход пользователей с правом «Управление» (админ — 5555)."
-                                : " Введите личный PIN пользователя этого раздела.")
+                            : " Введите личный PIN пользователя этого раздела.")
                 : "";
         }
     } catch (err) {
@@ -7218,17 +7205,13 @@ function summaryFolderCardHtml() {
         "summary-folder",
         "summary",
         "Общая",
-        summaryRoleInfo("admin").name + " · " + summaryRoleInfo("adjust").name + " · " + summaryRoleInfo("pay").name,
+        "Сводка, зарплата и СПУ (управление компанией)",
         ""
     );
 }
 
 function adminFolderCardHtml() {
     return folderCardHtml("summary-card", "admin", "Администратор", "Отдельный вход. Все подразделения и пользователи.", "");
-}
-
-function managementFolderCardHtml() {
-    return folderCardHtml("summary-folder", "management", "Управление", "Дашборд, план–факт, задачи и встречи над всеми отделами.", "");
 }
 
 function summaryLoginCardHtml() {
@@ -7335,10 +7318,7 @@ function loginByCode(code) {
         }
         clearLoginPinState(code);
         if (input) input.value = "";
-        const dest = (code === "mgmt" || code === "management") ? "summary" : code;
-        if (dest === "summary" && (code === "mgmt" || code === "management")) pendingOpenSection = "management";
-        if (!enterAsUser(user, dest)) {
-            pendingOpenSection = "";
+        if (!enterAsUser(user, code)) {
             showLoginError(code, "Ошибка входа в раздел.");
         }
     } catch (err) {
@@ -7542,8 +7522,6 @@ function applyModeUI() {
         const current = workspace();
         backBtn.style.display = (!summary && current && isTerritoryCode(current.code)) ? "" : "none";
     }
-    const mgmtTitle = document.getElementById("mgmtMenuTitle");
-    if (mgmtTitle) mgmtTitle.style.display = allowed.indexOf("management") !== -1 ? "" : "none";
 
     const stats = document.getElementById("timesheetStats");
     stats.classList.toggle("stats-3", !summary);
@@ -7595,13 +7573,11 @@ function allowedSections() {
     const code = workspace() && workspace().code;
         if (isSummary()) {
         if (currentSummaryRole === "pay" || (currentAuthUser() && currentAuthUser().legacy_role === "pay")) {
-            const payList = [];
-            if (userHasPerm("salary", "view")) payList.push("salary");
-            if (canOpenManagement()) payList.push("management");
-            return payList;
+            return userHasPerm("salary", "view") ? ["salary"] : [];
         }
         const list = [];
         if (userHasPerm("timesheet", "view")) list.push("timesheet");
+        if (canOpenManagement()) list.push("management");
         if (userHasPerm("salary", "view")) {
             list.push("salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary");
         }
@@ -7610,7 +7586,6 @@ function allowedSections() {
         if (userHasPerm("settings", "edit")) list.push("settings", "summaryStaff");
         if (userHasPerm("kpi", "manage") || isAppAdmin()) list.push("metricCatalog");
         if (isAppAdmin()) list.push("users");
-        if (canOpenManagement()) list.push("management");
         return list;
     }
     const list = [];
@@ -7645,7 +7620,6 @@ function allowedSections() {
     }
     if (userHasPerm("settings", "edit")) list.push("settings");
     if (isAppAdmin()) list.push("users");
-    if (canOpenManagement()) list.push("management");
     return list;
 }
 
@@ -7679,7 +7653,7 @@ function sectionTitle(id) {
         settings: "Настройки",
         metricCatalog: "Метрики",
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
-        management: "Управление"
+        management: "СПУ"
     };
     if (isDeptWorkSection(id) && workspace()) {
         return metricTabLabel(workspace().code, deptWorkTabFromSection(id));
@@ -7865,6 +7839,9 @@ function ensureShopMetrics() {
 }
 
 function ensureShopMetricCatalog() {
+    if (!appData || typeof appData !== "object") {
+        return { items: [] };
+    }
     if (!appData.shopMetricCatalog || typeof appData.shopMetricCatalog !== "object") {
         appData.shopMetricCatalog = { items: [] };
     }
@@ -19768,15 +19745,22 @@ function downloadCSV(rows, filename) {
 
 
 /* ============================================================
-   УПРАВЛЕНИЕ: дашборд, план–факт, задачи, встречи
+   СПУ (ранее «Управление»): панель, план–факт, финансы, задачи, встречи
+   Данные: appData.management === appData.spu — один комплект, без копий фактов отделов.
 ============================================================ */
 let mgmtTab = "dashboard";
-let mgmtPeriodKind = "month";
+let mgmtPeriodKind = "week";
 let mgmtAnchorIso = "";
 let mgmtDeptFilter = "";
 
 function canOpenManagement() {
     if (isAppAdmin()) return true;
+    if (isSummary()) {
+        const u = currentAuthUser();
+        if (currentSummaryRole === "pay" || (u && u.legacy_role === "pay")) return false;
+        if (currentSummaryRole === "admin" || currentSummaryRole === "adjust") return true;
+        if (!u) return currentSummaryRole !== "pay";
+    }
     return userHasPerm("management", "view")
         || userHasPerm("managementIndicators", "view")
         || userHasPerm("managementTasks", "view")
@@ -19797,6 +19781,9 @@ function canEditMgmtMeetings() {
 
 function ensureManagement() {
     if (!appData || typeof appData !== "object") return;
+    if ((!appData.management || typeof appData.management !== "object") && appData.spu && typeof appData.spu === "object") {
+        appData.management = appData.spu;
+    }
     if (!appData.management || typeof appData.management !== "object") {
         appData.management = { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [] };
     }
@@ -19806,83 +19793,183 @@ function ensureManagement() {
     if (!root.manualFacts || typeof root.manualFacts !== "object") root.manualFacts = {};
     if (!Array.isArray(root.tasks)) root.tasks = [];
     if (!Array.isArray(root.meetings)) root.meetings = [];
-    if (!root.indicators.length) seedDefaultManagementIndicators();
+    appData.spu = root;
+    ensureSpuDefaultIndicators();
 }
 
-function seedDefaultManagementIndicators() {
+function spuFindCatalogMetric(dept, hints, fallbackId) {
+    try {
+        const items = typeof catalogItemsForDept === "function" ? catalogItemsForDept(dept) : [];
+        const fid = fallbackId ? canonicalMetricId(fallbackId) : "";
+        if (fid) {
+            const byId = items.find(function (m) { return m && canonicalMetricId(m.id) === fid; });
+            if (byId) return byId;
+            if (dept === "shop") {
+                const shop = typeof shopMetricCatalogById === "function" ? shopMetricCatalogById(fid) : null;
+                if (shop) return shop;
+            }
+        }
+        const hs = (hints || []).map(function (h) { return String(h || "").toLowerCase(); }).filter(Boolean);
+        if (!hs.length) return null;
+        return items.find(function (m) {
+            const n = String((m && m.name) || "").toLowerCase();
+            return hs.some(function (h) { return n.indexOf(h) !== -1; });
+        }) || null;
+    } catch (err) {
+        console.error(err);
+        return null;
+    }
+}
+
+function spuAdoptIndicator(spec) {
     const root = appData.management;
-    const add = function (spec) {
-        root.indicators.push(normalizeMgmtIndicator(spec));
-    };
-    add({
-        name: "Персонал",
-        department_id: "",
-        source_type: "timesheet",
-        source_timesheet_agg: "headcount",
-        aggregation_type: "count",
-        unit: "people",
-        show_on_dashboard: true,
-        sort_order: 10
-    });
-    add({
-        name: "Отработано дней",
-        department_id: "",
-        source_type: "timesheet",
-        source_timesheet_agg: "days",
-        aggregation_type: "sum",
-        unit: "days",
-        show_on_dashboard: true,
-        sort_order: 20
-    });
+    let found = (root.indicators || []).find(function (x) { return x && spec.spu_code && x.spu_code === spec.spu_code; });
+    if (!found) {
+        found = (root.indicators || []).find(function (x) {
+            if (!x || x.spu_code) return false;
+            return String(x.name || "") === spec.name
+                && String(x.department_id || "") === String(spec.department_id || "")
+                && String(x.source_type || "") === String(spec.source_type || "");
+        });
+    }
+    if (found) {
+        found.spu_code = spec.spu_code;
+        if (spec.group && !found.group) found.group = spec.group;
+        if (spec.source_future && !found.source_future) found.source_future = spec.source_future;
+        if (spec.source_type === "worktime_metric" && !found.source_metric_id && spec.source_metric_id) {
+            found.source_metric_id = spec.source_metric_id;
+            found.source_submetric_id = spec.source_submetric_id || "";
+        }
+        if (spec.calc_left_code && !found.calc_left_id) {
+            const left = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_left_code; });
+            if (left) found.calc_left_id = left.indicator_id;
+        }
+        if (spec.calc_right_code && !found.calc_right_id) {
+            const right = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_right_code; });
+            if (right) found.calc_right_id = right.indicator_id;
+        }
+        return normalizeMgmtIndicator(found);
+    }
+    const it = normalizeMgmtIndicator(spec);
+    if (spec.calc_left_code) {
+        const left = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_left_code; });
+        if (left) it.calc_left_id = left.indicator_id;
+    }
+    if (spec.calc_right_code) {
+        const right = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_right_code; });
+        if (right) it.calc_right_id = right.indicator_id;
+    }
+    root.indicators.push(it);
+    return it;
+}
+
+function ensureSpuDefaultIndicators() {
+    const root = appData.management;
+    if (!root) return;
+    let shopSales = null;
+    let shopChecks = null;
+    let shopVisitors = null;
+    let whAssembled = null;
+    let whUnpacked = null;
+    let whInv = null;
+    let whRecv = null;
+    let officeAny = null;
+    let drvDeliv = null;
+    let drvPoints = null;
+    try {
+        shopSales = spuFindCatalogMetric("shop", ["сумма продаж"], "metric_sales");
+        shopChecks = spuFindCatalogMetric("shop", ["количество чеков"], "metric_checks");
+        shopVisitors = spuFindCatalogMetric("shop", ["покупател"], STORE_METRIC_VISITORS);
+        whAssembled = spuFindCatalogMetric("warehouse", ["собран"]);
+        whUnpacked = spuFindCatalogMetric("warehouse", ["разбор"]);
+        whInv = spuFindCatalogMetric("warehouse", ["инвентар"]);
+        whRecv = spuFindCatalogMetric("warehouse", ["принят", "приём", "прием"], "metric_receiving");
+        officeAny = (catalogItemsForDept("office") || []).filter(function (m) { return m && m.active !== false; })[0];
+        drvDeliv = spuFindCatalogMetric("drivers", ["достав"]);
+        drvPoints = spuFindCatalogMetric("drivers", ["точек", "точка"]);
+    } catch (err) {
+        console.error(err);
+    }
+
+    const specs = [
+        { spu_code: "co_revenue", name: "Выручка", department_id: "", source_type: "manual", source_future: "one_c", unit: "money", group: "finance", show_on_dashboard: true, sort_order: 10 },
+        { spu_code: "co_margin", name: "Маржинальная прибыль", department_id: "", source_type: "manual", source_future: "one_c", unit: "money", group: "finance", show_on_dashboard: true, sort_order: 20 },
+        { spu_code: "co_cogs", name: "Себестоимость", department_id: "", source_type: "manual", source_future: "one_c", unit: "money", group: "finance", show_on_dashboard: false, sort_order: 30 },
+        { spu_code: "co_rent", name: "Рентабельность", department_id: "", source_type: "calculated", calc_op: "percent", calc_left_code: "co_margin", calc_right_code: "co_revenue", unit: "percent", group: "finance", show_on_dashboard: true, sort_order: 40 },
+        { spu_code: "co_headcount", name: "Количество сотрудников", department_id: "", source_type: "timesheet", source_timesheet_agg: "headcount", unit: "people", aggregation_type: "count", show_on_dashboard: true, sort_order: 50 },
+        { spu_code: "co_margin_emp", name: "Прибыль/маржа на сотрудника", department_id: "", source_type: "calculated", calc_op: "ratio", calc_left_code: "co_margin", calc_right_code: "co_headcount", unit: "money", group: "finance", show_on_dashboard: true, sort_order: 60 },
+        { spu_code: "co_plan_pct", name: "Выполнение плана", department_id: "", source_type: "sales_plan", source_sales_plan_view: "all", source_sales_plan_field: "rate", unit: "percent", show_on_dashboard: true, sort_order: 70 },
+        { spu_code: "co_days", name: "Отработано дней", department_id: "", source_type: "timesheet", source_timesheet_agg: "days", unit: "days", show_on_dashboard: false, sort_order: 80 }
+    ];
     DEPT_DEFAULTS.forEach(function (d, i) {
-        add({
-            name: "Персонал",
+        specs.push({
+            spu_code: d.code + "_headcount",
+            name: "Количество сотрудников",
             department_id: d.code,
             source_type: "timesheet",
             source_timesheet_agg: "headcount",
-            aggregation_type: "count",
             unit: "people",
+            aggregation_type: "count",
             show_on_dashboard: true,
-            sort_order: 100 + i * 10
+            sort_order: 100 + i * 40
         });
-        add({
+        specs.push({
+            spu_code: d.code + "_days",
             name: "Отработано дней",
             department_id: d.code,
             source_type: "timesheet",
             source_timesheet_agg: "days",
-            aggregation_type: "sum",
             unit: "days",
-            show_on_dashboard: true,
-            sort_order: 104 + i * 10
+            show_on_dashboard: false,
+            sort_order: 104 + i * 40
         });
     });
-    const views = [
-        { id: "shop", name: "Продажи (факт)", dept: "shop" },
-        { id: "warehouse", name: "Продажи (факт)", dept: "warehouse" },
-        { id: "office", name: "Продажи (факт)", dept: "office" },
-        { id: "sales", name: "Продажи (факт)", dept: "drivers" }
-    ];
-    views.forEach(function (v, i) {
-        add({
-            name: v.name,
-            department_id: v.dept,
-            source_type: "sales_plan",
-            source_sales_plan_view: v.id,
-            source_sales_plan_field: "fact",
-            aggregation_type: "last",
-            unit: "money",
-            show_on_dashboard: true,
-            sort_order: 200 + i * 10
-        });
+    specs.push(
+        { spu_code: "shop_sales", name: "Выручка", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopSales ? shopSales.id : "metric_sales", unit: "money", show_on_dashboard: true, sort_order: 210 },
+        { spu_code: "shop_checks", name: "Количество чеков", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopChecks ? shopChecks.id : "metric_checks", unit: "number", show_on_dashboard: true, sort_order: 220 },
+        { spu_code: "shop_avg", name: "Средний чек", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_sales", calc_right_code: "shop_checks", unit: "money", show_on_dashboard: true, sort_order: 230 },
+        { spu_code: "shop_visitors", name: "Количество покупателей", department_id: "shop", source_type: shopVisitors ? "worktime_metric" : "manual", source_metric_id: shopVisitors ? shopVisitors.id : "", unit: "number", show_on_dashboard: true, sort_order: 240 },
+        { spu_code: "shop_plan_fact", name: "Факт продаж", department_id: "shop", source_type: "sales_plan", source_sales_plan_view: "shop", source_sales_plan_field: "fact", unit: "money", show_on_dashboard: false, sort_order: 250 },
+        { spu_code: "wh_assembled", name: "Количество собранных позиций", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whAssembled ? whAssembled.id : "", unit: "number", show_on_dashboard: true, sort_order: 310 },
+        { spu_code: "wh_unpacked", name: "Количество разобранного товара", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whUnpacked ? whUnpacked.id : "", unit: "number", show_on_dashboard: true, sort_order: 320 },
+        { spu_code: "wh_recv", name: "Количество принятого товара", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whRecv ? whRecv.id : "", unit: "number", show_on_dashboard: true, sort_order: 330 },
+        { spu_code: "wh_inv", name: "Инвентаризация", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whInv ? whInv.id : "", unit: "number", show_on_dashboard: true, sort_order: 340 },
+        { spu_code: "office_metric", name: officeAny ? officeAny.name : "Показатели офиса", department_id: "office", source_type: officeAny ? "worktime_metric" : "timesheet", source_metric_id: officeAny ? officeAny.id : "", source_timesheet_agg: "days", unit: "number", show_on_dashboard: true, sort_order: 410 },
+        { spu_code: "office_sales", name: "Факт продаж", department_id: "office", source_type: "sales_plan", source_sales_plan_view: "office", source_sales_plan_field: "fact", unit: "money", show_on_dashboard: true, sort_order: 420 },
+        { spu_code: "drv_plan", name: "План продаж", department_id: "drivers", source_type: "sales_plan", source_sales_plan_view: "sales", source_sales_plan_field: "plan", unit: "money", show_on_dashboard: true, sort_order: 510 },
+        { spu_code: "drv_fact", name: "Факт продаж", department_id: "drivers", source_type: "sales_plan", source_sales_plan_view: "sales", source_sales_plan_field: "fact", unit: "money", show_on_dashboard: true, sort_order: 520 },
+        { spu_code: "drv_rate", name: "Выполнение плана", department_id: "drivers", source_type: "sales_plan", source_sales_plan_view: "sales", source_sales_plan_field: "rate", unit: "percent", show_on_dashboard: true, sort_order: 530 },
+        { spu_code: "drv_deliv", name: "Количество доставок", department_id: "drivers", source_type: drvDeliv ? "worktime_metric" : "manual", source_metric_id: drvDeliv ? drvDeliv.id : "", unit: "number", show_on_dashboard: !!drvDeliv, sort_order: 540 },
+        { spu_code: "drv_points", name: "Количество точек", department_id: "drivers", source_type: drvPoints ? "worktime_metric" : "manual", source_metric_id: drvPoints ? drvPoints.id : "", unit: "number", show_on_dashboard: !!drvPoints, sort_order: 550 }
+    );
+    specs.forEach(function (spec) { spuAdoptIndicator(spec); });
+    (root.indicators || []).forEach(function (it) {
+        normalizeMgmtIndicator(it);
+        if (it.spu_code) return;
+        if (it.name === "Персонал" || it.name === "Продажи (факт)" || (it.name === "Отработано дней" && it.source_type === "timesheet")) {
+            it.is_active = false;
+            it.show_on_dashboard = false;
+        }
     });
+}
+
+function seedDefaultManagementIndicators() {
+    ensureSpuDefaultIndicators();
 }
 
 function normalizeMgmtIndicator(it) {
     if (!it || typeof it !== "object") return null;
     if (!it.indicator_id) it.indicator_id = nextPrefixedId("mind", (appData.management.indicators || []).map(function (x) { return x && x.indicator_id; }));
+    it.spu_code = it.spu_code || "";
     it.name = String(it.name || "").trim() || "Показатель";
     it.department_id = it.department_id == null ? "" : String(it.department_id);
-    it.source_type = it.source_type || "manual";
+    const st = String(it.source_type || "manual").toLowerCase();
+    if (st === "metric") it.source_type = "worktime_metric";
+    else if (st === "one_c" || st === "1c") it.source_type = "one_c_future";
+    else it.source_type = it.source_type || "manual";
+    it.source_future = it.source_future || "";
+    it.group = it.group || (it.unit === "money" && it.source_type === "manual" ? "finance" : "");
+    it.period_type = it.period_type || "week";
     it.source_metric_id = it.source_metric_id || "";
     it.source_submetric_id = it.source_submetric_id || "";
     it.source_timesheet_agg = it.source_timesheet_agg || "days";
@@ -19894,7 +19981,6 @@ function normalizeMgmtIndicator(it) {
     it.calc_right_id = it.calc_right_id || "";
     it.aggregation_type = it.aggregation_type || "sum";
     it.unit = it.unit || "number";
-    it.period_type = it.period_type || "month";
     it.owner_employee_id = it.owner_employee_id || "";
     it.show_on_dashboard = it.show_on_dashboard !== false;
     it.is_active = it.is_active !== false;
@@ -19983,13 +20069,13 @@ function mgmtDeptName(code) {
 }
 
 function mgmtSourceLabel(type) {
-    if (type === "worktime_metric") return "Метрики";
-    if (type === "timesheet") return "Табель";
+    if (type === "worktime_metric") return "METRIC";
+    if (type === "timesheet") return "TIMESHEET";
     if (type === "kpi") return "KPI";
-    if (type === "sales_plan") return "План продаж";
-    if (type === "manual") return "Ручной";
-    if (type === "calculated") return "Расчёт";
-    if (type === "one_c_future") return "1С";
+    if (type === "sales_plan") return "SALES_PLAN";
+    if (type === "manual") return "MANUAL";
+    if (type === "calculated") return "CALCULATED";
+    if (type === "one_c_future") return "ONE_C_FUTURE";
     return type || "—";
 }
 
@@ -20048,6 +20134,7 @@ function mgmtTimesheetFact(deptCode, agg, days) {
     if (agg === "headcount") return headcount;
     if (agg === "hours") return hours;
     if (agg === "ya") return ya;
+    if (agg === "days") return ya;
     if (agg === "late") return late;
     if (agg === "skip") return skip;
     if (agg === "sick") return sick;
@@ -20084,14 +20171,34 @@ function mgmtMetricFact(deptCode, metricId, subId, days) {
 
 function mgmtSalesPlanFact(it) {
     const viewId = it.source_sales_plan_view || "shop";
-    const view = SALES_PLAN_VIEWS[viewId] || SALES_PLAN_VIEWS.shop;
     const r = mgmtPeriodRange();
     const month = r.month || String(r.to).slice(0, 7);
-    const rec = salesPlanMonth(view, month, false);
     const field = it.source_sales_plan_field || "fact";
-    if (field === "plan") return Number(rec.plan_sales || 0);
-    if (field === "rate") return salesPlanRate(view, month) * 100;
-    return salesPlanFact(view, month);
+    const readView = function (id) {
+        const view = SALES_PLAN_VIEWS[id] || SALES_PLAN_VIEWS.shop;
+        const rec = salesPlanMonth(view, month, false);
+        return {
+            plan: Number(rec.plan_sales || 0),
+            fact: salesPlanFact(view, month),
+            rate: salesPlanRate(view, month) * 100
+        };
+    };
+    if (viewId === "all") {
+        let plan = 0;
+        let fact = 0;
+        Object.keys(SALES_PLAN_VIEWS).forEach(function (id) {
+            const v = readView(id);
+            plan += v.plan;
+            fact += v.fact;
+        });
+        if (field === "plan") return plan;
+        if (field === "rate") return plan ? (fact / plan) * 100 : null;
+        return fact;
+    }
+    const rec = readView(viewId);
+    if (field === "plan") return rec.plan;
+    if (field === "rate") return rec.rate;
+    return rec.fact;
 }
 
 function mgmtKpiFact(it) {
@@ -20182,6 +20289,7 @@ function mgmtReadIndicator(it, stack) {
     const type = it.source_type;
     if (type === "one_c_future") return { value: null, status: "one_c" };
     if (type === "manual") return { value: mgmtManualFact(it.indicator_id), status: "manual" };
+    if (type === "METRIC") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days), status: "auto" };
     if (type === "timesheet") return { value: mgmtTimesheetFact(it.department_id, it.source_timesheet_agg, days), status: "auto" };
     if (type === "worktime_metric") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days), status: "auto" };
     if (type === "sales_plan") return { value: mgmtSalesPlanFact(it), status: "auto" };
@@ -20264,31 +20372,43 @@ function renderManagement() {
         const body = document.getElementById("mgmtBody");
         if (!tabs || !body) return;
         const items = [
-            { id: "dashboard", label: "Дашборд", show: userHasPerm("management", "view") || canOpenManagement() },
+            { id: "dashboard", label: "Панель управления", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "planfact", label: "План–факт", show: userHasPerm("management", "view") || canOpenManagement() },
+            { id: "finance", label: "Финансовые показатели", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "tasks", label: "Задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() },
             { id: "meetings", label: "Встречи", show: userHasPerm("managementMeetings", "view") || isAppAdmin() },
             { id: "settings", label: "Настройка показателей", show: canEditMgmtIndicators() || isAppAdmin() }
         ].filter(function (t) { return t.show; });
         if (!items.length) {
-            body.innerHTML = '<div class="note">Нет доступа к разделу «Управление».</div>';
+            body.innerHTML = '<div class="note">Нет доступа к СПУ.</div>';
             tabs.innerHTML = "";
             return;
         }
         if (!items.some(function (t) { return t.id === mgmtTab; })) mgmtTab = items[0].id;
+        const titles = {
+            dashboard: "СПУ — Панель управления",
+            planfact: "СПУ — План–факт",
+            finance: "СПУ — Финансовые показатели",
+            tasks: "СПУ — Задачи",
+            meetings: "СПУ — Встречи",
+            settings: "СПУ — Настройка показателей"
+        };
+        const head = document.getElementById("mgmtPageTitle");
+        if (head) head.textContent = titles[mgmtTab] || "СПУ";
         tabs.innerHTML = items.map(function (t) {
             return '<button type="button" class="mgmt-tab' + (mgmtTab === t.id ? " on" : "") + '" onclick="setMgmtTab(\'' + t.id + '\')">'
                 + escapeHtml(t.label) + "</button>";
         }).join("");
         if (mgmtTab === "dashboard") body.innerHTML = renderMgmtDashboardHtml();
         else if (mgmtTab === "planfact") body.innerHTML = renderMgmtPlanFactHtml();
+        else if (mgmtTab === "finance") body.innerHTML = renderMgmtFinanceHtml();
         else if (mgmtTab === "tasks") body.innerHTML = renderMgmtTasksHtml();
         else if (mgmtTab === "meetings") body.innerHTML = renderMgmtMeetingsHtml();
         else body.innerHTML = renderMgmtSettingsHtml();
     } catch (err) {
         console.error(err);
         const body = document.getElementById("mgmtBody");
-        if (body) body.innerHTML = '<div class="note">Ошибка раздела «Управление»: ' + escapeHtml(err && err.message ? err.message : String(err)) + "</div>";
+        if (body) body.innerHTML = '<div class="note">Ошибка СПУ: ' + escapeHtml(err && err.message ? err.message : String(err)) + "</div>";
     }
 }
 
@@ -20298,7 +20418,7 @@ function setMgmtTab(id) {
 }
 
 function setMgmtPeriodKind(kind) {
-    mgmtPeriodKind = kind === "today" || kind === "week" ? kind : "month";
+    mgmtPeriodKind = kind === "week" ? "week" : "month";
     renderManagement();
 }
 
@@ -20311,7 +20431,6 @@ function mgmtPeriodToolbarHtml() {
     const r = mgmtPeriodRange();
     const label = r.from === r.to ? mgmtFmtRu(r.from) : mgmtFmtRu(r.from) + " — " + mgmtFmtRu(r.to);
     return '<div class="mgmt-period">'
-        + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "today" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'today\')">Сегодня</button>'
         + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "week" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'week\')">Неделя</button>'
         + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "month" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'month\')">Месяц</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtShiftPeriod(-1)">←</button>'
@@ -20353,10 +20472,10 @@ function renderMgmtDashboardHtml() {
         return it.department_id === mgmtDeptFilter;
     });
     let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
-    html += '<div class="mgmt-cards">';
-    if (!top.length) html += '<div class="note">Нет показателей на дашборде. Добавьте их в настройке.</div>';
+    html += '<div class="mgmt-block"><h4>Компания</h4><div class="mgmt-cards">';
+    if (!top.length) html += '<div class="note">Нет показателей на панели. Добавьте их в настройке.</div>';
     top.forEach(function (it) { html += mgmtCardHtml(it); });
-    html += "</div>";
+    html += "</div></div>";
     if (!mgmtDeptFilter) {
         DEPT_DEFAULTS.forEach(function (d) {
             const items = list.filter(function (it) { return it.department_id === d.code; });
@@ -20413,6 +20532,44 @@ function renderMgmtPlanFactHtml() {
     return html;
 }
 
+function mgmtIsFinanceIndicator(it) {
+    return !!(it && (it.group === "finance" || it.source_type === "one_c_future" || it.source_future === "one_c"));
+}
+
+function renderMgmtFinanceHtml() {
+    const canPlan = canEditMgmtIndicators();
+    const canManual = canEditMgmtIndicators();
+    const list = mgmtVisibleIndicators().filter(mgmtIsFinanceIndicator);
+    let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
+    html += '<div class="note" style="margin:6px 0">Ручной ввод только если нет Метрик / Табеля / Плана продаж / KPI. ONE_C_FUTURE — тот же показатель, позже источник меняется на 1С.</div>';
+    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + "<th>Показатель</th><th>Период</th><th>План</th><th>Факт</th><th>Источник</th><th>Ответственный</th>"
+        + "</tr></thead><tbody>";
+    if (!list.length) html += '<tr><td colspan="6"><div class="empty-row">Нет финансовых показателей.</div></td></tr>';
+    list.forEach(function (it) {
+        const read = mgmtReadIndicator(it);
+        const plan = mgmtPlanValue(it.indicator_id);
+        const fact = read.value;
+        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+        html += "<tr>"
+            + "<td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
+            + "<td>" + escapeHtml(mgmtPeriodKey()) + "</td>"
+            + "<td>" + (canPlan
+                ? '<input class="mgmt-manual" value="' + escapeAttribute(plan == null ? "" : String(plan)) + '" onchange="setMgmtPlanValue(\'' + it.indicator_id + "',this.value);renderManagement()\">"
+                : escapeHtml(plan == null ? "—" : mgmtFormatValue(it, plan)))
+            + "</td><td>";
+        if (it.source_type === "manual" && canManual) {
+            html += '<input class="mgmt-manual" value="' + escapeAttribute(fact == null ? "" : String(fact)) + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
+        } else {
+            html += escapeHtml(mgmtFormatValue(it, fact, read.status));
+        }
+        html += "</td><td>" + escapeHtml(mgmtSourceLabel(it.source_type))
+            + "</td><td>" + escapeHtml(emp ? emp.name : "—") + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
 function mgmtTaskStatus(task) {
     const st = task.status || "new";
     if (st === "done" || st === "cancelled") return st;
@@ -20451,8 +20608,8 @@ function renderMgmtTasksHtml() {
         + (canEditMgmtTasks() ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\')">+ Задача</button>' : "")
         + "</div>";
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Задача</th><th>Подразделение</th><th>Ответственный</th><th>Срок</th><th>Статус</th><th></th></tr></thead><tbody>";
-    if (!tasks.length) html += '<tr><td colspan="6"><div class="empty-row">Нет задач. Регулярные обязанности остаются в Метриках.</div></td></tr>';
+        + "<th>Задача</th><th>Подразделение</th><th>Ответственный</th><th>Поставлена</th><th>План</th><th>Факт</th><th>Статус</th><th></th></tr></thead><tbody>";
+    if (!tasks.length) html += '<tr><td colspan="8"><div class="empty-row">Нет управленческих задач. Ежедневные обязанности остаются в Метриках / чек-листах.</div></td></tr>';
     tasks.sort(function (a, b) { return String(a.planned_date || "").localeCompare(String(b.planned_date || "")); }).forEach(function (t) {
         const st = mgmtTaskStatus(t);
         const emp = t.responsible_employee_id ? getEmployee(t.responsible_employee_id) : null;
@@ -20461,7 +20618,9 @@ function renderMgmtTasksHtml() {
             + (t.result ? '<div class="mgmt-src">' + escapeHtml(t.result) + "</div>" : "") + "</td>"
             + "<td>" + escapeHtml(mgmtDeptName(t.department_id)) + "</td>"
             + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
+            + "<td>" + escapeHtml(t.created_date ? mgmtFmtRu(t.created_date) : "—") + "</td>"
             + "<td>" + escapeHtml(t.planned_date ? mgmtFmtRu(t.planned_date) : "—") + "</td>"
+            + "<td>" + escapeHtml(t.completed_date ? mgmtFmtRu(t.completed_date) : "—") + "</td>"
             + "<td>" + escapeHtml(mgmtTaskStatusLabel(st)) + "</td>"
             + "<td>" + (canEditMgmtTasks() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtTaskForm(\'' + t.task_id + '\')">Изменить</button>' : "")
             + "</td></tr>";
@@ -20478,16 +20637,17 @@ function renderMgmtMeetingsHtml() {
         ? '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openMgmtMeetingForm(\'\')">+ Встреча</button></div>'
         : "";
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Дата</th><th>Тема</th><th>Подразделение</th><th></th></tr></thead><tbody>";
-    if (!meetings.length) html += '<tr><td colspan="4"><div class="empty-row">Нет встреч.</div></td></tr>';
+        + "<th>Дата</th><th>Тема</th><th>Подразделение</th><th>Решения</th><th></th></tr></thead><tbody>";
+    if (!meetings.length) html += '<tr><td colspan="5"><div class="empty-row">Нет протоколов встреч.</div></td></tr>';
     meetings.forEach(function (m) {
         html += "<tr><td>" + escapeHtml(m.date ? mgmtFmtRu(m.date) : "—") + "</td>"
             + "<td><strong>" + escapeHtml(m.title || "") + "</strong>"
-            + (m.notes ? '<div class="mgmt-src">' + escapeHtml(m.notes) + "</div>" : "") + "</td>"
+            + (m.discussion ? '<div class="mgmt-src">' + escapeHtml(m.discussion) + "</div>" : "") + "</td>"
             + "<td>" + escapeHtml(mgmtDeptName(m.department_id)) + "</td>"
+            + "<td>" + escapeHtml(m.decisions || m.notes || "—") + "</td>"
             + "<td>"
             + (canEditMgmtMeetings() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtMeetingForm(\'' + m.meeting_id + '\')">Изменить</button> ' : "")
-            + (canEditMgmtTasks() ? '<button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\',\'' + m.meeting_id + '\')">+ Задача</button>' : "")
+            + (canEditMgmtTasks() ? '<button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\',\'' + m.meeting_id + '\')">+ Создать задачу</button>' : "")
             + "</td></tr>";
     });
     html += "</tbody></table></div>";
@@ -20500,12 +20660,13 @@ function renderMgmtSettingsHtml() {
     });
     let html = '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openMgmtIndicatorForm(\'\')">+ Показатель</button></div>';
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Показатель</th><th>Подразделение</th><th>Источник</th><th>Ответственный</th><th>Дашборд</th><th>Активен</th><th></th></tr></thead><tbody>";
+        + "<th>Показатель</th><th>Подразделение</th><th>Источник</th><th>Периодичность</th><th>Ответственный</th><th>Панель</th><th>Активен</th><th></th></tr></thead><tbody>";
     all.forEach(function (it) {
         const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
         html += "<tr><td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(it.indicator_id) + "</div></td>"
             + "<td>" + escapeHtml(mgmtDeptName(it.department_id)) + "</td>"
             + "<td>" + escapeHtml(mgmtSourceLabel(it.source_type)) + "</td>"
+            + "<td>" + escapeHtml(it.period_type === "month" ? "Месяц" : "Неделя") + "</td>"
             + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
             + "<td>" + (it.show_on_dashboard ? "да" : "нет") + "</td>"
             + "<td>" + (it.is_active === false ? "нет" : "да") + "</td>"
@@ -20567,7 +20728,7 @@ function openMgmtIndicatorForm(id) {
         + '<div class="form-group full"><label>Название</label><input id="miName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
         + '<div class="form-group"><label>Подразделение</label><select id="miDept" onchange="refreshMgmtIndicatorSourceFields()">' + mgmtDeptOptions(it.department_id) + "</select></div>"
         + '<div class="form-group"><label>Источник</label><select id="miSource" onchange="refreshMgmtIndicatorSourceFields()">'
-        + [["worktime_metric", "Метрики Work Time"], ["timesheet", "Табель"], ["kpi", "KPI"], ["sales_plan", "План продаж"], ["manual", "Ручной"], ["calculated", "Расчёт"], ["one_c_future", "1С (позже)"]].map(function (p) {
+        + [["worktime_metric", "METRIC — Метрики"], ["timesheet", "TIMESHEET — Табель"], ["kpi", "KPI"], ["sales_plan", "SALES_PLAN — План продаж"], ["manual", "MANUAL — Ручной"], ["calculated", "CALCULATED — Расчёт"], ["one_c_future", "ONE_C_FUTURE — 1С позже"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (it.source_type === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
         + '<div class="form-group full" id="miSourceBox"></div>'
@@ -20581,7 +20742,11 @@ function openMgmtIndicatorForm(id) {
         }).join("") + "</select></div>"
         + '<div class="form-group"><label>Ответственный</label><select id="miOwner">' + mgmtEmployeeOptions(it.owner_employee_id) + "</select></div>"
         + '<div class="form-group"><label>Порядок</label><input id="miOrder" type="number" value="' + escapeAttribute(String(it.sort_order || 10)) + '"></div>'
-        + '<div class="form-group"><label class="check"><input id="miDash" type="checkbox"' + (it.show_on_dashboard !== false ? " checked" : "") + "> На дашборде</label></div>"
+        + '<div class="form-group"><label>Периодичность</label><select id="miPeriod">'
+        + '<option value="week"' + (it.period_type !== "month" ? " selected" : "") + ">Неделя</option>"
+        + '<option value="month"' + (it.period_type === "month" ? " selected" : "") + ">Месяц</option></select></div>"
+        + '<div class="form-group"><label class="check"><input id="miFinance" type="checkbox"' + (it.group === "finance" || it.source_future === "one_c" ? " checked" : "") + "> Финансовые показатели</label></div>"
+        + '<div class="form-group"><label class="check"><input id="miDash" type="checkbox"' + (it.show_on_dashboard !== false ? " checked" : "") + "> На панели управления</label></div>"
         + '<div class="form-group"><label class="check"><input id="miActive" type="checkbox"' + (it.is_active !== false ? " checked" : "") + "> Активен</label></div>"
         + "</div>"
         + '<div class="rev-modal-actions" style="margin-top:10px">'
@@ -20613,7 +20778,8 @@ function refreshMgmtIndicatorSourceFields(preset) {
         });
         html += "</select>";
     } else if (type === "sales_plan") {
-        html = "<label>План продаж</label><select id=\"miSpView\">";
+        html = "<label>План продаж</label><select id=\"miSpView\">"
+            + '<option value="all"' + (it.source_sales_plan_view === "all" ? " selected" : "") + ">Все подразделения (сумма)</option>";
         Object.keys(SALES_PLAN_VIEWS).forEach(function (id) {
             const v = SALES_PLAN_VIEWS[id];
             html += '<option value="' + id + '"' + (it.source_sales_plan_view === id ? " selected" : "") + ">" + escapeHtml(v.title) + "</option>";
@@ -20694,6 +20860,9 @@ function saveMgmtIndicator(id) {
     it.aggregation_type = (document.getElementById("miAgg") || {}).value || "sum";
     it.owner_employee_id = (document.getElementById("miOwner") || {}).value || "";
     it.sort_order = Number((document.getElementById("miOrder") || {}).value || 10);
+    it.period_type = (document.getElementById("miPeriod") || {}).value || "week";
+    it.group = (document.getElementById("miFinance") && document.getElementById("miFinance").checked) ? "finance" : "";
+    if (it.group === "finance" && it.source_type === "manual") it.source_future = it.source_future || "one_c";
     it.show_on_dashboard = !!(document.getElementById("miDash") && document.getElementById("miDash").checked);
     it.is_active = !!(document.getElementById("miActive") && document.getElementById("miActive").checked);
     normalizeMgmtIndicator(it);
@@ -20717,10 +20886,12 @@ function openMgmtTaskForm(id, meetingId) {
         meeting_id: meetingId || ""
     };
     const html = "<h3>" + (id ? "Задача" : "Новая задача") + "</h3>"
-        + '<div class="form-group"><label>Название</label><input id="mtTitle" maxlength="200" value="' + escapeAttribute(t.title || "") + '"></div>'
+        + '<div class="form-group"><label>Задача</label><input id="mtTitle" maxlength="200" value="' + escapeAttribute(t.title || "") + '"></div>'
         + '<div class="form-group"><label>Подразделение</label><select id="mtDept">' + mgmtDeptOptions(t.department_id) + "</select></div>"
         + '<div class="form-group"><label>Ответственный</label><select id="mtEmp">' + mgmtEmployeeOptions(t.responsible_employee_id) + "</select></div>"
-        + '<div class="form-group"><label>Срок</label><input id="mtDate" type="date" value="' + escapeAttribute(t.planned_date || "") + '"></div>'
+        + '<div class="form-group"><label>Дата постановки</label><input id="mtCreated" type="date" value="' + escapeAttribute(t.created_date || mgmtIsoFromDate(new Date())) + '"></div>'
+        + '<div class="form-group"><label>Плановая дата</label><input id="mtDate" type="date" value="' + escapeAttribute(t.planned_date || "") + '"></div>'
+        + '<div class="form-group"><label>Фактическая дата</label><input id="mtDone" type="date" value="' + escapeAttribute(t.completed_date || "") + '"></div>'
         + '<div class="form-group"><label>Статус</label><select id="mtStatus">'
         + [["new", "Новая"], ["in_progress", "В работе"], ["done", "Выполнена"], ["cancelled", "Отменена"]].map(function (p) {
             return '<option value="' + p[0] + '"' + ((t.status || "new") === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
@@ -20751,7 +20922,9 @@ function saveMgmtTask(id) {
     t.title = title;
     t.department_id = (document.getElementById("mtDept") || {}).value || "";
     t.responsible_employee_id = (document.getElementById("mtEmp") || {}).value || "";
+    t.created_date = (document.getElementById("mtCreated") || {}).value || t.created_date || mgmtIsoFromDate(new Date());
     t.planned_date = (document.getElementById("mtDate") || {}).value || "";
+    t.completed_date = (document.getElementById("mtDone") || {}).value || t.completed_date || "";
     t.status = (document.getElementById("mtStatus") || {}).value || "new";
     t.result = (document.getElementById("mtResult") || {}).value || "";
     t.meeting_id = (document.getElementById("mtMeeting") || {}).value || t.meeting_id || "";
@@ -20769,13 +20942,31 @@ function openMgmtMeetingForm(id) {
         date: mgmtIsoFromDate(new Date()),
         title: "",
         notes: "",
+        discussion: "",
+        decisions: "",
+        participant_employee_ids: [],
         department_id: mgmtDeptFilter || ""
     };
-    const html = "<h3>" + (id ? "Встреча" : "Новая встреча") + "</h3>"
+    const selected = {};
+    (m.participant_employee_ids || []).forEach(function (pid) { selected[pid] = true; });
+    let people = "";
+    DEPT_DEFAULTS.forEach(function (d) {
+        const w = findWorkspaceByCode(d.code);
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
+            people += '<label class="check" style="display:block;font-size:12px;"><input type="checkbox" class="mm-part" value="'
+                + escapeAttribute(e.id) + '"' + (selected[e.id] ? " checked" : "") + "> "
+                + escapeHtml((e.name || e.id) + " · " + d.name) + "</label>";
+        });
+    });
+    const html = "<h3>" + (id ? "Протокол встречи" : "Новая встреча") + "</h3>"
         + '<div class="form-group"><label>Дата</label><input id="mmDate" type="date" value="' + escapeAttribute(m.date || "") + '"></div>'
         + '<div class="form-group"><label>Тема</label><input id="mmTitle" maxlength="200" value="' + escapeAttribute(m.title || "") + '"></div>'
         + '<div class="form-group"><label>Подразделение</label><select id="mmDept">' + mgmtDeptOptions(m.department_id) + "</select></div>"
-        + '<div class="form-group"><label>Заметки / решения</label><textarea id="mmNotes" rows="4">' + escapeHtml(m.notes || "") + "</textarea></div>"
+        + '<div class="form-group"><label>Участники</label><div style="max-height:140px;overflow:auto;border:1px solid #e5e7eb;padding:6px;border-radius:8px;">'
+        + (people || '<div class="note">Нет сотрудников</div>') + "</div></div>"
+        + '<div class="form-group"><label>Обсуждение</label><textarea id="mmDisc" rows="3">' + escapeHtml(m.discussion || "") + "</textarea></div>"
+        + '<div class="form-group"><label>Решения</label><textarea id="mmDec" rows="3">' + escapeHtml(m.decisions || m.notes || "") + "</textarea></div>"
         + '<div class="rev-modal-actions" style="margin-top:10px">'
         + '<button type="button" class="btn btn-primary" onclick="saveMgmtMeeting(\'' + (m.meeting_id || "") + '\')">Сохранить</button> '
         + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
@@ -20799,7 +20990,14 @@ function saveMgmtMeeting(id) {
     m.title = title;
     m.date = (document.getElementById("mmDate") || {}).value || "";
     m.department_id = (document.getElementById("mmDept") || {}).value || "";
-    m.notes = (document.getElementById("mmNotes") || {}).value || "";
+    m.discussion = (document.getElementById("mmDisc") || {}).value || "";
+    m.decisions = (document.getElementById("mmDec") || {}).value || "";
+    m.notes = m.decisions;
+    const parts = [];
+    document.querySelectorAll(".mm-part:checked").forEach(function (el) {
+        if (el.value) parts.push(el.value);
+    });
+    m.participant_employee_ids = parts;
     saveApp();
     closeMgmtModal();
     mgmtTab = "meetings";
@@ -20844,7 +21042,7 @@ function verifyRepPayExample() {
 function requestedLoginView() {
     try {
         var hash = String(location.hash || "").replace("#", "");
-        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "management") return hash;
+        if (hash === "shop" || hash === "territory" || hash === "summary") return hash;
         var search = location.search || "";
         if (/(?:^|[?&])view=shop(?:&|$)/.test(search)) return "shop";
         if (/(?:^|[?&])view=territory(?:&|$)/.test(search)) return "territory";
