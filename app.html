@@ -347,6 +347,107 @@
         @media (max-width: 1100px) {
             .mgmt-dept-grid { grid-template-columns: 1fr; }
         }
+        .spu-dash { font-size: 12px; }
+        .spu-dash-tabs {
+            display: flex;
+            gap: 0;
+            border: 1px solid #2f5496;
+            margin: 0 0 6px;
+            overflow-x: auto;
+        }
+        .spu-dash-tabs button {
+            flex: 1;
+            min-width: 120px;
+            border: 0;
+            border-right: 1px solid #2f5496;
+            background: #d6dce4;
+            color: #1f4e79;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: .03em;
+            padding: 7px 8px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .spu-dash-tabs button:last-child { border-right: 0; }
+        .spu-dash-tabs button.on { background: #2f5496; color: #fff; }
+        .spu-kpi {
+            display: grid;
+            grid-template-columns: 150px 1fr 1fr 1fr;
+            gap: 4px;
+            margin-bottom: 6px;
+        }
+        .spu-kpi-period, .spu-kpi-col {
+            background: #1f4e79;
+            color: #fff;
+            padding: 6px 8px;
+            min-height: 118px;
+        }
+        .spu-kpi-period { background: #2e75b6; }
+        .spu-kpi-period label { display: block; font-size: 10px; opacity: .85; margin-bottom: 4px; }
+        .spu-kpi-period select {
+            width: 100%;
+            font-size: 12px;
+            padding: 3px 4px;
+        }
+        .spu-kpi-col h5 {
+            margin: 0 0 4px;
+            font-size: 11px;
+            letter-spacing: .06em;
+            color: #9dc3e6;
+        }
+        .spu-kpi-row { margin: 0 0 5px; line-height: 1.2; }
+        .spu-kpi-row .k-lab { font-size: 10px; color: #bdd7ee; }
+        .spu-kpi-row .k-val { font-size: 16px; font-weight: 700; }
+        .spu-kpi-row .k-d { font-size: 11px; margin-left: 4px; }
+        .spu-up { color: #92d050; }
+        .spu-down { color: #ff6b6b; }
+        .spu-flat { color: #d0d7de; }
+        .spu-extra {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 4px;
+            margin-bottom: 6px;
+        }
+        .spu-extra div {
+            background: #f2f2f2;
+            border: 1px solid #c9c9c9;
+            padding: 5px 8px;
+        }
+        .spu-extra b { font-size: 15px; }
+        .spu-deptbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            background: #548235;
+            color: #fff;
+            padding: 5px 8px;
+            margin: 8px 0 6px;
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: .04em;
+        }
+        .spu-deptbar select { font-size: 12px; font-weight: 600; max-width: 220px; }
+        .spu-chart {
+            border: 1px solid #c9c9c9;
+            margin: 0 0 8px;
+            background: #fff;
+        }
+        .spu-chart h4 {
+            margin: 0;
+            padding: 4px 8px;
+            background: #1f4e79;
+            color: #fff;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .spu-chart-body { overflow-x: auto; padding: 4px 4px 2px; }
+        .spu-chart svg { display: block; min-width: 640px; width: 100%; height: 210px; }
+        .spu-leg { font-size: 10px; color: #64748b; padding: 0 8px 6px; }
+        @media (max-width: 900px) {
+            .spu-kpi, .spu-extra { grid-template-columns: 1fr; }
+        }
 
         .pf-wrap {
             max-height: calc(100vh - 200px);
@@ -20705,6 +20806,9 @@ let mgmtPfHead = "";
 let mgmtPfDept = "";
 let mgmtPfCollapsed = {};
 const MGMT_PF_UI_KEY = "worktime_spu_planfact_ui_v1";
+const MGMT_DASH_UI_KEY = "worktime_spu_dash_ui_v1";
+let mgmtDashPanel = "opt";
+let mgmtDashWeek = "";
 
 let orgChartScale = 1;
 let orgCollapsed = {};
@@ -21912,7 +22016,35 @@ function ensureSpuDefaultIndicators() {
         { spu_code: "drv_deliv", name: "Количество доставок", department_id: "drivers", source_type: drvDeliv ? "worktime_metric" : "manual", source_metric_id: drvDeliv ? drvDeliv.id : "", unit: "number", show_on_dashboard: !!drvDeliv, sort_order: 540 },
         { spu_code: "drv_points", name: "Количество точек", department_id: "drivers", source_type: drvPoints ? "worktime_metric" : "manual", source_metric_id: drvPoints ? drvPoints.id : "", unit: "number", show_on_dashboard: !!drvPoints, sort_order: 550 },
         { spu_code: "hr_positions", name: "Количество полностью введённых должностей", department_id: "office", source_type: "manual", unit: "people", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 90 },
-        { spu_code: "sales_overdue", name: "Просроченная дебиторская задолженность", department_id: "drivers", source_type: "manual", unit: "money", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_sales", group: "sales", show_on_dashboard: true, sort_order: 560 }
+        { spu_code: "sales_overdue", name: "Просроченная дебиторская задолженность", department_id: "drivers", source_type: "manual", unit: "money", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_sales", group: "sales", show_on_dashboard: true, sort_order: 560 },
+        { spu_code: "opt_revenue", name: "Выручка ОПТ", department_id: "drivers", source_type: "manual", source_future: "one_c", unit: "money", group: "sales", spu_department_id: "spu_sales", show_on_dashboard: true, sort_order: 570 },
+        { spu_code: "opt_margin", name: "Маржинальная прибыль ОПТ", department_id: "drivers", source_type: "manual", source_future: "one_c", unit: "money", group: "sales", spu_department_id: "spu_sales", show_on_dashboard: true, sort_order: 580 },
+        { spu_code: "opt_rent", name: "Рентабельность ОПТ", department_id: "drivers", source_type: "calculated", calc_op: "percent", calc_left_code: "opt_margin", calc_right_code: "opt_revenue", unit: "percent", spu_department_id: "spu_sales", show_on_dashboard: true, sort_order: 590 },
+        { spu_code: "opt_orders", name: "Количество заявок ОПТ", department_id: "drivers", source_type: "manual", source_future: "one_c", unit: "number", spu_department_id: "spu_sales", show_on_dashboard: false, sort_order: 600 },
+        { spu_code: "opt_avg", name: "Средний чек ОПТ", department_id: "drivers", source_type: "calculated", calc_op: "ratio", calc_left_code: "opt_revenue", calc_right_code: "opt_orders", unit: "money", spu_department_id: "spu_sales", show_on_dashboard: true, sort_order: 610 },
+        { spu_code: "opt_ar", name: "Дебиторская задолженность ОПТ", department_id: "drivers", source_type: "manual", source_future: "one_c", unit: "money", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_sales", show_on_dashboard: false, sort_order: 620 },
+        { spu_code: "opt_ar_days", name: "Отсрочка оплат клиентам ОПТ, дни", department_id: "drivers", source_type: "manual", source_future: "one_c", unit: "days", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_sales", show_on_dashboard: false, sort_order: 630 },
+        { spu_code: "opt_stock", name: "Остатки товара ОПТ", department_id: "drivers", source_type: "manual", source_future: "one_c", unit: "money", spu_department_id: "spu_sales", show_on_dashboard: false, sort_order: 640 },
+        { spu_code: "opt_mp_emp", name: "МП на сотрудника ОПТ", department_id: "drivers", source_type: "calculated", calc_op: "ratio", calc_left_code: "opt_margin", calc_right_code: "drivers_headcount", unit: "money", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 650 },
+        { spu_code: "opt_rev_emp", name: "Выручка на сотрудника ОПТ", department_id: "drivers", source_type: "calculated", calc_op: "ratio", calc_left_code: "opt_revenue", calc_right_code: "drivers_headcount", unit: "money", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 651 },
+        { spu_code: "wh_revenue", name: "Выручка СКЛАД", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "money", group: "sales", spu_department_id: "spu_warehouse", show_on_dashboard: true, sort_order: 660 },
+        { spu_code: "wh_margin", name: "Маржинальная прибыль СКЛАД", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "money", spu_department_id: "spu_warehouse", show_on_dashboard: true, sort_order: 670 },
+        { spu_code: "wh_rent", name: "Рентабельность СКЛАД", department_id: "warehouse", source_type: "calculated", calc_op: "percent", calc_left_code: "wh_margin", calc_right_code: "wh_revenue", unit: "percent", spu_department_id: "spu_warehouse", show_on_dashboard: true, sort_order: 680 },
+        { spu_code: "wh_customers", name: "Количество покупателей СКЛАД", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "number", spu_department_id: "spu_warehouse", show_on_dashboard: false, sort_order: 690 },
+        { spu_code: "wh_avg", name: "Средний чек СКЛАД", department_id: "warehouse", source_type: "calculated", calc_op: "ratio", calc_left_code: "wh_revenue", calc_right_code: "wh_customers", unit: "money", spu_department_id: "spu_warehouse", show_on_dashboard: true, sort_order: 700 },
+        { spu_code: "wh_ar", name: "Дебиторская задолженность СКЛАД", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "money", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_warehouse", show_on_dashboard: false, sort_order: 710 },
+        { spu_code: "wh_ar_days", name: "Отсрочка оплаты клиентами СКЛАД, дни", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "days", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_warehouse", show_on_dashboard: false, sort_order: 720 },
+        { spu_code: "wh_ap", name: "Кредиторская задолженность ОПТ/СКЛАД", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "money", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_warehouse", show_on_dashboard: false, sort_order: 730 },
+        { spu_code: "wh_supplier_days", name: "Сроки оплаты поставщикам, дни", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "days", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_warehouse", show_on_dashboard: false, sort_order: 740 },
+        { spu_code: "wh_stock", name: "Остатки товара СКЛАД", department_id: "warehouse", source_type: "manual", source_future: "one_c", unit: "money", spu_department_id: "spu_warehouse", show_on_dashboard: false, sort_order: 750 },
+        { spu_code: "wh_mp_emp", name: "МП на сотрудника СКЛАД", department_id: "warehouse", source_type: "calculated", calc_op: "ratio", calc_left_code: "wh_margin", calc_right_code: "warehouse_headcount", unit: "money", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 760 },
+        { spu_code: "wh_rev_emp", name: "Выручка на сотрудника СКЛАД", department_id: "warehouse", source_type: "calculated", calc_op: "ratio", calc_left_code: "wh_revenue", calc_right_code: "warehouse_headcount", unit: "money", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 761 },
+        { spu_code: "shop_margin", name: "Маржинальная прибыль магазина", department_id: "shop", source_type: "manual", source_future: "one_c", unit: "money", spu_department_id: "spu_shop", show_on_dashboard: true, sort_order: 770 },
+        { spu_code: "shop_rent", name: "Рентабельность магазина", department_id: "shop", source_type: "calculated", calc_op: "percent", calc_left_code: "shop_margin", calc_right_code: "shop_sales", unit: "percent", spu_department_id: "spu_shop", show_on_dashboard: true, sort_order: 780 },
+        { spu_code: "shop_stock", name: "Остатки товара магазина", department_id: "shop", source_type: "manual", source_future: "one_c", unit: "money", spu_department_id: "spu_shop", show_on_dashboard: false, sort_order: 790 },
+        { spu_code: "shop_supplier_days", name: "Сроки оплаты поставщикам магазина, дни", department_id: "shop", source_type: "manual", source_future: "one_c", unit: "days", invert_score: true, score_direction: "LOWER_IS_BETTER", spu_department_id: "spu_shop", show_on_dashboard: false, sort_order: 800 },
+        { spu_code: "shop_rev_emp", name: "Выручка на сотрудника магазина", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_sales", calc_right_code: "shop_headcount", unit: "money", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 810 },
+        { spu_code: "shop_mp_emp", name: "МП на сотрудника магазина", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_margin", calc_right_code: "shop_headcount", unit: "money", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 820 }
     );
     specs.forEach(function (spec) {
         if (!spec.spu_department_id) spec.spu_department_id = mgmtDefaultSpuDeptId(spec);
@@ -22743,39 +22875,360 @@ function openMgmtIndicatorDetail(indicatorId) {
     openMgmtModal(html);
 }
 
-function renderMgmtDashboardHtml() {
-    const list = mgmtVisibleIndicators().filter(function (it) { return it.show_on_dashboard; });
-    const top = list.filter(function (it) {
-        if (!mgmtDeptFilter) return !it.department_id;
-        return it.department_id === mgmtDeptFilter;
-    });
-    const attn = [];
-    list.forEach(function (it) {
-        const read = mgmtReadIndicator(it);
-        const plan = mgmtPlanValue(it.indicator_id);
-        const st = mgmtRowStatus(it, read.value, plan);
-        if (st.cls === "mgmt-bad" || st.cls === "mgmt-warn") {
-            attn.push(mgmtDeptName(it.department_id) + ": " + it.name + " — " + st.label);
+function loadMgmtDashUi() {
+    try {
+        const raw = localStorage.getItem(MGMT_DASH_UI_KEY);
+        if (!raw) return;
+        const ui = JSON.parse(raw);
+        if (ui.panel) mgmtDashPanel = ui.panel;
+        if (ui.week) mgmtDashWeek = ui.week;
+    } catch (err) {}
+}
+
+function saveMgmtDashUi() {
+    try {
+        localStorage.setItem(MGMT_DASH_UI_KEY, JSON.stringify({
+            panel: mgmtDashPanel,
+            week: mgmtDashWeek
+        }));
+    } catch (err) {}
+}
+
+function mgmtEnsureDashWeek() {
+    loadMgmtDashUi();
+    const cur = mgmtThuWeek().from;
+    if (!mgmtDashWeek) mgmtDashWeek = cur;
+    mgmtDashWeek = mgmtThuWeek(mgmtDashWeek).from;
+}
+
+function setMgmtDashPanel(id) {
+    mgmtDashPanel = String(id || "opt");
+    saveMgmtDashUi();
+    renderManagement();
+}
+
+function setMgmtDashWeek(fromIso) {
+    mgmtDashWeek = mgmtThuWeek(fromIso).from;
+    saveMgmtDashUi();
+    renderManagement();
+}
+
+function mgmtDashPanels() {
+    return [
+        {
+            id: "opt",
+            label: "ОПТ",
+            spu: "spu_sales",
+            extra: ["drivers_headcount", "opt_mp_emp", "drv_rate"],
+            charts: [
+                { title: "Выручка и маржинальная прибыль ОПТ", bars: ["opt_revenue", "opt_margin"], line: "opt_rent" },
+                { title: "Динамика заявок и среднего чека", bars: ["opt_orders"], line: "opt_avg" },
+                { title: "Отсрочка оплат клиентам ОПТ", bars: ["opt_ar", "opt_revenue"], line: "opt_ar_days" }
+            ]
+        },
+        {
+            id: "wh",
+            label: "СКЛАД",
+            spu: "spu_warehouse",
+            extra: ["warehouse_headcount", "wh_mp_emp", "wh_rent"],
+            charts: [
+                { title: "Выручка и маржинальная прибыль СКЛАД", bars: ["wh_revenue", "wh_margin"], line: "wh_rent" },
+                { title: "Динамика покупателей и среднего чека", bars: ["wh_customers"], line: "wh_avg" },
+                { title: "Отсрочка оплаты клиентами", bars: ["wh_ar"], line: "wh_ar_days" },
+                { title: "Дебиторская и кредиторская задолженность ОПТ/СКЛАД", bars: ["opt_ar", "wh_ap"] },
+                { title: "Сроки оплаты поставщикам", bars: ["wh_supplier_days"] },
+                { title: "Остатки товара", bars: ["wh_stock"] }
+            ]
+        },
+        {
+            id: "stock",
+            label: "ДТК.Т.ЗАПАСЫ ОПТ/СКЛАД",
+            spu: "spu_warehouse",
+            extra: ["wh_stock", "opt_stock", "wh_supplier_days"],
+            charts: [
+                { title: "Дебиторская и кредиторская задолженность ОПТ/СКЛАД", bars: ["opt_ar", "wh_ap"] },
+                { title: "Сроки оплаты поставщикам", bars: ["wh_supplier_days"] },
+                { title: "Остатки товара ОПТ/СКЛАД", bars: ["opt_stock", "wh_stock"] }
+            ]
+        },
+        {
+            id: "shop",
+            label: "МАГАЗИН",
+            spu: "spu_shop",
+            extra: ["shop_headcount", "shop_mp_emp", "shop_plan_fact"],
+            charts: [
+                { title: "Выручка и маржинальная прибыль магазина", bars: ["shop_sales", "shop_margin"], line: "shop_rent" },
+                { title: "Динамика покупателей и среднего чека", bars: ["shop_visitors"], line: "shop_avg" },
+                { title: "Остатки товара", bars: ["shop_stock"] },
+                { title: "Сроки оплаты поставщикам", bars: ["shop_supplier_days"] }
+            ]
+        },
+        {
+            id: "hr",
+            label: "ДЕПАРТАМЕНТ ПЕРСОНАЛА",
+            spu: "spu_personnel",
+            extra: ["drivers_headcount", "warehouse_headcount", "shop_headcount"],
+            charts: [
+                { title: "Динамика выручки и прибыли на сотрудника ОПТ/СКЛАД", bars: ["opt_rev_emp", "wh_rev_emp"], line: "opt_mp_emp" },
+                { title: "Динамика выручки и прибыли на сотрудника МАГАЗИНА", bars: ["shop_rev_emp"], line: "shop_mp_emp" }
+            ]
         }
-    });
-    (appData.management.tasks || []).forEach(function (t) {
-        if (t && mgmtTaskStatus(t) === "overdue") attn.push("Задача просрочена: " + (t.title || ""));
-    });
-    let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
-    if (attn.length) {
-        html += '<div class="mgmt-attn">' + attn.slice(0, 8).map(function (x) {
-            return "<span>" + escapeHtml(x) + "</span>";
-        }).join("") + "</div>";
+    ];
+}
+
+function mgmtDashAliases(code) {
+    const map = {
+        opt_revenue: ["opt_revenue", "drv_fact"],
+        opt_orders: ["opt_orders", "drv_deliv", "drv_points"],
+        opt_ar: ["opt_ar", "sales_overdue"]
+    };
+    return map[code] || [code];
+}
+
+function mgmtDashIndicator(code) {
+    const list = mgmtIndicators();
+    const aliases = mgmtDashAliases(code);
+    for (let i = 0; i < aliases.length; i++) {
+        const hit = list.find(function (x) { return x && x.spu_code === aliases[i]; });
+        if (hit) return hit;
     }
-    html += '<div class="mgmt-block"><h4>Компания</h4>' + mgmtKpiTableHtml(top) + "</div>";
-    if (!mgmtDeptFilter) {
-        html += '<div class="mgmt-dept-grid">';
-        DEPT_DEFAULTS.forEach(function (d) {
-            const items = list.filter(function (it) { return it.department_id === d.code; });
-            html += '<div class="mgmt-block"><h4>' + escapeHtml(d.name) + "</h4>" + mgmtKpiTableHtml(items) + "</div>";
+    return null;
+}
+
+function mgmtFmtDdMm(iso) {
+    const p = String(iso || "").split("-");
+    if (p.length < 3) return iso || "";
+    return p[2] + "." + p[1];
+}
+
+function mgmtDashDeltaClass(it, curr, prev) {
+    if (curr == null || prev == null || !Number.isFinite(Number(curr)) || !Number.isFinite(Number(prev))) return "spu-flat";
+    const delta = Number(curr) - Number(prev);
+    if (Math.abs(delta) < 1e-9) return "spu-flat";
+    const lower = it && (it.score_direction === "LOWER_IS_BETTER" || it.invert_score);
+    const up = delta > 0;
+    if (lower) return up ? "spu-down" : "spu-up";
+    return up ? "spu-up" : "spu-down";
+}
+
+function mgmtDashDeltaHtml(it, curr, prev) {
+    if (curr == null || prev == null || !Number.isFinite(Number(curr)) || !Number.isFinite(Number(prev))) {
+        return '<span class="spu-flat">—</span>';
+    }
+    const delta = Number(curr) - Number(prev);
+    const cls = mgmtDashDeltaClass(it, curr, prev);
+    const arrow = delta > 0 ? "↑" : (delta < 0 ? "↓" : "→");
+    let abs = "";
+    if (it && it.unit === "percent") {
+        abs = (delta > 0 ? "+" : "") + (Math.round(delta * 10) / 10).toLocaleString("ru-RU") + " п.п.";
+    } else if (it && it.unit === "money") {
+        abs = (delta > 0 ? "+" : "") + Math.round(delta).toLocaleString("ru-RU");
+    } else {
+        abs = (delta > 0 ? "+" : "") + (Math.round(delta * 10) / 10).toLocaleString("ru-RU");
+    }
+    return '<span class="k-d ' + cls + '">' + arrow + " " + abs + "</span>";
+}
+
+function mgmtDashReadAt(code, fromIso) {
+    const it = mgmtDashIndicator(code);
+    if (!it) return { it: null, value: null, status: "missing" };
+    return mgmtRunInThuWeek(fromIso, function () {
+        const read = mgmtReadIndicator(it);
+        return { it: it, value: read.value, status: read.status };
+    });
+}
+
+function mgmtDashPrev(code, fromIso) {
+    const prev = mgmtShiftThuWeek(fromIso, -1).from;
+    return mgmtDashReadAt(code, prev);
+}
+
+function mgmtChartCompact(n, unit) {
+    if (n == null || !Number.isFinite(Number(n))) return "";
+    const v = Number(n);
+    if (unit === "percent") return (Math.round(v * 10) / 10) + "%";
+    const a = Math.abs(v);
+    if (a >= 1000000) return (v / 1000000).toFixed(1).replace(".", ",") + " млн";
+    if (a >= 1000) return Math.round(v).toLocaleString("ru-RU");
+    return (Math.round(v * 10) / 10).toLocaleString("ru-RU");
+}
+
+function mgmtSvgComboChart(weeks, barCodes, lineCode) {
+    const W = 760;
+    const H = 210;
+    const padL = 48;
+    const padR = 44;
+    const padT = 18;
+    const padB = 28;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+    const series = [];
+    (barCodes || []).forEach(function (code, i) {
+        const it = mgmtDashIndicator(code);
+        series.push({
+            code: code,
+            it: it,
+            type: "bar",
+            color: i === 0 ? "#4F81BD" : "#9BBB59",
+            values: weeks.map(function (w) { return mgmtDashReadAt(code, w.from).value; })
         });
-        html += "</div>";
+    });
+    if (lineCode) {
+        const it = mgmtDashIndicator(lineCode);
+        series.push({
+            code: lineCode,
+            it: it,
+            type: "line",
+            color: "#F79646",
+            values: weeks.map(function (w) { return mgmtDashReadAt(lineCode, w.from).value; })
+        });
     }
+    function maxOf(arr) {
+        let m = 0;
+        arr.forEach(function (v) {
+            if (v != null && Number.isFinite(Number(v))) m = Math.max(m, Math.abs(Number(v)));
+        });
+        return m || 1;
+    }
+    const barVals = [];
+    const lineVals = [];
+    series.forEach(function (s) {
+        (s.type === "line" ? lineVals : barVals).push.apply(s.type === "line" ? lineVals : barVals, s.values);
+    });
+    const maxBar = maxOf(barVals);
+    const maxLine = maxOf(lineVals);
+    const n = weeks.length || 1;
+    const groupW = innerW / n;
+    const barCount = Math.max(1, (barCodes || []).length);
+    const barW = Math.max(8, Math.min(22, (groupW - 10) / barCount));
+    let svg = '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="xMidYMid meet">';
+    svg += '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#fff"/>';
+    for (let g = 0; g <= 4; g++) {
+        const y = padT + innerH * (g / 4);
+        svg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#e5e7eb"/>';
+    }
+    weeks.forEach(function (w, i) {
+        const x = padL + groupW * i + groupW / 2;
+        svg += '<text x="' + x + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="#64748b">'
+            + escapeHtml(mgmtFmtDdMm(w.from)) + "</text>";
+    });
+    (barCodes || []).forEach(function (code, bi) {
+        const s = series[bi];
+        if (!s) return;
+        s.values.forEach(function (v, i) {
+            if (v == null || !Number.isFinite(Number(v))) return;
+            const h = (Math.abs(Number(v)) / maxBar) * (innerH - 8);
+            const x = padL + groupW * i + (groupW - barCount * barW - 4) / 2 + bi * (barW + 2);
+            const y = padT + innerH - h;
+            svg += '<rect x="' + x + '" y="' + y + '" width="' + barW + '" height="' + h + '" fill="' + s.color + '"/>';
+            svg += '<text x="' + (x + barW / 2) + '" y="' + (y - 3) + '" text-anchor="middle" font-size="9" fill="#334155">'
+                + escapeHtml(mgmtChartCompact(v, s.it && s.it.unit)) + "</text>";
+        });
+    });
+    const lineSeries = series.filter(function (s) { return s.type === "line"; })[0];
+    if (lineSeries) {
+        let d = "";
+        const pts = [];
+        lineSeries.values.forEach(function (v, i) {
+            if (v == null || !Number.isFinite(Number(v))) return;
+            const x = padL + groupW * i + groupW / 2;
+            const y = padT + innerH - (Math.abs(Number(v)) / maxLine) * (innerH - 8);
+            pts.push({ x: x, y: y, v: v });
+            d += (d ? " L " : "M ") + x + " " + y;
+        });
+        if (d) svg += '<path d="' + d + '" fill="none" stroke="#F79646" stroke-width="2"/>';
+        pts.forEach(function (p) {
+            svg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="3.5" fill="#F79646"/>';
+            svg += '<text x="' + p.x + '" y="' + (p.y - 8) + '" text-anchor="middle" font-size="9" fill="#c2410c">'
+                + escapeHtml(mgmtChartCompact(p.v, lineSeries.it && lineSeries.it.unit)) + "</text>";
+        });
+    }
+    svg += "</svg>";
+    const legend = series.map(function (s) {
+        const name = (s.it && s.it.name) || s.code;
+        return '<span style="color:' + s.color + '">● ' + escapeHtml(name) + "</span>";
+    }).join(" &nbsp; ");
+    return { svg: svg, legend: legend };
+}
+
+function mgmtDashKpiCol(title, revCode, mpCode, rentCode, weekFrom) {
+    const rev = mgmtDashReadAt(revCode, weekFrom);
+    const mp = mgmtDashReadAt(mpCode, weekFrom);
+    const rent = mgmtDashReadAt(rentCode, weekFrom);
+    const prevRev = mgmtDashPrev(revCode, weekFrom);
+    const prevMp = mgmtDashPrev(mpCode, weekFrom);
+    const prevRent = mgmtDashPrev(rentCode, weekFrom);
+    function row(lab, pack, prev) {
+        return '<div class="spu-kpi-row"><div class="k-lab">' + escapeHtml(lab) + "</div>"
+            + '<div><span class="k-val">' + escapeHtml(pack.it ? mgmtFormatValue(pack.it, pack.value, pack.status) : "—") + "</span>"
+            + mgmtDashDeltaHtml(pack.it, pack.value, prev.value) + "</div></div>";
+    }
+    return '<div class="spu-kpi-col"><h5>' + escapeHtml(title) + "</h5>"
+        + row("Выручка", rev, prevRev)
+        + row("МП", mp, prevMp)
+        + row("R по МП", rent, prevRent)
+        + "</div>";
+}
+
+function mgmtDashOwnerHtml(spuId) {
+    const canHead = canEditMgmtIndicators() || isAppAdmin() || canOpenManagement();
+    const headNow = mgmtDeptHeadId(spuId)
+        || (typeof orgManagerForSpuDept === "function" ? orgManagerForSpuDept(spuId) : "");
+    const emp = headNow ? getEmployee(headNow) : null;
+    if (!canHead) return '<span>' + escapeHtml(emp ? emp.name : "—") + "</span>";
+    return '<select onchange="setMgmtDeptHead(\'' + escapeAttribute(spuId) + "',this.value);renderManagement()\">"
+        + mgmtLeaderOptions(headNow) + "</select>";
+}
+
+function renderMgmtDashboardHtml() {
+    ensureManagement();
+    mgmtEnsureDashWeek();
+    const panels = mgmtDashPanels();
+    if (!panels.some(function (p) { return p.id === mgmtDashPanel; })) mgmtDashPanel = "opt";
+    const panel = panels.find(function (p) { return p.id === mgmtDashPanel; }) || panels[0];
+    const week = mgmtThuWeek(mgmtDashWeek);
+    const weeks = [];
+    for (let i = 7; i >= 0; i--) weeks.push(mgmtShiftThuWeek(week.from, -i));
+
+    let html = '<div class="spu-dash">';
+    html += '<div class="spu-dash-tabs">';
+    panels.forEach(function (p) {
+        html += '<button type="button" class="' + (p.id === panel.id ? "on" : "") + '" onclick="setMgmtDashPanel(\'' + p.id + "')\">"
+            + escapeHtml(p.label) + "</button>";
+    });
+    html += "</div>";
+    html += '<div class="spu-kpi">';
+    html += '<div class="spu-kpi-period"><label>ПЕРИОД (чт–ср)</label>'
+        + '<select onchange="setMgmtDashWeek(this.value)">' + mgmtThuWeekOptions(week.from) + "</select>"
+        + '<div class="k-lab" style="margin-top:8px">Неделя</div>'
+        + '<div class="k-val" style="font-size:13px">' + escapeHtml(mgmtFmtRu(week.from) + " – " + mgmtFmtRu(week.to)) + "</div>"
+        + "</div>";
+    html += mgmtDashKpiCol("ОПТ", "opt_revenue", "opt_margin", "opt_rent", week.from);
+    html += mgmtDashKpiCol("СКЛАД", "wh_revenue", "wh_margin", "wh_rent", week.from);
+    html += mgmtDashKpiCol("МАГАЗИН", "shop_sales", "shop_margin", "shop_rent", week.from);
+    html += "</div>";
+
+    html += '<div class="spu-extra">';
+    (panel.extra || []).forEach(function (code) {
+        const pack = mgmtDashReadAt(code, week.from);
+        const prev = mgmtDashPrev(code, week.from);
+        html += "<div><div class=\"k-lab\">" + escapeHtml(pack.it ? pack.it.name : code) + "</div>"
+            + "<b>" + escapeHtml(pack.it ? mgmtFormatValue(pack.it, pack.value, pack.status) : "—") + "</b>"
+            + " " + mgmtDashDeltaHtml(pack.it, pack.value, prev.value)
+            + "</div>";
+    });
+    html += "</div>";
+
+    html += '<div class="spu-deptbar"><span>' + escapeHtml(panel.label) + "</span>"
+        + "<span>Ответственный " + mgmtDashOwnerHtml(panel.spu) + "</span></div>";
+
+    (panel.charts || []).forEach(function (ch) {
+        const drawn = mgmtSvgComboChart(weeks, ch.bars || [], ch.line || "");
+        html += '<div class="spu-chart"><h4>' + escapeHtml(ch.title) + "</h4>"
+            + '<div class="spu-chart-body">' + drawn.svg + "</div>"
+            + '<div class="spu-leg">' + drawn.legend + "</div></div>";
+    });
+    html += "</div>";
     return html;
 }
 
