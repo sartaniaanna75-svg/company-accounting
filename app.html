@@ -41,7 +41,7 @@
         button { cursor: pointer; }
 
         /* =========================================================
-           Экран входа: Магазин Володарского + Территория + Общая
+           Экран входа: Магазин Володарского + Территория + Общее + СПУ + Администратор
         ========================================================= */
         .login-screen {
             min-height: 100vh;
@@ -90,6 +90,10 @@
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             gap: 16px;
+        }
+
+        .login-grid.home-five {
+            grid-template-columns: repeat(2, 1fr);
         }
 
         .login-grid.territory-view {
@@ -310,43 +314,37 @@
             color: white;
         }
 
-        .mgmt-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
-        .mgmt-chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 8px 0; }
+        .mgmt-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+        .mgmt-chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
         .mgmt-chip, .mgmt-tab {
             border: 1px solid var(--border);
             background: #fff;
             padding: 4px 10px;
-            border-radius: 8px;
+            border-radius: 6px;
             font-size: 12px;
             cursor: pointer;
         }
         .mgmt-chip.on, .mgmt-tab.on { background: #0f172a; color: #fff; border-color: #0f172a; }
-        .mgmt-period { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; }
-        .mgmt-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 10px 0; }
-        .mgmt-card {
-            background: #fff;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 8px 10px;
-            cursor: default;
-        }
-        .mgmt-card.clickable { cursor: pointer; }
-        .mgmt-card .k { font-size: 11px; color: var(--muted); }
-        .mgmt-card .v { font-size: 15px; font-weight: 700; margin: 1px 0; }
-        .mgmt-page-h { font-size: 13px; font-weight: 700; margin: 0 0 8px; }
-        .mgmt-card .s { font-size: 11px; color: var(--muted); }
-        .mgmt-block { margin: 12px 0; }
-        .mgmt-block h4 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+        .mgmt-period { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; margin-bottom: 6px; }
+        .mgmt-block { margin: 8px 0 12px; }
+        .mgmt-block h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
         .mgmt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        .mgmt-table th, .mgmt-table td { border-bottom: 1px solid #e5e7eb; padding: 4px 6px; text-align: left; }
-        .mgmt-table th { background: #f8fafc; position: sticky; top: 0; }
+        .mgmt-table th, .mgmt-table td { border-bottom: 1px solid #e5e7eb; padding: 3px 6px; text-align: left; white-space: nowrap; }
+        .mgmt-table td.wrap { white-space: normal; }
+        .mgmt-table th { background: #f8fafc; position: sticky; top: 0; z-index: 1; font-weight: 600; }
         .mgmt-ok { background: #ecfdf5; }
         .mgmt-warn { background: #fffbeb; }
         .mgmt-bad { background: #fef2f2; }
+        .mgmt-muted { background: #f8fafc; color: #94a3b8; }
         .mgmt-src { font-size: 11px; color: var(--muted); }
         .mgmt-manual { width: 92px; padding: 3px 6px; }
+        .mgmt-delta-up { color: #166534; font-weight: 600; }
+        .mgmt-delta-down { color: #b91c1c; font-weight: 600; }
+        .mgmt-attn { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+        .mgmt-attn span { font-size: 11px; padding: 3px 8px; border-radius: 6px; background: #fff7ed; border: 1px solid #fed7aa; }
+        .mgmt-dept-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
         @media (max-width: 1100px) {
-            .mgmt-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .mgmt-dept-grid { grid-template-columns: 1fr; }
         }
 
         .main {
@@ -2570,7 +2568,7 @@
         </div>
         <div class="login-title" id="loginTitle">⏱ Табель сотрудников</div>
         <div class="login-subtitle" id="loginSubtitle">
-            Выберите раздел: Магазин Володарского, Территория или Общая.
+            Выберите раздел: Магазин Володарского, Территория, Общее, СПУ или Администратор.
             <span id="defaultPinHint"></span>
         </div>
         <div class="login-grid" id="loginGrid">
@@ -2590,9 +2588,14 @@
                 <button type="button" class="btn btn-primary" style="width:100%;" onclick="event.stopPropagation();renderLogin('territory')">Открыть</button>
             </div>
             <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('summary')">
-                <h3>Общая</h3>
-                <div class="note">Сводка, зарплата и СПУ (управление компанией)</div>
+                <h3>Общее</h3>
+                <div class="note">Зарплаты, начисления и общий расчёт</div>
                 <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('summary')">Открыть</button>
+            </div>
+            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('spu')">
+                <h3>СПУ</h3>
+                <div class="note">Система планирования и управления компанией</div>
+                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('spu')">Открыть</button>
             </div>
             <div class="login-card summary-card" role="button" tabindex="0" onclick="renderLogin('admin')">
                 <h3>Администратор</h3>
@@ -2617,7 +2620,7 @@
 
         <div class="dept-now" id="deptNow"></div>
 
-        <div class="menu-title">Работа</div>
+        <div class="menu-title" data-for="dept">Работа</div>
 
         <button type="button" class="nav-btn" data-for="dept" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
@@ -2690,7 +2693,7 @@
             📊 Сводка
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="management" onclick="showSection('management', this)">
-            📋 СПУ — управление
+            📋 Панель управления
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="salary" onclick="showSection('salary', this)">
             💰 Зарплата
@@ -3845,6 +3848,7 @@ let summarySortMode = "dept";
 let currentSummaryRole = null;
 let currentDeptRole = null;
 let currentUserId = "";
+let currentEntry = "dept";
 let loginView = "home";
 let loginSelectedUserByDept = {};
 let loginPinByDept = {};
@@ -5175,7 +5179,14 @@ function userCanOpenManagementAccess(user) {
 
 function userCanAccessDept(user, code) {
     if (!user || user.is_active === false) return false;
-    if (code === "mgmt" || code === "management") return userCanOpenManagementAccess(user);
+    if (code === "admin") {
+        return user.role === "admin" || user.legacy_role === "admin";
+    }
+    if (code === "spu" || code === "mgmt" || code === "management") {
+        if (user.legacy_role === "pay") return false;
+        if (userAccessDeptCodes(user).indexOf("spu") !== -1) return true;
+        return userCanOpenManagementAccess(user) || user.legacy_role === "adjust" || user.legacy_role === "admin";
+    }
     if (user.role === "admin" || user.legacy_role === "admin") return true;
     return userAccessDeptCodes(user).indexOf(code) !== -1;
 }
@@ -5194,10 +5205,35 @@ function usersForDeptLogin(code) {
 
 function userSwitchCodes(user) {
     if (!user) return [];
-    if (user.role === "admin" || user.legacy_role === "admin") {
-        return DEPT_DEFAULTS.map(function (d) { return d.code; }).concat(["summary"]);
+    const codes = [];
+    function add(code) {
+        if (!code || codes.indexOf(code) !== -1) return;
+        codes.push(code);
     }
-    return userAccessDeptCodes(user);
+    DEPT_DEFAULTS.forEach(function (d) {
+        if (userCanAccessDept(user, d.code)) add(d.code);
+    });
+    if (userCanAccessDept(user, "summary")) add("summary");
+    if (userCanAccessDept(user, "spu")) add("spu");
+    if (userCanAccessDept(user, "admin")) add("admin");
+    return codes;
+}
+
+function currentNavCode() {
+    if (isSpuMode()) return "spu";
+    if (isAdminEntry()) return "admin";
+    if (isSummary()) return "summary";
+    return (workspace() && workspace().code) || "";
+}
+
+function entryLabel(code) {
+    if (code === "summary") return "Общее";
+    if (code === "spu") return "СПУ";
+    if (code === "admin") return "Администратор";
+    const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
+    if (d) return d.name;
+    const w = findWorkspaceByCode(code);
+    return officialName(w) || code || "";
 }
 
 function findActiveUserByPin(entered) {
@@ -5255,30 +5291,51 @@ function applyLegacyRolesFromUser(user, code) {
     currentDeptRole = (user.role === "manager" || userHasPerm("settings", "edit")) ? "admin" : "staff";
 }
 
+function isSpuMode() {
+    return isSummary() && currentEntry === "spu";
+}
+
+function isAdminEntry() {
+    return currentEntry === "admin";
+}
+
 let pendingOpenSection = "";
 
 function enterAsUser(user, code) {
     ensureLoginData();
     migrateAppUsers(appData);
     let w = findWorkspaceByCode(code);
+    if (!w && (code === "summary" || code === "spu" || code === "admin")) {
+        w = findWorkspaceByCode("summary");
+    }
     if (!w && code === "summary") {
         w = createWorkspace(SUMMARY_DEFAULT.name, "5555", "summary", "summary");
         appData.workspaces.push(w);
         ensureSummaryPins(w);
     }
-    const def = DEPT_DEFAULTS.find(function (d) { return d.code === code; });
+    const destCode = (code === "spu" || code === "admin") ? "summary" : code;
+    const def = DEPT_DEFAULTS.find(function (d) { return d.code === destCode; });
     if (!w && def) {
-        w = createWorkspace(def.name, String(def.pin), "dept", code);
+        w = createWorkspace(def.name, String(def.pin), "dept", destCode);
         appData.workspaces.push(w);
     }
     if (!w) return false;
+    if (code === "spu") currentEntry = "spu";
+    else if (code === "admin") currentEntry = "admin";
+    else if (destCode === "summary") {
+        if (currentEntry !== "spu" && currentEntry !== "admin") currentEntry = "summary";
+    } else {
+        currentEntry = "dept";
+    }
     currentUserId = user.user_id;
     setCurrentWorkspace(w);
-    applyLegacyRolesFromUser(user, code);
+    applyLegacyRolesFromUser(user, destCode === "summary" || w.type === "summary" ? "summary" : destCode);
     selectedMonth = currentMonthValue();
     const want = pendingOpenSection;
     pendingOpenSection = "";
     if (want && allowedSections().indexOf(want) !== -1) currentSection = want;
+    else if (currentEntry === "spu") currentSection = "management";
+    else if (currentEntry === "admin") currentSection = "users";
     else if (user.legacy_role === "pay") currentSection = "salary";
     else if (user.legacy_role === "adjust") currentSection = "salary";
     else currentSection = defaultSection();
@@ -5290,10 +5347,40 @@ function enterAsUser(user, code) {
 
 function switchUserWorkspace(code) {
     const user = currentAuthUser();
-    if (!user || !userCanAccessDept(user, code)) return;
+    if (!user) return;
+    const keepMonth = selectedMonth;
+    if (code === "admin") {
+        if (!isAppAdmin()) return;
+        const w = findWorkspaceByCode("summary");
+        if (!w) return;
+        currentEntry = "admin";
+        currentUserId = user.user_id;
+        setCurrentWorkspace(w);
+        applyLegacyRolesFromUser(user, "summary");
+        selectedMonth = keepMonth;
+        currentSection = "users";
+        saveSession();
+        loadWorkspace();
+        return;
+    }
+    if (code === "spu") {
+        if (!userCanAccessDept(user, "spu")) return;
+        const w = findWorkspaceByCode("summary");
+        if (!w) return;
+        currentEntry = "spu";
+        currentUserId = user.user_id;
+        setCurrentWorkspace(w);
+        applyLegacyRolesFromUser(user, "summary");
+        selectedMonth = keepMonth;
+        currentSection = "management";
+        saveSession();
+        loadWorkspace();
+        return;
+    }
+    if (!userCanAccessDept(user, code)) return;
     const w = findWorkspaceByCode(code);
     if (!w) return;
-    const keepMonth = selectedMonth;
+    currentEntry = code === "summary" ? "summary" : "dept";
     const keepSection = currentSection;
     currentUserId = user.user_id;
     setCurrentWorkspace(w);
@@ -5576,7 +5663,7 @@ function createDefaultData() {
         shopSalesPlan: { months: {} },
         deptSalesPlans: {},
         users: [],
-        management: { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [] },
+        management: { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [], events: [] },
         workspaces: DEPT_DEFAULTS.map(function (d) {
             return createWorkspace(d.name, d.pin, "dept", d.code);
         }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
@@ -6061,7 +6148,9 @@ function repairFourDepartments(data) {
 
 function workspaceTitle(w) {
     if (!w) return "";
-    if (w.type === "summary" || w.code === "summary") return "Общая сводка";
+    if (typeof isSpuMode === "function" && isSpuMode()) return "СПУ";
+    if (typeof isAdminEntry === "function" && isAdminEntry()) return "Администратор";
+    if (w.type === "summary" || w.code === "summary") return "Общее";
     return officialName(w);
 }
 
@@ -6078,28 +6167,31 @@ function renderDeptNow() {
         return;
     }
 
-    const code = current.code || (isSummary() ? "summary" : "");
+    const code = currentNavCode();
     const hint = isSummary()
-        ? (isAppAdmin()
+        ? (isAdminEntry()
             ? currentAuthUserName() + " · режим администратора"
-            : currentSummaryRole === "adjust"
-                ? currentAuthUserName() + " · штрафы, прогулы, продукты, аванс и налоги"
-                : currentSummaryRole === "pay"
-                    ? currentAuthUserName() + " · только отметка «Выдано»"
-                    : (currentAuthUserName() || "Общая"))
+            : isSpuMode()
+                ? (currentAuthUserName() || "СПУ")
+                : (isAppAdmin()
+                    ? currentAuthUserName() + " · режим администратора"
+                    : currentSummaryRole === "adjust"
+                        ? currentAuthUserName()
+                        : currentSummaryRole === "pay"
+                            ? currentAuthUserName() + " · только отметка «Выдано»"
+                            : (currentAuthUserName() || "Общее")))
         : (isAppAdmin()
             ? currentAuthUserName() + " · режим администратора"
             : (currentAuthUserName() ? currentAuthUserName() + " · " + officialName(current) : "Свои сотрудники. Другие отделы сюда не входят."));
 
-    const title = isSummary() ? "Общая" : officialName(current);
+    const title = entryLabel(code) || officialName(current);
     const user = currentAuthUser();
     const codes = userSwitchCodes(user);
     let switchHtml = "";
     if (codes.length > 1) {
         switchHtml = '<select class="dept-switch" onchange="switchUserWorkspace(this.value)">';
         codes.forEach(function (c) {
-            const label = c === "summary" ? "Общая" : officialName(findWorkspaceByCode(c)) || c;
-            switchHtml += '<option value="' + c + '"' + ((current.code === c) ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
+            switchHtml += '<option value="' + c + '"' + (code === c ? " selected" : "") + ">" + escapeHtml(entryLabel(c)) + "</option>";
         });
         switchHtml += "</select>";
     }
@@ -6908,7 +7000,7 @@ function summaryMonthMoney(monthValue) {
 function renderLogin(view) {
     try {
         console.log("[WorkTime login click]", view);
-        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "admin") loginView = view;
+        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "spu" || view === "admin") loginView = view;
         ensureLoginData();
         try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
@@ -6961,13 +7053,22 @@ function renderLogin(view) {
             }).join("");
         } else if (loginView === "summary") {
             backHome();
-            if (title) title.textContent = "Общая";
+            if (title) title.textContent = "Общее";
             if (subtitle) {
-                subtitle.innerHTML = "Выберите пользователя и введите его PIN."
+                subtitle.innerHTML = "Зарплаты, начисления и общий расчёт. Выберите пользователя и введите его PIN."
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid single-view";
-            grid.innerHTML = userPinLoginCardHtml("summary", "Общая");
+            grid.innerHTML = userPinLoginCardHtml("summary", "Общее");
+        } else if (loginView === "spu") {
+            backHome();
+            if (title) title.textContent = "СПУ";
+            if (subtitle) {
+                subtitle.innerHTML = "Система планирования и управления компанией. Выберите пользователя и введите его PIN."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = userPinLoginCardHtml("spu", "СПУ");
         } else if (loginView === "admin") {
             backHome();
             if (title) title.textContent = "Администратор";
@@ -6986,8 +7087,8 @@ function renderLogin(view) {
                 subtitle.innerHTML = "Выберите раздел или вход администратора."
                     + ' <span id="defaultPinHint"></span>';
             }
-            grid.className = "login-grid";
-            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + adminFolderCardHtml();
+            grid.className = "login-grid home-five";
+            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + spuFolderCardHtml() + adminFolderCardHtml();
         }
 
         restoreAllLoginCardState(grid);
@@ -6998,8 +7099,10 @@ function renderLogin(view) {
                 ? (loginView === "home"
                     ? " PIN: магазин 1111 · офис 2222 · склад 3333 · логистика 4444 · админ 5555 · Ольга 6666 · Наталья 7777."
                     : loginView === "summary"
-                        ? " Общая: 5555 / 6666 / 7777."
-                        : loginView === "admin"
+                        ? " Общее: 5555 / 6666 / 7777."
+                        : loginView === "spu"
+                            ? " СПУ: 5555 / 6666."
+                            : loginView === "admin"
                             ? " Админ: 5555."
                             : " Введите личный PIN пользователя этого раздела.")
                 : "";
@@ -7204,8 +7307,18 @@ function summaryFolderCardHtml() {
     return folderCardHtml(
         "summary-folder",
         "summary",
-        "Общая",
-        "Сводка, зарплата и СПУ (управление компанией)",
+        "Общее",
+        "Зарплаты, начисления и общий расчёт",
+        ""
+    );
+}
+
+function spuFolderCardHtml() {
+    return folderCardHtml(
+        "summary-folder",
+        "spu",
+        "СПУ",
+        "Система планирования и управления компанией",
         ""
     );
 }
@@ -7215,7 +7328,7 @@ function adminFolderCardHtml() {
 }
 
 function summaryLoginCardHtml() {
-    return userPinLoginCardHtml("summary", "Общая");
+    return userPinLoginCardHtml("summary", "Общее");
 }
 
 function adminLoginCardHtml() {
@@ -7318,6 +7431,9 @@ function loginByCode(code) {
         }
         clearLoginPinState(code);
         if (input) input.value = "";
+        if (code === "spu") currentEntry = "spu";
+        else if (code === "summary") currentEntry = "summary";
+        else currentEntry = "dept";
         if (!enterAsUser(user, code)) {
             showLoginError(code, "Ошибка входа в раздел.");
         }
@@ -7355,7 +7471,8 @@ function loginAdmin() {
         }
         if (input) input.value = "";
         loginPinByDept.admin = "";
-        if (!enterAsUser(user, "summary")) {
+        currentEntry = "admin";
+        if (!enterAsUser(user, "admin")) {
             showLoginError("admin", "Ошибка входа администратора.");
         }
     } catch (err) {
@@ -7403,7 +7520,8 @@ function saveSession() {
             section: currentSection,
             summaryRole: currentSummaryRole,
             deptRole: currentDeptRole,
-            userId: currentUserId
+            userId: currentUserId,
+            entry: currentEntry
         }));
     } catch (err) {}
 }
@@ -7414,6 +7532,7 @@ function leaveWorkspace() {
     currentDeptRole = null;
     currentUserId = "";
     currentSection = "timesheet";
+    currentEntry = "dept";
     selectedMonth = currentMonthValue();
     clearLoginPinState();
     try { sessionStorage.removeItem(SESSION_KEY); } catch (err) {}
@@ -7424,8 +7543,11 @@ function leaveWorkspace() {
 
 function logout() {
     const code = currentWorkspaceCode;
+    const entry = currentEntry;
     leaveWorkspace();
-    if (isTerritoryCode(code)) renderLogin("territory");
+    if (entry === "spu") renderLogin("spu");
+    else if (entry === "admin") renderLogin("admin");
+    else if (isTerritoryCode(code)) renderLogin("territory");
     else if (code === "shop") renderLogin("shop");
     else if (code === "summary") renderLogin("summary");
     else renderLogin("home");
@@ -7451,6 +7573,7 @@ function tryRestoreSession() {
             if (saved.summaryRole) currentSummaryRole = saved.summaryRole;
             if (saved.deptRole) currentDeptRole = saved.deptRole;
             if (saved.userId) currentUserId = saved.userId;
+            if (saved.entry) currentEntry = saved.entry;
             if (saved.index !== undefined && !id && !code) {
                 currentWorkspaceIndex = Number(saved.index);
             }
@@ -7478,6 +7601,15 @@ function tryRestoreSession() {
                 currentSummaryRole = null;
                 if (!currentDeptRole) currentDeptRole = "staff";
             }
+        }
+        if (w.type === "summary" || w.code === "summary") {
+            if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "summary") {
+                if (currentSection === "management") currentEntry = "spu";
+                else if (currentSection === "users") currentEntry = "admin";
+                else currentEntry = "summary";
+            }
+        } else {
+            currentEntry = "dept";
         }
         openApp();
     } catch (err) {}
@@ -7512,6 +7644,14 @@ function applyModeUI() {
             if (sec === "deptMetrics" && (!workspace() || !isGenericMetricsDept(workspace().code))) show = false;
             if (mode === "dept" && (sec === "timesheet" || sec === "deptMetrics") && (code === "warehouse" || code === "drivers")) {
                 show = false;
+            }
+            if (isSpuMode()) {
+                show = sec === "management" && allowed.indexOf("management") !== -1;
+            } else if (isAdminEntry()) {
+                show = (sec === "users" || sec === "settings" || sec === "metricCatalog") && allowed.indexOf(sec) !== -1;
+            } else if (summary) {
+                if (sec === "management") show = false;
+                if (sec === "users") show = false;
             }
         }
         el.style.display = show ? "" : "none";
@@ -7571,21 +7711,30 @@ function closeSidebar() {
 
 function allowedSections() {
     const code = workspace() && workspace().code;
-        if (isSummary()) {
+    if (isSpuMode()) {
+        return canOpenManagement() ? ["management"] : [];
+    }
+    if (isAdminEntry()) {
+        const list = [];
+        if (isAppAdmin()) list.push("users");
+        if (userHasPerm("settings", "edit")) list.push("settings");
+        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("metricCatalog");
+        return list;
+    }
+    if (isSummary()) {
         if (currentSummaryRole === "pay" || (currentAuthUser() && currentAuthUser().legacy_role === "pay")) {
             return userHasPerm("salary", "view") ? ["salary"] : [];
         }
         const list = [];
         if (userHasPerm("timesheet", "view")) list.push("timesheet");
-        if (canOpenManagement()) list.push("management");
         if (userHasPerm("salary", "view")) {
             list.push("salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary");
         }
         if (userHasPerm("discipline", "view")) list.push("discipline");
-        if (userHasPerm("timesheet", "view")) list.push("analysis");
-        if (userHasPerm("settings", "edit")) list.push("settings", "summaryStaff");
-        if (userHasPerm("kpi", "manage") || isAppAdmin()) list.push("metricCatalog");
-        if (isAppAdmin()) list.push("users");
+        if (userHasPerm("timesheet", "view") || userHasPerm("salary", "view")) list.push("analysis");
+        if (userHasPerm("timesheet", "edit") || userHasPerm("settings", "edit")) list.push("summaryStaff");
+        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("metricCatalog");
+        if (userHasPerm("settings", "edit")) list.push("settings");
         return list;
     }
     const list = [];
@@ -7695,6 +7844,8 @@ function showSection(id, button) {
         : id;
     const host = document.getElementById(sectionId);
     if (host) host.classList.add("active");
+    const monthBar = document.querySelector(".month-bar");
+    if (monthBar) monthBar.style.display = id === "management" ? "none" : "";
 
     document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         const visible = btn.style.display !== "none";
@@ -19393,9 +19544,7 @@ function accessRoleLabel(user) {
 
 function accessDeptLabels(user) {
     return userSwitchCodes(user).map(function (c) {
-        if (c === "summary") return "Общая";
-        const d = DEPT_DEFAULTS.find(function (x) { return x.code === c; });
-        return (d && d.name) || c;
+        return entryLabel(c);
     }).join(", ") || "—";
 }
 
@@ -19409,26 +19558,27 @@ function accessPermLabels(user) {
 function renderAccessUsers() {
     if (!isAppAdmin()) return;
     migrateAppUsers(appData);
-    const body = document.getElementById("accessUsersBody");
-    if (!body) return;
+    const bodies = ["accessUsersBody", "accessUsersBodySpu"].map(function (id) {
+        return document.getElementById(id);
+    }).filter(Boolean);
+    if (!bodies.length) return;
     const list = appUsers().slice().sort(function (a, b) {
         return String(a.display_name || "").localeCompare(String(b.display_name || ""), "ru");
     });
-    if (!list.length) {
-        body.innerHTML = '<tr><td colspan="7"><div class="empty-row">Пользователей пока нет.</div></td></tr>';
-        return;
-    }
-    body.innerHTML = list.map(function (u) {
-        return "<tr><td><strong>" + escapeHtml(u.display_name || "") + "</strong>"
-            + '<div class="note">' + escapeHtml(u.user_id) + "</div></td>"
-            + "<td>" + escapeHtml(accessRoleLabel(u)) + "</td>"
-            + "<td>" + escapeHtml(accessDeptLabels(u)) + "</td>"
-            + "<td>" + escapeHtml(accessPermLabels(u)) + "</td>"
-            + "<td>" + (u.is_active === false ? "Нет" : "Да") + "</td>"
-            + '<td class="users-pin">••••</td>'
-            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openAccessUserEditor(\''
-            + u.user_id + "')\">Редактировать</button></td></tr>";
-    }).join("");
+    const html = !list.length
+        ? '<tr><td colspan="7"><div class="empty-row">Пользователей пока нет.</div></td></tr>'
+        : list.map(function (u) {
+            return "<tr><td><strong>" + escapeHtml(u.display_name || "") + "</strong>"
+                + '<div class="note">' + escapeHtml(u.user_id) + "</div></td>"
+                + "<td>" + escapeHtml(accessRoleLabel(u)) + "</td>"
+                + "<td>" + escapeHtml(accessDeptLabels(u)) + "</td>"
+                + "<td>" + escapeHtml(accessPermLabels(u)) + "</td>"
+                + "<td>" + (u.is_active === false ? "Нет" : "Да") + "</td>"
+                + '<td class="users-pin">••••</td>'
+                + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openAccessUserEditor(\''
+                + u.user_id + "')\">Редактировать</button></td></tr>";
+        }).join("");
+    bodies.forEach(function (body) { body.innerHTML = html; });
 }
 
 function closeAccessUserEditor() {
@@ -19479,8 +19629,11 @@ function openAccessUserEditor(userId) {
             + (on || user.role === "admin" ? " checked" : "") + "> " + escapeHtml(d.name) + "</label>";
     });
     deptHtml += '<label class="check"><input type="checkbox" id="accessDept_summary"'
-        + ((user.departments || []).indexOf("summary") !== -1 || user.role === "admin" ? " checked" : "")
-        + "> Общая</label>";
+        + ((user.departments || []).indexOf("summary") !== -1 || user.role === "admin" || user.legacy_role === "admin" ? " checked" : "")
+        + "> Общее</label>";
+    deptHtml += '<label class="check"><input type="checkbox" id="accessDept_spu"'
+        + (userCanAccessDept(user, "spu") ? " checked" : "")
+        + "> СПУ</label>";
     let permHtml = "";
     ACCESS_PERM_KEYS.forEach(function (p) {
         const on = permRank((user.permissions && user.permissions[p.key]) || "none") > 0;
@@ -19539,6 +19692,9 @@ function saveAccessUser(userId) {
     if (document.getElementById("accessDept_summary") && document.getElementById("accessDept_summary").checked) {
         departments.push("summary");
     }
+    if (document.getElementById("accessDept_spu") && document.getElementById("accessDept_spu").checked) {
+        departments.push("spu");
+    }
     const permissions = {};
     ACCESS_PERM_KEYS.forEach(function (p) {
         const el = document.getElementById("accessPerm_" + p.key);
@@ -19550,6 +19706,7 @@ function saveAccessUser(userId) {
             if (departments.indexOf(d.code) === -1) departments.push(d.code);
         });
         if (departments.indexOf("summary") === -1) departments.push("summary");
+        if (departments.indexOf("spu") === -1) departments.push("spu");
         ACCESS_PERM_KEYS.forEach(function (p) { permissions[p.key] = "edit"; });
     }
     let prev = findAccessUser(id);
@@ -19785,7 +19942,7 @@ function ensureManagement() {
         appData.management = appData.spu;
     }
     if (!appData.management || typeof appData.management !== "object") {
-        appData.management = { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [] };
+        appData.management = { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [], events: [] };
     }
     const root = appData.management;
     if (!Array.isArray(root.indicators)) root.indicators = [];
@@ -19793,6 +19950,7 @@ function ensureManagement() {
     if (!root.manualFacts || typeof root.manualFacts !== "object") root.manualFacts = {};
     if (!Array.isArray(root.tasks)) root.tasks = [];
     if (!Array.isArray(root.meetings)) root.meetings = [];
+    if (!Array.isArray(root.events)) root.events = [];
     appData.spu = root;
     ensureSpuDefaultIndicators();
 }
@@ -20373,11 +20531,12 @@ function renderManagement() {
         if (!tabs || !body) return;
         const items = [
             { id: "dashboard", label: "Панель управления", show: userHasPerm("management", "view") || canOpenManagement() },
-            { id: "planfact", label: "План–факт", show: userHasPerm("management", "view") || canOpenManagement() },
+            { id: "planfact", label: "План–факт компании", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "finance", label: "Финансовые показатели", show: userHasPerm("management", "view") || canOpenManagement() },
-            { id: "tasks", label: "Задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() },
-            { id: "meetings", label: "Встречи", show: userHasPerm("managementMeetings", "view") || isAppAdmin() },
-            { id: "settings", label: "Настройка показателей", show: canEditMgmtIndicators() || isAppAdmin() }
+            { id: "meetings", label: "Протокол встреч", show: userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement() },
+            { id: "tasks", label: "Задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement() },
+            { id: "events", label: "График мероприятий", show: canOpenManagement() },
+            { id: "settings", label: "⚙ Показатели", show: canEditMgmtIndicators() || isAppAdmin() }
         ].filter(function (t) { return t.show; });
         if (!items.length) {
             body.innerHTML = '<div class="note">Нет доступа к СПУ.</div>';
@@ -20387,10 +20546,11 @@ function renderManagement() {
         if (!items.some(function (t) { return t.id === mgmtTab; })) mgmtTab = items[0].id;
         const titles = {
             dashboard: "СПУ — Панель управления",
-            planfact: "СПУ — План–факт",
+            planfact: "СПУ — План–факт компании",
             finance: "СПУ — Финансовые показатели",
+            meetings: "СПУ — Протокол встреч",
             tasks: "СПУ — Задачи",
-            meetings: "СПУ — Встречи",
+            events: "СПУ — График мероприятий",
             settings: "СПУ — Настройка показателей"
         };
         const head = document.getElementById("mgmtPageTitle");
@@ -20404,6 +20564,7 @@ function renderManagement() {
         else if (mgmtTab === "finance") body.innerHTML = renderMgmtFinanceHtml();
         else if (mgmtTab === "tasks") body.innerHTML = renderMgmtTasksHtml();
         else if (mgmtTab === "meetings") body.innerHTML = renderMgmtMeetingsHtml();
+        else if (mgmtTab === "events") body.innerHTML = renderMgmtEventsHtml();
         else body.innerHTML = renderMgmtSettingsHtml();
     } catch (err) {
         console.error(err);
@@ -20450,19 +20611,92 @@ function mgmtDeptChipsHtml() {
     return html;
 }
 
-function mgmtCardHtml(it) {
+function mgmtRowStatus(it, fact, plan) {
+    if (it.source_type === "one_c_future") return { cls: "mgmt-muted", label: "Нет 1С" };
+    if (fact == null || fact === "") return { cls: "mgmt-muted", label: "Нет данных" };
+    if (plan == null || Number(plan) === 0) return { cls: "", label: "Факт" };
+    const pct = Number(fact) / Number(plan);
+    if (pct >= 1) return { cls: "mgmt-ok", label: "Норма" };
+    if (pct >= 0.8) return { cls: "mgmt-warn", label: "Внимание" };
+    return { cls: "mgmt-bad", label: "Отклонение" };
+}
+
+function mgmtPeekPrevFact(it) {
+    const saved = mgmtAnchorIso;
+    const r = mgmtPeriodRange();
+    const d = mgmtParseIso(r.from);
+    if (mgmtPeriodKind === "week") d.setDate(d.getDate() - 7);
+    else d.setMonth(d.getMonth() - 1);
+    mgmtAnchorIso = mgmtIsoFromDate(d);
+    const prev = mgmtReadIndicator(it);
+    mgmtAnchorIso = saved;
+    return prev && prev.value != null ? Number(prev.value) : null;
+}
+
+function mgmtDeltaHtml(curr, prev) {
+    if (curr == null || prev == null || !Number.isFinite(Number(prev)) || Number(prev) === 0) return "—";
+    const pct = ((Number(curr) - Number(prev)) / Math.abs(Number(prev))) * 100;
+    const cls = pct >= 0 ? "mgmt-delta-up" : "mgmt-delta-down";
+    const arrow = pct >= 0 ? "↑" : "↓";
+    return '<span class="' + cls + '">' + arrow + " " + (Math.round(Math.abs(pct) * 10) / 10).toLocaleString("ru-RU") + "%</span>";
+}
+
+function mgmtKpiTableHtml(items) {
+    let html = '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + "<th>Показатель</th><th>План</th><th>Факт</th><th>Откл.</th><th>%</th><th>Δ к прошл.</th><th>Ответственный</th><th>Статус</th>"
+        + "</tr></thead><tbody>";
+    if (!items.length) {
+        html += '<tr><td colspan="8"><div class="empty-row">Нет показателей на панели. Добавьте через ⚙ Показатели.</div></td></tr>';
+    }
+    items.forEach(function (it) {
+        const read = mgmtReadIndicator(it);
+        const plan = mgmtPlanValue(it.indicator_id);
+        const fact = read.value;
+        const diff = plan != null && fact != null ? Number(fact) - Number(plan) : null;
+        const pct = plan && Number(plan) !== 0 && fact != null ? (Number(fact) / Number(plan)) * 100 : null;
+        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+        const st = mgmtRowStatus(it, fact, plan);
+        const prev = mgmtPeekPrevFact(it);
+        html += '<tr class="' + st.cls + '" style="cursor:pointer" onclick="openMgmtIndicatorDetail(\'' + it.indicator_id + '\')">'
+            + '<td class="wrap">' + escapeHtml(it.name) + "</td>"
+            + "<td>" + escapeHtml(plan == null ? "—" : mgmtFormatValue(it, plan)) + "</td>"
+            + "<td><strong>" + escapeHtml(mgmtFormatValue(it, fact, read.status)) + "</strong></td>"
+            + "<td>" + (diff == null ? "—" : escapeHtml(mgmtFormatValue(it, diff))) + "</td>"
+            + "<td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</td>"
+            + "<td>" + mgmtDeltaHtml(fact, prev) + "</td>"
+            + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
+            + "<td>" + escapeHtml(st.label) + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function openMgmtIndicatorDetail(indicatorId) {
+    const it = (appData.management.indicators || []).find(function (x) { return x && x.indicator_id === indicatorId; });
+    if (!it) return;
     const read = mgmtReadIndicator(it);
     const plan = mgmtPlanValue(it.indicator_id);
     const fact = read.value;
-    let extra = mgmtSourceLabel(it.source_type);
-    if (plan != null && fact != null && Number(plan) !== 0) {
-        const pct = (Number(fact) / Number(plan)) * 100;
-        extra = "План " + mgmtFormatValue(it, plan) + " · " + (Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%";
-    }
-    return '<div class="mgmt-card clickable" onclick="openMgmtSource(\'' + it.indicator_id + '\')">'
-        + '<div class="k">' + escapeHtml(it.name) + "</div>"
-        + '<div class="v">' + escapeHtml(mgmtFormatValue(it, fact, read.status)) + "</div>"
-        + '<div class="s">' + escapeHtml(extra) + "</div></div>";
+    const diff = plan != null && fact != null ? Number(fact) - Number(plan) : null;
+    const pct = plan && Number(plan) !== 0 && fact != null ? (Number(fact) / Number(plan)) * 100 : null;
+    const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+    const st = mgmtRowStatus(it, fact, plan);
+    const html = "<h3>" + escapeHtml(it.name) + "</h3>"
+        + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div>"
+        + '<table class="mgmt-table" style="margin-top:8px"><tbody>'
+        + "<tr><td>Период</td><td>" + escapeHtml(mgmtPeriodKey()) + "</td></tr>"
+        + "<tr><td>Подразделение</td><td>" + escapeHtml(mgmtDeptName(it.department_id)) + "</td></tr>"
+        + "<tr><td>План</td><td>" + escapeHtml(plan == null ? "—" : mgmtFormatValue(it, plan)) + "</td></tr>"
+        + "<tr><td>Факт</td><td>" + escapeHtml(mgmtFormatValue(it, fact, read.status)) + "</td></tr>"
+        + "<tr><td>Отклонение</td><td>" + (diff == null ? "—" : escapeHtml(mgmtFormatValue(it, diff))) + "</td></tr>"
+        + "<tr><td>Выполнение</td><td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</td></tr>"
+        + "<tr><td>Ответственный</td><td>" + escapeHtml(emp ? emp.name : "—") + "</td></tr>"
+        + "<tr><td>Статус</td><td>" + escapeHtml(st.label) + "</td></tr>"
+        + "</tbody></table>"
+        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + '<button type="button" class="btn btn-primary" onclick="closeMgmtModal();openMgmtSource(\'' + it.indicator_id + '\')">Открыть источник</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Закрыть</button></div>';
+    openMgmtModal(html);
 }
 
 function renderMgmtDashboardHtml() {
@@ -20471,19 +20705,32 @@ function renderMgmtDashboardHtml() {
         if (!mgmtDeptFilter) return !it.department_id;
         return it.department_id === mgmtDeptFilter;
     });
+    const attn = [];
+    list.forEach(function (it) {
+        const read = mgmtReadIndicator(it);
+        const plan = mgmtPlanValue(it.indicator_id);
+        const st = mgmtRowStatus(it, read.value, plan);
+        if (st.cls === "mgmt-bad" || st.cls === "mgmt-warn") {
+            attn.push(mgmtDeptName(it.department_id) + ": " + it.name + " — " + st.label);
+        }
+    });
+    (appData.management.tasks || []).forEach(function (t) {
+        if (t && mgmtTaskStatus(t) === "overdue") attn.push("Задача просрочена: " + (t.title || ""));
+    });
     let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
-    html += '<div class="mgmt-block"><h4>Компания</h4><div class="mgmt-cards">';
-    if (!top.length) html += '<div class="note">Нет показателей на панели. Добавьте их в настройке.</div>';
-    top.forEach(function (it) { html += mgmtCardHtml(it); });
-    html += "</div></div>";
+    if (attn.length) {
+        html += '<div class="mgmt-attn">' + attn.slice(0, 8).map(function (x) {
+            return "<span>" + escapeHtml(x) + "</span>";
+        }).join("") + "</div>";
+    }
+    html += '<div class="mgmt-block"><h4>Компания</h4>' + mgmtKpiTableHtml(top) + "</div>";
     if (!mgmtDeptFilter) {
+        html += '<div class="mgmt-dept-grid">';
         DEPT_DEFAULTS.forEach(function (d) {
             const items = list.filter(function (it) { return it.department_id === d.code; });
-            if (!items.length) return;
-            html += '<div class="mgmt-block"><h4>' + escapeHtml(d.name) + "</h4><div class=\"mgmt-cards\">";
-            items.forEach(function (it) { html += mgmtCardHtml(it); });
-            html += "</div></div>";
+            html += '<div class="mgmt-block"><h4>' + escapeHtml(d.name) + "</h4>" + mgmtKpiTableHtml(items) + "</div>";
         });
+        html += "</div>";
     }
     return html;
 }
@@ -20502,7 +20749,7 @@ function renderMgmtPlanFactHtml() {
     const canManual = canEditMgmtIndicators();
     let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Показатель</th><th>Подразделение</th><th>План</th><th>Факт</th><th>Отклонение</th><th>%</th><th>Ответственный</th><th>Источник</th>"
+        + "<th>Показатель</th><th>Подразделение</th><th>План</th><th>Факт</th><th>Отклонение</th><th>%</th><th>Ответственный</th><th>Статус</th>"
         + "</tr></thead><tbody>";
     mgmtVisibleIndicators().forEach(function (it) {
         const read = mgmtReadIndicator(it);
@@ -20511,8 +20758,9 @@ function renderMgmtPlanFactHtml() {
         const diff = plan != null && fact != null ? Number(fact) - Number(plan) : null;
         const pct = plan && Number(plan) !== 0 && fact != null ? (Number(fact) / Number(plan)) * 100 : null;
         const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
-        html += '<tr class="' + mgmtRowTone(it, fact, plan) + '">'
-            + "<td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
+        const st = mgmtRowStatus(it, fact, plan);
+        html += '<tr class="' + st.cls + '">'
+            + '<td class="wrap">' + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
             + "<td>" + escapeHtml(mgmtDeptName(it.department_id)) + "</td>"
             + "<td>" + (canPlan
                 ? '<input class="mgmt-manual" value="' + escapeAttribute(plan == null ? "" : String(plan)) + '" onchange="setMgmtPlanValue(\'' + it.indicator_id + "',this.value);renderManagement()\">"
@@ -20526,7 +20774,7 @@ function renderMgmtPlanFactHtml() {
         html += "</td><td>" + (diff == null ? "—" : escapeHtml(mgmtFormatValue(it, diff)))
             + "</td><td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%"))
             + "</td><td>" + escapeHtml(emp ? emp.name : "—")
-            + "</td><td>" + escapeHtml(mgmtSourceLabel(it.source_type)) + "</td></tr>";
+            + "</td><td>" + escapeHtml(st.label) + "</td></tr>";
     });
     html += "</tbody></table></div>";
     return html;
@@ -20637,17 +20885,22 @@ function renderMgmtMeetingsHtml() {
         ? '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openMgmtMeetingForm(\'\')">+ Встреча</button></div>'
         : "";
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Дата</th><th>Тема</th><th>Подразделение</th><th>Решения</th><th></th></tr></thead><tbody>";
-    if (!meetings.length) html += '<tr><td colspan="5"><div class="empty-row">Нет протоколов встреч.</div></td></tr>';
+        + "<th>Дата</th><th>Подразделение</th><th>Вопрос</th><th>Решение</th><th>Ответственный</th><th>План</th><th>Факт</th><th>Статус</th><th></th></tr></thead><tbody>";
+    if (!meetings.length) html += '<tr><td colspan="9"><div class="empty-row">Нет протоколов встреч.</div></td></tr>';
     meetings.forEach(function (m) {
+        const emp = m.owner_employee_id ? getEmployee(m.owner_employee_id) : null;
         html += "<tr><td>" + escapeHtml(m.date ? mgmtFmtRu(m.date) : "—") + "</td>"
-            + "<td><strong>" + escapeHtml(m.title || "") + "</strong>"
-            + (m.discussion ? '<div class="mgmt-src">' + escapeHtml(m.discussion) + "</div>" : "") + "</td>"
             + "<td>" + escapeHtml(mgmtDeptName(m.department_id)) + "</td>"
-            + "<td>" + escapeHtml(m.decisions || m.notes || "—") + "</td>"
+            + '<td class="wrap"><strong>' + escapeHtml(m.problem || m.title || "") + "</strong>"
+            + (m.discussion ? '<div class="mgmt-src">' + escapeHtml(m.discussion) + "</div>" : "") + "</td>"
+            + '<td class="wrap">' + escapeHtml(m.decisions || m.notes || "—") + "</td>"
+            + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
+            + "<td>" + escapeHtml(m.planned_date ? mgmtFmtRu(m.planned_date) : "—") + "</td>"
+            + "<td>" + escapeHtml(m.actual_date ? mgmtFmtRu(m.actual_date) : "—") + "</td>"
+            + "<td>" + escapeHtml(mgmtTaskStatusLabel(m.status || "new")) + "</td>"
             + "<td>"
             + (canEditMgmtMeetings() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtMeetingForm(\'' + m.meeting_id + '\')">Изменить</button> ' : "")
-            + (canEditMgmtTasks() ? '<button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\',\'' + m.meeting_id + '\')">+ Создать задачу</button>' : "")
+            + (canEditMgmtTasks() ? '<button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\',\'' + m.meeting_id + '\')">+ Задача</button>' : "")
             + "</td></tr>";
     });
     html += "</tbody></table></div>";
@@ -20874,12 +21127,13 @@ function saveMgmtIndicator(id) {
 
 function openMgmtTaskForm(id, meetingId) {
     ensureManagement();
+    const meet = meetingId ? (appData.management.meetings || []).find(function (x) { return x && x.meeting_id === meetingId; }) : null;
     const t = id ? appData.management.tasks.find(function (x) { return x.task_id === id; }) : {
         task_id: "",
-        title: "",
-        department_id: mgmtDeptFilter || "",
-        responsible_employee_id: "",
-        planned_date: "",
+        title: meet ? (meet.decisions || meet.problem || meet.title || "") : "",
+        department_id: (meet && meet.department_id) || mgmtDeptFilter || "",
+        responsible_employee_id: (meet && meet.owner_employee_id) || "",
+        planned_date: (meet && meet.planned_date) || "",
         status: "new",
         result: "",
         priority: "normal",
@@ -20961,12 +21215,20 @@ function openMgmtMeetingForm(id) {
     });
     const html = "<h3>" + (id ? "Протокол встречи" : "Новая встреча") + "</h3>"
         + '<div class="form-group"><label>Дата</label><input id="mmDate" type="date" value="' + escapeAttribute(m.date || "") + '"></div>'
-        + '<div class="form-group"><label>Тема</label><input id="mmTitle" maxlength="200" value="' + escapeAttribute(m.title || "") + '"></div>'
         + '<div class="form-group"><label>Подразделение</label><select id="mmDept">' + mgmtDeptOptions(m.department_id) + "</select></div>"
-        + '<div class="form-group"><label>Участники</label><div style="max-height:140px;overflow:auto;border:1px solid #e5e7eb;padding:6px;border-radius:8px;">'
+        + '<div class="form-group"><label>Участники</label><div style="max-height:120px;overflow:auto;border:1px solid #e5e7eb;padding:6px;border-radius:8px;">'
         + (people || '<div class="note">Нет сотрудников</div>') + "</div></div>"
-        + '<div class="form-group"><label>Обсуждение</label><textarea id="mmDisc" rows="3">' + escapeHtml(m.discussion || "") + "</textarea></div>"
-        + '<div class="form-group"><label>Решения</label><textarea id="mmDec" rows="3">' + escapeHtml(m.decisions || m.notes || "") + "</textarea></div>"
+        + '<div class="form-group"><label>Вопрос / проблема</label><input id="mmTitle" maxlength="200" value="' + escapeAttribute(m.problem || m.title || "") + '"></div>'
+        + '<div class="form-group"><label>Обсуждение</label><textarea id="mmDisc" rows="2">' + escapeHtml(m.discussion || "") + "</textarea></div>"
+        + '<div class="form-group"><label>Решение</label><textarea id="mmDec" rows="2">' + escapeHtml(m.decisions || m.notes || "") + "</textarea></div>"
+        + '<div class="form-group"><label>Ответственный</label><select id="mmOwner">' + mgmtEmployeeOptions(m.owner_employee_id) + "</select></div>"
+        + '<div class="form-group"><label>Плановая дата</label><input id="mmPlan" type="date" value="' + escapeAttribute(m.planned_date || "") + '"></div>'
+        + '<div class="form-group"><label>Фактическая дата</label><input id="mmFact" type="date" value="' + escapeAttribute(m.actual_date || "") + '"></div>'
+        + '<div class="form-group"><label>Статус</label><select id="mmStatus">'
+        + [["new", "Новая"], ["in_progress", "В работе"], ["done", "Выполнена"], ["cancelled", "Отменена"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + ((m.status || "new") === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Результат</label><input id="mmResult" maxlength="240" value="' + escapeAttribute(m.result || "") + '"></div>'
         + '<div class="rev-modal-actions" style="margin-top:10px">'
         + '<button type="button" class="btn btn-primary" onclick="saveMgmtMeeting(\'' + (m.meeting_id || "") + '\')">Сохранить</button> '
         + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
@@ -20977,7 +21239,7 @@ function saveMgmtMeeting(id) {
     if (!canEditMgmtMeetings()) return;
     ensureManagement();
     const title = String((document.getElementById("mmTitle") || {}).value || "").replace(/\s+/g, " ").trim();
-    if (!title) { toast("Укажите тему встречи.", "error"); return; }
+    if (!title) { toast("Укажите вопрос или проблему.", "error"); return; }
     let m = id ? appData.management.meetings.find(function (x) { return x.meeting_id === id; }) : null;
     if (!m) {
         m = {
@@ -20988,11 +21250,17 @@ function saveMgmtMeeting(id) {
         appData.management.meetings.push(m);
     }
     m.title = title;
+    m.problem = title;
     m.date = (document.getElementById("mmDate") || {}).value || "";
     m.department_id = (document.getElementById("mmDept") || {}).value || "";
     m.discussion = (document.getElementById("mmDisc") || {}).value || "";
     m.decisions = (document.getElementById("mmDec") || {}).value || "";
     m.notes = m.decisions;
+    m.owner_employee_id = (document.getElementById("mmOwner") || {}).value || "";
+    m.planned_date = (document.getElementById("mmPlan") || {}).value || "";
+    m.actual_date = (document.getElementById("mmFact") || {}).value || "";
+    m.status = (document.getElementById("mmStatus") || {}).value || "new";
+    m.result = (document.getElementById("mmResult") || {}).value || "";
     const parts = [];
     document.querySelectorAll(".mm-part:checked").forEach(function (el) {
         if (el.value) parts.push(el.value);
@@ -21002,6 +21270,98 @@ function saveMgmtMeeting(id) {
     closeMgmtModal();
     mgmtTab = "meetings";
     renderManagement();
+}
+
+function canEditMgmtEvents() {
+    return isAppAdmin() || canEditMgmtTasks() || canEditMgmtMeetings();
+}
+
+function renderMgmtEventsHtml() {
+    const events = (appData.management.events || []).slice().sort(function (a, b) {
+        return String(a.date || "").localeCompare(String(b.date || ""));
+    });
+    let html = canEditMgmtEvents()
+        ? '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openMgmtEventForm(\'\')">+ Мероприятие</button></div>'
+        : "";
+    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + "<th>Дата</th><th>Мероприятие</th><th>Подразделение</th><th>Ответственный</th><th>Статус</th><th>Комментарий</th><th></th></tr></thead><tbody>";
+    if (!events.length) html += '<tr><td colspan="7"><div class="empty-row">Нет мероприятий.</div></td></tr>';
+    events.forEach(function (e) {
+        const emp = e.owner_employee_id ? getEmployee(e.owner_employee_id) : null;
+        const st = e.status || "new";
+        html += '<tr class="' + (st === "done" ? "mgmt-ok" : st === "cancelled" ? "mgmt-muted" : "") + '">'
+            + "<td>" + escapeHtml(e.date ? mgmtFmtRu(e.date) : "—") + "</td>"
+            + '<td class="wrap"><strong>' + escapeHtml(e.title || "") + "</strong></td>"
+            + "<td>" + escapeHtml(mgmtDeptName(e.department_id)) + "</td>"
+            + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
+            + "<td>" + escapeHtml(mgmtTaskStatusLabel(st)) + "</td>"
+            + '<td class="wrap">' + escapeHtml(e.comment || "—") + "</td>"
+            + "<td>" + (canEditMgmtEvents() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtEventForm(\'' + e.event_id + '\')">Изменить</button>' : "")
+            + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function openMgmtEventForm(id) {
+    ensureManagement();
+    const e = id ? appData.management.events.find(function (x) { return x.event_id === id; }) : {
+        event_id: "",
+        date: mgmtIsoFromDate(new Date()),
+        title: "",
+        department_id: mgmtDeptFilter || "",
+        owner_employee_id: "",
+        status: "new",
+        comment: ""
+    };
+    const html = "<h3>" + (id ? "Мероприятие" : "Новое мероприятие") + "</h3>"
+        + '<div class="form-group"><label>Дата</label><input id="meDate" type="date" value="' + escapeAttribute(e.date || "") + '"></div>'
+        + '<div class="form-group"><label>Мероприятие</label><input id="meTitle" maxlength="200" value="' + escapeAttribute(e.title || "") + '"></div>'
+        + '<div class="form-group"><label>Подразделение</label><select id="meDept">' + mgmtDeptOptions(e.department_id) + "</select></div>"
+        + '<div class="form-group"><label>Ответственный</label><select id="meEmp">' + mgmtEmployeeOptions(e.owner_employee_id) + "</select></div>"
+        + '<div class="form-group"><label>Статус</label><select id="meStatus">'
+        + [["new", "Запланировано"], ["in_progress", "В работе"], ["done", "Проведено"], ["cancelled", "Отменено"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + ((e.status || "new") === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Комментарий / результат</label><input id="meComment" maxlength="240" value="' + escapeAttribute(e.comment || "") + '"></div>'
+        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + '<button type="button" class="btn btn-primary" onclick="saveMgmtEvent(\'' + (e.event_id || "") + '\')">Сохранить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    openMgmtModal(html);
+}
+
+function saveMgmtEvent(id) {
+    if (!canEditMgmtEvents()) return;
+    ensureManagement();
+    const title = String((document.getElementById("meTitle") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!title) { toast("Укажите мероприятие.", "error"); return; }
+    let e = id ? appData.management.events.find(function (x) { return x.event_id === id; }) : null;
+    if (!e) {
+        e = {
+            event_id: nextPrefixedId("mevt", appData.management.events.map(function (x) { return x && x.event_id; })),
+            created_by_user_id: currentAuthUserId()
+        };
+        appData.management.events.push(e);
+    }
+    e.title = title;
+    e.date = (document.getElementById("meDate") || {}).value || "";
+    e.department_id = (document.getElementById("meDept") || {}).value || "";
+    e.owner_employee_id = (document.getElementById("meEmp") || {}).value || "";
+    e.status = (document.getElementById("meStatus") || {}).value || "new";
+    e.comment = (document.getElementById("meComment") || {}).value || "";
+    saveApp();
+    closeMgmtModal();
+    mgmtTab = "events";
+    renderManagement();
+}
+
+function renderMgmtUsersHtml() {
+    return ""
+        + '<div class="note" style="margin-bottom:8px">Тот же справочник пользователей Work Time. PIN не сбрасываются.</div>'
+        + '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openAccessUserEditor(\'\')">+ Добавить пользователя</button></div>'
+        + '<div class="table-wrapper" style="max-height:none"><table class="users-table mgmt-table"><thead><tr>'
+        + "<th>Пользователь</th><th>Роль</th><th>Отделы</th><th>Права</th><th>Активен</th><th>PIN</th><th></th>"
+        + '</tr></thead><tbody id="accessUsersBodySpu"></tbody></table></div>';
 }
 
 
@@ -21042,11 +21402,13 @@ function verifyRepPayExample() {
 function requestedLoginView() {
     try {
         var hash = String(location.hash || "").replace("#", "");
-        if (hash === "shop" || hash === "territory" || hash === "summary") return hash;
+        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "spu" || hash === "admin") return hash;
         var search = location.search || "";
         if (/(?:^|[?&])view=shop(?:&|$)/.test(search)) return "shop";
         if (/(?:^|[?&])view=territory(?:&|$)/.test(search)) return "territory";
         if (/(?:^|[?&])view=summary(?:&|$)/.test(search)) return "summary";
+        if (/(?:^|[?&])view=spu(?:&|$)/.test(search)) return "spu";
+        if (/(?:^|[?&])view=admin(?:&|$)/.test(search)) return "admin";
     } catch (err) {}
     return "home";
 }
