@@ -3184,12 +3184,15 @@
         }
 
         .cr-page { display: flex; flex-direction: column; gap: 8px; }
+        .cr-copy-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 6px; }
+        .cr-copy-bar span { font-size: 13px; font-weight: 600; color: #9a3412; }
         .cr-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
         .cr-head h2 { margin: 0; font-size: 18px; }
         .cr-crumb { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
         .cr-tabs { display: flex; gap: 0; flex-wrap: nowrap; width: 100%; margin: 6px 0 8px; overflow-x: auto; border-radius: 8px; }
         .cr-tab {
-            flex: 1 1 0;
+            flex: 1 1 auto;
+            min-width: 118px;
             text-align: center;
             white-space: nowrap;
             border: 1px solid transparent;
@@ -3207,6 +3210,7 @@
         .cr-tab-give { background: #dcfce7; color: #166534; border-color: #86efac; }
         .cr-tab-rebill { background: #cffafe; color: #155e75; border-color: #67e8f9; }
         .cr-tab-driver { background: #ffe4e6; color: #9f1239; border-color: #fda4af; }
+        .cr-tab-extra { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
         .cr-tab-analytics { background: #ede9fe; color: #5b21b6; border-color: #c4b5fd; }
         .cr-tab.on {
             color: #fff;
@@ -3227,6 +3231,7 @@
         .cr-tab-give.on { background: #15803d; border-color: #166534; }
         .cr-tab-rebill.on { background: #0e7490; border-color: #155e75; }
         .cr-tab-driver.on { background: #e11d48; border-color: #be123c; }
+        .cr-tab-extra.on { background: #b45309; border-color: #92400e; }
         .cr-tab-analytics.on { background: #6d28d9; border-color: #5b21b6; }
         .cr-tab .cr-badge {
             display: inline-block; min-width: 18px; margin-left: 6px; padding: 0 6px; border-radius: 999px;
@@ -3301,6 +3306,7 @@
         .cr-ana { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .cr-ana table { width: 100%; font-size: 12px; border-collapse: collapse; background: #fff; }
         .cr-ana th, .cr-ana td { padding: 4px 6px; border-bottom: 1px solid #eef2f7; text-align: left; }
+        tr.cr-extra-date td { background: #fffbeb; font-weight: 700; color: #92400e; position: sticky; left: 0; }
         @media (max-width: 1000px) {
             .cr-stats, .cr-queues, .cr-ana, .cr-form { grid-template-columns: 1fr; }
         }
@@ -25573,7 +25579,8 @@ const CR_ADJ_DEFAULTS = [
     { adjustment_id: "adj_wrong_ship", code: "wrong_ship", name: "Неправильная отгрузка", sort_order: 170 },
     { adjustment_id: "adj_driver_unload", code: "driver_unload", name: "ошибка водителя при выгрузке", sort_order: 180 },
     { adjustment_id: "adj_terms", code: "terms", name: "Сроки", sort_order: 190 },
-    { adjustment_id: "adj_recount", code: "recount", name: "Пересчёт", sort_order: 200 }
+    { adjustment_id: "adj_recount", code: "recount", name: "Пересчёт", sort_order: 200 },
+    { adjustment_id: "adj_extra", code: "extra", name: "Лишний товар", sort_order: 210 }
 ];
 
 let crUi = { tab: "all", author: "", driver: "", picker: "", adj: "", result: "", q: "", month: "" };
@@ -25711,6 +25718,12 @@ function crVehiclePlate(id) {
     return v ? (v.plate || v.name || "") : "";
 }
 
+function crIsExtraAdj(it) {
+    if (!it) return false;
+    if (it.adjustment_id === "adj_extra" || crAdjCode(it.adjustment_id) === "extra") return true;
+    return !!it.extra_on_register;
+}
+
 function crIsDriverAdj(it) {
     const c = crAdjCode(it.adjustment_id);
     return c === "driver" || c === "driver_not_gave" || c === "driver_unload";
@@ -25723,6 +25736,7 @@ function crIsRecountAdj(it) {
 
 function crActiveQueue(it) {
     if (!it || it.is_deleted) return "";
+    if (crIsExtraAdj(it)) return "";
     if (crIsDriverAdj(it) && !it.charged_to_driver) return "driver";
     if (it.recount_result === "give" && !it.given_to_client) return "give";
     if (it.recount_result === "rebill" && !it.rebilled) return "rebill";
@@ -25732,6 +25746,7 @@ function crActiveQueue(it) {
 }
 
 function crStatusText(it) {
+    if (crIsExtraAdj(it)) return { cls: "adj", text: "Лишний товар" };
     if (it.charged_to_driver) return { cls: "done", text: "Пробито на водителя" };
     if (it.given_to_client) return { cls: "done", text: "Отдано клиенту" };
     if (it.rebilled) return { cls: "done", text: "Перебито" };
@@ -25762,7 +25777,7 @@ function canViewCustomerReturns() {
 }
 
 function crCanSeeTab(tab) {
-    if (tab === "all" || tab === "analytics") return crHasFullView();
+    if (tab === "all" || tab === "analytics" || tab === "extra") return crHasFullView();
     if (tab === "recount") return crHasFullView() || userHasPerm("customerReturnsRecount", "view");
     if (tab === "give") return crHasFullView() || userHasPerm("customerReturnsGive", "view");
     if (tab === "rebill") return crHasFullView() || userHasPerm("customerReturnsRebill", "view");
@@ -25888,6 +25903,48 @@ function crQueueList(queue) {
     return crFiltered().filter(function (it) { return crActiveQueue(it) === queue; });
 }
 
+function crExtraList() {
+    return (crStore().items || []).filter(function (it) {
+        if (!it || it.is_deleted) return false;
+        if (!crInPeriod(it)) return false;
+        if (!crIsExtraAdj(it)) return false;
+        if (crUi.driver && it.driver_employee_id !== crUi.driver) return false;
+        return true;
+    });
+}
+
+function crRenderExtraJournal(list) {
+    const rows = list || [];
+    const groups = {};
+    rows.forEach(function (it) {
+        const d = String((it && it.date) || "");
+        if (!groups[d]) groups[d] = [];
+        groups[d].push(it);
+    });
+    const dates = Object.keys(groups).sort().reverse();
+    let body = "";
+    dates.forEach(function (d) {
+        const dayRows = groups[d];
+        body += '<tr class="cr-extra-date"><td colspan="6">' + escapeHtml(crFmtDate(d) || "Без даты")
+            + " · " + dayRows.length + "</td></tr>";
+        dayRows.forEach(function (it) {
+            body += "<tr><td>" + escapeHtml(crFmtDate(it.date)) + "</td>"
+                + "<td>" + escapeHtml(crEmpName(it.driver_employee_id) || "—") + "</td>"
+                + "<td>" + escapeHtml(crVehiclePlate(it.vehicle_id) || "—") + "</td>"
+                + '<td class="cr-wrap-text">' + escapeHtml(it.product_name || "") + "</td>"
+                + '<td class="cr-qty">' + escapeHtml(String(it.qty || "")) + "</td>"
+                + '<td class="cr-num">' + money2(it.amount) + "</td></tr>";
+        });
+    });
+    if (!body) body = '<tr><td colspan="6"><div class="empty-row">Нет лишнего товара за период.</div></td></tr>';
+    return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
+        + "<th>Дата</th><th>Водитель</th><th>№ автомобиля</th><th>Товар</th><th>Количество</th><th>Сумма</th>"
+        + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr><td colspan=\"4\">Записей: " + rows.length
+        + '</td><td class="cr-qty">' + crQty(rows) + '</td><td class="cr-num">' + money2(crSum(rows))
+        + "</td></tr></tfoot></table></div>";
+}
+window.crRenderExtraJournal = crRenderExtraJournal;
+
 function crPushHistory(it, action, detail) {
     if (!it.history) it.history = [];
     it.history.push({
@@ -25944,7 +26001,7 @@ function renderTerritoryReturns() {
     if (!root) return;
     ensureCustomerReturns(appData);
     if (!crCanSeeTab(crUi.tab)) {
-        const tabs = ["all", "recount", "give", "rebill", "driver", "analytics"];
+        const tabs = ["all", "recount", "give", "rebill", "driver", "extra", "analytics"];
         crUi.tab = tabs.find(crCanSeeTab) || "all";
     }
     if (!crUi.month) crUi.month = selectedMonth || currentMonthValue();
@@ -25953,6 +26010,7 @@ function renderTerritoryReturns() {
     const qGive = crQueueList("give");
     const qRebill = crQueueList("rebill");
     const qDriver = crQueueList("driver");
+    const qExtra = crExtraList();
     const pageTitle = document.getElementById("pageTitle");
     if (pageTitle) pageTitle.textContent = "Возвраты по покупателям";
 
@@ -25978,35 +26036,77 @@ function renderTerritoryReturns() {
     html += tabBtn("give", "Отдать", qGive.length);
     html += tabBtn("rebill", "Перебить", qRebill.length);
     html += tabBtn("driver", "На водителя", qDriver.length);
+    html += tabBtn("extra", "Лишний товар", qExtra.length);
     html += tabBtn("analytics", "Аналитика");
     html += "</div>";
 
     html += '<div class="cr-filters">'
         + '<label>Период<input type="month" value="' + escapeAttribute(crUi.month) + '" onchange="crOnFilter(\'month\',this)"></label>'
-        + '<label>Автор продаж<select onchange="crOnFilter(\'author\',this)">' + crEmpOptions(crUi.author, "author") + "</select></label>"
-        + '<label>Водитель<select onchange="crOnFilter(\'driver\',this)">' + crEmpOptions(crUi.driver, "driver") + "</select></label>"
-        + '<label>Товаросборщик<select onchange="crOnFilter(\'picker\',this)">' + crEmpOptions(crUi.picker, "picker") + "</select></label>"
-        + '<label>Корректировка<select onchange="crOnFilter(\'adj\',this)">' + crAdjOptions(crUi.adj) + "</select></label>"
-        + '<label>Результат пересчёта<select onchange="crOnFilter(\'result\',this)">'
-        + '<option value="">Все</option>'
-        + '<option value="pending"' + (crUi.result === "pending" ? " selected" : "") + ">— выбрать —</option>"
-        + '<option value="give"' + (crUi.result === "give" ? " selected" : "") + ">Отдать</option>"
-        + '<option value="rebill"' + (crUi.result === "rebill" ? " selected" : "") + ">Перебить</option>"
-        + "</select></label>"
-        + '<label>Поиск<input type="search" placeholder="Поиск по товару, клиенту, накладной..." value="'
-        + escapeAttribute(crUi.q) + '" oninput="crOnFilter(\'q\',this)"></label>'
-        + '<button type="button" class="btn" onclick="crResetFilters()">Сбросить фильтры</button>'
-        + "</div>";
+        + '<label>Водитель<select onchange="crOnFilter(\'driver\',this)">' + crEmpOptions(crUi.driver, "driver") + "</select></label>";
+    if (crUi.tab !== "extra") {
+        html += '<label>Автор продаж<select onchange="crOnFilter(\'author\',this)">' + crEmpOptions(crUi.author, "author") + "</select></label>"
+            + '<label>Товаросборщик<select onchange="crOnFilter(\'picker\',this)">' + crEmpOptions(crUi.picker, "picker") + "</select></label>"
+            + '<label>Корректировка<select onchange="crOnFilter(\'adj\',this)">' + crAdjOptions(crUi.adj) + "</select></label>"
+            + '<label>Результат пересчёта<select onchange="crOnFilter(\'result\',this)">'
+            + '<option value="">Все</option>'
+            + '<option value="pending"' + (crUi.result === "pending" ? " selected" : "") + ">— выбрать —</option>"
+            + '<option value="give"' + (crUi.result === "give" ? " selected" : "") + ">Отдать</option>"
+            + '<option value="rebill"' + (crUi.result === "rebill" ? " selected" : "") + ">Перебить</option>"
+            + "</select></label>"
+            + '<label>Поиск<input type="search" placeholder="Поиск по товару, клиенту, накладной..." value="'
+            + escapeAttribute(crUi.q) + '" oninput="crOnFilter(\'q\',this)"></label>';
+    }
+    html += '<button type="button" class="btn" onclick="crResetFilters()">Сбросить фильтры</button></div>';
 
     if (crUi.tab === "analytics") html += crRenderAnalytics(all, qRecount, qGive, qRebill, qDriver);
     else if (crUi.tab === "all") html += crRenderAllTable(all);
-    else if (crUi.tab === "recount") html += crRenderQueueTable("recount", qRecount);
+    else if (crUi.tab === "recount") html += crRenderRecountCopyBar(qRecount) + crRenderQueueTable("recount", qRecount);
     else if (crUi.tab === "give") html += crRenderQueueTable("give", qGive);
     else if (crUi.tab === "rebill") html += crRenderQueueTable("rebill", qRebill);
     else if (crUi.tab === "driver") html += crRenderQueueTable("driver", qDriver);
+    else if (crUi.tab === "extra") html += crRenderExtraJournal(qExtra);
 
     html += "</div>";
     root.innerHTML = html;
+}
+
+function crRenderRecountCopyBar(list) {
+    return '<div class="cr-copy-bar"><span>На пересчёт (' + list.length + ')</span>'
+        + '<button type="button" class="btn btn-small" onclick="crCopyRecountProducts()">📋 Скопировать товары</button></div>';
+}
+
+function crCopyRecountProducts() {
+    const names = crQueueList("recount").map(function (it) {
+        return String((it && it.product_name) || "").trim();
+    }).filter(Boolean);
+    if (!names.length) {
+        toast("Нет товаров для копирования.", "error");
+        return;
+    }
+    const text = names.join("\n");
+    function done() { toast("Товары скопированы"); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(function () { crCopyTextFallback(text, done); });
+        return;
+    }
+    crCopyTextFallback(text, done);
+}
+
+function crCopyTextFallback(text, done) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+        document.execCommand("copy");
+        if (done) done();
+    } catch (err) {
+        toast("Не удалось скопировать.", "error");
+    }
+    document.body.removeChild(ta);
 }
 
 function crRenderStats(all, a, b, c, d) {
