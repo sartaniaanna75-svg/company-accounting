@@ -1953,6 +1953,8 @@
         #summaryStaffList {
             overflow-x: auto;
         }
+        .name-parts { display: flex; flex-wrap: wrap; gap: 6px; }
+        .name-parts input { min-width: 110px; flex: 1; }
 
         .employee-row {
             display: flex;
@@ -3105,6 +3107,8 @@
         .mc-seg button.on { background: #0f172a; color: #fff; }
         .mc-tabs-checks { display: flex; flex-direction: column; gap: 6px; }
         .mc-tabs-checks label.check { font-size: 12px; font-weight: 400; margin: 0; }
+        .mc-assign { display: flex; flex-direction: column; gap: 6px; }
+        .mc-assign label.check { font-size: 12px; font-weight: 400; margin: 0; }
         .mc-tab-head, .mc-tab-row {
             display: grid;
             grid-template-columns: minmax(0, 1fr) 158px;
@@ -3519,6 +3523,9 @@
         </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="employees" onclick="showSection('employees', this)">
             📋 В табель
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="summaryStaff" onclick="showSection('summaryStaff', this)">
+            👤 Сотрудники
         </button>
         <button type="button" class="nav-btn" data-for="both" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
             📚 Метрики
@@ -4210,9 +4217,9 @@
                         <div>
                             <div class="card-title">Все сотрудники</div>
                             <div class="note">
-                                Здесь ФИО, отдел, статус, ставка и такси. Планы и бонусы магазина (выкладка, ревизия, проходы)
-                                задаются в разделе «Зарплата Володарского» → «Правила KPI» и «Назначение KPI».
-                                У сотрудников магазина есть кнопка «Настройки зарплаты».
+                                Общий справочник: фамилия, имя, отчество, должность, рабочий отдел и рабочая группа.
+                                Сотрудник создаётся один раз (employee_id не меняется) и появляется в выбранной группе:
+                                Торговые, Водители, складские вкладки, офис. Учётная запись (PIN) здесь не создаётся.
                             </div>
                         </div>
                         <div class="toolbar">
@@ -4357,15 +4364,15 @@
                         <div>
                             <div class="card-title">ФИО сотрудника</div>
                             <div class="note">
-                                Здесь заводятся только сотрудники этого отдела. Они не видны в других отделах.
-                                После выбора в табеле человек автоматически появится в общей сводке.
+                                Здесь заводятся сотрудники этого отдела (один employee_id, без копий).
+                                Рабочая группа определяет, где человек виден: Торговые, Водители, товароразборщики и т.д.
                             </div>
                         </div>
                     </div>
                     <div class="toolbar fio-filters" id="fioFilters" style="margin: 12px 0 8px;"></div>
                     <div id="fioList"></div>
                     <div class="toolbar" style="margin-top:14px;">
-                        <button type="button" class="btn btn-primary" onclick="addEmployee()">+ Добавить ФИО</button>
+                        <button type="button" class="btn btn-primary" id="addFioEmployeeBtn" onclick="addEmployee()">+ Добавить ФИО</button>
                     </div>
                 </div>
                 <div class="card">
@@ -4410,7 +4417,7 @@
             <section id="metricCatalog" class="section">
                 <div class="card">
                     <div class="card-title">Метрики</div>
-                    <div class="note" style="margin-top:6px">Единый справочник рабочих показателей Work Time (Магазин Володарского). KPI в зарплату назначается отдельно.</div>
+                    <div class="note" style="margin-top:6px">Единый справочник рабочих показателей всех отделов. Значения заполняются в рабочих разделах (Торговые, Водители, Склад, Офис, магазин). KPI в зарплату назначается отдельно.</div>
                     <div class="toolbar" style="margin-top:10px" id="metricCatalogToolbar"></div>
                     <div class="table-wrapper" style="margin-top:10px;max-height:none">
                         <table class="metric-cat-table">
@@ -4552,7 +4559,10 @@
                     <div class="card-header">
                         <div>
                             <div class="card-title">Сотрудники и должности</div>
-                            <div class="note">Меняется должность и признаки СПУ у существующего employee_id. Рабочий отдел и департамент СПУ — разные сущности. PIN и user_id здесь не трогаются.</div>
+                            <div class="note">
+                                Здесь меняются должность и признаки СПУ у уже существующего сотрудника (employee_id не меняется).
+                                Нового человека с ФИО создавайте в меню «Сотрудники». PIN и user_id здесь не создаются.
+                            </div>
                         </div>
                     </div>
                     <div class="table-wrapper">
@@ -4738,7 +4748,7 @@ let shopMetricCategory = "pickers";
 let deptMetricTab = "";
 let territoryMetricsHubId = "";
 let metricCatalogExpanded = {};
-let metricCatalogFilter = { tab: "", active: "active", structure: "" };
+let metricCatalogFilter = { tab: "", active: "active", structure: "", dept: "" };
 let timesheetWorkTabFilterByDept = {};
 let revisionPanel = "schedule";
 let disciplinePanel = "late";
@@ -4843,6 +4853,7 @@ let shopUiQuiet = 0;
 
 const METRIC_SHELF_LABELS_ID = "metric_shelf_labels_ok";
 const METRIC_WRITEOFF_LOSSES_ID = "metric_writeoff_losses";
+const METRIC_RETURNS_COUNT_ID = "metric_returns_count";
 const WRITEOFF_METRIC_NAME = "Потери/списания по инвентаризации";
 const WRITEOFF_KPI_NAME = "Лимит потерь/списаний";
 const METRIC_SHELF_LABELS_FIELD = "shelfLabels";
@@ -5386,19 +5397,24 @@ function renderTimesheetGroupFilter() {
         + "</div>";
 }
 function workTabSelect(employee) {
-    const w = workspace();
-    if (!w || isSummary()) return "";
+    return workTabSelectForDept(employee, workspace());
+}
+function workTabSelectForDept(employee, deptWs) {
+    const w = deptWs || workspace();
+    if (!w) return "";
     const tabs = timesheetGroupFilterTabs(w.code);
     if (!tabs.length) return "";
-    const current = String(employee.work_tab_id || "");
-    let html = '<select onchange="updateEmployee(\'' + employee.id + '\',\'work_tab_id\',this.value)">'
+    const current = String(employee.work_tab_id || employeePrimaryWorkTabId(employee, w.code) || "");
+    const locked = !canEditStaff() && (isSummary() || isAdminEntry());
+    let html = '<select onchange="updateEmployee(\'' + employee.id + '\',\'work_tab_id\',this.value)"'
+        + (locked ? " disabled" : "") + ">"
         + '<option value="">Не выбрана</option>';
     tabs.forEach(function (t) {
         html += '<option value="' + t.id + '"' + (current === t.id ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
     });
     html += "</select>";
     if (!current) {
-        html += '<div class="note">У сотрудника не выбрана основная должность. В режиме «Только свои» он не появится в рабочих метриках.</div>';
+        html += '<div class="note">Выберите рабочую группу, чтобы сотрудник появился в Торговых / Водителях / на складе.</div>';
     }
     return html;
 }
@@ -5435,7 +5451,7 @@ function setDeptMetricTab(id) {
     renderDeptMetrics();
 }
 const SHOP_METRIC_FILL_TYPES = [
-    { id: "number", label: "Число" },
+    { id: "number", label: "Числовая" },
     { id: "check", label: "Сделано / Не сделано" },
     { id: "money", label: "Денежная сумма" },
     { id: "auto_calc", label: "Автоматический расчёт" },
@@ -6345,7 +6361,7 @@ function enterAsUser(user, code) {
     if (want && allowedSections().indexOf(want) !== -1) currentSection = want;
     else if (currentEntry === "spu") currentSection = "management";
     else if (currentEntry === "org") currentSection = "org-chart";
-    else if (currentEntry === "admin") currentSection = "users";
+    else if (currentEntry === "admin") currentSection = "summaryStaff";
     else if (user.legacy_role === "pay") currentSection = "salary";
     else if (user.legacy_role === "adjust") currentSection = "salary";
     else currentSection = defaultSection();
@@ -6368,7 +6384,7 @@ function switchUserWorkspace(code) {
         setCurrentWorkspace(w);
         applyLegacyRolesFromUser(user, "summary");
         selectedMonth = keepMonth;
-        currentSection = "users";
+        currentSection = "summaryStaff";
         saveSession();
         loadWorkspace();
         return;
@@ -6566,7 +6582,10 @@ function summaryRoleInfo(role) {
 }
 
 function canEditStaff() {
-    return isTableAdmin() && isSummary();
+    if (isAppAdmin()) return true;
+    if (isAdminEntry() && userHasPerm("settings", "edit")) return true;
+    if (isSummary()) return isTableAdmin() || currentSummaryRole === "admin";
+    return isTableAdmin() || userHasPerm("timesheet", "edit") || userHasPerm("settings", "edit");
 }
 
 function isTableAdmin() {
@@ -7656,6 +7675,74 @@ function isRepPercentField(field) {
 
 function isBlankName(name) {
     return !String(name || "").replace(/\s+/g, " ").trim();
+}
+
+function splitEmployeeName(name) {
+    const parts = String(name || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+    return {
+        last_name: parts[0] || "",
+        first_name: parts[1] || "",
+        middle_name: parts.slice(2).join(" ")
+    };
+}
+
+function employeeNameParts(employee) {
+    if (!employee) return { last_name: "", first_name: "", middle_name: "" };
+    if (employee.last_name || employee.first_name || employee.middle_name) {
+        return {
+            last_name: String(employee.last_name || ""),
+            first_name: String(employee.first_name || ""),
+            middle_name: String(employee.middle_name || "")
+        };
+    }
+    return splitEmployeeName(employee.name);
+}
+
+function composeEmployeeName(employee) {
+    const p = employeeNameParts(employee);
+    return [p.last_name, p.first_name, p.middle_name].filter(Boolean).join(" ");
+}
+
+function applyEmployeeNameParts(employee, last, first, middle) {
+    if (!employee) return;
+    employee.last_name = String(last || "").replace(/\s+/g, " ").trim();
+    employee.first_name = String(first || "").replace(/\s+/g, " ").trim();
+    employee.middle_name = String(middle || "").replace(/\s+/g, " ").trim();
+    employee.name = composeEmployeeName(employee);
+}
+
+function updateEmployeeNamePart(employeeId, part, value) {
+    if (shopUiQuiet) return;
+    if (!canEditStaff()) return;
+    const employee = getEmployee(employeeId);
+    if (!employee) return;
+    const p = employeeNameParts(employee);
+    if (part === "last_name") p.last_name = value;
+    else if (part === "first_name") p.first_name = value;
+    else p.middle_name = value;
+    applyEmployeeNameParts(employee, p.last_name, p.first_name, p.middle_name);
+    if (isBlankName(employee.name) && part === "last_name") {
+        toast("Укажите фамилию.", "error");
+    }
+    saveApp();
+    if (isSummary() || isAdminEntry()) renderSummaryStaff();
+    else renderFio();
+    renderEmployees();
+    refreshAll();
+}
+
+function namePartsHtml(employee, disabled) {
+    const p = employeeNameParts(employee);
+    const dis = disabled ? " disabled" : "";
+    return '<div class="name-parts">'
+        + '<input placeholder="Фамилия *" value="' + escapeAttribute(p.last_name) + '"'
+        + (isBlankName(p.last_name) ? ' class="name-missing"' : "")
+        + " onchange=\"updateEmployeeNamePart('" + employee.id + "','last_name',this.value)\"" + dis + ">"
+        + '<input placeholder="Имя *" value="' + escapeAttribute(p.first_name) + '"'
+        + " onchange=\"updateEmployeeNamePart('" + employee.id + "','first_name',this.value)\"" + dis + ">"
+        + '<input placeholder="Отчество" value="' + escapeAttribute(p.middle_name) + '"'
+        + " onchange=\"updateEmployeeNamePart('" + employee.id + "','middle_name',this.value)\"" + dis + ">"
+        + "</div>";
 }
 
 function isPlaceholderEmployeeName(name) {
@@ -8769,9 +8856,10 @@ function applyModeUI() {
             } else if (isSpuMode()) {
                 show = el.getAttribute("data-spu") === "1" && sec && allowed.indexOf(sec) !== -1;
             } else if (isAdminEntry()) {
-                show = (sec === "users" || sec === "settings" || sec === "metricCatalog") && allowed.indexOf(sec) !== -1;
+                show = (sec === "users" || sec === "settings" || sec === "metricCatalog" || sec === "summaryStaff")
+                    && allowed.indexOf(sec) !== -1;
             } else if (isTerritoryMetricsMode()) {
-                show = mode === "territoryMetricsHub" && (!sec || allowed.indexOf(sec) !== -1);
+                show = (mode === "territoryMetricsHub" || sec === "metricCatalog") && (!sec || allowed.indexOf(sec) !== -1);
             } else if (summary) {
                 if (sec === "management" || String(sec || "").indexOf("management-") === 0) show = false;
                 if (sec === "org-chart" || sec === "org-settings") show = false;
@@ -8891,6 +8979,7 @@ function allowedSections() {
         if (isAppAdmin() || userHasPerm("metrics", "view")) list.push("territoryMetrics");
         if (typeof canViewCustomerReturns === "function" && canViewCustomerReturns()) list.push("territoryReturns");
         else if (isAppAdmin() || userHasPerm("metrics", "view") || userHasPerm("customerReturns", "view")) list.push("territoryReturns");
+        if (canEditShopMetricCatalog()) list.push("metricCatalog");
         if (!list.length) list.push("territoryMetrics");
         return list;
     }
@@ -8903,8 +8992,9 @@ function allowedSections() {
     if (isAdminEntry()) {
         const list = [];
         if (isAppAdmin()) list.push("users");
+        if (isAppAdmin() || userHasPerm("timesheet", "edit") || userHasPerm("settings", "edit")) list.push("summaryStaff");
+        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit") || isAppAdmin()) list.push("metricCatalog");
         if (userHasPerm("settings", "edit")) list.push("settings");
-        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("metricCatalog");
         return list;
     }
     if (isSummary()) {
@@ -9209,6 +9299,7 @@ function ensureShopMetrics() {
         root.substitutionPayDefaults = { day_rate: 0, extra_pay: 0, coef: 1, kpi_mode: "keep_primary" };
     }
     ensureShopMetricCatalog();
+    applyReturnsCountGroupIfNeeded();
     return root;
 }
 
@@ -9258,7 +9349,98 @@ function ensureShopMetricCatalog() {
         if (!found.name) found.name = seed.name;
     });
     list.forEach(normalizeMetricCatalogItemTabs);
+    seedReturnsCountMetric();
     return appData.shopMetricCatalog;
+}
+
+function seedReturnsCountMetric() {
+    const list = (appData.shopMetricCatalog && appData.shopMetricCatalog.items) || [];
+    const nameKey = "количество возвратов";
+    let found = list.find(function (it) { return it && it.id === METRIC_RETURNS_COUNT_ID; });
+    if (!found) {
+        found = list.find(function (it) {
+            return it && metricDepartmentId(it) === "drivers"
+                && String(it.name || "").replace(/\s+/g, " ").trim().toLowerCase() === nameKey;
+        });
+    }
+    if (!found) {
+        found = {
+            id: METRIC_RETURNS_COUNT_ID,
+            key: "returnsCount",
+            name: "Количество возвратов",
+            department_id: "drivers",
+            section_id: "sales",
+            metric_tab_id: "sales",
+            work_tab_ids: ["sales", "drivers"],
+            work_tab_scopes: { sales: "same_work_tab", drivers: "same_work_tab" },
+            fill_type: "number",
+            sort_order: 80,
+            active: true,
+            assignable: true,
+            builtin: true,
+            core_column: false,
+            show_column: true,
+            assign_mode: "group_all",
+            position_titles: [],
+            formula: null,
+            submetrics: [],
+            structure_type: "plain"
+        };
+        list.push(found);
+    } else {
+        if (!found.id) found.id = METRIC_RETURNS_COUNT_ID;
+        if (!found.key) found.key = "returnsCount";
+        if (!found.name) found.name = "Количество возвратов";
+        if (!found.department_id) found.department_id = "drivers";
+        if (!found.fill_type) found.fill_type = "number";
+        if (found.assignable == null) found.assignable = true;
+        if (found.show_column == null) found.show_column = true;
+        if (found.active == null) found.active = true;
+        if (!Array.isArray(found.work_tab_ids) || !found.work_tab_ids.length) {
+            found.work_tab_ids = ["sales", "drivers"];
+        }
+        if (!found.assign_mode) found.assign_mode = "group_all";
+    }
+    normalizeMetricCatalogItemTabs(found);
+    return found;
+}
+
+function applyReturnsCountGroupIfNeeded() {
+    const item = seedReturnsCountMetric();
+    if (item && item.assign_mode !== "specific") applyMetricCatalogGroupAssignment(item);
+}
+
+function metricCatalogGroupEmployees(item) {
+    const dept = metricDepartmentId(item);
+    const w = findWorkspaceByCode(dept);
+    const tabs = metricWorkTabIds(item);
+    const out = [];
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return;
+        const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
+        if (tabs.indexOf(tab) === -1) return;
+        out.push(e);
+    });
+    return out;
+}
+
+function applyMetricCatalogGroupAssignment(item) {
+    if (!item || !item.id || item.assignable === false) return;
+    metricCatalogGroupEmployees(item).forEach(function (e) {
+        applyShopEmployeeWorkMetric(e.id, item.id, true);
+    });
+}
+
+function applyMetricCatalogSpecificAssignment(item, employeeIds) {
+    if (!item || !item.id) return;
+    const want = {};
+    (employeeIds || []).forEach(function (id) { if (id) want[id] = true; });
+    const dept = metricDepartmentId(item);
+    const w = findWorkspaceByCode(dept);
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        applyShopEmployeeWorkMetric(e.id, item.id, !!want[e.id]);
+    });
 }
 
 function metricDepartmentId(item) {
@@ -9297,10 +9479,26 @@ function normalizeMetricCatalogItemTabs(item) {
 }
 
 function catalogDeptContext() {
+    if (currentSection === "metricCatalog" && metricCatalogFilter && metricCatalogFilter.dept) {
+        return metricCatalogFilter.dept;
+    }
     if (isSummary()) return "shop";
     const c = workspace() && workspace().code;
     if (c === "shop" || isGenericMetricsDept(c)) return c;
     return "shop";
+}
+
+function catalogViewShowsAllDepts() {
+    return currentSection === "metricCatalog" && (isAppAdmin() || isAdminEntry() || isSummary() || isTerritoryMetricsMode());
+}
+
+function catalogItemsForView() {
+    if (currentSection === "deptMetrics") return catalogItemsForDept(catalogDeptContext());
+    if (catalogViewShowsAllDepts()) {
+        if (metricCatalogFilter.dept) return catalogItemsForDept(metricCatalogFilter.dept);
+        return shopMetricCatalogItems();
+    }
+    return catalogItemsForDept(catalogDeptContext());
 }
 
 function catalogItemsForDept(dept) {
@@ -9332,6 +9530,8 @@ function ensureDeptMetrics(deptCode) {
     const root = appData.deptMetrics[deptCode];
     if (!root.facts || typeof root.facts !== "object") root.facts = {};
     if (!root.workAccess || typeof root.workAccess !== "object") root.workAccess = {};
+    ensureShopMetricCatalog();
+    if (deptCode === "drivers") applyReturnsCountGroupIfNeeded();
     return root;
 }
 
@@ -10002,6 +10202,21 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
         renderPayrollView(payrollViewFromSection());
     }
     refreshMetricsUi();
+}
+
+function assignGroupAllMetricsToEmployee(employee) {
+    if (!employee || !employee.id) return;
+    const home = employeeHome(employee.id);
+    if (!home) return;
+    const dept = home.code;
+    const tab = employeePrimaryWorkTabId(employee, dept) || inferWorkTabIdFromPosition(dept, employee.position);
+    if (!tab) return;
+    catalogItemsForDept(dept).forEach(function (it) {
+        if (!it || it.active === false || it.assignable === false) return;
+        if (it.assign_mode === "specific") return;
+        if (!metricShowsOnTab(it, tab)) return;
+        applyShopEmployeeWorkMetric(employee.id, it.id, true);
+    });
 }
 
 function renderShopMetricAccessPanel() {
@@ -18804,6 +19019,11 @@ function renderAnalysis() {
    В Общую список не заводят — он собирается сам из отделов.
 ============================================================ */
 function canEditShopMetricCatalog() {
+    if (isAppAdmin()) return true;
+    if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) {
+        if (isSummary() || isAdminEntry()) return true;
+        if (workspace() && (workspace().code === "shop" || isGenericMetricsDept(workspace().code))) return true;
+    }
     if (isSummary()) return currentSummaryRole === "admin";
     if (!isTableAdmin() || !workspace()) return false;
     const c = workspace().code;
@@ -18934,12 +19154,24 @@ function renderMetricCatalog() {
     const bar = document.getElementById(generic ? "deptMetricsCatalogToolbar" : "metricCatalogToolbar");
     if (!body) return;
     const can = canEditShopMetricCatalog();
-    const dept = generic ? catalogDeptContext() : "shop";
-    const tabs = metricTabsForDept(dept);
+    const allDepts = catalogViewShowsAllDepts();
+    const dept = currentSection === "deptMetrics"
+        ? catalogDeptContext()
+        : (allDepts ? (metricCatalogFilter.dept || "") : catalogDeptContext());
+    const tabs = dept ? metricTabsForDept(dept) : [];
     if (bar) {
         let html = can
             ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Добавить метрику</button>'
             : '<div class="note">Просмотр. Изменять справочник может администратор.</div>';
+        if (allDepts) {
+            html += '<select onchange="setMetricCatalogFilter(\'dept\',this.value)" style="margin-left:8px">';
+            html += '<option value="">Все отделы</option>';
+            DEPT_DEFAULTS.forEach(function (d) {
+                html += '<option value="' + d.code + '"' + (metricCatalogFilter.dept === d.code ? " selected" : "") + ">"
+                    + escapeHtml(d.name) + "</option>";
+            });
+            html += "</select>";
+        }
         html += '<select onchange="setMetricCatalogFilter(\'tab\',this.value)" style="margin-left:8px">';
         html += '<option value="">Все вкладки</option>';
         tabs.forEach(function (t) {
@@ -18958,7 +19190,7 @@ function renderMetricCatalog() {
         html += "</select>";
         bar.innerHTML = html;
     }
-    let items = catalogItemsForDept(dept).slice().sort(function (a, b) {
+    let items = catalogItemsForView().slice().sort(function (a, b) {
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     });
     items = items.filter(function (it) {
@@ -19152,13 +19384,13 @@ function shopCatalogPositionOptions() {
 }
 
 function catalogFormDeptList() {
-    if (isSummary()) return DEPT_DEFAULTS.slice();
+    if (isAppAdmin() || isAdminEntry() || isSummary()) return DEPT_DEFAULTS.slice();
     const code = catalogDeptContext();
     return DEPT_DEFAULTS.filter(function (d) { return d.code === code; });
 }
 
 function catalogFormCanPickDept() {
-    return isSummary() && currentSummaryRole === "admin";
+    return isAppAdmin() || isAdminEntry() || (isSummary() && (currentSummaryRole === "admin" || userHasPerm("kpi", "manage")));
 }
 
 function refreshMetricCatalogTabOptions(selectedTabs, scopes) {
@@ -19191,6 +19423,7 @@ function onMetricCatalogTabToggle(el) {
     if (!el) return;
     const sel = document.querySelector('.mc-tab-scope[data-tab="' + el.value + '"]');
     if (sel) sel.disabled = !el.checked;
+    refreshMetricCatalogPeopleBox((document.getElementById("mcMetricId") || {}).value || "");
 }
 
 function collectMetricCatalogTabScopes() {
@@ -19207,6 +19440,29 @@ function collectMetricCatalogTabScopes() {
 function onMetricCatalogDeptChange() {
     refreshMetricCatalogTabOptions([]);
     refreshMetricCatalogFormulaBox();
+    refreshMetricCatalogPeopleBox((document.getElementById("mcMetricId") || {}).value || "");
+}
+
+function onMetricCatalogAssignModeChange() {
+    const wrap = document.getElementById("mcPeopleWrap");
+    const specific = document.querySelector('input[name="mcAssignMode"][value="specific"]');
+    if (wrap) wrap.style.display = (specific && specific.checked) ? "" : "none";
+    if (specific && specific.checked) {
+        refreshMetricCatalogPeopleBox((document.getElementById("mcMetricId") || {}).value || "");
+    }
+}
+
+function collectMetricCatalogAssignMode() {
+    const specific = document.querySelector('input[name="mcAssignMode"][value="specific"]');
+    return (specific && specific.checked) ? "specific" : "group_all";
+}
+
+function collectMetricCatalogPersonIds() {
+    const ids = [];
+    document.querySelectorAll(".mc-person:checked").forEach(function (el) {
+        if (el.value) ids.push(el.value);
+    });
+    return ids;
 }
 
 function onMetricCatalogStructureChange(type) {
@@ -19268,10 +19524,11 @@ function metricCatalogFormSubrowHtml(id, name, order, active) {
 
 function openMetricCatalogForm(id, dupIgnore) {
     if (!canEditShopMetricCatalog()) return;
-    const contextDept = catalogDeptContext();
     const existing = id ? shopMetricCatalogById(id) : null;
+    const contextDept = catalogDeptContext();
     if (id && existing && !catalogFormCanPickDept() && metricDepartmentId(existing) !== contextDept) return;
-    const dept = existing ? metricDepartmentId(existing) : contextDept;
+    let dept = existing ? metricDepartmentId(existing) : contextDept;
+    if (!existing && catalogViewShowsAllDepts() && !metricCatalogFilter.dept) dept = "drivers";
     const tab = existing ? metricTabId(existing) : currentDeptMetricTab(dept);
     const it = existing || {
         id: "",
@@ -19292,6 +19549,7 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<div class="metric-cat-form">'
         + '<div class="form-group full"><label>Название метрики</label>'
         + '<input id="mcName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
+        + '<input type="hidden" id="mcMetricId" value="' + escapeAttribute(it.id || "") + '">'
         + '<div class="form-group"><label>Отдел</label><select id="mcDept" onchange="onMetricCatalogDeptChange()"'
         + (deptLocked ? " disabled" : "") + ">";
     depts.forEach(function (d) {
@@ -19304,7 +19562,7 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<button type="button" data-struct="plain" class="' + (metricStructureType(it) === "plain" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'plain\')">Обычная</button>'
         + '<button type="button" data-struct="with_submetrics" class="' + (metricStructureType(it) === "with_submetrics" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'with_submetrics\')">С подметриками</button>'
         + "</div></div>"
-        + '<div class="form-group full"><label>Показывать во вкладках</label><div class="mc-tabs-checks" id="mcTabsBox"></div></div>'
+        + '<div class="form-group full"><label>Показывать в разделах</label><div class="mc-tabs-checks" id="mcTabsBox"></div></div>'
         + '<div class="form-group"><label>Тип фиксации</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()"'
         + (it.builtin && it.core_column ? " disabled" : "") + ">";
     SHOP_METRIC_FILL_TYPES.forEach(function (s) {
@@ -19321,7 +19579,13 @@ function openMetricCatalogForm(id, dupIgnore) {
         }).join("")
         + '</div><button type="button" class="btn btn-secondary btn-small" style="margin-top:6px" onclick="addMetricCatalogFormSubrow()">+ Добавить</button></div>'
         + '<div class="form-group full" id="mcFormulaBox"></div>'
-        + '<div class="note full">Кто заполняет показатель, задаётся только в карточке сотрудника: ФИО → Рабочие метрики.</div>'
+        + '<div class="form-group full"><label>Назначение</label><div class="mc-assign">'
+        + '<label class="check"><input type="radio" name="mcAssignMode" value="group_all"'
+        + (it.assign_mode === "specific" ? "" : " checked") + ' onchange="onMetricCatalogAssignModeChange()"> Всем сотрудникам выбранных групп</label>'
+        + '<label class="check"><input type="radio" name="mcAssignMode" value="specific"'
+        + (it.assign_mode === "specific" ? " checked" : "") + ' onchange="onMetricCatalogAssignModeChange()"> Выбрать конкретных сотрудников</label>'
+        + "</div></div>"
+        + '<div class="form-group full" id="mcPeopleWrap"><div class="mc-people" id="mcPeopleBox"></div></div>'
         + '<div class="note full" id="mcDupHint"></div></div>'
         + '<div class="rev-modal-actions" style="margin-top:10px">'
         + '<button type="button" class="btn btn-primary" onclick="saveMetricCatalogForm(\'' + (it.id || "") + '\',' + (dupIgnore ? "true" : "false") + ')">Сохранить</button>'
@@ -19329,6 +19593,8 @@ function openMetricCatalogForm(id, dupIgnore) {
     openMetricCatalogModal(html);
     refreshMetricCatalogTabOptions(metricWorkTabIds(it), it.work_tab_scopes);
     refreshMetricCatalogFormulaBox(it.formula);
+    onMetricCatalogAssignModeChange();
+    refreshMetricCatalogPeopleBox(it.id);
 }
 
 function refreshMetricCatalogFormulaBox(formula) {
@@ -19368,24 +19634,23 @@ function refreshMetricCatalogFormulaBox(formula) {
 function refreshMetricCatalogPeopleBox(metricId) {
     const box = document.getElementById("mcPeopleBox");
     if (!box) return;
-    const w = findWorkspaceByCode("shop");
-    const all = document.getElementById("mcAllPeople") && document.getElementById("mcAllPeople").checked;
-    const posBoxes = document.querySelectorAll(".mc-pos:checked");
-    const allowed = [];
-    posBoxes.forEach(function (el) { allowed.push(el.value); });
+    const deptEl = document.getElementById("mcDept");
+    const dept = (deptEl && deptEl.value) || catalogDeptContext();
+    const w = findWorkspaceByCode(dept);
+    const tabIds = typeof collectMetricCatalogTabIds === "function" ? collectMetricCatalogTabIds() : [];
     const people = ((w && w.employees) || []).filter(function (e) {
-        return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID && isWorking(e);
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return false;
+        if (!tabIds.length) return true;
+        const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
+        return tabIds.indexOf(tab) !== -1 || (metricId && shopEmployeeHasWorkMetric(e.id, metricId));
     }).sort(compareEmployeesByStatusThenName);
-    box.innerHTML = people.filter(function (e) {
-        if (all) return true;
-        if (!allowed.length) return true;
-        const pos = String(e.position || "").trim();
-        return allowed.indexOf(pos) !== -1 || (metricId && shopEmployeeHasWorkMetric(e.id, metricId));
-    }).map(function (e) {
+    box.innerHTML = people.map(function (e) {
         const on = metricId && shopEmployeeHasWorkMetric(e.id, metricId);
+        const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
         return '<label class="check"><input type="checkbox" class="mc-person" value="' + escapeAttribute(e.id) + '"'
-            + (on ? " checked" : "") + "><span>" + escapeHtml(shopMetricEmployeeCaption(e)) + "</span></label>";
-    }).join("") || '<div class="note">Нет сотрудников для выбранных должностей.</div>';
+            + (on ? " checked" : "") + "><span>" + escapeHtml(shopMetricEmployeeCaption(e))
+            + (tab ? " · " + escapeHtml(metricTabLabel(dept, tab)) : "") + "</span></label>";
+    }).join("") || '<div class="note">Нет сотрудников в выбранных группах.</div>';
 }
 
 function saveMetricCatalogForm(id, dupIgnore) {
@@ -19500,6 +19765,9 @@ function saveMetricCatalogForm(id, dupIgnore) {
         item.assignable = true;
         if (shopWriteoffNameLooksLikeLimitTitle(item.name)) item.name = WRITEOFF_METRIC_NAME;
     }
+    item.assign_mode = collectMetricCatalogAssignMode();
+    if (item.assign_mode === "specific") applyMetricCatalogSpecificAssignment(item, collectMetricCatalogPersonIds());
+    else applyMetricCatalogGroupAssignment(item);
     if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
     saveApp();
     closeMetricCatalogModal();
@@ -20191,7 +20459,7 @@ function renderFio() {
     if (filterHost) {
         let fh = "";
         if (tabs.length) {
-            fh += '<div class="form-group"><label>Должность</label><select onchange="setFioTabFilter(this.value)">'
+            fh += '<div class="form-group"><label>Рабочая группа</label><select onchange="setFioTabFilter(this.value)">'
                 + '<option value="">Все</option>';
             tabs.forEach(function (tab) {
                 fh += '<option value="' + escapeAttribute(tab.id) + '"'
@@ -20233,21 +20501,23 @@ function renderFio() {
         const added = employee.id === justAddedEmployeeId;
         const tabSel = workTabSelect(employee);
         return '<div class="employee-row' + (fired ? " staff-fired" : "") + (added ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-            + fieldBlock("ФИО", nameInputHtml(employee, false), "emp-field-name")
+            + fieldBlock("ФИО", namePartsHtml(employee, !canEditStaff()), "emp-field-name")
             + fieldBlock("Должность", positionSelect(employee), "emp-field-pos")
             + (tabSel ? fieldBlock("Основная группа", tabSel, "emp-field-tab") : "")
             + shopExtraFunctionsHtml(employee)
             + fieldBlock("Отдел в карточке", '<input value="' + escapeAttribute(employee.department || "") + '" onchange="updateEmployee(\'' + employee.id + '\',\'department\',this.value)">', "emp-field-dept")
             + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value)">', "emp-field-time")
             + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value)">', "emp-field-time")
-            + fieldBlock("Статус", jobStatusSelect(employee, false), "emp-field-status")
-            + '<div class="emp-actions"><button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>'
+            + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff()), "emp-field-status")
+            + (canEditStaff() ? '<div class="emp-actions"><button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>' : "")
             + "</div>";
     }).join("");
     withShopUiQuiet(function () {
-        list.innerHTML = html || '<div class="empty-row">Нет сотрудников выбранной должности.</div>';
+        list.innerHTML = html || '<div class="empty-row">Нет сотрудников выбранной группы.</div>';
     });
     renderPositionList();
+    const addBtn = document.getElementById("addFioEmployeeBtn");
+    if (addBtn) addBtn.style.display = canEditStaff() ? "" : "none";
 }
 
 function setFioTabFilter(tabId) {
@@ -20446,16 +20716,30 @@ function focusNewEmployeeCard(employeeId) {
 }
 
 function addEmployee() {
+    if (!canEditStaff()) {
+        toast("Нет права добавлять сотрудников.", "error");
+        return;
+    }
+    const w = workspace();
+    if (!w || w.type === "summary") {
+        toast("Добавьте сотрудника в справочнике «Сотрудники».", "error");
+        return;
+    }
+    const tabFilter = (fioFilterByDept[w.code] && fioFilterByDept[w.code].tab)
+        || (timesheetGroupFilterTabs(w.code).length ? defaultMetricTabId(w.code) : "");
     const employee = {
         id: generateEmployeeId(),
         employee_id: "",
         external_1c_id: "",
         name: "",
+        last_name: "",
+        first_name: "",
+        middle_name: "",
         position: "",
-        work_tab_id: "",
-        work_tab_from: "",
+        work_tab_id: tabFilter || "",
+        work_tab_from: tabFilter ? selectedMonth : "",
         work_tab_history: [],
-        department: officialName(workspace()),
+        department: officialName(w),
         start: "08:00",
         end: "17:00",
         rate: 0,
@@ -20464,14 +20748,16 @@ function addEmployee() {
         terms: {}
     };
     employee.employee_id = employee.id;
-    if (!Array.isArray(workspace().employees)) workspace().employees = [];
-    workspace().employees.push(employee);
+    if (!Array.isArray(w.employees)) w.employees = [];
+    w.employees.push(employee);
     justAddedEmployeeId = employee.id;
+    assignGroupAllMetricsToEmployee(employee);
+    saveApp();
     renderFio();
     renderEmployees();
     refreshAll();
     focusNewEmployeeCard(employee.id);
-    toast("Введите фамилию или ФИО сотрудника", "error");
+    toast("Введите фамилию, имя и рабочую группу.");
 }
 
 function updateEmployee(employeeId, field, value) {
@@ -20503,13 +20789,20 @@ function updateEmployee(employeeId, field, value) {
         employee.jobStatus = value === "fired" ? "fired" : "working";
     } else if (field === "work_tab_id") {
         setEmployeePrimaryWorkTab(employeeId, value);
+        assignGroupAllMetricsToEmployee(employee);
     } else if (field === "position") {
         setEmployeePosition(employee, value, selectedMonth);
+        if (!employee.work_tab_id) {
+            const home = employeeHome(employeeId);
+            const inferred = inferWorkTabIdFromPosition(home && home.code, value);
+            if (inferred) setEmployeePrimaryWorkTab(employeeId, inferred);
+        }
+        assignGroupAllMetricsToEmployee(employee);
     } else {
         employee[field] = value;
     }
     if (isBlankName(employee.name)) {
-        if (isSummary()) renderSummaryStaff();
+        if (isSummary() || isAdminEntry()) renderSummaryStaff();
         else {
             renderFio();
             renderEmployees();
@@ -20518,7 +20811,11 @@ function updateEmployee(employeeId, field, value) {
         return;
     }
     saveApp();
-    if (isSummary()) renderSummaryStaff();
+    if (isSummary() || isAdminEntry()) renderSummaryStaff();
+    else {
+        renderFio();
+        renderEmployees();
+    }
     refreshAll();
 }
 
@@ -20611,11 +20908,14 @@ function workplaceSelect(employee, dept) {
 
 function renderSummaryStaff() {
     const box = document.getElementById("summaryStaffList");
-    if (!box || currentWorkspaceIndex === null || !isSummary()) return;
+    if (!box || currentWorkspaceIndex === null) return;
+    if (!isSummary() && !isAdminEntry()) return;
 
     const groups = summaryDirectoryGroups();
+    const addBtn = document.getElementById("addSummaryEmployeeBtn");
+    if (addBtn) addBtn.style.display = canEditStaff() ? "" : "none";
     if (!groups.length) {
-        box.innerHTML = '<div class="empty-row">Сотрудников пока нет. Добавьте человека здесь или во вкладке «ФИО» отдела.</div>';
+        box.innerHTML = '<div class="empty-row">Сотрудников пока нет. Нажмите «+ Добавить сотрудника».</div>';
         return;
     }
 
@@ -20633,6 +20933,7 @@ function renderSummaryStaff() {
             const place = locked
                 ? '<input value="' + escapeAttribute(officialName(g.dept)) + '" disabled>'
                 : workplaceSelect(employee, g.dept);
+            const tabSel = workTabSelectForDept(employee, g.dept);
             const percentBlock = '<div class="form-group rep-accrual"><label>Начисление</label>'
                 + '<div class="rep-accrual-row"><span class="rep-accrual-name">Опт</span>'
                 + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentOpt) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentOpt\',this.value)"' + dis + ">"
@@ -20645,14 +20946,13 @@ function renderSummaryStaff() {
                 + '<span class="rep-accrual-unit">%</span></div>'
                 + "</div>";
             html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-                + fieldBlock("ФИО", nameInputHtml(employee, locked))
-                + fieldBlock("Где работает", place)
+                + fieldBlock("ФИО", namePartsHtml(employee, locked))
+                + fieldBlock("Рабочий отдел", place)
+                + (tabSel ? fieldBlock("Рабочая группа", tabSel) : "")
                 + fieldBlock("Статус", statusSel)
-                + (isDrivers
-                    ? fieldBlock("Должность", locked
-                        ? '<input value="' + escapeAttribute(employee.position || "") + '" disabled>'
-                        : positionSelect(employee, g.dept))
-                    : "")
+                + fieldBlock("Должность", locked
+                    ? '<input value="' + escapeAttribute(employee.position || "") + '" disabled>'
+                    : positionSelect(employee, g.dept))
                 + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">")
                 + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">")
                 + (isDrivers && isRep ? percentBlock : "")
@@ -20671,16 +20971,30 @@ function renderSummaryStaff() {
 }
 
 function addSummaryEmployee() {
-    if (!canEditStaff()) return;
-    const code = summaryDeptFilter || "shop";
+    if (!canEditStaff()) {
+        toast("Нет права добавлять сотрудников.", "error");
+        return;
+    }
+    if (!summaryDeptFilter) {
+        toast("Сначала выберите рабочий отдел в фильтре сверху.", "error");
+        return;
+    }
+    const code = summaryDeptFilter;
     const target = findWorkspaceByCode(code) || orderedDeptWorkspaces()[0];
     if (!target) return;
+    const defaultTab = defaultMetricTabId(target.code);
     const employee = {
         id: generateEmployeeId(),
         employee_id: "",
         external_1c_id: "",
         name: "",
+        last_name: "",
+        first_name: "",
+        middle_name: "",
         position: "",
+        work_tab_id: timesheetGroupFilterTabs(target.code).length ? defaultTab : "",
+        work_tab_from: selectedMonth,
+        work_tab_history: [],
         department: officialName(target),
         start: "08:00",
         end: "17:00",
@@ -20693,10 +21007,12 @@ function addSummaryEmployee() {
     if (!Array.isArray(target.employees)) target.employees = [];
     target.employees.push(employee);
     justAddedEmployeeId = employee.id;
+    assignGroupAllMetricsToEmployee(employee);
+    saveApp();
     renderSummaryStaff();
     refreshAll();
     focusNewEmployeeCard(employee.id);
-    toast("Введите фамилию или ФИО сотрудника", "error");
+    toast("Введите фамилию, имя, должность и рабочую группу.");
 }
 
 function moveEmployeeToDepartment(employeeId, deptCode) {
@@ -20720,6 +21036,14 @@ function moveEmployeeToDepartment(employeeId, deptCode) {
     employee.department = officialName(to);
     to.employees.push(employee);
     if (wasAssigned) to.employeeIds.push(employeeId);
+    const nextTabs = timesheetGroupFilterTabs(to.code);
+    if (nextTabs.length) {
+        const keep = nextTabs.some(function (t) { return t.id === employee.work_tab_id; });
+        if (!keep) setEmployeePrimaryWorkTab(employeeId, defaultMetricTabId(to.code));
+    } else {
+        employee.work_tab_id = "";
+    }
+    assignGroupAllMetricsToEmployee(employee);
 
     saveApp();
     renderSummaryStaff();
@@ -20979,7 +21303,7 @@ function renderStaffOrgAdmin() {
         return String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
     if (!people.length) {
-        body.innerHTML = '<tr><td colspan="8"><div class="empty-row">Нет сотрудников. Добавьте их во вкладке ФИО отдела.</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="8"><div class="empty-row">Нет сотрудников. Создайте ФИО в разделе «Сотрудники».</div></td></tr>';
     } else {
         body.innerHTML = people.map(function (e) {
             const home = employeeHome(e.id);
