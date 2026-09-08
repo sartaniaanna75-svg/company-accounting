@@ -1953,8 +1953,8 @@
         #summaryStaffList {
             overflow-x: auto;
         }
-        .name-parts { display: flex; flex-wrap: wrap; gap: 6px; }
-        .name-parts input { min-width: 140px; flex: 1; }
+        .name-parts { display: block; min-width: 220px; }
+        .name-parts input { width: 100%; min-width: 220px; box-sizing: border-box; }
 
         .employee-row {
             display: flex;
@@ -1990,7 +1990,7 @@
             line-height: 1.2;
         }
 
-        .employee-row > .form-group.emp-field-name { width: 100%; max-width: 520px; }
+        .employee-row > .form-group.emp-field-name { width: 280px; max-width: 320px; }
         .employee-row > .form-group.emp-field-pos { width: 160px; }
         .employee-row > .form-group.emp-field-dept { width: 150px; }
         .employee-row > .form-group.emp-field-time { width: 96px; }
@@ -2052,7 +2052,7 @@
             }
         }
 
-        .summary-staff-row > .form-group:nth-child(1) { width: 220px; }
+        .summary-staff-row > .form-group:nth-child(1) { width: 280px; }
         .summary-staff-row > .form-group:nth-child(2) { width: 180px; }
         .summary-staff-row > .form-group:nth-child(3) { width: 120px; }
         .summary-staff-row > .form-group:nth-child(4) { width: 160px; }
@@ -7767,6 +7767,30 @@ function applyEmployeeNameParts(employee, last, first, middle) {
     employee.name = composeEmployeeName(employee);
 }
 
+function applyEmployeeFullName(employee, fullName) {
+    const p = splitEmployeeName(fullName);
+    applyEmployeeNameParts(employee, p.last_name, p.first_name, p.middle_name);
+}
+
+function updateEmployeeFullName(employeeId, value) {
+    if (shopUiQuiet) return;
+    if (!canEditStaff()) return;
+    const employee = getEmployee(employeeId);
+    if (!employee) return;
+    applyEmployeeFullName(employee, value);
+    if (isBlankName(employee.name)) {
+        toast("Введите ФИО сотрудника.", "error");
+        if (isSummary() || isAdminEntry()) renderSummaryStaff();
+        else renderFio();
+        return;
+    }
+    saveApp();
+    if (isSummary() || isAdminEntry()) renderSummaryStaff();
+    else renderFio();
+    renderEmployees();
+    refreshAll();
+}
+
 function updateEmployeeNamePart(employeeId, part, value) {
     if (shopUiQuiet) return;
     if (!canEditStaff()) return;
@@ -7778,7 +7802,7 @@ function updateEmployeeNamePart(employeeId, part, value) {
     else p.middle_name = value;
     applyEmployeeNameParts(employee, p.last_name, p.first_name, p.middle_name);
     if (isBlankName(employee.name) && part === "last_name") {
-        toast("Укажите фамилию.", "error");
+        toast("Введите ФИО сотрудника.", "error");
     }
     saveApp();
     if (isSummary() || isAdminEntry()) renderSummaryStaff();
@@ -7788,16 +7812,13 @@ function updateEmployeeNamePart(employeeId, part, value) {
 }
 
 function namePartsHtml(employee, disabled) {
-    const p = employeeNameParts(employee);
+    const full = composeEmployeeName(employee) || String((employee && employee.name) || "");
     const dis = disabled ? " disabled" : "";
     return '<div class="name-parts">'
-        + '<input placeholder="Фамилия *" value="' + escapeAttribute(p.last_name) + '"'
-        + (isBlankName(p.last_name) ? ' class="name-missing"' : "")
-        + " onchange=\"updateEmployeeNamePart('" + employee.id + "','last_name',this.value)\"" + dis + ">"
-        + '<input placeholder="Имя *" value="' + escapeAttribute(p.first_name) + '"'
-        + " onchange=\"updateEmployeeNamePart('" + employee.id + "','first_name',this.value)\"" + dis + ">"
-        + '<input placeholder="Отчество" value="' + escapeAttribute(p.middle_name) + '"'
-        + " onchange=\"updateEmployeeNamePart('" + employee.id + "','middle_name',this.value)\"" + dis + ">"
+        + '<input placeholder="Иванов Иван Иванович" value="' + escapeAttribute(full) + '"'
+        + (isBlankName(full) ? ' class="name-missing"' : "")
+        + ' oninput="syncNameFieldState(this)"'
+        + " onchange=\"updateEmployeeFullName('" + employee.id + "',this.value)\"" + dis + ">"
         + "</div>";
 }
 
@@ -7829,7 +7850,7 @@ function syncNameFieldState(el) {
 function nameInputHtml(employee, disabled) {
     const empty = isBlankName(employee && employee.name);
     return '<input' + (empty ? ' class="name-missing"' : "")
-        + ' placeholder="Введите фамилию"'
+        + ' placeholder="Иванов Иван Иванович"'
         + ' value="' + escapeAttribute(employee && employee.name ? employee.name : "") + '"'
         + ' oninput="syncNameFieldState(this)"'
         + " onchange=\"updateEmployee('" + employee.id + "','name',this.value)\""
@@ -15180,7 +15201,7 @@ function setTimesheetEmployee(fromId, toId) {
     if (fromId === toId) return;
 
     if (toId && isBlankName((getEmployee(toId) || {}).name)) {
-        toast("Введите фамилию или ФИО сотрудника", "error");
+        toast("Введите ФИО сотрудника", "error");
         renderTimesheet();
         return;
     }
@@ -21016,7 +21037,7 @@ function renderFio() {
         const added = employee.id === justAddedEmployeeId;
         const tabSel = workTabSelect(employee);
         return '<div class="employee-row' + (fired ? " staff-fired" : "") + (added ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-            + fieldBlock("ФИО", namePartsHtml(employee, !canEditStaff()), "emp-field-name")
+            + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, !canEditStaff()), "emp-field-name")
             + fieldBlock("Должность", positionSelect(employee), "emp-field-pos")
             + (tabSel ? fieldBlock("Основная группа", tabSel, "emp-field-tab") : "")
             + shopExtraFunctionsHtml(employee)
@@ -21194,7 +21215,7 @@ function positionSelect(employee, dept) {
 function toggleAssign(employeeId, checked) {
     const employee = getEmployee(employeeId);
     if (checked && employee && isBlankName(employee.name)) {
-        toast("Введите фамилию или ФИО сотрудника", "error");
+        toast("Введите ФИО сотрудника", "error");
         renderEmployees();
         return;
     }
@@ -21276,7 +21297,7 @@ function addEmployee() {
     renderEmployees();
     refreshAll();
     focusNewEmployeeCard(employee.id);
-    toast("Введите фамилию, имя и рабочую группу.");
+    toast("Введите ФИО сотрудника и рабочую группу.");
 }
 
 function updateEmployee(employeeId, field, value) {
@@ -21286,13 +21307,13 @@ function updateEmployee(employeeId, field, value) {
     if (!employee) return;
     if (field === "name") {
         if (isBlankName(value)) {
-            employee.name = "";
-            toast("Введите фамилию или ФИО сотрудника", "error");
+            applyEmployeeFullName(employee, "");
+            toast("Введите ФИО сотрудника", "error");
             if (isSummary()) renderSummaryStaff();
             else renderFio();
             return;
         }
-        employee.name = String(value).replace(/\s+/g, " ").trim();
+        applyEmployeeFullName(employee, value);
         saveApp();
         if (isSummary()) renderSummaryStaff();
         renderFio();
@@ -21465,7 +21486,7 @@ function renderSummaryStaff() {
                 + '<span class="rep-accrual-unit">%</span></div>'
                 + "</div>";
             html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-                + fieldBlock("ФИО", namePartsHtml(employee, locked))
+                + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, locked))
                 + fieldBlock("Рабочий отдел", place)
                 + (tabSel ? fieldBlock("Рабочая группа", tabSel) : "")
                 + fieldBlock("Статус", statusSel)
@@ -21531,7 +21552,7 @@ function addSummaryEmployee() {
     renderSummaryStaff();
     refreshAll();
     focusNewEmployeeCard(employee.id);
-    toast("Введите фамилию, имя, должность и рабочую группу.");
+    toast("Введите ФИО сотрудника, должность и рабочую группу.");
 }
 
 function moveEmployeeToDepartment(employeeId, deptCode) {
@@ -21916,7 +21937,7 @@ function openStaffOrgEditor(employeeId) {
     }).join("<br>");
     modal.innerHTML = "<h3>Сотрудник</h3>"
         + '<div class="note">employee_id не меняется: ' + escapeHtml(e.id) + "</div>"
-        + '<div class="form-group"><label>ФИО</label><input id="orgEmpName" maxlength="120" value="' + escapeAttribute(e.name || "") + '"></div>'
+        + '<div class="form-group"><label>ФИО сотрудника *</label><input id="orgEmpName" maxlength="120" placeholder="Иванов Иван Иванович" value="' + escapeAttribute(e.name || composeEmployeeName(e) || "") + '"></div>'
         + '<div class="form-group"><label>Должность</label><select id="orgEmpPos">' + orgPositionOptions(e.position || "") + "</select></div>"
         + '<div class="form-group"><label>Рабочий отдел</label><select id="orgEmpDept">' + deptHtml + "</select></div>"
         + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMgr"' + (mgr ? " checked" : "") + "> Руководитель</label></div>"
@@ -21941,8 +21962,8 @@ function saveStaffOrgEditor(employeeId) {
     if (!e) return;
     const keepId = e.id;
     const name = String((document.getElementById("orgEmpName") || {}).value || "").replace(/\s+/g, " ").trim();
-    if (!name) { toast("Укажите ФИО.", "error"); return; }
-    e.name = name;
+    if (!name) { toast("Укажите ФИО сотрудника.", "error"); return; }
+    applyEmployeeFullName(e, name);
     const pos = String((document.getElementById("orgEmpPos") || {}).value || "").trim();
     const fromIso = String((document.getElementById("orgEmpFrom") || {}).value || todayIsoDate());
     const fromMonth = fromIso.slice(0, 7);
