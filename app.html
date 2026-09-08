@@ -2962,11 +2962,14 @@
         .evg-bar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 0 0 8px; font-size: 12px; }
         .evg-bar label { display: inline-flex; align-items: center; gap: 6px; color: #475569; }
         .evg-bar .btn-primary { margin-left: auto; }
-        .evg-bar select, .evg-bar input[type="search"], .evg-bar input[type="text"] {
+        .evg-bar select, .evg-bar input[type="search"], .evg-bar input[type="text"], .evg-bar input[type="date"] {
             height: 32px; padding: 3px 8px; font-size: 12px; min-width: 0;
         }
-        .evg-bar input[type="search"] { width: 200px; }
-        .evg-nav { display: inline-flex; gap: 4px; align-items: center; }
+        .evg-bar input[type="search"] { width: 180px; }
+        .evg-bar input[type="date"] { width: 138px; }
+        .evg-nav { display: inline-flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+        .evg-presets { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+        .evg-presets .btn { padding: 3px 8px; font-size: 11px; height: 28px; }
         .evg-wrap {
             overflow: auto;
             max-height: calc(100vh - 250px);
@@ -2996,23 +2999,27 @@
         }
         .evg-sticky { position: sticky; z-index: 2; background: #fff; }
         .evg-table thead .evg-sticky { z-index: 5; background: #d6e3f0; }
-        .evg-n { left: 0; width: 32px; min-width: 32px; text-align: center; }
-        .evg-name { left: 32px; width: 190px; min-width: 190px; max-width: 190px; text-align: left; white-space: normal; word-wrap: break-word; }
-        .evg-ds { left: 222px; width: 82px; min-width: 82px; }
-        .evg-de { left: 304px; width: 82px; min-width: 82px; }
-        .evg-table thead th.evg-weekhead { white-space: normal; }
-        .evg-desc { left: 386px; width: 260px; min-width: 260px; max-width: 260px; text-align: left; white-space: normal; word-wrap: break-word; overflow-wrap: anywhere; box-shadow: 4px 0 6px -4px rgba(15,23,42,.18); }
-        .evg-day {
-            width: 22px; min-width: 22px; max-width: 22px;
-            padding: 0 !important; text-align: center;
+        .evg-n { left: 0; width: 28px; min-width: 28px; text-align: center; }
+        .evg-name { left: 28px; width: 150px; min-width: 150px; max-width: 150px; text-align: left; white-space: normal; word-wrap: break-word; }
+        .evg-ds { left: 178px; width: 76px; min-width: 76px; }
+        .evg-de { left: 254px; width: 76px; min-width: 76px; }
+        .evg-desc { left: 330px; width: 190px; min-width: 190px; max-width: 190px; text-align: left; white-space: normal; word-wrap: break-word; overflow-wrap: anywhere; }
+        .evg-dept { left: 520px; width: 110px; min-width: 110px; max-width: 110px; text-align: left; white-space: normal; word-wrap: break-word; }
+        .evg-emp { left: 630px; width: 120px; min-width: 120px; max-width: 120px; text-align: left; white-space: normal; word-wrap: break-word; }
+        .evg-st { left: 750px; width: 88px; min-width: 88px; max-width: 88px; box-shadow: 4px 0 6px -4px rgba(15,23,42,.18); }
+        .evg-week {
+            width: 78px; min-width: 78px; max-width: 78px;
+            text-align: center; padding: 4px 2px !important;
         }
-        .evg-table thead .evg-day { font-size: 10px; line-height: 1.15; padding: 2px 0 !important; }
-        .evg-wd { font-weight: 400; color: #64748b; }
-        .evg-we { background: #e8f1fb; }
-        .evg-table thead th.evg-we { background: #d5e6f7; }
+        .evg-table thead .evg-week { font-size: 10px; line-height: 1.2; white-space: nowrap; }
+        .evg-table thead th.evg-monthhead {
+            background: #d6e3f0;
+            font-size: 11px;
+            letter-spacing: .04em;
+            color: #1f4e79;
+        }
         .evg-wk { box-shadow: inset 2px 0 0 #1f4e79; }
         .evg-on { background: #95d5a6 !important; }
-        .evg-weekhead { font-size: 10px; line-height: 1.2; font-weight: 700; color: #1f4e79; }
         .evg-row { cursor: pointer; }
         .evg-row:hover td.evg-sticky { background: #f8fafc; }
         .evg-foot { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 12px; color: #475569; }
@@ -23939,7 +23946,8 @@ let mgmtTaskDept = "";
 let mgmtTaskEmp = "";
 let mgmtMeetWeekFrom = "";
 let mgmtMeetOpen = {};
-let mgmtEventMonth = "";
+let mgmtEventFrom = "";
+let mgmtEventTo = "";
 let mgmtEventDept = "";
 let mgmtEventEmp = "";
 let mgmtEventStatus = "";
@@ -24598,19 +24606,6 @@ function canEditMgmtEvents() {
     return isAppAdmin() || canEditMgmtTasks() || canEditMgmtMeetings();
 }
 
-function mgmtEventWdShort(iso) {
-    const d = mgmtParseIso(iso).getDay();
-    return ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"][d];
-}
-
-function mgmtIsoWeekNo(iso) {
-    const d = mgmtParseIso(iso);
-    d.setHours(0, 0, 0, 0);
-    d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
-    const week1 = new Date(d.getFullYear(), 0, 4);
-    return 1 + Math.round(((d - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7);
-}
-
 function normalizeMgmtEvent(e) {
     if (!e || typeof e !== "object") return e;
     const start = e.start_date || e.date || "";
@@ -24648,68 +24643,23 @@ function mgmtEventDeptOptions(selected, allowAll) {
     return html;
 }
 
-function mgmtEventMonthDays(month) {
-    const m = month || currentMonthValue();
-    const last = daysInMonthValue(m);
-    const out = [];
-    for (let d = 1; d <= last; d++) {
-        const iso = m + "-" + mgmtPad(d);
-        const dt = mgmtParseIso(iso);
-        const week = mgmtThuWeek(iso);
-        out.push({
-            iso: iso,
-            n: d,
-            wd: dt.getDay(),
-            weekend: dt.getDay() === 0 || dt.getDay() === 6,
-            weekStart: week.from,
-            weekTo: week.to,
-            weekKey: week.key,
-            weekNo: mgmtIsoWeekNo(week.from)
-        });
-    }
-    return out;
+function mgmtFmtRuShort(iso) {
+    const p = String(iso || "").split("-");
+    if (p.length < 3) return iso || "";
+    return p[2] + "." + p[1];
 }
 
-function mgmtEventOverlapsDay(e, iso) {
-    const a = e.start_date || e.date || "";
-    const b = e.end_date || a;
-    if (!a || !iso) return false;
-    return iso >= a && iso <= (b || a);
+function mgmtEventMonthHead(monthValue, showYear) {
+    const parts = String(monthValue || "").split("-").map(Number);
+    if (!parts[0] || !parts[1]) return "";
+    const name = String(MONTH_FULL[parts[1] - 1] || "").toUpperCase();
+    return showYear ? name + " " + parts[0] : name;
 }
 
-function mgmtEventOverlapsMonth(e, month) {
-    const a = e.start_date || e.date || "";
-    const b = e.end_date || a || "";
-    if (!a) return false;
-    const from = month + "-01";
-    const to = month + "-" + mgmtPad(daysInMonthValue(month));
-    return a <= to && (b || a) >= from;
-}
-
-function setMgmtEventMonth(value) {
-    mgmtEventMonth = String(value || currentMonthValue()).slice(0, 7);
-    renderManagement();
-}
-
-function shiftMgmtEventMonth(delta) {
-    if (!mgmtEventMonth) mgmtEventMonth = currentMonthValue();
-    const p = mgmtEventMonth.split("-").map(Number);
-    const d = new Date(p[0], (p[1] || 1) - 1 + Number(delta || 0), 1);
-    mgmtEventMonth = d.getFullYear() + "-" + mgmtPad(d.getMonth() + 1);
-    renderManagement();
-}
-
-function mgmtEventMonthOptions(selected) {
-    let html = "";
-    const cur = currentMonthValue().split("-").map(Number);
-    const base = new Date(cur[0], (cur[1] || 1) - 1, 1);
-    for (let i = -14; i <= 8; i++) {
-        const d = new Date(base.getFullYear(), base.getMonth() + i, 1);
-        const val = d.getFullYear() + "-" + mgmtPad(d.getMonth() + 1);
-        html += '<option value="' + val + '"' + (val === selected ? " selected" : "") + ">"
-            + escapeHtml(monthLabel(val)) + "</option>";
-    }
-    return html;
+function mgmtEventEmpLabel(id) {
+    if (!id) return "—";
+    const emp = typeof getEmployee === "function" ? getEmployee(id) : null;
+    return (emp && (emp.name || emp.id)) || String(id);
 }
 
 function mgmtEventStatusLabel(st) {
@@ -24719,17 +24669,114 @@ function mgmtEventStatusLabel(st) {
     return "Запланировано";
 }
 
+function mgmtShiftIsoMonth(iso, delta) {
+    const p = String(iso || "").split("-").map(Number);
+    const last = new Date(p[0], (p[1] || 1) - 1 + Number(delta || 0) + 1, 0).getDate();
+    const day = Math.min(p[2] || 1, last);
+    return mgmtIsoFromDate(new Date(p[0], (p[1] || 1) - 1 + Number(delta || 0), day));
+}
+
+function mgmtEventEnsureRange() {
+    if (!mgmtEventFrom || !mgmtEventTo) {
+        const m = currentMonthValue();
+        mgmtEventFrom = m + "-01";
+        mgmtEventTo = m + "-" + mgmtPad(daysInMonthValue(m));
+    }
+    if (mgmtEventTo && mgmtEventFrom && mgmtEventTo < mgmtEventFrom) {
+        const tmp = mgmtEventFrom;
+        mgmtEventFrom = mgmtEventTo;
+        mgmtEventTo = tmp;
+    }
+}
+
+function setMgmtEventFrom(value) {
+    mgmtEventFrom = String(value || "").slice(0, 10);
+    mgmtEventEnsureRange();
+    renderManagement();
+}
+
+function setMgmtEventTo(value) {
+    mgmtEventTo = String(value || "").slice(0, 10);
+    mgmtEventEnsureRange();
+    renderManagement();
+}
+
+function shiftMgmtEventRange(delta) {
+    mgmtEventEnsureRange();
+    mgmtEventFrom = mgmtShiftIsoMonth(mgmtEventFrom, delta);
+    mgmtEventTo = mgmtShiftIsoMonth(mgmtEventTo, delta);
+    renderManagement();
+}
+
+function setMgmtEventPreset(kind) {
+    mgmtEventEnsureRange();
+    const y = Number(String(mgmtEventFrom).slice(0, 4)) || new Date().getFullYear();
+    const startMonth = String(mgmtEventFrom).slice(0, 7);
+    if (kind === "year") {
+        mgmtEventFrom = y + "-01-01";
+        mgmtEventTo = y + "-12-31";
+        renderManagement();
+        return;
+    }
+    let months = 1;
+    if (kind === "3m") months = 3;
+    else if (kind === "6m") months = 6;
+    else if (kind === "9m") months = 9;
+    const p = startMonth.split("-").map(Number);
+    const from = startMonth + "-01";
+    const end = new Date(p[0], (p[1] || 1) - 1 + months, 0);
+    mgmtEventFrom = from;
+    mgmtEventTo = mgmtIsoFromDate(end);
+    renderManagement();
+}
+
+function mgmtEventRangeWeeks(fromIso, toIso) {
+    const from = fromIso || mgmtIsoFromDate(new Date());
+    const to = toIso || from;
+    let cur = mgmtThuWeek(from).from;
+    const lastStart = mgmtThuWeek(to).from;
+    const weeks = [];
+    let guard = 0;
+    while (cur <= lastStart && guard < 80) {
+        const w = mgmtThuWeek(cur);
+        weeks.push({
+            from: w.from,
+            to: w.to,
+            key: w.key,
+            month: String(w.from).slice(0, 7)
+        });
+        cur = mgmtShiftThuWeek(w.from, 1).from;
+        guard += 1;
+    }
+    return weeks;
+}
+
+function mgmtEventOverlapsWeek(e, week) {
+    const a = e.start_date || e.date || "";
+    const b = e.end_date || a;
+    if (!a || !week) return false;
+    return a <= week.to && (b || a) >= week.from;
+}
+
+function mgmtEventOverlapsRange(e, from, to) {
+    const a = e.start_date || e.date || "";
+    const b = e.end_date || a;
+    if (!a) return true;
+    return a <= to && (b || a) >= from;
+}
+
 function renderMgmtEventsHtml() {
     ensureManagement();
-    if (!mgmtEventMonth) mgmtEventMonth = currentMonthValue();
-    const days = mgmtEventMonthDays(mgmtEventMonth);
+    mgmtEventEnsureRange();
+    const weeks = mgmtEventRangeWeeks(mgmtEventFrom, mgmtEventTo);
+    const scaleFrom = weeks.length ? weeks[0].from : mgmtEventFrom;
+    const scaleTo = weeks.length ? weeks[weeks.length - 1].to : mgmtEventTo;
     const can = canEditMgmtEvents();
     const q = String(mgmtEventQ || "").toLowerCase().trim();
     let events = (appData.management.events || []).filter(function (e) { return e && e.event_id; });
     events.forEach(normalizeMgmtEvent);
     events = events.filter(function (e) {
-        const hasDate = !!(e.start_date || e.date);
-        if (hasDate && !mgmtEventOverlapsMonth(e, mgmtEventMonth)) return false;
+        if (!mgmtEventOverlapsRange(e, scaleFrom, scaleTo)) return false;
         if (mgmtEventDept && String(e.department_id || e.spu_department_id || "") !== mgmtEventDept) return false;
         if (mgmtEventEmp && e.owner_employee_id !== mgmtEventEmp) return false;
         if (mgmtEventStatus && String(e.status || "new") !== mgmtEventStatus) return false;
@@ -24745,10 +24792,17 @@ function renderMgmtEventsHtml() {
 
     let html = '<div class="evg-bar">'
         + '<div class="evg-nav">'
-        + '<label>Период</label>'
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="shiftMgmtEventMonth(-1)">←</button>'
-        + '<select onchange="setMgmtEventMonth(this.value)">' + mgmtEventMonthOptions(mgmtEventMonth) + "</select>"
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="shiftMgmtEventMonth(1)">→</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="shiftMgmtEventRange(-1)">←</button>'
+        + '<label>Период с <input type="date" value="' + escapeAttribute(mgmtEventFrom) + '" onchange="setMgmtEventFrom(this.value)"></label>'
+        + '<label>по <input type="date" value="' + escapeAttribute(mgmtEventTo) + '" onchange="setMgmtEventTo(this.value)"></label>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="shiftMgmtEventRange(1)">→</button>'
+        + "</div>"
+        + '<div class="evg-presets">'
+        + '<button type="button" class="btn btn-secondary" onclick="setMgmtEventPreset(\'1m\')">1 мес</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="setMgmtEventPreset(\'3m\')">3 мес</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="setMgmtEventPreset(\'6m\')">6 мес</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="setMgmtEventPreset(\'9m\')">9 мес</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="setMgmtEventPreset(\'year\')">Год</button>'
         + "</div>"
         + '<label>Подразделение <select onchange="mgmtEventDept=this.value;renderManagement()">'
         + mgmtEventDeptOptions(mgmtEventDept, true) + "</select></label>"
@@ -24763,59 +24817,69 @@ function renderMgmtEventsHtml() {
         + (can ? '<button type="button" class="btn btn-primary btn-small" onclick="openMgmtEventForm(\'\')">+ Добавить мероприятие</button>' : "")
         + "</div>";
 
-    const weekGroups = [];
-    days.forEach(function (day) {
-        const last = weekGroups[weekGroups.length - 1];
-        if (!last || last.key !== day.weekKey) {
-            weekGroups.push({ key: day.weekKey, no: day.weekNo, from: day.weekStart, to: day.weekTo, span: 1 });
-        } else last.span += 1;
+    const years = {};
+    weeks.forEach(function (w) { years[String(w.from).slice(0, 4)] = true; });
+    const showYear = Object.keys(years).length > 1;
+    const monthGroups = [];
+    weeks.forEach(function (w) {
+        const last = monthGroups[monthGroups.length - 1];
+        if (!last || last.month !== w.month) monthGroups.push({ month: w.month, span: 1 });
+        else last.span += 1;
     });
 
-    html += '<div class="evg-wrap"><table class="evg-table"><thead>';
-    html += '<tr><th class="evg-sticky evg-n" rowspan="3">№</th>'
-        + '<th class="evg-sticky evg-name" rowspan="3">Название мероприятия</th>'
-        + '<th class="evg-sticky evg-ds" rowspan="3">Дата начала</th>'
-        + '<th class="evg-sticky evg-de" rowspan="3">Дата завершения</th>'
-        + '<th class="evg-sticky evg-desc" rowspan="3">Описание</th>'
-        + '<th class="evg-weekhead" colspan="' + days.length + '">' + escapeHtml(monthLabel(mgmtEventMonth)) + "</th></tr>";
-    html += "<tr>";
-    weekGroups.forEach(function (g) {
-        html += '<th class="evg-weekhead evg-wk" colspan="' + g.span + '">Неделя ' + g.no
-            + "<br>" + escapeHtml(mgmtFmtRu(g.from) + " – " + mgmtFmtRu(g.to)) + "</th>";
+    const leftHead = '<th class="evg-sticky evg-n" rowspan="2">№</th>'
+        + '<th class="evg-sticky evg-name" rowspan="2">Название мероприятия</th>'
+        + '<th class="evg-sticky evg-ds" rowspan="2">Дата начала</th>'
+        + '<th class="evg-sticky evg-de" rowspan="2">Дата завершения</th>'
+        + '<th class="evg-sticky evg-desc" rowspan="2">Описание</th>'
+        + '<th class="evg-sticky evg-dept" rowspan="2">Подразделение</th>'
+        + '<th class="evg-sticky evg-emp" rowspan="2">Ответственный</th>'
+        + '<th class="evg-sticky evg-st" rowspan="2">Статус</th>';
+
+    html += '<div class="evg-wrap"><table class="evg-table"><thead><tr>' + leftHead;
+    monthGroups.forEach(function (g) {
+        html += '<th class="evg-monthhead" colspan="' + g.span + '">' + escapeHtml(mgmtEventMonthHead(g.month, showYear)) + "</th>";
     });
     html += "</tr><tr>";
-    days.forEach(function (day) {
-        html += '<th class="evg-day' + (day.weekend ? " evg-we" : "") + (day.iso === day.weekStart ? " evg-wk" : "") + '">'
-            + day.n + '<div class="evg-wd">' + mgmtEventWdShort(day.iso) + "</div></th>";
+    weeks.forEach(function (w) {
+        html += '<th class="evg-week evg-wk">' + escapeHtml(mgmtFmtRuShort(w.from) + "–" + mgmtFmtRuShort(w.to)) + "</th>";
     });
     html += "</tr></thead><tbody>";
 
+    const leftEmpty = '<td class="evg-sticky evg-n"></td>'
+        + '<td class="evg-sticky evg-name wrap" colspan="7"><div class="empty-row">Нет мероприятий за этот период.</div></td>';
     if (!events.length) {
-        html += '<tr><td class="evg-sticky evg-n"></td><td class="evg-sticky evg-name wrap" colspan="4"><div class="empty-row">Нет мероприятий за этот период.</div></td>';
-        days.forEach(function (day) {
-            html += '<td class="evg-day' + (day.iso === day.weekStart ? " evg-wk" : "") + '"></td>';
+        html += "<tr>" + leftEmpty;
+        weeks.forEach(function () {
+            html += '<td class="evg-week"></td>';
         });
         html += "</tr>";
     }
     events.forEach(function (e, i) {
         const start = e.start_date || e.date || "";
         const end = e.end_date || start;
+        const emp = mgmtEventEmpLabel(e.owner_employee_id);
         html += '<tr class="evg-row" ' + (can ? 'onclick="openMgmtEventForm(\'' + e.event_id + "')\"" : "") + ">"
             + '<td class="evg-sticky evg-n">' + (i + 1) + "</td>"
             + '<td class="evg-sticky evg-name"><strong>' + escapeHtml(e.title || "") + "</strong></td>"
             + '<td class="evg-sticky evg-ds">' + escapeHtml(start ? mgmtFmtRu(start) : "—") + "</td>"
             + '<td class="evg-sticky evg-de">' + escapeHtml(end ? mgmtFmtRu(end) : "—") + "</td>"
-            + '<td class="evg-sticky evg-desc">' + escapeHtml(e.description || e.comment || "") + "</td>";
-        days.forEach(function (day) {
-            const on = mgmtEventOverlapsDay(e, day.iso);
-            html += '<td class="evg-day' + (on ? " evg-on" : "") + (day.iso === day.weekStart ? " evg-wk" : "") + '"'
-                + (on ? ' title="' + escapeAttribute((e.title || "") + " · " + mgmtFmtRu(day.iso)) + '"' : "") + "></td>";
+            + '<td class="evg-sticky evg-desc">' + escapeHtml(e.description || e.comment || "") + "</td>"
+            + '<td class="evg-sticky evg-dept">' + escapeHtml(mgmtEventDeptLabel(e.department_id || e.spu_department_id || "")) + "</td>"
+            + '<td class="evg-sticky evg-emp">' + escapeHtml(emp) + "</td>"
+            + '<td class="evg-sticky evg-st">' + escapeHtml(mgmtEventStatusLabel(e.status)) + "</td>";
+        weeks.forEach(function (w) {
+            const on = mgmtEventOverlapsWeek(e, w);
+            html += '<td class="evg-week' + (on ? " evg-on" : "") + '"'
+                + (on ? ' title="' + escapeAttribute((e.title || "") + " · " + mgmtFmtRuShort(w.from) + "–" + mgmtFmtRuShort(w.to)) + '"' : "")
+                + "></td>";
         });
         html += "</tr>";
     });
     html += "</tbody></table></div>";
-    html += '<div class="evg-foot"><span>Всего мероприятий: ' + events.length + "</span>"
-        + '<span class="evg-leg"><i></i>Период мероприятия · неделя: четверг → среда</span></div>';
+    html += '<div class="evg-foot"><span>Всего мероприятий: ' + events.length
+        + " · недель на шкале: " + weeks.length + "</span>"
+        + '<span class="evg-leg"><i></i>Неделя пересекается с мероприятием · неделя: четверг → среда</span></div>';
     return html;
 }
 
