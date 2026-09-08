@@ -3407,6 +3407,12 @@
         <button type="button" class="nav-btn" data-for="warehouse" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
             📚 Метрики
         </button>
+        <button type="button" class="nav-btn" data-for="warehouse" data-section="fio" onclick="showSection('fio', this)">
+            👤 ФИО сотрудника
+        </button>
+        <button type="button" class="nav-btn" data-for="warehouse" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
+            📚 Справочник метрик
+        </button>
         <button type="button" class="nav-btn" data-for="warehouse" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
         </button>
@@ -3449,6 +3455,18 @@
         </button>
         <button type="button" class="nav-btn" data-for="office" data-section="salesPlan" onclick="showSection('salesPlan', this)">
             📈 План продаж
+        </button>
+        <button type="button" class="nav-btn" data-for="office" data-section="fio" onclick="showSection('fio', this)">
+            👤 ФИО сотрудника
+        </button>
+        <button type="button" class="nav-btn" data-for="office" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
+            📚 Справочник метрик
+        </button>
+        <button type="button" class="nav-btn" data-for="drivers" data-section="fio" onclick="showSection('fio', this)">
+            👤 ФИО сотрудника
+        </button>
+        <button type="button" class="nav-btn" data-for="drivers" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
+            📚 Справочник метрик
         </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
             📚 Метрики
@@ -4365,7 +4383,7 @@
                             <div class="card-title">ФИО сотрудника</div>
                             <div class="note">
                                 Здесь заводятся сотрудники этого отдела (один employee_id, без копий).
-                                Рабочая группа определяет, где человек виден: Торговые, Водители, товароразборщики и т.д.
+                                Для Логистики выберите рабочую группу: Торговые или Водители — человек появится в соответствующем разделе.
                             </div>
                         </div>
                     </div>
@@ -6018,6 +6036,7 @@ function accessRoleTemplate(role, legacy) {
     if (role === "admin" || legacy === "admin") {
         ACCESS_PERM_KEYS.forEach(function (x) { p[x.key] = "edit"; });
         p.settings = "edit";
+        p.kpi = "manage";
         return p;
     }
     if (legacy === "adjust") {
@@ -6371,6 +6390,7 @@ function enterAsUser(user, code) {
     else if (currentEntry === "admin") currentSection = "summaryStaff";
     else if (user.legacy_role === "pay") currentSection = "salary";
     else if (user.legacy_role === "adjust") currentSection = "salary";
+    else if (canEditStaff() && allowedSections().indexOf("fio") !== -1) currentSection = "fio";
     else currentSection = defaultSection();
     clearLoginPinState();
     saveSession();
@@ -6440,7 +6460,10 @@ function switchUserWorkspace(code) {
     setCurrentWorkspace(w);
     applyLegacyRolesFromUser(user, code);
     selectedMonth = keepMonth;
-    currentSection = keepSection;
+    const allowed = allowedSections();
+    if (allowed.indexOf(keepSection) !== -1) currentSection = keepSection;
+    else if (canEditStaff() && allowed.indexOf("fio") !== -1) currentSection = "fio";
+    else currentSection = allowed[0] || "timesheet";
     saveSession();
     loadWorkspace();
 }
@@ -6467,6 +6490,9 @@ function normalizeAccessUser(u) {
     }
     if ((u.role === "admin" || u.legacy_role === "admin") && u.permissions.orgStructure === "none") {
         u.permissions.orgStructure = "edit";
+    }
+    if ((u.role === "admin" || u.legacy_role === "admin") && permRank(u.permissions.kpi) < permRank("manage")) {
+        u.permissions.kpi = "manage";
     }
     return u;
 }
@@ -8850,8 +8876,13 @@ function applyModeUI() {
             const sec = el.getAttribute("data-section");
             const code = workspace() && workspace().code;
             if (sec && allowed.indexOf(sec) === -1) show = false;
+            if (sec === "metricCatalog" && mode === "both"
+                && (code === "warehouse" || code === "drivers" || code === "office")) {
+                show = false;
+            }
             if (sec === "deptMetrics" && (!workspace() || !isGenericMetricsDept(workspace().code))) show = false;
-            if (mode === "dept" && (sec === "timesheet" || sec === "deptMetrics") && (code === "warehouse" || code === "drivers")) {
+            if (mode === "dept" && (sec === "timesheet" || sec === "deptMetrics" || sec === "fio")
+                && (code === "warehouse" || code === "drivers" || code === "office")) {
                 show = false;
             }
             if (isOrgMode()) {
@@ -9040,20 +9071,22 @@ function allowedSections() {
             list.push("territoryMetrics");
             list.push.apply(list, deptWorkNavSections("warehouse"));
         }
-        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("deptMetrics");
     } else if (code === "drivers") {
         if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
         if (userHasPerm("metrics", "view")) {
             list.push("territoryMetrics");
             list.push.apply(list, deptWorkNavSections("drivers"));
         }
-        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("deptMetrics");
     } else if (code === "office") {
         if (userHasPerm("metrics", "view")) list.push("territoryMetrics", "deptMetrics");
         if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
     }
+    if (canEditShopMetricCatalog()) {
+        if (isGenericMetricsDept(code) && list.indexOf("deptMetrics") === -1) list.push("deptMetrics");
+        if (list.indexOf("metricCatalog") === -1) list.push("metricCatalog");
+    }
     if (isGenericMetricsDept(code) && list.indexOf("territoryMetrics") === -1
-        && (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit"))) {
+        && (userHasPerm("kpi", "manage") || userHasPerm("kpi", "edit") || userHasPerm("settings", "edit"))) {
         list.push("territoryMetrics");
     }
     if (userHasPerm("settings", "edit")) list.push("settings");
@@ -9163,7 +9196,17 @@ function showSection(id, button) {
 
     if (id === "timesheet") renderTimesheet();
     if (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers") renderShopMetrics();
-    if (isDeptWorkSection(id)) renderDeptWorkMetrics();
+    if (isDeptWorkSection(id)) {
+        const w = workspace();
+        const tab = deptWorkTabFromSection(id);
+        if (w && tab) {
+            if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
+                fioFilterByDept[w.code] = { tab: "", position: "" };
+            }
+            fioFilterByDept[w.code].tab = tab;
+        }
+        renderDeptWorkMetrics();
+    }
     if (id === "revision") renderShopRevision();
     if (id === "salesPlan") renderShopSalesPlan();
     if (id === "salary") renderSalary();
@@ -19040,7 +19083,7 @@ function renderAnalysis() {
 ============================================================ */
 function canEditShopMetricCatalog() {
     if (isAppAdmin()) return true;
-    if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) {
+    if (userHasPerm("kpi", "manage") || userHasPerm("kpi", "edit") || userHasPerm("settings", "edit")) {
         if (isSummary() || isAdminEntry()) return true;
         if (workspace() && (workspace().code === "shop" || isGenericMetricsDept(workspace().code))) return true;
     }
@@ -20271,7 +20314,14 @@ function fillDeptWorkTable(dept, tab, ids, options) {
     if (!body) return;
     if (!fieldsAll.length) {
         if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
-        body.innerHTML = '<tr><td><div class="empty-row">Создайте метрику в справочнике «Метрики» и при необходимости назначьте её в карточке ФИО → Рабочие метрики.</div></td></tr>';
+        body.innerHTML = '<tr><td><div class="empty-row">В этой группе пока нет метрик.'
+            + (canEditShopMetricCatalog()
+                ? ' <button type="button" class="btn btn-primary btn-small" onclick="showSection(\'metricCatalog\')">+ Добавить метрику</button>'
+                : "")
+            + (canEditStaff()
+                ? ' <button type="button" class="btn btn-secondary btn-small" onclick="showSection(\'fio\')">+ Добавить ФИО</button>'
+                : "")
+            + "</div></td></tr>";
         if (wrap) {
             wrap.scrollLeft = scrollLeft;
             wrap.scrollTop = scrollTop;
