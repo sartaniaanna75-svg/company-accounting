@@ -3325,9 +3325,6 @@
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-planfact" onclick="showSection('management-planfact', this)">
             План–факт компании
         </button>
-        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-finance" onclick="showSection('management-finance', this)">
-            Ввод финансовых показателей
-        </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-meetings" onclick="showSection('management-meetings', this)">
             Протокол встреч
         </button>
@@ -3336,6 +3333,9 @@
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-events" onclick="showSection('management-events', this)">
             График мероприятий
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-finance" onclick="showSection('management-finance', this)">
+            Ввод финансовых показателей
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-settings" onclick="showSection('management-settings', this)">
             Показатели
@@ -8584,10 +8584,11 @@ function allowedSpuSections() {
     const list = [];
     const open = canOpenManagement() || userHasPerm("management", "view");
     if (open) {
-        list.push("management", "management-planfact", "management-finance");
+        list.push("management", "management-planfact");
         if (userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement()) list.push("management-meetings");
         if (userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement()) list.push("management-tasks");
         if (canOpenManagement()) list.push("management-events");
+        list.push("management-finance");
     }
     if (canEditMgmtIndicators() || isAppAdmin()) list.push("management-settings");
     return list;
@@ -22922,10 +22923,10 @@ function renderManagement() {
         const items = [
             { id: "dashboard", label: "Панель управления", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "planfact", label: "План–факт компании", show: userHasPerm("management", "view") || canOpenManagement() },
-            { id: "finance", label: "Ввод финансовых показателей", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "meetings", label: "Протокол встреч", show: userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement() },
             { id: "tasks", label: "Ежедневные задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement() },
             { id: "events", label: "График мероприятий", show: canOpenManagement() },
+            { id: "finance", label: "Ввод финансовых показателей", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "settings", label: "⚙ Показатели", show: canEditMgmtIndicators() || isAppAdmin() }
         ].filter(function (t) { return t.show; });
         if (!items.length) {
@@ -23918,8 +23919,47 @@ function mgmtTasksForMeetingWeek(week) {
         if (!t || t.is_active === false) return false;
         if (t.meeting_id && ids[t.meeting_id]) return true;
         if (t.week_key && t.week_key === week.key) return true;
+        if (t.meeting_date && mgmtThuWeek(t.meeting_date).key === week.key) return true;
         return false;
     });
+}
+
+function mgmtMeetTaskStatus(task) {
+    if (!task) return "new";
+    if (task.status === "done") return "done";
+    const today = mgmtIsoFromDate(new Date());
+    if (task.status === "overdue" || (task.planned_date && task.planned_date < today)) return "overdue";
+    if (task.status === "in_progress") return "in_progress";
+    if (task.status === "new" || task.status === "not_done" || !task.status) return "new";
+    return "new";
+}
+
+function mgmtMeetTaskStatusLabel(st) {
+    if (st === "done") return "Выполнена";
+    if (st === "in_progress") return "В работе";
+    if (st === "overdue") return "Просрочена";
+    return "Новая";
+}
+
+function mgmtMeetTaskStatusOptions(selected) {
+    const cur = selected || "new";
+    return [["new", "Новая"], ["in_progress", "В работе"], ["done", "Выполнена"], ["overdue", "Просрочена"]].map(function (p) {
+        return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+    }).join("");
+}
+
+function canEditMgmtMeetingTasks() {
+    return canEditMgmtTasks() || canEditMgmtMeetings();
+}
+
+function mgmtMeetingQuestionOptions(week, selected) {
+    let html = '<option value="">— не связан</option>';
+    mgmtMeetingsInWeek(week).forEach(function (m) {
+        if (!m || !m.meeting_id) return;
+        html += '<option value="' + escapeAttribute(m.meeting_id) + '"' + (m.meeting_id === selected ? " selected" : "") + ">"
+            + escapeHtml((m.date ? mgmtFmtRu(m.date) + " · " : "") + (m.problem || m.title || m.meeting_id)) + "</option>";
+    });
+    return html;
 }
 
 function mgmtTaskStatus(task) {
@@ -23946,6 +23986,10 @@ let mgmtTaskDept = "";
 let mgmtTaskEmp = "";
 let mgmtMeetWeekFrom = "";
 let mgmtMeetOpen = {};
+let mgmtMeetTaskEmp = "";
+let mgmtMeetTaskSt = "";
+let mgmtMeetTaskDept = "";
+let mgmtMeetTaskDue = "";
 let mgmtEventFrom = "";
 let mgmtEventTo = "";
 let mgmtEventDept = "";
@@ -24087,11 +24131,31 @@ function renderMgmtMeetingsHtml() {
         + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtMeetWeekFrom=mgmtShiftThuWeek(mgmtMeetWeekFrom,1).from;renderManagement()">Следующая неделя ›</button>'
         + ' <input type="date" value="' + escapeAttribute(current.from) + '" onchange="mgmtMeetWeekFrom=mgmtThuWeek(this.value).from;renderManagement()">'
         + "</div>";
-    html += '<div class="pf-note">Отчётная неделя: четверг — среда. История недель сохраняется.</div>';
+    html += '<div class="pf-note">Отчётная неделя: четверг — среда. История недель сохраняется. Вопросы и задачи протокола хранятся отдельно.</div>';
+    html += '<div class="mgmt-chips" style="align-items:center">'
+        + '<span class="mgmt-src">Фильтр задач:</span>'
+        + '<label class="mgmt-src">Ответственный <select onchange="mgmtMeetTaskEmp=this.value;renderManagement()">'
+        + mgmtEmployeeFilterOptions(mgmtMeetTaskEmp) + "</select></label>"
+        + '<label class="mgmt-src">Статус <select onchange="mgmtMeetTaskSt=this.value;renderManagement()">'
+        + '<option value="">Все</option>'
+        + [["new", "Новая"], ["in_progress", "В работе"], ["done", "Выполнена"], ["overdue", "Просрочена"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + (mgmtMeetTaskSt === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></label>"
+        + '<label class="mgmt-src">Подразделение <select onchange="mgmtMeetTaskDept=this.value;renderManagement()">'
+        + mgmtEventDeptOptions(mgmtMeetTaskDept, true) + "</select></label>"
+        + '<label class="mgmt-src">Срок <input type="date" value="' + escapeAttribute(mgmtMeetTaskDue) + '" onchange="mgmtMeetTaskDue=this.value;renderManagement()"></label>'
+        + "</div>";
     weeks.forEach(function (week) {
         const open = !!mgmtMeetOpen[week.key];
         const questions = mgmtMeetingsInWeek(week);
-        const tasks = mgmtTasksForMeetingWeek(week);
+        let tasks = mgmtTasksForMeetingWeek(week);
+        tasks = tasks.filter(function (t) {
+            if (mgmtMeetTaskEmp && t.responsible_employee_id !== mgmtMeetTaskEmp) return false;
+            if (mgmtMeetTaskSt && mgmtMeetTaskStatus(t) !== mgmtMeetTaskSt) return false;
+            if (mgmtMeetTaskDept && String(t.department_id || t.spu_department_id || "") !== mgmtMeetTaskDept) return false;
+            if (mgmtMeetTaskDue && t.planned_date !== mgmtMeetTaskDue) return false;
+            return true;
+        });
         const meta = mgmtWeekMeta(week.key);
         html += '<div class="wt-week">';
         html += '<div class="wt-week-head" onclick="mgmtMeetOpen[\'' + week.key + '\']=!mgmtMeetOpen[\'' + week.key + "'];renderManagement()\">"
@@ -24140,6 +24204,7 @@ function renderMgmtMeetingsHtml() {
             html += "</div>";
             html += '<div class="wt-week-title">Протокол встречи'
                 + (canM ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMgmtMeetingForm(\'\',\'' + week.from + '\')">+ Добавить вопрос</button>' : "")
+                + (canEditMgmtMeetingTasks() ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMgmtMeetingTaskForm(\'\',\'' + week.from + '\')">+ Добавить задачу</button>' : "")
                 + "</div>";
             html += '<div class="table-wrapper" style="max-height:none;margin-bottom:8px"><table class="wt-table"><thead><tr>'
                 + "<th>Дата встречи</th><th>Департамент</th><th>Вопрос / тема</th><th>Описание проблемы</th><th>Решение</th><th>Ответственный</th><th>Комментарий / результат</th>"
@@ -24157,31 +24222,32 @@ function renderMgmtMeetingsHtml() {
                     + '<td class="wrap">' + escapeHtml(m.result || "—") + "</td>"
                     + "<td>"
                     + (canM ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtMeetingForm(\'' + m.meeting_id + '\')">Изменить</button> ' : "")
-                    + (canT ? '<button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\',\'' + m.meeting_id + '\')">Добавить в Ежедневные задачи</button>' : "")
+                    + (canEditMgmtMeetingTasks() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtMeetingTaskForm(\'\',\'' + week.from + '\',\'' + m.meeting_id + '\')">Задача по вопросу</button>' : "")
                     + "</td></tr>";
             });
             html += "</tbody></table></div>";
-            html += '<div class="wt-week-title">Задачи по итогам встречи'
-                + (canT && questions[0] ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMgmtTaskForm(\'\',\'' + questions[0].meeting_id + '\')">+ Задача</button>' : "")
-                + (canT && !questions[0] && canM ? ' <span class="mgmt-src">Сначала добавьте вопрос протокола</span>' : "")
+            html += '<div class="wt-week-title">Задачи по встрече'
+                + (canEditMgmtMeetingTasks() ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMgmtMeetingTaskForm(\'\',\'' + week.from + '\')">+ Добавить задачу</button>' : "")
                 + "</div>";
             html += '<div class="table-wrapper" style="max-height:none"><table class="wt-table"><thead><tr>'
-                + "<th>Дата</th><th>Департамент</th><th>Задача</th><th>Ответственный</th><th>Дата план</th><th>Дата факт</th><th>Статус</th><th>Результат / комментарий</th><th></th></tr></thead><tbody>";
-            if (!tasks.length) html += '<tr><td colspan="9"><div class="empty-row">Нет задач по итогам этой недели.</div></td></tr>';
+                + "<th>Задача</th><th>Ответственный</th><th>Срок</th><th>Статус</th><th>Подразделение</th><th>Вопрос</th><th></th></tr></thead><tbody>";
+            if (!tasks.length) html += '<tr><td colspan="7"><div class="empty-row">Нет задач по этой встрече.</div></td></tr>';
             tasks.forEach(function (t) {
                 const emp = t.responsible_employee_id ? getEmployee(t.responsible_employee_id) : null;
+                const st = mgmtMeetTaskStatus(t);
+                const linked = t.meeting_id ? (appData.management.meetings || []).find(function (x) { return x && x.meeting_id === t.meeting_id; }) : null;
                 html += '<tr class="' + mgmtWorkRowClass(t) + '">'
-                    + "<td>" + escapeHtml(t.created_date ? mgmtFmtRu(t.created_date) : "—") + "</td>"
-                    + "<td>" + escapeHtml(mgmtDeptName(t.department_id)) + "</td>"
-                    + '<td class="wrap">' + escapeHtml(t.title || "") + "</td>"
+                    + '<td class="wrap"><strong>' + escapeHtml(t.title || "") + "</strong>"
+                    + (t.description ? '<div class="mgmt-src">' + escapeHtml(t.description) + "</div>" : "")
+                    + "</td>"
                     + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
                     + "<td>" + escapeHtml(t.planned_date ? mgmtFmtRu(t.planned_date) : "—") + "</td>"
-                    + "<td>" + escapeHtml(t.completed_date ? mgmtFmtRu(t.completed_date) : "—") + "</td>"
-                    + "<td>" + (canT
-                        ? "<select onchange=\"patchMgmtTask('" + t.task_id + "','status',this.value)\">" + mgmtWorkStatusOptions(t.status) + "</select>"
-                        : escapeHtml(mgmtWorkStatusLabel(mgmtWorkStatus(t)))) + "</td>"
-                    + '<td class="wrap">' + escapeHtml(t.result || "—") + "</td>"
-                    + "<td>" + (canT ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtTaskForm(\'' + t.task_id + '\')">Изменить</button>' : "") + "</td></tr>";
+                    + "<td>" + (canEditMgmtMeetingTasks()
+                        ? "<select onchange=\"patchMgmtTask('" + t.task_id + "','status',this.value)\">" + mgmtMeetTaskStatusOptions(st) + "</select>"
+                        : escapeHtml(mgmtMeetTaskStatusLabel(st))) + "</td>"
+                    + "<td>" + escapeHtml(mgmtEventDeptLabel(t.department_id || t.spu_department_id || "") || mgmtDeptName(t.department_id)) + "</td>"
+                    + '<td class="wrap">' + escapeHtml(linked ? (linked.problem || linked.title || "") : "—") + "</td>"
+                    + "<td>" + (canEditMgmtMeetingTasks() ? '<button type="button" class="btn btn-secondary btn-small" onclick="openMgmtMeetingTaskForm(\'' + t.task_id + '\',\'' + week.from + '\')">Изменить</button>' : "") + "</td></tr>";
             });
             html += "</tbody></table></div></div>";
         }
@@ -24449,6 +24515,88 @@ function saveMgmtIndicator(id) {
     closeMgmtModal();
     renderManagement();
     toast("Показатель сохранён.");
+}
+
+function openMgmtMeetingTaskForm(id, weekFrom, meetingId) {
+    ensureManagement();
+    const week = mgmtThuWeek(weekFrom || mgmtMeetWeekFrom || mgmtIsoFromDate(new Date()));
+    const meet = meetingId ? (appData.management.meetings || []).find(function (x) { return x && x.meeting_id === meetingId; }) : null;
+    const u = currentAuthUser();
+    const t = id ? (appData.management.tasks || []).find(function (x) { return x && x.task_id === id; }) : {
+        task_id: "",
+        title: "",
+        description: "",
+        department_id: (meet && meet.department_id) || "",
+        responsible_employee_id: (meet && meet.owner_employee_id) || "",
+        created_by_employee_id: (u && u.employee_id) || "",
+        created_date: mgmtIsoFromDate(new Date()),
+        planned_date: "",
+        status: "new",
+        meeting_id: meetingId || "",
+        meeting_date: (meet && meet.date) || week.from,
+        week_key: week.key,
+        source: "meeting"
+    };
+    const html = "<h3>" + (id ? "Задача по встрече" : "Новая задача по встрече") + "</h3>"
+        + '<div class="mgmt-task-form">'
+        + '<div class="form-group full"><label>Название задачи *</label><input id="mmtTitle" maxlength="200" value="' + escapeAttribute(t.title || "") + '"></div>'
+        + '<div class="form-group full"><label>Описание задачи</label><textarea id="mmtDesc" maxlength="2000" rows="3">' + escapeHtml(t.description || "") + "</textarea></div>"
+        + '<div class="form-group full"><label>Связанный вопрос встречи</label><select id="mmtQuestion">'
+        + mgmtMeetingQuestionOptions(week, t.meeting_id || meetingId || "") + "</select></div>"
+        + '<div class="form-group"><label>Ответственный сотрудник</label><select id="mmtEmp">' + mgmtEmployeeOptions(t.responsible_employee_id) + "</select></div>"
+        + '<div class="form-group"><label>Подразделение</label><select id="mmtDept">' + mgmtEventDeptOptions(t.department_id || "", false) + "</select></div>"
+        + '<div class="form-group"><label>Дата постановки</label><input id="mmtCreated" type="date" value="' + escapeAttribute(t.created_date || mgmtIsoFromDate(new Date())) + '"></div>'
+        + '<div class="form-group"><label>Срок выполнения</label><input id="mmtDue" type="date" value="' + escapeAttribute(t.planned_date || "") + '"></div>'
+        + '<div class="form-group"><label>Статус</label><select id="mmtStatus">' + mgmtMeetTaskStatusOptions(mgmtMeetTaskStatus(t)) + "</select></div>"
+        + '<div class="form-group"><label>Автор задачи</label><select id="mmtBy">' + mgmtLeaderOptions(t.created_by_employee_id) + "</select></div>"
+        + "</div>"
+        + '<input type="hidden" id="mmtWeekFrom" value="' + escapeAttribute(week.from) + '">'
+        + '<input type="hidden" id="mmtMeetingDate" value="' + escapeAttribute(t.meeting_date || (meet && meet.date) || week.from) + '">'
+        + '<div class="mgmt-ind-actions">'
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button>'
+        + '<button type="button" class="btn btn-primary" onclick="saveMgmtMeetingTask(\'' + (t.task_id || "") + '\')">Сохранить</button>'
+        + "</div>";
+    openMgmtModal(html, "mgmt-task-modal");
+}
+
+function saveMgmtMeetingTask(id) {
+    if (!canEditMgmtMeetingTasks()) return;
+    ensureManagement();
+    const title = String((document.getElementById("mmtTitle") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!title) { toast("Укажите название задачи.", "error"); return; }
+    let t = id ? (appData.management.tasks || []).find(function (x) { return x && x.task_id === id; }) : null;
+    const weekFrom = (document.getElementById("mmtWeekFrom") || {}).value || mgmtMeetWeekFrom;
+    const week = mgmtThuWeek(weekFrom);
+    const questionId = (document.getElementById("mmtQuestion") || {}).value || "";
+    const meet = questionId ? (appData.management.meetings || []).find(function (x) { return x && x.meeting_id === questionId; }) : null;
+    if (!t) {
+        t = {
+            task_id: nextPrefixedId("mtask", appData.management.tasks.map(function (x) { return x && x.task_id; })),
+            created_by_user_id: currentAuthUserId(),
+            is_active: true,
+            source: "meeting"
+        };
+        appData.management.tasks.push(t);
+    }
+    t.title = title;
+    t.description = (document.getElementById("mmtDesc") || {}).value || "";
+    t.responsible_employee_id = (document.getElementById("mmtEmp") || {}).value || "";
+    t.department_id = (document.getElementById("mmtDept") || {}).value || "";
+    t.created_date = (document.getElementById("mmtCreated") || {}).value || t.created_date || mgmtIsoFromDate(new Date());
+    t.planned_date = (document.getElementById("mmtDue") || {}).value || "";
+    t.status = (document.getElementById("mmtStatus") || {}).value || "new";
+    t.created_by_employee_id = (document.getElementById("mmtBy") || {}).value || t.created_by_employee_id || "";
+    t.meeting_id = questionId;
+    t.meeting_date = (meet && meet.date) || (document.getElementById("mmtMeetingDate") || {}).value || week.from;
+    t.week_key = meet && meet.date ? mgmtThuWeek(meet.date).key : week.key;
+    t.source = t.source || "meeting";
+    if (t.status === "done" && !t.completed_date) t.completed_date = mgmtIsoFromDate(new Date());
+    saveApp();
+    closeMgmtModal();
+    mgmtTab = "meetings";
+    mgmtMeetOpen[week.key] = true;
+    mgmtMeetWeekFrom = week.from;
+    renderManagement();
 }
 
 function openMgmtTaskForm(id, meetingId) {
