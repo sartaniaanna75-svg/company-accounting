@@ -598,7 +598,9 @@
             margin: 16px 0 18px;
         }
 
-        #metricsWrap.table-wrapper {
+        #metricsWrap.table-wrapper,
+        #territoryMetricsWrap.table-wrapper,
+        #deptMetricsWrap.table-wrapper {
             max-height: calc(100vh - 280px);
         }
 
@@ -2628,14 +2630,17 @@
 
         <div class="menu-title">Работа</div>
 
+        <button type="button" class="nav-btn" data-for="territory" data-section="territoryMetrics" onclick="showSection('territoryMetrics', this)">
+            📊 Метрики
+        </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
         </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
-            📚 Метрики
+            📚 Справочник метрик
         </button>
         <button type="button" class="nav-btn" data-for="warehouse" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
-            📚 Метрики
+            📚 Справочник метрик
         </button>
         <button type="button" class="nav-btn" data-for="warehouse" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
@@ -2681,7 +2686,7 @@
             📈 План продаж
         </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
-            📚 Метрики
+            📚 Справочник метрик
         </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
@@ -2921,7 +2926,7 @@
             <section id="deptMetrics" class="section">
                 <div class="card">
                     <div class="card-title" id="deptMetricsPageTitle">Метрики</div>
-                    <div class="note" id="deptMetricsNote" style="margin-top:6px">Справочник показателей. Ежедневные значения заполняются в рабочих вкладках подразделения. Кто участвует — ФИО → Рабочие метрики.</div>
+                    <div class="note" id="deptMetricsNote" style="margin-top:6px">Справочник показателей. Факт вносится в «Территория → Метрики» и в рабочих вкладках: это одни и те же значения. Кто участвует — ФИО → Рабочие метрики.</div>
                     <div class="toolbar" style="margin-top:10px" id="deptMetricsCatalogToolbar"></div>
                     <div class="table-wrapper" style="margin-top:10px;max-height:none">
                         <table class="metric-cat-table">
@@ -2955,6 +2960,31 @@
                         <table class="metrics-table" id="deptMetricsTable">
                             <thead id="deptMetricsHead"></thead>
                             <tbody id="deptMetricsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 ТЕРРИТОРИЯ → МЕТРИКИ — единый ввод факта
+            ================================================== -->
+            <section id="territoryMetrics" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title" id="territoryMetricsPageTitle">Метрики</div>
+                            <div class="note" id="territoryMetricsMonthNote"></div>
+                        </div>
+                        <div class="toolbar">
+                            <div class="metrics-tabs metrics-fill-tabs" id="territoryMetricsFillTabs"></div>
+                        </div>
+                    </div>
+                    <div class="metrics-tabs" id="territoryMetricsHubTabs" style="margin:0 0 12px"></div>
+                    <div class="table-wrapper" id="territoryMetricsWrap">
+                        <table class="metrics-table" id="territoryMetricsTable">
+                            <thead id="territoryMetricsHead"></thead>
+                            <tbody id="territoryMetricsBody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -3790,6 +3820,12 @@ const DEPT_DEFAULTS = [
     { code: "drivers", name: "Логистика + Торговые", pin: "4444" }
 ];
 const TERRITORY_DEPT_CODES = ["office", "warehouse", "drivers"];
+const TERRITORY_METRICS_HUB = [
+    { id: "drivers", label: "Водители", departmentId: "drivers", workTabIds: ["drivers"] },
+    { id: "sales", label: "Торговые", departmentId: "drivers", workTabIds: ["sales"] },
+    { id: "warehouse", label: "Склад", departmentId: "warehouse", workTabIds: null },
+    { id: "office", label: "Офис", departmentId: "office", workTabIds: ["main"] }
+];
 function isGenericMetricsDept(code) {
     return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
 }
@@ -3856,6 +3892,7 @@ let loginSelectedUserByDept = {};
 let loginPinByDept = {};
 let shopMetricCategory = "pickers";
 let deptMetricTab = "";
+let territoryMetricsHubId = "";
 let metricCatalogExpanded = {};
 let metricCatalogFilter = { tab: "", active: "active", structure: "" };
 let timesheetWorkTabFilterByDept = {};
@@ -7423,7 +7460,8 @@ function saveSession() {
             section: currentSection,
             summaryRole: currentSummaryRole,
             deptRole: currentDeptRole,
-            userId: currentUserId
+            userId: currentUserId,
+            territoryMetricsHubId: territoryMetricsHubId
         }));
     } catch (err) {}
 }
@@ -7471,6 +7509,7 @@ function tryRestoreSession() {
             if (saved.summaryRole) currentSummaryRole = saved.summaryRole;
             if (saved.deptRole) currentDeptRole = saved.deptRole;
             if (saved.userId) currentUserId = saved.userId;
+            if (saved.territoryMetricsHubId) territoryMetricsHubId = saved.territoryMetricsHubId;
             if (saved.index !== undefined && !id && !code) {
                 currentWorkspaceIndex = Number(saved.index);
             }
@@ -7524,6 +7563,9 @@ function applyModeUI() {
         }
         if (mode === "office") {
             show = !summary && !!(workspace() && workspace().code === "office");
+        }
+        if (mode === "territory") {
+            show = !summary && !!(workspace() && isTerritoryCode(workspace().code));
         }
         if (el.classList.contains("nav-btn")) {
             const sec = el.getAttribute("data-section");
@@ -7630,18 +7672,24 @@ function allowedSections() {
         if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
         if (userHasPerm("revision", "view")) list.push("revision");
         if (userHasPerm("metrics", "view")) {
+            list.push("territoryMetrics");
             list.push.apply(list, deptWorkNavSections("warehouse"));
         }
         if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("deptMetrics");
     } else if (code === "drivers") {
         if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
         if (userHasPerm("metrics", "view")) {
+            list.push("territoryMetrics");
             list.push.apply(list, deptWorkNavSections("drivers"));
         }
         if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("deptMetrics");
     } else if (code === "office") {
-        if (userHasPerm("metrics", "view")) list.push("deptMetrics");
+        if (userHasPerm("metrics", "view")) list.push("territoryMetrics", "deptMetrics");
         if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
+    }
+    if (isGenericMetricsDept(code) && list.indexOf("territoryMetrics") === -1
+        && (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit"))) {
+        list.push("territoryMetrics");
     }
     if (userHasPerm("settings", "edit")) list.push("settings");
     if (isAppAdmin()) list.push("users");
@@ -7678,7 +7726,8 @@ function sectionTitle(id) {
         users: "Пользователи и доступы",
         settings: "Настройки",
         metricCatalog: "Метрики",
-        deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
+        deptMetrics: "Справочник метрик — " + (workspace() ? officialName(workspace()) : ""),
+        territoryMetrics: "Метрики",
         management: "Управление"
     };
     if (isDeptWorkSection(id) && workspace()) {
@@ -7750,6 +7799,7 @@ function showSection(id, button) {
     if (id === "settings") loadWorkspaceSettings();
     if (id === "metricCatalog") renderMetricCatalog();
     if (id === "deptMetrics") renderDeptMetrics();
+    if (id === "territoryMetrics") renderTerritoryMetrics();
     if (id === "management") renderManagement();
 }
 
@@ -7784,6 +7834,7 @@ function refreshAll() {
     }
     if (currentSection === "metricCatalog") renderMetricCatalog();
     if (currentSection === "deptMetrics") renderDeptMetrics();
+    if (currentSection === "territoryMetrics") renderTerritoryMetrics();
     if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
     if (currentSection === "management") renderManagement();
     updateStats();
@@ -8020,12 +8071,14 @@ function deptTimesheetLockLabel(deptCode, employeeId, day, month) {
 
 function refreshMetricsUi() {
     if (workspace() && workspace().code === "shop") renderShopMetrics();
-    if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
+    if (currentSection === "territoryMetrics") renderTerritoryMetrics();
+    else if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
     else if (workspace() && isGenericMetricsDept(workspace().code)) renderDeptMetrics();
 }
 
 function refreshDeptWorkUi() {
-    if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
+    if (currentSection === "territoryMetrics") renderTerritoryMetrics();
+    else if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
     else if (currentSection === "deptMetrics") renderDeptMetrics();
 }
 
@@ -8178,6 +8231,14 @@ function shopCatalogFieldsForItem(item, onlyActiveSubs) {
 }
 
 function currentWorkMetricsContext() {
+    if (currentSection === "territoryMetrics") {
+        const spec = currentTerritoryMetricsHub();
+        if (!spec) return null;
+        return {
+            department_id: spec.departmentId,
+            work_tab_id: territoryHubFillViewTab(spec)
+        };
+    }
     const w = workspace();
     if (!w) return null;
     const department_id = w.code;
@@ -18351,7 +18412,9 @@ function deptMetricInputHtml(deptCode, employeeId, day, field) {
 function onDeptMetricNav(event) {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    const tableId = isDeptWorkSection(currentSection) ? "metricsTable" : "deptMetricsTable";
+    const tableId = currentSection === "territoryMetrics"
+        ? "territoryMetricsTable"
+        : (isDeptWorkSection(currentSection) ? "metricsTable" : "deptMetricsTable");
     const table = document.getElementById(tableId);
     if (!table) return;
     const inputs = Array.prototype.slice.call(table.querySelectorAll("tbody input.metrics-input"));
@@ -18417,6 +18480,116 @@ function hideShopOnlyMetricChrome() {
     });
 }
 
+function defaultTerritoryMetricsHubId() {
+    const code = workspace() && workspace().code;
+    if (code === "warehouse") return "warehouse";
+    if (code === "office") return "office";
+    return "drivers";
+}
+
+function currentTerritoryMetricsHub() {
+    let id = String(territoryMetricsHubId || "");
+    if (!TERRITORY_METRICS_HUB.some(function (s) { return s.id === id; })) {
+        id = defaultTerritoryMetricsHubId();
+        territoryMetricsHubId = id;
+    }
+    return TERRITORY_METRICS_HUB.find(function (s) { return s.id === id; }) || TERRITORY_METRICS_HUB[0];
+}
+
+function territoryHubTabIds(spec) {
+    if (!spec) return [];
+    if (spec.workTabIds && spec.workTabIds.length) return spec.workTabIds.slice();
+    return metricTabsForDept(spec.departmentId).map(function (t) { return t.id; });
+}
+
+function territoryHubFillViewTab(spec) {
+    return "hub:" + ((spec && spec.id) || "drivers");
+}
+
+function territoryHubFields(spec) {
+    const tabs = territoryHubTabIds(spec);
+    const list = [];
+    const seen = {};
+    tabs.forEach(function (tab) {
+        deptMetricFields(spec.departmentId, tab).forEach(function (field) {
+            const k = (field.service || "") + ":" + metricFactStorageKey(field.metricId, field.submetricId);
+            if (seen[k]) return;
+            seen[k] = true;
+            list.push(field);
+        });
+    });
+    list.sort(function (a, b) {
+        const sa = shopCatalogSort(a.metricId, 0) - shopCatalogSort(b.metricId, 0);
+        if (sa) return sa;
+        return String(a.submetricId || "").localeCompare(String(b.submetricId || ""));
+    });
+    return list;
+}
+
+function territoryHubPeople(spec, metricId) {
+    const item = shopMetricCatalogById(metricId);
+    const tabs = territoryHubTabIds(spec).filter(function (tab) {
+        return !item || metricShowsOnTab(item, tab);
+    });
+    const seen = {};
+    const list = [];
+    tabs.forEach(function (tab) {
+        workMetricPeopleForTab(spec.departmentId, metricId, tab).forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+    });
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function setTerritoryMetricsHub(id) {
+    if (!TERRITORY_METRICS_HUB.some(function (s) { return s.id === id; })) return;
+    territoryMetricsHubId = id;
+    saveSession();
+    renderTerritoryMetrics();
+}
+
+function renderTerritoryMetricsHubTabs() {
+    const host = document.getElementById("territoryMetricsHubTabs");
+    if (!host) return;
+    const current = currentTerritoryMetricsHub();
+    host.innerHTML = TERRITORY_METRICS_HUB.map(function (spec) {
+        return '<button type="button" class="metrics-tab' + (spec.id === current.id ? " active" : "")
+            + '" onclick="setTerritoryMetricsHub(\'' + spec.id + '\')">'
+            + escapeHtml(spec.label) + "</button>";
+    }).join("");
+}
+
+function renderTerritoryMetrics() {
+    const section = document.getElementById("territoryMetrics");
+    if (!section) return;
+    const spec = currentTerritoryMetricsHub();
+    ensureDeptMetrics(spec.departmentId);
+    renderTerritoryMetricsHubTabs();
+    const title = document.getElementById("territoryMetricsPageTitle");
+    if (title) title.textContent = "Метрики — " + spec.label;
+    const pageTitle = document.getElementById("pageTitle");
+    if (pageTitle && currentSection === "territoryMetrics") {
+        pageTitle.textContent = "Метрики — " + spec.label;
+    }
+    fillDeptWorkTable(spec.departmentId, territoryHubTabIds(spec)[0] || "main", {
+        wrap: "territoryMetricsWrap",
+        table: "territoryMetricsTable",
+        head: "territoryMetricsHead",
+        body: "territoryMetricsBody",
+        title: "territoryMetricsPageTitle",
+        note: "territoryMetricsMonthNote",
+        fillTabs: "territoryMetricsFillTabs"
+    }, {
+        fields: territoryHubFields(spec),
+        peopleFn: function (metricId) { return territoryHubPeople(spec, metricId); },
+        fillViewTab: territoryHubFillViewTab(spec),
+        tabLabel: spec.label
+    });
+}
+
 function renderDeptWorkMetrics() {
     const dept = workspace() && workspace().code;
     if (dept !== "warehouse" && dept !== "drivers") return;
@@ -18426,27 +18599,31 @@ function renderDeptWorkMetrics() {
     fillDeptWorkTable(dept, tab, deptWorkDom("work"));
 }
 
-function fillDeptWorkTable(dept, tab, ids) {
+function fillDeptWorkTable(dept, tab, ids, options) {
+    options = options || {};
+    const peopleOf = options.peopleFn || function (metricId) {
+        return workMetricPeopleForTab(dept, metricId, tab);
+    };
     const wrap = document.getElementById(ids.wrap);
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
     const table = document.getElementById(ids.table);
     const title = document.getElementById(ids.title);
     const monthNote = document.getElementById(ids.note);
-    const tabLabel = metricTabLabel(dept, tab);
+    const tabLabel = options.tabLabel || metricTabLabel(dept, tab);
     if (title && ids.title === "metricsPageTitle") title.textContent = tabLabel;
     if (monthNote) {
         monthNote.textContent = monthLabel(selectedMonth) + ". «" + tabLabel
             + "». Колонки у тех, кому метрика назначена в ФИО → Рабочие метрики. Выходной (В) из Табеля.";
     }
-    const fieldsAll = deptMetricFields(dept, tab);
-    const prepared = prepareWorkMetricsView(fieldsAll, table, ids.fillTabs || "metricsFillTabs", dept, tab);
+    const fieldsAll = options.fields || deptMetricFields(dept, tab);
+    const prepared = prepareWorkMetricsView(fieldsAll, table, ids.fillTabs || "metricsFillTabs", dept, options.fillViewTab || tab);
     const fields = prepared.fields;
     const employees = [];
     const seen = {};
     fields.forEach(function (field) {
         if (field.service) return;
-        deptWorkMetricPeople(dept, field.metricId).forEach(function (e) {
+        peopleOf(field.metricId).forEach(function (e) {
             if (!e || !e.id || seen[e.id]) return;
             seen[e.id] = true;
             employees.push(e);
@@ -18456,7 +18633,7 @@ function fillDeptWorkTable(dept, tab, ids) {
     let inputCols = 0;
     fields.forEach(function (field) {
         if (field.service) return;
-        inputCols += Math.max(deptWorkMetricPeople(dept, field.metricId).length, 1);
+        inputCols += Math.max(peopleOf(field.metricId).length, 1);
     });
     if (table) {
         table.classList.remove("metrics-pickers-table", "metrics-cashiers-table", "metrics-managers-table");
@@ -18471,7 +18648,7 @@ function fillDeptWorkTable(dept, tab, ids) {
                 return;
             }
             const wide = field.type === "money";
-            const n = Math.max(deptWorkMetricPeople(dept, field.metricId).length, 1);
+            const n = Math.max(peopleOf(field.metricId).length, 1);
             for (let i = 0; i < n; i++) {
                 colHtml += '<col class="metrics-col-emp metrics-col-g-' + (fi % 4) + (wide ? " metrics-col-money" : "") + '">';
             }
@@ -18530,7 +18707,7 @@ function fillDeptWorkTable(dept, tab, ids) {
             let n = 0;
             group.fields.forEach(function (field) {
                 if (field.service) n += 1;
-                else n += Math.max(deptWorkMetricPeople(dept, field.metricId).length, 1);
+                else n += Math.max(peopleOf(field.metricId).length, 1);
             });
             return Math.max(n, 1);
         };
@@ -18548,7 +18725,7 @@ function fillDeptWorkTable(dept, tab, ids) {
                     + '" title="' + escapeHtml(group.label) + '">' + escapeHtml(group.label) + "</th>";
                 return;
             }
-            const people = deptWorkMetricPeople(dept, group.field.metricId);
+            const people = peopleOf(group.field.metricId);
             headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(group.fi)
                 + (group.fi ? " metrics-group-start" : "") + '" colspan="' + Math.max(people.length, 1)
                 + '" rowspan="' + (hasSubs ? 2 : 1) + '" title="' + escapeHtml(group.field.label) + '">'
@@ -18559,7 +18736,7 @@ function fillDeptWorkTable(dept, tab, ids) {
             groups.forEach(function (group) {
                 if (group.kind !== "parent") return;
                 group.fields.forEach(function (field, si) {
-                    const people = deptWorkMetricPeople(dept, field.metricId);
+                    const people = peopleOf(field.metricId);
                     headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(group.fi)
                         + (si === 0 ? " metrics-group-start" : "") + '" colspan="' + Math.max(people.length, 1)
                         + '" title="' + escapeHtml(field.label) + '">' + escapeHtml(field.label) + "</th>";
@@ -18570,7 +18747,7 @@ function fillDeptWorkTable(dept, tab, ids) {
         fields.forEach(function (field, fi) {
             if (field.service) return;
             const wide = field.type === "money";
-            const people = deptWorkMetricPeople(dept, field.metricId);
+            const people = peopleOf(field.metricId);
             people.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
                 headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(fi)
@@ -18601,7 +18778,7 @@ function fillDeptWorkTable(dept, tab, ids) {
                 return;
             }
             const wide = field.type === "money";
-            const people = deptWorkMetricPeople(dept, field.metricId);
+            const people = peopleOf(field.metricId);
             people.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
                 const dayOff = deptTimesheetStatus(dept, employee.id, day) === "В";
@@ -18628,7 +18805,7 @@ function fillDeptWorkTable(dept, tab, ids) {
                 + ' metrics-group-start">' + (sum ? sum.toLocaleString("ru-RU") : "0") + "</td>";
             return;
         }
-        const people = deptWorkMetricPeople(dept, field.metricId);
+        const people = peopleOf(field.metricId);
         people.forEach(function (employee, ei) {
             let sum = 0;
             for (let d = 1; d <= days; d++) sum += Number(getDeptMetricStored(dept, employee.id, d, field.metricId, selectedMonth, field.submetricId) || 0);
