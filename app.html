@@ -46,7 +46,7 @@
         .login-screen {
             min-height: 100vh;
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             justify-content: center;
             padding: 20px;
         }
@@ -98,7 +98,7 @@
         }
 
         .login-grid.territory-view {
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(2, 1fr);
         }
 
         .login-card {
@@ -272,6 +272,7 @@
         .login-card.drivers { border-top: 5px solid #a855f7; }
         .login-card.shop-folder { border-top: 5px solid #f59e0b; cursor: pointer; }
         .login-card.territory-folder { border-top: 5px solid #0284c7; cursor: pointer; }
+        .login-card.territoryMetrics { border-top: 5px solid #0284c7; }
         .login-card.summary-folder { border-top: 5px solid #22c55e; cursor: pointer; }
         .login-card.summary, .login-card.summary-card { border-top: 5px solid #22c55e; }
 
@@ -3207,11 +3208,12 @@
             </div>
             <div class="login-card territory-folder" role="button" tabindex="0" onclick="renderLogin('territory')">
                 <h3>Территория</h3>
-                <div class="note">Офис, Склад, Логистика + Торговые</div>
+                <div class="note">Офис, Склад, Логистика + Торговые, Метрики территории</div>
                 <ul class="territory-preview">
                     <li>Офис</li>
                     <li>Склад</li>
                     <li>Логистика + Торговые</li>
+                    <li>Метрики территории</li>
                 </ul>
                 <button type="button" class="btn btn-primary" style="width:100%;" onclick="event.stopPropagation();renderLogin('territory')">Открыть</button>
             </div>
@@ -3248,19 +3250,27 @@
 
         <div class="dept-now" id="deptNow"></div>
 
+        <div class="menu-title" data-for="territoryMetricsHub">Метрики территории</div>
+        <button type="button" class="nav-btn" data-for="territoryMetricsHub" data-section="territoryMetrics" data-hub="office" onclick="setTerritoryMetricsHub('office')">
+            Офис
+        </button>
+        <button type="button" class="nav-btn" data-for="territoryMetricsHub" data-section="territoryMetrics" data-hub="warehouse" onclick="setTerritoryMetricsHub('warehouse')">
+            Склад
+        </button>
+        <button type="button" class="nav-btn" data-for="territoryMetricsHub" data-section="territoryMetrics" data-hub="drivers" onclick="setTerritoryMetricsHub('drivers')">
+            Логистика + Торговые
+        </button>
+
         <div class="menu-title" data-for="dept">Работа</div>
 
-        <button type="button" class="nav-btn" data-for="territory" data-section="territoryMetrics" onclick="showSection('territoryMetrics', this)">
-            📊 Метрики
-        </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
         </button>
         <button type="button" class="nav-btn" data-for="dept" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
-            📚 Справочник метрик
+            📚 Метрики
         </button>
         <button type="button" class="nav-btn" data-for="warehouse" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
-            📚 Справочник метрик
+            📚 Метрики
         </button>
         <button type="button" class="nav-btn" data-for="warehouse" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
@@ -3306,7 +3316,7 @@
             📈 План продаж
         </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="deptMetrics" onclick="showSection('deptMetrics', this)">
-            📚 Справочник метрик
+            📚 Метрики
         </button>
         <button type="button" class="nav-btn" data-for="drivers" data-section="timesheet" onclick="showSection('timesheet', this)">
             📅 Табель месяца
@@ -3575,7 +3585,7 @@
             <section id="deptMetrics" class="section">
                 <div class="card">
                     <div class="card-title" id="deptMetricsPageTitle">Метрики</div>
-                    <div class="note" id="deptMetricsNote" style="margin-top:6px">Справочник показателей. Факт вносится в «Территория → Метрики» и в рабочих вкладках: это одни и те же значения. Кто участвует — ФИО → Рабочие метрики.</div>
+                    <div class="note" id="deptMetricsNote" style="margin-top:6px">Справочник показателей. Ежедневные значения заполняются в рабочих вкладках подразделения и в «Метрики территории». Кто участвует — ФИО → Рабочие метрики.</div>
                     <div class="toolbar" style="margin-top:10px" id="deptMetricsCatalogToolbar"></div>
                     <div class="table-wrapper" style="margin-top:10px;max-height:none">
                         <table class="metric-cat-table">
@@ -3622,14 +3632,14 @@
                 <div class="card">
                     <div class="card-header">
                         <div>
-                            <div class="card-title" id="territoryMetricsPageTitle">Метрики</div>
+                            <div class="card-title" id="territoryMetricsPageTitle">Метрики территории</div>
                             <div class="note" id="territoryMetricsMonthNote"></div>
                         </div>
                         <div class="toolbar">
+                            <div class="metrics-tabs" id="territoryMetricsHubTabs"></div>
                             <div class="metrics-tabs metrics-fill-tabs" id="territoryMetricsFillTabs"></div>
                         </div>
                     </div>
-                    <div class="metrics-tabs" id="territoryMetricsHubTabs" style="margin:0 0 12px"></div>
                     <div class="table-wrapper" id="territoryMetricsWrap">
                         <table class="metrics-table" id="territoryMetricsTable">
                             <thead id="territoryMetricsHead"></thead>
@@ -4512,10 +4522,9 @@ const DEPT_DEFAULTS = [
 ];
 const TERRITORY_DEPT_CODES = ["office", "warehouse", "drivers"];
 const TERRITORY_METRICS_HUB = [
-    { id: "drivers", label: "Водители", departmentId: "drivers", workTabIds: ["drivers"] },
-    { id: "sales", label: "Торговые", departmentId: "drivers", workTabIds: ["sales"] },
+    { id: "office", label: "Офис", departmentId: "office", workTabIds: null },
     { id: "warehouse", label: "Склад", departmentId: "warehouse", workTabIds: null },
-    { id: "office", label: "Офис", departmentId: "office", workTabIds: ["main"] }
+    { id: "drivers", label: "Логистика + Торговые", departmentId: "drivers", workTabIds: null }
 ];
 function isGenericMetricsDept(code) {
     return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
@@ -5994,6 +6003,11 @@ function userCanAccessDept(user, code) {
         if (userAccessDeptCodes(user).indexOf("spu") !== -1) return true;
         return userCanOpenManagementAccess(user) || user.legacy_role === "adjust" || user.legacy_role === "admin";
     }
+    if (code === "territoryMetrics") {
+        if (user.role === "admin" || user.legacy_role === "admin") return true;
+        const codes = userAccessDeptCodes(user);
+        return TERRITORY_DEPT_CODES.some(function (c) { return codes.indexOf(c) !== -1; });
+    }
     if (user.role === "admin" || user.legacy_role === "admin") return true;
     return userAccessDeptCodes(user).indexOf(code) !== -1;
 }
@@ -6024,10 +6038,12 @@ function userSwitchCodes(user) {
     if (userCanAccessDept(user, "spu")) add("spu");
     if (userCanAccessDept(user, "org")) add("org");
     if (userCanAccessDept(user, "admin")) add("admin");
+    if (userCanAccessDept(user, "territoryMetrics")) add("territoryMetrics");
     return codes;
 }
 
 function currentNavCode() {
+    if (isTerritoryMetricsMode()) return "territoryMetrics";
     if (isOrgMode()) return "org";
     if (isSpuMode()) return "spu";
     if (isAdminEntry()) return "admin";
@@ -6040,6 +6056,7 @@ function entryLabel(code) {
     if (code === "org") return "Оргструктура";
     if (code === "spu") return "СПУ";
     if (code === "admin") return "Администратор";
+    if (code === "territoryMetrics") return "Метрики территории";
     const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
     if (d) return d.name;
     const w = findWorkspaceByCode(code);
@@ -6113,11 +6130,37 @@ function isAdminEntry() {
     return currentEntry === "admin";
 }
 
+function isTerritoryMetricsMode() {
+    return currentEntry === "territoryMetrics";
+}
+
+function territoryMetricsHostWorkspace() {
+    return findWorkspaceByCode("office") || findWorkspaceByCode("warehouse") || findWorkspaceByCode("drivers");
+}
+
 let pendingOpenSection = "";
 
 function enterAsUser(user, code) {
     ensureLoginData();
     migrateAppUsers(appData);
+    if (code === "territoryMetrics") {
+        if (!userCanAccessDept(user, "territoryMetrics")) return false;
+        const host = territoryMetricsHostWorkspace();
+        if (!host) return false;
+        currentEntry = "territoryMetrics";
+        currentUserId = user.user_id;
+        setCurrentWorkspace(host);
+        applyLegacyRolesFromUser(user, host.code);
+        selectedMonth = currentMonthValue();
+        if (!TERRITORY_METRICS_HUB.some(function (s) { return s.id === territoryMetricsHubId; })) {
+            territoryMetricsHubId = "office";
+        }
+        currentSection = "territoryMetrics";
+        clearLoginPinState();
+        saveSession();
+        openApp();
+        return true;
+    }
     let w = findWorkspaceByCode(code);
     if (!w && (code === "summary" || code === "spu" || code === "admin" || code === "org")) {
         w = findWorkspaceByCode("summary");
@@ -6203,6 +6246,13 @@ function switchUserWorkspace(code) {
         applyLegacyRolesFromUser(user, "summary");
         selectedMonth = keepMonth;
         currentSection = "org-chart";
+        saveSession();
+        loadWorkspace();
+        return;
+    }
+    if (code === "territoryMetrics") {
+        if (!enterAsUser(user, "territoryMetrics")) return;
+        selectedMonth = keepMonth;
         saveSession();
         loadWorkspace();
         return;
@@ -6990,6 +7040,7 @@ function workspaceTitle(w) {
     if (typeof isSpuMode === "function" && isSpuMode()) return "СПУ";
     if (typeof isOrgMode === "function" && isOrgMode()) return "Оргструктура";
     if (typeof isAdminEntry === "function" && isAdminEntry()) return "Администратор";
+    if (typeof isTerritoryMetricsMode === "function" && isTerritoryMetricsMode()) return "Метрики территории";
     if (w.type === "summary" || w.code === "summary") return "Общее";
     return officialName(w);
 }
@@ -7843,7 +7894,7 @@ function summaryMonthMoney(monthValue) {
 function renderLogin(view) {
     try {
         console.log("[WorkTime login click]", view);
-        if (view === "home" || view === "shop" || view === "territory" || view === "summary" || view === "spu" || view === "org" || view === "admin") loginView = view;
+        if (view === "home" || view === "shop" || view === "territory" || view === "territoryMetrics" || view === "summary" || view === "spu" || view === "org" || view === "admin") loginView = view;
         ensureLoginData();
         try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
@@ -7887,13 +7938,29 @@ function renderLogin(view) {
             backHome();
             if (title) title.textContent = "ТЕРРИТОРИЯ";
             if (subtitle) {
-                subtitle.innerHTML = "Офис, Склад и Логистика + Торговые. Выберите пользователя и введите его PIN."
+                subtitle.innerHTML = "Офис, Склад, Логистика + Торговые и Метрики территории. Выберите пользователя или откройте метрики."
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid territory-view";
             grid.innerHTML = TERRITORY_DEPT_CODES.map(function (code) {
                 return deptLoginCardHtml(defs.find(function (d) { return d.code === code; }));
-            }).join("");
+            }).join("") + territoryMetricsLoginCardHtml();
+        } else if (loginView === "territoryMetrics") {
+            if (homeLink) {
+                homeLink.innerHTML = '<button type="button" onclick="renderLogin(\'territory\')">← Назад в Территорию</button>';
+            }
+            if (title) title.textContent = "Метрики территории";
+            if (subtitle) {
+                subtitle.innerHTML = "Метрики сотрудников Офиса, Склада и Логистики + Торговых. Выберите пользователя и введите его PIN."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = userPinLoginCardHtml(
+                "territoryMetrics",
+                "Метрики территории",
+                "Метрики сотрудников Офиса, Склада и Логистики + Торговых",
+                "Открыть"
+            );
         } else if (loginView === "summary") {
             backHome();
             if (title) title.textContent = "Общее";
@@ -7958,6 +8025,8 @@ function renderLogin(view) {
                             ? " Оргструктура: 5555 / 6666."
                             : loginView === "admin"
                             ? " Админ: 5555."
+                            : loginView === "territoryMetrics"
+                            ? " Введите PIN пользователя Офиса, Склада или Логистики + Торговых."
                             : " Введите личный PIN пользователя этого раздела.")
                 : "";
         }
@@ -7991,7 +8060,7 @@ function usersForDeptLoginSafe(code) {
     }
 }
 
-function userPinLoginCardHtml(code, title) {
+function userPinLoginCardHtml(code, title, note, buttonLabel) {
     if (!code) return "";
     const users = usersForDeptLoginSafe(code);
     let selected = loginSelectedUserByDept[code] || "";
@@ -8004,10 +8073,10 @@ function userPinLoginCardHtml(code, title) {
     let body = "";
     if (users === null) {
         body = '<div class="login-empty">Ошибка загрузки пользователей</div>'
-            + '<button type="button" class="btn btn-primary" style="width:100%;" disabled>Войти</button>';
+            + '<button type="button" class="btn btn-primary" style="width:100%;" disabled>' + escapeHtml(buttonLabel || "Войти") + "</button>";
     } else if (!users.length) {
         body = '<div class="login-empty">Для этого раздела не найдено пользователей с доступом</div>'
-            + '<button type="button" class="btn btn-primary" style="width:100%;" disabled>Войти</button>';
+            + '<button type="button" class="btn btn-primary" style="width:100%;" disabled>' + escapeHtml(buttonLabel || "Войти") + "</button>";
     } else {
         let opts = '<option value="">Выберите пользователя</option>';
         users.forEach(function (u) {
@@ -8034,13 +8103,26 @@ function userPinLoginCardHtml(code, title) {
             + '<div class="login-error" id="loginError_' + code + '"></div>'
             + '<button type="button" class="btn btn-primary" id="loginBtn_' + code + '" style="width:100%;"'
             + (pinEnabled && pinValue ? "" : " disabled")
-            + ' onclick="event.stopPropagation();loginByCode(\'' + code + '\')">Войти</button>';
+            + ' onclick="event.stopPropagation();loginByCode(\'' + code + '\')">'
+            + escapeHtml(buttonLabel || "Войти") + "</button>";
     }
 
     return ""
         + '<div class="login-card ' + code + '" id="loginCard_' + code + '" data-login-dept="' + code + '">'
         +   "<h3>" + escapeHtml(title || code) + "</h3>"
+        +   (note ? '<div class="note">' + escapeHtml(note) + "</div>" : "")
         +   body
+        + "</div>";
+}
+
+function territoryMetricsLoginCardHtml() {
+    return ""
+        + '<div class="login-card territoryMetrics" role="button" tabindex="0"'
+        + ' onclick="renderLogin(\'territoryMetrics\')"'
+        + ' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){renderLogin(\'territoryMetrics\');event.preventDefault();}">'
+        +   "<h3>Метрики территории</h3>"
+        +   '<div class="note">Метрики сотрудников Офиса, Склада и Логистики + Торговых</div>'
+        +   '<button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin(\'territoryMetrics\')">Открыть</button>'
         + "</div>";
 }
 
@@ -8298,6 +8380,7 @@ function loginByCode(code) {
         if (code === "spu") currentEntry = "spu";
         else if (code === "org") currentEntry = "org";
         else if (code === "summary") currentEntry = "summary";
+        else if (code === "territoryMetrics") currentEntry = "territoryMetrics";
         else currentEntry = "dept";
         if (!enterAsUser(user, code)) {
             showLoginError(code, "Ошибка входа в раздел.");
@@ -8414,7 +8497,7 @@ function logout() {
     if (entry === "spu") renderLogin("spu");
     else if (entry === "org") renderLogin("org");
     else if (entry === "admin") renderLogin("admin");
-    else if (isTerritoryCode(code)) renderLogin("territory");
+    else if (entry === "territoryMetrics" || isTerritoryCode(code)) renderLogin("territory");
     else if (code === "shop") renderLogin("shop");
     else if (code === "summary") renderLogin("summary");
     else renderLogin("home");
@@ -8477,7 +8560,7 @@ function tryRestoreSession() {
                 else if (currentSection === "users") currentEntry = "admin";
                 else currentEntry = "summary";
             }
-        } else {
+        } else if (currentEntry !== "territoryMetrics") {
             currentEntry = "dept";
         }
         openApp();
@@ -8509,6 +8592,9 @@ function applyModeUI() {
         if (mode === "territory") {
             show = !summary && !!(workspace() && isTerritoryCode(workspace().code));
         }
+        if (mode === "territoryMetricsHub") {
+            show = isTerritoryMetricsMode();
+        }
         if (el.classList.contains("nav-btn")) {
             const sec = el.getAttribute("data-section");
             const code = workspace() && workspace().code;
@@ -8527,6 +8613,8 @@ function applyModeUI() {
                 show = el.getAttribute("data-spu") === "1" && sec && allowed.indexOf(sec) !== -1;
             } else if (isAdminEntry()) {
                 show = (sec === "users" || sec === "settings" || sec === "metricCatalog") && allowed.indexOf(sec) !== -1;
+            } else if (isTerritoryMetricsMode()) {
+                show = mode === "territoryMetricsHub" && (!sec || allowed.indexOf(sec) !== -1);
             } else if (summary) {
                 if (sec === "management" || String(sec || "").indexOf("management-") === 0) show = false;
                 if (sec === "org-chart" || sec === "org-settings") show = false;
@@ -8540,6 +8628,9 @@ function applyModeUI() {
         }
         if (el.getAttribute("data-org") === "1" && !el.classList.contains("nav-btn")) {
             show = isOrgMode();
+        }
+        if (isTerritoryMetricsMode() && !el.classList.contains("nav-btn")) {
+            show = mode === "territoryMetricsHub";
         }
         el.style.display = show ? "" : "none";
     });
@@ -8638,6 +8729,9 @@ function allowedSpuSections() {
 
 function allowedSections() {
     const code = workspace() && workspace().code;
+    if (isTerritoryMetricsMode()) {
+        return ["territoryMetrics"];
+    }
     if (isOrgMode()) {
         return allowedOrgSections();
     }
@@ -8737,6 +8831,7 @@ function sectionTitle(id) {
         users: "Сотрудники, должности и доступы",
         settings: "Настройки",
         metricCatalog: "Метрики",
+        territoryMetrics: "Метрики территории",
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
         management: "Панель управления",
         "management-planfact": "План–факт компании",
@@ -8795,7 +8890,11 @@ function showSection(id, button) {
 
     document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         const visible = btn.style.display !== "none";
-        btn.classList.toggle("active", visible && btn.getAttribute("data-section") === id);
+        const hub = btn.getAttribute("data-hub");
+        const on = hub
+            ? (visible && id === "territoryMetrics" && hub === String(territoryMetricsHubId || ""))
+            : (visible && btn.getAttribute("data-section") === id);
+        btn.classList.toggle("active", on);
     });
     if (button) button.classList.add("active");
 
@@ -19584,6 +19683,10 @@ function setTerritoryMetricsHub(id) {
     territoryMetricsHubId = id;
     saveSession();
     renderTerritoryMetrics();
+    document.querySelectorAll(".nav-btn[data-hub]").forEach(function (btn) {
+        const visible = btn.style.display !== "none";
+        btn.classList.toggle("active", visible && btn.getAttribute("data-hub") === id);
+    });
 }
 
 function renderTerritoryMetricsHubTabs() {
