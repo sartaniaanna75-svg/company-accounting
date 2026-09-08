@@ -5360,7 +5360,10 @@ function setTimesheetWorkTabFilter(tabId) {
 }
 function timesheetEmployeesForView() {
     const w = workspace();
-    const list = visibleEmployees();
+    const list = visibleEmployees().filter(function (e) {
+        if (!w || !e || !e.id) return false;
+        return employeeHomeDeptCode(e.id) === w.code;
+    });
     const tab = currentTimesheetWorkTabFilter();
     if (!tab || !w) return list;
     const seen = {};
@@ -6291,6 +6294,10 @@ function isOrgMode() {
 
 function isAdminEntry() {
     return currentEntry === "admin";
+}
+
+function isCompanyWideCatalogMode() {
+    return isAdminEntry() || (isSummary() && currentEntry === "summary");
 }
 
 function isTerritoryMetricsMode() {
@@ -9050,7 +9057,6 @@ function allowedSections() {
         list.push("territoryMetrics");
     }
     if (userHasPerm("settings", "edit")) list.push("settings");
-    if (isAppAdmin()) list.push("users");
     return list;
 }
 
@@ -9479,17 +9485,23 @@ function normalizeMetricCatalogItemTabs(item) {
 }
 
 function catalogDeptContext() {
-    if (currentSection === "metricCatalog" && metricCatalogFilter && metricCatalogFilter.dept) {
-        return metricCatalogFilter.dept;
+    if (isCompanyWideCatalogMode()) {
+        if (currentSection === "metricCatalog" && metricCatalogFilter && metricCatalogFilter.dept) {
+            return metricCatalogFilter.dept;
+        }
+        return "shop";
     }
-    if (isSummary()) return "shop";
+    if (isTerritoryMetricsMode()) {
+        const hub = currentTerritoryMetricsHub();
+        return (hub && hub.departmentId) || "office";
+    }
     const c = workspace() && workspace().code;
     if (c === "shop" || isGenericMetricsDept(c)) return c;
     return "shop";
 }
 
 function catalogViewShowsAllDepts() {
-    return currentSection === "metricCatalog" && (isAppAdmin() || isAdminEntry() || isSummary() || isTerritoryMetricsMode());
+    return currentSection === "metricCatalog" && isCompanyWideCatalogMode();
 }
 
 function catalogItemsForView() {
@@ -18193,6 +18205,10 @@ function metricControlEmployeeReport(employee, month) {
     const work = [];
     ids.forEach(function (id) {
         const it = shopMetricCatalogById(id);
+        if (!isCompanyWideCatalogMode() && !isSummary()) {
+            const dept = workspace() && workspace().code;
+            if (dept && it && metricDepartmentId(it) !== dept) return;
+        }
         if (it && metricStructureType(it) === "with_submetrics") {
             const subs = metricSubmetrics(it, true);
             if (!subs.length) {
@@ -18274,6 +18290,10 @@ function metricControlPeople() {
         });
     } else {
         people = directoryEmployees().slice();
+        const code = workspace() && workspace().code;
+        if (code && code !== "summary") {
+            people = people.filter(function (e) { return employeeHomeDeptCode(e.id) === code; });
+        }
     }
     people = people.filter(function (e) { return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID; });
     if (f.position) {
@@ -19384,13 +19404,14 @@ function shopCatalogPositionOptions() {
 }
 
 function catalogFormDeptList() {
-    if (isAppAdmin() || isAdminEntry() || isSummary()) return DEPT_DEFAULTS.slice();
+    if (isCompanyWideCatalogMode()) return DEPT_DEFAULTS.slice();
     const code = catalogDeptContext();
     return DEPT_DEFAULTS.filter(function (d) { return d.code === code; });
 }
 
 function catalogFormCanPickDept() {
-    return isAppAdmin() || isAdminEntry() || (isSummary() && (currentSummaryRole === "admin" || userHasPerm("kpi", "manage")));
+    if (!isCompanyWideCatalogMode()) return false;
+    return isAppAdmin() || currentSummaryRole === "admin" || userHasPerm("kpi", "manage") || userHasPerm("settings", "edit");
 }
 
 function refreshMetricCatalogTabOptions(selectedTabs, scopes) {
@@ -19640,6 +19661,7 @@ function refreshMetricCatalogPeopleBox(metricId) {
     const tabIds = typeof collectMetricCatalogTabIds === "function" ? collectMetricCatalogTabIds() : [];
     const people = ((w && w.employees) || []).filter(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return false;
+        if (employeeHomeDeptCode(e.id) !== dept) return false;
         if (!tabIds.length) return true;
         const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
         return tabIds.indexOf(tab) !== -1 || (metricId && shopEmployeeHasWorkMetric(e.id, metricId));
@@ -19827,6 +19849,7 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     const seen = {};
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        if (employeeHomeDeptCode(e.id) !== code) return;
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
         if (scope === "same_work_tab" && !employeeMatchesWorkTab(e, code, tab)) return;
         if (!isWorking(e)) {
@@ -19847,7 +19870,7 @@ function deptMetricFields(deptCode, tabId) {
     const tab = tabId || currentDeptMetricTab(deptCode);
     const list = [];
     catalogItemsForDept(deptCode).filter(function (it) {
-        return metricShowsOnTab(it, tab) && shopCatalogItemShownInUi(it);
+        return metricDepartmentId(it) === deptCode && metricShowsOnTab(it, tab) && shopCatalogItemShownInUi(it);
     }).sort(function (a, b) {
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     }).forEach(function (it) {
@@ -20057,9 +20080,13 @@ function defaultTerritoryMetricsHubId() {
 
 function currentTerritoryMetricsHub() {
     let id = String(territoryMetricsHubId || "");
+    if (!isTerritoryMetricsMode()) {
+        const code = workspace() && workspace().code;
+        if (isGenericMetricsDept(code)) id = code;
+    }
     if (!TERRITORY_METRICS_HUB.some(function (s) { return s.id === id; })) {
         id = defaultTerritoryMetricsHubId();
-        territoryMetricsHubId = id;
+        if (isTerritoryMetricsMode()) territoryMetricsHubId = id;
     }
     return TERRITORY_METRICS_HUB.find(function (s) { return s.id === id; }) || TERRITORY_METRICS_HUB[0];
 }
@@ -20114,6 +20141,11 @@ function territoryHubPeople(spec, metricId) {
 
 function setTerritoryMetricsHub(id) {
     if (!TERRITORY_METRICS_HUB.some(function (s) { return s.id === id; })) return;
+    if (!isTerritoryMetricsMode()) {
+        const code = workspace() && workspace().code;
+        if (isGenericMetricsDept(code)) id = code;
+        else return;
+    }
     territoryMetricsHubId = id;
     saveSession();
     renderTerritoryMetrics();
@@ -20126,6 +20158,12 @@ function setTerritoryMetricsHub(id) {
 function renderTerritoryMetricsHubTabs() {
     const host = document.getElementById("territoryMetricsHubTabs");
     if (!host) return;
+    if (!isTerritoryMetricsMode()) {
+        host.innerHTML = "";
+        host.style.display = "none";
+        return;
+    }
+    host.style.display = "";
     const current = currentTerritoryMetricsHub();
     host.innerHTML = TERRITORY_METRICS_HUB.map(function (spec) {
         return '<button type="button" class="metrics-tab' + (spec.id === current.id ? " active" : "")
@@ -20431,7 +20469,9 @@ function renderFio() {
 
     const w = workspace();
     const code = w && w.code;
-    const pool = (w.employees || []).slice();
+    const pool = (w.employees || []).slice().filter(function (e) {
+        return e && e.id && employeeHomeDeptCode(e.id) === code;
+    });
     const list = document.getElementById("fioList");
     const filterHost = document.getElementById("fioFilters");
     const tabs = timesheetGroupFilterTabs(code);
@@ -21095,7 +21135,7 @@ function loadWorkspaceSettings() {
     const summary = isSummary();
     document.getElementById("deptPinBox").style.display = "none";
     const usersCard = document.getElementById("summaryUsersCard");
-    if (usersCard) usersCard.style.display = isAppAdmin() ? "" : "none";
+    if (usersCard) usersCard.style.display = (isAppAdmin() && isCompanyWideCatalogMode()) ? "" : "none";
     const posCard = document.getElementById("positionsSettingsCard");
     if (posCard) posCard.style.display = (!summary && isTableAdmin()) ? "" : "none";
     if (!summary) renderPositionList();
