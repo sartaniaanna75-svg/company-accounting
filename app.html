@@ -4249,9 +4249,10 @@
                         <div>
                             <div class="card-title">Все сотрудники</div>
                             <div class="note">
-                                Общий справочник: фамилия, имя, отчество, должность, рабочий отдел и рабочая группа.
+                                Общий справочник: одно поле ФИО, должность, рабочий отдел и рабочая группа.
                                 Сотрудник создаётся один раз (employee_id не меняется) и появляется в выбранной группе:
-                                Торговые, Водители, складские вкладки, офис. Учётная запись (PIN) здесь не создаётся.
+                                Торговые / Продажи ОПТ, Водители, складские вкладки, офис. Учётная запись (PIN) здесь не создаётся.
+                                После ввода ФИО нажмите «Сохранить».
                             </div>
                         </div>
                         <div class="toolbar">
@@ -4397,7 +4398,8 @@
                             <div class="card-title">ФИО сотрудника</div>
                             <div class="note">
                                 Здесь заводятся сотрудники этого отдела (один employee_id, без копий).
-                                Для Логистики выберите рабочую группу: Торговые или Водители — человек появится в соответствующем разделе.
+                                ФИО вводится одним полем. Для Логистики выберите рабочую группу: Торговые / Продажи ОПТ или Водители.
+                                После ввода нажмите «Сохранить».
                             </div>
                         </div>
                     </div>
@@ -5108,7 +5110,7 @@ const METRIC_TABS_BY_DEPT = {
         { id: "guards", label: "Сторожа" }
     ],
     drivers: [
-        { id: "sales", label: "Торговые" },
+        { id: "sales", label: "Торговые / Продажи ОПТ" },
         { id: "drivers", label: "Водители" }
     ],
     office: [
@@ -5450,7 +5452,7 @@ function workTabSelectForDept(employee, deptWs) {
     if (!tabs.length) return "";
     const current = String(employee.work_tab_id || employeePrimaryWorkTabId(employee, w.code) || "");
     const locked = !canEditStaff() && (isSummary() || isAdminEntry());
-    let html = '<select onchange="updateEmployee(\'' + employee.id + '\',\'work_tab_id\',this.value)"'
+    let html = '<select class="emp-work-tab" onchange="updateEmployee(\'' + employee.id + '\',\'work_tab_id\',this.value)"'
         + (locked ? " disabled" : "") + ">"
         + '<option value="">Не выбрана</option>';
     tabs.forEach(function (t) {
@@ -6639,6 +6641,8 @@ function summaryRoleInfo(role) {
 
 function canEditStaff() {
     if (isAppAdmin()) return true;
+    if (isAdminEntry()) return true;
+    if (currentDeptRole === "admin" || currentSummaryRole === "admin") return true;
     if (isAdminEntry() && userHasPerm("settings", "edit")) return true;
     if (isSummary()) return isTableAdmin() || currentSummaryRole === "admin";
     return isTableAdmin() || userHasPerm("timesheet", "edit") || userHasPerm("settings", "edit");
@@ -6707,7 +6711,7 @@ function allowsEarly730(w) {
 function changeSummaryDeptFilter(value) {
     summaryDeptFilter = value || "";
     syncSummarySortControls();
-    if (isSummary()) {
+    if (isSummary() || isAdminEntry()) {
         renderTimesheet();
         renderSalary();
         renderRepSalary();
@@ -7623,17 +7627,27 @@ function findEmployeeIn(w, id) {
 }
 
 function getEmployee(id) {
-    if (currentWorkspaceIndex !== null && workspace() && workspace().type !== "summary") {
+    if (!id) return null;
+    if (workspace() && workspace().type !== "summary") {
         const local = findEmployeeIn(workspace(), id);
         if (local) return local;
     }
     let found = null;
-    appData.workspaces.forEach(function (w) {
-        if (found) return;
+    ((appData && appData.workspaces) || []).forEach(function (w) {
+        if (found || !w) return;
         const e = findEmployeeIn(w, id);
         if (e) found = e;
     });
     return found;
+}
+
+function staffTargetWorkspace() {
+    const w = workspace();
+    if (w && w.code && w.code !== "summary" && w.type !== "summary") return w;
+    const code = summaryDeptFilter
+        || ((document.getElementById("staffDeptFilter") || {}).value || "");
+    if (code) return findWorkspaceByCode(code);
+    return null;
 }
 
 function directoryEmployees(w) {
@@ -7778,17 +7792,66 @@ function updateEmployeeFullName(employeeId, value) {
     const employee = getEmployee(employeeId);
     if (!employee) return;
     applyEmployeeFullName(employee, value);
-    if (isBlankName(employee.name)) {
-        toast("Введите ФИО сотрудника.", "error");
-        if (isSummary() || isAdminEntry()) renderSummaryStaff();
-        else renderFio();
+    if (!isBlankName(employee.name)) saveApp();
+}
+
+function namePartsHtml(employee, disabled) {
+    const full = composeEmployeeName(employee) || String((employee && employee.name) || "");
+    const dis = disabled ? " disabled" : "";
+    return '<div class="name-parts">'
+        + '<input class="emp-fio-input' + (isBlankName(full) ? " name-missing" : "") + '" placeholder="Иванов Иван Иванович" value="' + escapeAttribute(full) + '"'
+        + ' oninput="syncNameFieldState(this);updateEmployeeFullName(\'' + employee.id + '\',this.value)"'
+        + " onkeydown=\"if(event.key==='Enter'){event.preventDefault();commitEmployeeCard('" + employee.id + "');}\""
+        + " onchange=\"updateEmployeeFullName('" + employee.id + "',this.value)\"" + dis + ">"
+        + "</div>";
+}
+
+function commitEmployeeCard(employeeId) {
+    if (!canEditStaff()) {
+        toast("Нет права сохранять сотрудников.", "error");
         return;
     }
+    const employee = getEmployee(employeeId);
+    if (!employee) {
+        toast("Не найден сотрудник для сохранения.", "error");
+        return;
+    }
+    const card = document.getElementById("emp-card-" + employeeId);
+    const nameInput = card && card.querySelector(".emp-fio-input");
+    const fullName = nameInput ? nameInput.value : (employee.name || "");
+    applyEmployeeFullName(employee, fullName);
+    if (isBlankName(employee.name)) {
+        toast("Введите ФИО сотрудника.", "error");
+        return;
+    }
+    const tabSel = card && card.querySelector(".emp-work-tab");
+    if (tabSel) {
+        const home = employeeHome(employeeId);
+        const code = home && home.code;
+        let tab = tabSel.value;
+        if (!tab && timesheetGroupFilterTabs(code).length) tab = defaultMetricTabId(code);
+        if (tab && tab !== String(employee.work_tab_id || "")) {
+            setEmployeePrimaryWorkTab(employeeId, tab);
+        }
+    }
+    if (!employee.employee_id) employee.employee_id = employee.id;
+    assignGroupAllMetricsToEmployee(employee);
     saveApp();
+    justAddedEmployeeId = employee.id;
     if (isSummary() || isAdminEntry()) renderSummaryStaff();
-    else renderFio();
-    renderEmployees();
-    refreshAll();
+    else {
+        renderFio();
+        renderEmployees();
+    }
+    toast("Сотрудник сохранён.");
+}
+
+function employeeCardActionsHtml(employee) {
+    if (!canEditStaff()) return "";
+    return '<div class="emp-actions">'
+        + '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + '\')">Сохранить</button>'
+        + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>'
+        + "</div>";
 }
 
 function updateEmployeeNamePart(employeeId, part, value) {
@@ -7805,21 +7868,6 @@ function updateEmployeeNamePart(employeeId, part, value) {
         toast("Введите ФИО сотрудника.", "error");
     }
     saveApp();
-    if (isSummary() || isAdminEntry()) renderSummaryStaff();
-    else renderFio();
-    renderEmployees();
-    refreshAll();
-}
-
-function namePartsHtml(employee, disabled) {
-    const full = composeEmployeeName(employee) || String((employee && employee.name) || "");
-    const dis = disabled ? " disabled" : "";
-    return '<div class="name-parts">'
-        + '<input placeholder="Иванов Иван Иванович" value="' + escapeAttribute(full) + '"'
-        + (isBlankName(full) ? ' class="name-missing"' : "")
-        + ' oninput="syncNameFieldState(this)"'
-        + " onchange=\"updateEmployeeFullName('" + employee.id + "',this.value)\"" + dis + ">"
-        + "</div>";
 }
 
 function isPlaceholderEmployeeName(name) {
@@ -20959,14 +21007,14 @@ function shopExtraFunctionsHtml(employee) {
 }
 
 function renderFio() {
-    if (currentWorkspaceIndex === null || isSummary()) return;
-
     const w = workspace();
-    const code = w && w.code;
+    if (!w || w.code === "summary" || w.type === "summary") return;
+    const list = document.getElementById("fioList");
+    if (!list) return;
+    const code = w.code;
     const pool = (w.employees || []).slice().filter(function (e) {
         return e && e.id && employeeHomeDeptCode(e.id) === code;
     });
-    const list = document.getElementById("fioList");
     const filterHost = document.getElementById("fioFilters");
     const tabs = timesheetGroupFilterTabs(code);
     if (!fioFilterByDept[code] || typeof fioFilterByDept[code] !== "object") {
@@ -21045,7 +21093,7 @@ function renderFio() {
             + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value)">', "emp-field-time")
             + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value)">', "emp-field-time")
             + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff()), "emp-field-status")
-            + (canEditStaff() ? '<div class="emp-actions"><button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button></div>' : "")
+            + employeeCardActionsHtml(employee)
             + "</div>";
     }).join("");
     withShopUiQuiet(function () {
@@ -21256,9 +21304,9 @@ function addEmployee() {
         toast("Нет права добавлять сотрудников.", "error");
         return;
     }
-    const w = workspace();
-    if (!w || w.type === "summary") {
-        toast("Добавьте сотрудника в справочнике «Сотрудники».", "error");
+    const w = staffTargetWorkspace();
+    if (!w || w.code === "summary" || w.type === "summary") {
+        toast("Сначала выберите отдел в фильтре (для логистики — «Логистика + Торговые»).", "error");
         return;
     }
     let tabFilter = (fioFilterByDept[w.code] && fioFilterByDept[w.code].tab)
@@ -21291,13 +21339,15 @@ function addEmployee() {
     if (!Array.isArray(w.employees)) w.employees = [];
     w.employees.push(employee);
     justAddedEmployeeId = employee.id;
-    assignGroupAllMetricsToEmployee(employee);
+    try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
     saveApp();
-    renderFio();
-    renderEmployees();
-    refreshAll();
+    if (isSummary() || isAdminEntry()) renderSummaryStaff();
+    else {
+        renderFio();
+        renderEmployees();
+    }
     focusNewEmployeeCard(employee.id);
-    toast("Введите ФИО сотрудника и рабочую группу.");
+    toast("Введите ФИО сотрудника и нажмите «Сохранить».");
 }
 
 function updateEmployee(employeeId, field, value) {
@@ -21315,10 +21365,6 @@ function updateEmployee(employeeId, field, value) {
         }
         applyEmployeeFullName(employee, value);
         saveApp();
-        if (isSummary()) renderSummaryStaff();
-        renderFio();
-        renderEmployees();
-        refreshAll();
         return;
     }
     if (field === "rate" || field === "taxiDaily" || isRepPercentField(field)) {
@@ -21329,7 +21375,9 @@ function updateEmployee(employeeId, field, value) {
         employee.jobStatus = value === "fired" ? "fired" : "working";
     } else if (field === "work_tab_id") {
         setEmployeePrimaryWorkTab(employeeId, value);
-        assignGroupAllMetricsToEmployee(employee);
+        try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
+        saveApp();
+        return;
     } else if (field === "position") {
         setEmployeePosition(employee, value, selectedMonth);
         if (!employee.work_tab_id) {
@@ -21342,21 +21390,10 @@ function updateEmployee(employeeId, field, value) {
         employee[field] = value;
     }
     if (isBlankName(employee.name)) {
-        if (isSummary() || isAdminEntry()) renderSummaryStaff();
-        else {
-            renderFio();
-            renderEmployees();
-        }
-        refreshAll();
+        saveApp();
         return;
     }
     saveApp();
-    if (isSummary() || isAdminEntry()) renderSummaryStaff();
-    else {
-        renderFio();
-        renderEmployees();
-    }
-    refreshAll();
 }
 
 function setEmployeeTermsField(employeeId, field, value) {
@@ -21502,18 +21539,25 @@ function renderSummaryStaff() {
                     : "")
                 + (locked
                     ? ""
-                    : '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>')
+                    : '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + '\')">Сохранить</button>'
+                        + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>')
                 + "</div>"
                 + "</div>";
         });
     });
-    box.innerHTML = html;
+    withShopUiQuiet(function () {
+        box.innerHTML = html;
+    });
 }
 
 function addSummaryEmployee() {
     if (!canEditStaff()) {
         toast("Нет права добавлять сотрудников.", "error");
         return;
+    }
+    if (!summaryDeptFilter) {
+        const sel = document.getElementById("staffDeptFilter");
+        if (sel && sel.value) summaryDeptFilter = sel.value;
     }
     if (!summaryDeptFilter) {
         toast("Сначала выберите рабочий отдел в фильтре сверху.", "error");
@@ -21550,9 +21594,8 @@ function addSummaryEmployee() {
     assignGroupAllMetricsToEmployee(employee);
     saveApp();
     renderSummaryStaff();
-    refreshAll();
     focusNewEmployeeCard(employee.id);
-    toast("Введите ФИО сотрудника, должность и рабочую группу.");
+    toast("Введите ФИО сотрудника, выберите группу и нажмите «Сохранить».");
 }
 
 function moveEmployeeToDepartment(employeeId, deptCode) {
