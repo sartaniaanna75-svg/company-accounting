@@ -2747,6 +2747,11 @@
             max-width: 100%;
         }
 
+        .field-invalid {
+            outline: 2px solid #991b1b !important;
+            box-shadow: 0 0 0 3px rgba(153, 27, 27, .15);
+        }
+
         .mgmt-ind-sec {
             grid-column: 1 / -1;
             display: grid;
@@ -26386,9 +26391,10 @@ function mgmtOrgUnitsChecksHtml(selectedIds) {
 
 function collectMgmtAddOrgUnits() {
     const ids = [];
-    document.querySelectorAll(".mi-org-unit:checked").forEach(function (el) {
-        if (el.value) ids.push(el.value);
-    });
+    const nodes = document.querySelectorAll(".mi-org-unit:checked");
+    for (let i = 0; i < nodes.length; i++) {
+        if (nodes[i].value) ids.push(nodes[i].value);
+    }
     return ids;
 }
 
@@ -26519,7 +26525,11 @@ function confirmMgmtWizardLinkExisting(indicatorId) {
 }
 
 function saveMgmtIndicatorFromWizard() {
-    if (!canEditMgmtIndicators()) return;
+    if (!canEditMgmtIndicators()) {
+        toast("Нет права редактировать показатели СПУ.", "error");
+        return;
+    }
+    try {
     ensureManagement();
     const editId = (document.getElementById("miEditId") || {}).value || "";
     const origin = mgmtAddWizardOrigin();
@@ -26543,7 +26553,7 @@ function saveMgmtIndicatorFromWizard() {
         it.is_active = true;
         it.sort_order = order;
         it.use_in_metrics = false;
-        it.source_metric_id = "";
+        it.source_metric_id = it.source_metric_id || "";
         it.org_unit_ids = [];
         mgmtApplySpuHub(it, hub);
         if (it.source_type === "one_c_future") it.source_future = "one_c";
@@ -26556,12 +26566,25 @@ function saveMgmtIndicatorFromWizard() {
     }
 
     if (!units.length) {
-        toast("Отметьте хотя бы одно подразделение.", "error");
+        const wrap = document.getElementById("miAddUnits");
+        if (wrap) wrap.classList.add("field-invalid");
+        toast("Выберите подразделение.", "error");
         return;
     }
-    const metricId = (document.getElementById("miAddMetric") || {}).value || "";
+    const metricEl = document.getElementById("miAddMetric");
+    const metricId = (metricEl || {}).value || "";
     const metric = shopMetricCatalogById(metricId);
-    if (!metric) { toast("Выберите существующую метрику. Новые метрики создаются в рабочих разделах.", "error"); return; }
+    if (!metric) {
+        if (metricEl) metricEl.classList.add("field-invalid");
+        const catEl = document.getElementById("miAddTerrCat");
+        if (origin === "territory" && catEl && !catEl.value) {
+            catEl.classList.add("field-invalid");
+            toast("Выберите категорию Метрик.", "error");
+        } else {
+            toast("Выберите источник показателя.", "error");
+        }
+        return;
+    }
     const existing = mgmtLinkedIndicatorByMetricId(metric.id, editId);
     if (existing && existing.indicator_id !== editId) {
         const hint = document.getElementById("miAddDupHint");
@@ -26585,7 +26608,7 @@ function saveMgmtIndicatorFromWizard() {
     it.show_on_dashboard = showDash;
     it.is_active = true;
     it.sort_order = order;
-    it.use_in_metrics = false;
+    it.use_in_metrics = true;
     it.unit = metric.fill_type === "money" ? "money" : "number";
     it.period_type = it.period_type || "week";
     it.aggregation_type = it.aggregation_type || "sum";
@@ -26593,11 +26616,16 @@ function saveMgmtIndicatorFromWizard() {
     mgmtApplySpuHub(it, hub);
     applyMetricOrgUnitAssignments(metric, units);
     metric.spu_indicator_id = it.indicator_id;
+    metric.show_in_work_metrics = true;
     normalizeMgmtIndicator(it);
     saveApp();
     closeMgmtModal();
     renderManagement();
     toast("Связь сохранена: одна метрика, назначения по подразделениям. Факт — только в рабочих Метриках.");
+    } catch (err) {
+        console.error(err);
+        toast("Не удалось сохранить показатель: " + (err && err.message ? err.message : String(err)), "error");
+    }
 }
 
 function renderMgmtSettingsHtml() {
@@ -26615,7 +26643,7 @@ function renderMgmtSettingsHtml() {
             + " onclick=\"setMgmtSettingsHub('" + h.id + "')\">" + escapeHtml(h.label) + "</button>";
     });
     html += "</div>";
-    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openMgmtIndicatorAddWizard()">+ Добавить показатель</button></div>';
+    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openMgmtIndicatorForm()">+ Добавить показатель</button></div>';
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
         + "<th>Показатель</th><th>Источник</th><th>Подразделения</th><th>Раздел СПУ</th><th>Панель</th><th></th></tr></thead><tbody>";
     if (!filtered.length) {
@@ -26636,7 +26664,7 @@ function renderMgmtSettingsHtml() {
             + mgmtSpuDisplaySectionOptions(mgmtIndicatorHubKey(it)) + "</select></td>"
             + '<td><label class="check"><input type="checkbox"' + (it.show_on_dashboard ? " checked" : "")
             + " onchange=\"setMgmtIndicatorDash('" + it.indicator_id + "',this.checked)\"> Да</label></td>"
-            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openMgmtIndicatorAddWizard(\'' + it.indicator_id + '\')">Настроить</button></td></tr>';
+            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openMgmtIndicatorForm(\'' + it.indicator_id + '\')">Настроить</button></td></tr>';
     });
     html += "</tbody></table></div>";
     return html;
@@ -27108,12 +27136,34 @@ function refreshMgmtSubmetricSelect(selected) {
     box.innerHTML = html;
 }
 
+function mgmtClearFieldInvalid() {
+    document.querySelectorAll(".field-invalid").forEach(function (el) {
+        el.classList.remove("field-invalid");
+    });
+}
+
+function mgmtMarkInvalid(id, message) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.classList.add("field-invalid");
+        try { el.focus(); } catch (err) {}
+        try { el.scrollIntoView({ block: "center" }); } catch (err2) {}
+    }
+    if (message) toast(message, "error");
+    return false;
+}
+
 function saveMgmtIndicator(id) {
-    if (!canEditMgmtIndicators()) return;
+    if (!canEditMgmtIndicators()) {
+        toast("Нет права редактировать показатели СПУ.", "error");
+        return;
+    }
+    mgmtClearFieldInvalid();
+    try {
     ensureManagement();
     const name = String((document.getElementById("miName") || {}).value || "").replace(/\s+/g, " ").trim();
-    if (!name) { toast("Укажите название.", "error"); return; }
-    let it = id ? appData.management.indicators.find(function (x) { return x.indicator_id === id; }) : null;
+    if (!name) return mgmtMarkInvalid("miName", "Укажите название.");
+    let it = id ? appData.management.indicators.find(function (x) { return x && x.indicator_id === id; }) : null;
     if (!it) {
         it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
         appData.management.indicators.push(it);
@@ -27151,28 +27201,23 @@ function saveMgmtIndicator(id) {
 
     const useMetrics = !!(document.getElementById("miUseMetrics") && document.getElementById("miUseMetrics").checked);
     if (useMetrics) {
-        const cat = (document.getElementById("miMetricsCat") || {}).value || "";
+        const cat = String((document.getElementById("miMetricsCat") || {}).value || "");
+        const spec = territoryMetricCategoryById(cat);
+        if (!spec || spec.id === "returns") {
+            return mgmtMarkInvalid("miMetricsCat", "Выберите категорию Метрик.");
+        }
         const assignMode = collectMgmtMetricsAssignMode();
         const personIds = collectMgmtMetricsPersonIds();
         const tabIds = collectMgmtMetricsTabIds();
         const chosenLink = (document.getElementById("miLinkMetricId") || {}).value || "";
-        const skipPrompt = (document.getElementById("miSkipMetricPrompt") || {}).value === "1";
         let linkItem = chosenLink ? shopMetricCatalogById(chosenLink) : (it.source_metric_id ? shopMetricCatalogById(it.source_metric_id) : null);
-        if (!linkItem && !skipPrompt) {
+        if (linkItem && linkItem.builtin && metricDepartmentId(linkItem) === "shop") {
+            linkItem = null;
+        }
+        if (!linkItem) {
             const hits = findExactWorkMetricsByName(name, "");
-            if (hits.length) {
-                const hint = document.getElementById("miLinkHint");
-                if (hint) {
-                    hint.innerHTML = "Найдена существующая рабочая метрика: <strong>"
-                        + escapeHtml(hits[0].name) + "</strong>"
-                        + '<div class="toolbar" style="margin-top:8px">'
-                        + '<button type="button" class="btn btn-primary" onclick="confirmMgmtMetricLink(\''
-                        + it.indicator_id + "','" + hits[0].id + '\')">Связать с существующей</button> '
-                        + '<button type="button" class="btn btn-secondary" onclick="cancelMgmtMetricLinkPrompt()">Отмена</button></div>';
-                }
-                toast("Найдена существующая рабочая метрика. Свяжите её или отмените.", "error");
-                return;
-            }
+            const inCat = hits.filter(function (m) { return metricTerritoryCategory(m) === cat; });
+            linkItem = inCat[0] || null;
         }
         const ok = applySpuIndicatorWorkMetric(it, {
             category: cat,
@@ -27182,9 +27227,21 @@ function saveMgmtIndicator(id) {
             fillType: spuFillTypeFromUnit(it.unit),
             linkItem: linkItem
         });
-        if (!ok) return;
+        if (!ok) {
+            if (assignMode === "specific" && !(personIds || []).length) mgmtMarkInvalid("miMetricsPeople");
+            return;
+        }
         const hid = document.getElementById("miLinkedMetricId");
         if (hid) hid.value = it.source_metric_id || "";
+        const linked = shopMetricCatalogById(it.source_metric_id);
+        if (linked) {
+            const units = defaultOrgUnitsForMetric(linked, it);
+            it.org_unit_ids = units.slice();
+            if (!Array.isArray(linked.org_unit_ids) || !linked.org_unit_ids.length) {
+                linked.org_unit_ids = units.slice();
+                mergeMetricWorkTabsFromOrgUnits(linked);
+            }
+        }
     } else {
         hideSpuIndicatorFromWorkMetrics(it);
     }
@@ -27194,9 +27251,13 @@ function saveMgmtIndicator(id) {
     closeMgmtModal();
     renderManagement();
     if (typeof renderMetricCatalog === "function") {
-        try { renderMetricCatalog(); } catch (err) {}
+        try { renderMetricCatalog(); } catch (errCat) { console.error(errCat); }
     }
     toast("Показатель сохранён.");
+    } catch (err) {
+        console.error(err);
+        toast("Не удалось сохранить показатель: " + (err && err.message ? err.message : String(err)), "error");
+    }
 }
 
 function openMgmtMeetingTaskForm(id, weekFrom, meetingId) {
