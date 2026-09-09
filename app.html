@@ -3845,7 +3845,7 @@
                             <div class="card-title" id="territoryMetricsPageTitle">Метрики территории</div>
                             <div class="note" id="territoryMetricsMonthNote"></div>
                         </div>
-                        <div class="toolbar">
+                        <div class="toolbar" style="flex-direction:column;align-items:flex-start;gap:8px">
                             <div class="metrics-tabs" id="territoryMetricsHubTabs"></div>
                             <div class="metrics-tabs metrics-fill-tabs" id="territoryMetricsFillTabs"></div>
                         </div>
@@ -9628,29 +9628,99 @@ function seedReturnsCountMetric() {
 
 function inferTerritoryMetricCategory(item) {
     if (!item) return "";
-    if (item.territory_category && territoryMetricCategoryById(item.territory_category)
-        && item.territory_category !== "returns") {
-        return item.territory_category;
-    }
     if (canonicalMetricId(item.id) === METRIC_RETURNS_COUNT_ID) return "sales_opt";
     const dept = metricDepartmentId(item);
     if (dept === "shop") return "";
     const tabs = metricWorkTabIds(item);
     if (dept === "office") return "office";
     if (dept === "warehouse") {
+        const ops = tabs.filter(function (t) { return t !== "cashiers"; });
         const onlyCashiers = tabs.length && tabs.every(function (t) { return t === "cashiers"; });
-        if (onlyCashiers) return "sales_retail";
+        if (onlyCashiers || (!ops.length && tabs.indexOf("cashiers") !== -1)) return "sales_retail";
         return "warehouse";
     }
     if (dept === "drivers") {
         const hasSales = tabs.indexOf("sales") !== -1;
         const hasDrivers = tabs.indexOf("drivers") !== -1;
+        if (hasSales && !hasDrivers) return "sales_opt";
+        if (hasDrivers && !hasSales) return "drivers";
         if (hasSales && hasDrivers) return "common";
-        if (hasSales) return "sales_opt";
-        if (hasDrivers) return "drivers";
-        return "sales_opt";
+        return "drivers";
     }
     return "common";
+}
+
+function workTabsAllowedForTerritoryCategory(catId, dept) {
+    const spec = territoryMetricCategoryById(catId);
+    if (spec && spec.workTabIds && spec.workTabIds.length) return spec.workTabIds.slice();
+    return metricTabsForDept(dept || (spec && spec.departmentId) || "office").map(function (t) { return t.id; });
+}
+
+function repairTerritoryMetricHubAssignment(it) {
+    if (!it || !it.id || metricDepartmentId(it) === "shop") return;
+    if (canonicalMetricId(it.id) === METRIC_RETURNS_COUNT_ID) return;
+    const nameKey = typeof shopMetricNameKey === "function" ? shopMetricNameKey(it.name) : String(it.name || "").toLowerCase();
+    if (nameKey === "тест офис") {
+        it.department_id = "office";
+        it.territory_category = "office";
+        it.work_tab_ids = ["main"];
+        normalizeMetricCatalogItemTabs(it);
+        return;
+    }
+    if (nameKey === "тест склад") {
+        it.department_id = "warehouse";
+        it.territory_category = "warehouse";
+        it.work_tab_ids = ["loaders", "pickers", "managers"];
+        normalizeMetricCatalogItemTabs(it);
+        return;
+    }
+    if (nameKey === "тест опт") {
+        it.department_id = "drivers";
+        it.territory_category = "sales_opt";
+        it.work_tab_ids = ["sales"];
+        normalizeMetricCatalogItemTabs(it);
+        return;
+    }
+    if (nameKey === "тест розница") {
+        it.department_id = "warehouse";
+        it.territory_category = "sales_retail";
+        it.work_tab_ids = ["cashiers"];
+        normalizeMetricCatalogItemTabs(it);
+        return;
+    }
+    const dept = metricDepartmentId(it);
+    const tabs = metricWorkTabIds(it);
+    let cat = String(it.territory_category || "");
+    if (!territoryMetricCategoryById(cat) || cat === "returns") cat = "";
+    if (dept === "warehouse") {
+        const ops = tabs.filter(function (t) { return t !== "cashiers"; });
+        if (cat === "warehouse" || (ops.length && cat !== "sales_retail")) {
+            it.territory_category = "warehouse";
+            it.department_id = "warehouse";
+            it.work_tab_ids = ops.length ? ops : ["loaders", "pickers", "managers"];
+            it.work_tab_ids = it.work_tab_ids.filter(function (t) { return t !== "cashiers"; });
+        } else {
+            it.territory_category = "sales_retail";
+            it.department_id = "warehouse";
+            it.work_tab_ids = ["cashiers"];
+        }
+    } else if (dept === "drivers") {
+        const hasSales = tabs.indexOf("sales") !== -1;
+        const hasDrivers = tabs.indexOf("drivers") !== -1;
+        if (cat === "sales_opt" || (hasSales && !hasDrivers)) {
+            it.territory_category = "sales_opt";
+            it.work_tab_ids = ["sales"];
+        } else if (cat === "drivers" || (hasDrivers && !hasSales) || !cat) {
+            it.territory_category = "drivers";
+            it.work_tab_ids = hasDrivers ? ["drivers"] : ["drivers"];
+        }
+    } else if (dept === "office" && cat !== "common") {
+        it.territory_category = "office";
+        it.work_tab_ids = ["main"];
+    } else if (!cat) {
+        it.territory_category = inferTerritoryMetricCategory(it);
+    }
+    normalizeMetricCatalogItemTabs(it);
 }
 
 function migrateTerritoryMetricCategories() {
@@ -9658,10 +9728,21 @@ function migrateTerritoryMetricCategories() {
     list.forEach(function (it) {
         if (!it || !it.id) return;
         if (metricDepartmentId(it) === "shop") return;
-        if (it.territory_category && territoryMetricCategoryById(it.territory_category)
-            && it.territory_category !== "returns") return;
-        it.territory_category = inferTerritoryMetricCategory(it);
+        repairTerritoryMetricHubAssignment(it);
+        if (!it.territory_category || !territoryMetricCategoryById(it.territory_category)
+            || it.territory_category === "returns") {
+            it.territory_category = inferTerritoryMetricCategory(it);
+        }
+        normalizeMetricCatalogItemTabs(it);
     });
+}
+
+function metricBelongsToTerritoryHub(item, spec) {
+    if (!item || !spec || !shopCatalogItemShownInUi(item)) return false;
+    if (metricDepartmentId(item) === "shop") return false;
+    const cat = metricTerritoryCategory(item);
+    if (spec.allTerritory) return cat === "common";
+    return cat === spec.id;
 }
 
 function metricTerritoryCategory(item) {
@@ -19844,10 +19925,20 @@ function refreshMetricCatalogTabOptions(selectedTabs, scopes) {
     const box = document.getElementById("mcTabsBox");
     if (!deptEl || !box) return;
     const dept = deptEl.value || catalogDeptContext();
-    const tabs = metricTabsForDept(dept);
+    const cat = String((document.getElementById("mcCategory") || {}).value || "");
+    const spec = cat ? territoryMetricCategoryById(cat) : null;
+    let tabs = metricTabsForDept(dept);
+    if (spec && spec.workTabIds && spec.workTabIds.length) {
+        const allow = spec.workTabIds;
+        tabs = tabs.filter(function (t) { return allow.indexOf(t.id) !== -1; });
+    }
     const chosen = {};
     (selectedTabs || []).forEach(function (id) { chosen[id] = true; });
-    if (!Object.keys(chosen).length) chosen[defaultMetricTabId(dept)] = true;
+    if (!Object.keys(chosen).length) {
+        (spec && spec.workTabIds && spec.workTabIds.length ? spec.workTabIds : [defaultMetricTabId(dept)]).forEach(function (id) {
+            chosen[id] = true;
+        });
+    }
     const scopeMap = scopes && typeof scopes === "object" ? scopes : {};
     box.innerHTML = '<div class="mc-tab-head"><span>Вкладка</span><span>Сотрудники</span></div>'
         + tabs.map(function (t) {
@@ -20204,15 +20295,11 @@ function saveMetricCatalogForm(id, dupIgnore) {
     const spec = cat ? territoryMetricCategoryById(cat) : null;
     if (spec && spec.departmentId) {
         dept = spec.departmentId;
-        const allowed = metricTabsForDept(dept).map(function (t) { return t.id; });
+        const allowed = workTabsAllowedForTerritoryCategory(cat, dept);
         if (tabIds.length) {
             tabIds = tabIds.filter(function (t) { return allowed.indexOf(t) !== -1; });
         }
-        if (!tabIds.length) {
-            tabIds = (spec.workTabIds && spec.workTabIds.length)
-                ? spec.workTabIds.slice()
-                : defaultWorkTabsForDept(dept);
-        }
+        if (!tabIds.length) tabIds = allowed.slice();
     } else if (spec && spec.allTerritory && (!dept || dept === "shop")) {
         dept = "office";
     }
@@ -20318,6 +20405,12 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     item.work_tab_ids = tabIds.slice();
     normalizeMetricCatalogItemTabs(item);
+    if (item.territory_category && item.territory_category !== "common" && item.territory_category !== "returns") {
+        const allowTabs = workTabsAllowedForTerritoryCategory(item.territory_category, metricDepartmentId(item));
+        item.work_tab_ids = metricWorkTabIds(item).filter(function (t) { return allowTabs.indexOf(t) !== -1; });
+        if (!item.work_tab_ids.length) item.work_tab_ids = allowTabs.slice();
+        normalizeMetricCatalogItemTabs(item);
+    }
     item.structure_type = structure;
     if (structure === "with_submetrics") {
         const nextSubs = collectMetricCatalogSubmetrics(item.submetrics);
@@ -20426,10 +20519,22 @@ function deptMetricFields(deptCode, tabId) {
     shopMetricCatalogItems().filter(function (it) {
         if (!it || !shopCatalogItemShownInUi(it)) return false;
         if (metricDepartmentId(it) === "shop") return false;
-        if (metricDepartmentId(it) === deptCode && metricShowsOnTab(it, tab)) return true;
-        if (metricTerritoryCategory(it) === "common") {
+        const cat = metricTerritoryCategory(it);
+        if (cat === "common") {
             return workMetricPeopleForTab(deptCode, it.id, tab).length > 0;
         }
+        if (deptCode === "warehouse") {
+            if (tab === "cashiers") return cat === "sales_retail" && metricShowsOnTab(it, tab);
+            return cat === "warehouse" && metricShowsOnTab(it, tab);
+        }
+        if (deptCode === "drivers") {
+            if (tab === "sales") return cat === "sales_opt" && metricShowsOnTab(it, tab);
+            if (tab === "drivers") return cat === "drivers" && metricShowsOnTab(it, tab);
+        }
+        if (deptCode === "office") {
+            return cat === "office" && metricShowsOnTab(it, tab);
+        }
+        if (metricDepartmentId(it) === deptCode && metricShowsOnTab(it, tab)) return true;
         return false;
     }).sort(function (a, b) {
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
@@ -20751,12 +20856,7 @@ function territoryHubFields(spec) {
     const seen = {};
     const catId = spec && spec.id;
     shopMetricCatalogItems().filter(function (it) {
-        if (!it || !shopCatalogItemShownInUi(it)) return false;
-        if (metricDepartmentId(it) === "shop") return false;
-        if (spec && spec.allTerritory) return metricTerritoryCategory(it) === "common";
-        if (isTerritoryMetricsMode()) return metricTerritoryCategory(it) === catId;
-        if (spec && spec.departmentId) return metricDepartmentId(it) === spec.departmentId;
-        return metricTerritoryCategory(it) === catId;
+        return metricBelongsToTerritoryHub(it, spec);
     }).sort(function (a, b) {
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     }).forEach(function (it) {
@@ -20808,32 +20908,39 @@ function territoryHubPeople(spec, metricId) {
     return list;
 }
 
+function syncTerritoryMetricsHubNav(id) {
+    const hub = String(id || "");
+    document.querySelectorAll(".nav-btn[data-hub]").forEach(function (btn) {
+        const visible = btn.style.display !== "none";
+        btn.classList.toggle("active", visible && btn.getAttribute("data-hub") === hub);
+    });
+    document.querySelectorAll("#territoryMetricsHubTabs .metrics-tab").forEach(function (btn) {
+        btn.classList.toggle("active", btn.getAttribute("data-hub") === hub);
+    });
+}
+
 function setTerritoryMetricsHub(id) {
     if (id === "returns") {
         territoryMetricsHubId = "returns";
         saveSession();
         if (currentSection !== "territoryReturns") showSection("territoryReturns");
         else if (typeof renderTerritoryReturns === "function") renderTerritoryReturns();
-        document.querySelectorAll(".nav-btn[data-hub]").forEach(function (btn) {
-            const visible = btn.style.display !== "none";
-            btn.classList.toggle("active", visible && btn.getAttribute("data-hub") === "returns");
-        });
+        syncTerritoryMetricsHubNav("returns");
         return;
     }
     if (!TERRITORY_METRICS_HUB.some(function (s) { return s.id === id; })) return;
     if (!isTerritoryMetricsMode()) {
         const code = workspace() && workspace().code;
-        if (isGenericMetricsDept(code)) id = code;
-        else return;
+        if (!isGenericMetricsDept(code)) return;
+        if (id !== code && !(id === "sales_retail" && code === "warehouse") && !(id === "sales_opt" && code === "drivers")) {
+            id = code;
+        }
     }
     territoryMetricsHubId = id;
     saveSession();
-    if (currentSection !== "territoryMetrics") showSection("territoryMetrics");
-    else renderTerritoryMetrics();
-    document.querySelectorAll(".nav-btn[data-hub]").forEach(function (btn) {
-        const visible = btn.style.display !== "none";
-        btn.classList.toggle("active", visible && btn.getAttribute("data-hub") === id);
-    });
+    currentSection = "territoryMetrics";
+    showSection("territoryMetrics");
+    syncTerritoryMetricsHubNav(id);
 }
 
 function renderTerritoryMetricsHubTabs() {
@@ -20848,7 +20955,7 @@ function renderTerritoryMetricsHubTabs() {
     const current = currentTerritoryMetricsHub();
     host.innerHTML = TERRITORY_METRICS_HUB.map(function (spec) {
         return '<button type="button" class="metrics-tab' + (spec.id === current.id ? " active" : "")
-            + '" onclick="setTerritoryMetricsHub(\'' + spec.id + '\')">'
+            + '" data-hub="' + spec.id + '" onclick="setTerritoryMetricsHub(\'' + spec.id + '\')">'
             + escapeHtml(spec.label) + "</button>";
     }).join("");
 }
