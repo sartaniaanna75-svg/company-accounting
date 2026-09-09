@@ -3380,6 +3380,19 @@
         .cr-ana table { width: 100%; font-size: 12px; border-collapse: collapse; background: #fff; }
         .cr-ana th, .cr-ana td { padding: 4px 6px; border-bottom: 1px solid #eef2f7; text-align: left; }
         tr.cr-extra-date td { background: #fffbeb; font-weight: 700; color: #92400e; position: sticky; left: 0; }
+        .cr-cash { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; min-height: 28px; }
+        .cr-cash label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #0f172a; font-weight: 600; cursor: pointer; }
+        .cr-cash input { width: 16px; height: 16px; margin: 0; }
+        .cr-done-cell { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; min-width: 132px; }
+        .cr-done-cell input[type="date"] { max-width: 140px; }
+        .cr-ana-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 0 0 8px; }
+        .cr-ana-toolbar label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+        .cr-ana-role { margin: 0 0 12px; }
+        .cr-ana-role h3 { margin: 0 0 6px; font-size: 14px; }
+        .cr-ana-emp { cursor: pointer; }
+        .cr-ana-emp:hover { background: #f8fafc; }
+        .cr-ana-detail td { background: #f8fafc; font-size: 11px; }
+        tr.cr-hist { background: #f8fafc; }
         @media (max-width: 1000px) {
             .cr-stats, .cr-queues, .cr-ana, .cr-form { grid-template-columns: 1fr; }
         }
@@ -27880,7 +27893,11 @@ const CR_ADJ_DEFAULTS = [
     { adjustment_id: "adj_extra", code: "extra", name: "Лишний товар", sort_order: 210 }
 ];
 
-let crUi = { tab: "all", author: "", driver: "", picker: "", adj: "", result: "", q: "", month: "" };
+let crUi = {
+    tab: "all", author: "", driver: "", picker: "", adj: "", result: "", q: "", month: "",
+    driverView: "all", giveView: "all", rebillView: "all",
+    anaRole: "", anaEmp: "", anaType: "", anaOpen: ""
+};
 let crDraftLines = [];
 let crDraftSeq = 1;
 
@@ -27935,6 +27952,14 @@ function crNormalizeItem(it) {
     if (it.client_ext_id == null) it.client_ext_id = "";
     if (it.return_to_client_date == null) it.return_to_client_date = "";
     if (it.recount_result == null) it.recount_result = "";
+    if (it.recount_result_at == null) it.recount_result_at = "";
+    if (it.recount_result_by_user_id == null) it.recount_result_by_user_id = "";
+    if (it.cashier_code == null) it.cashier_code = "";
+    if (it.found_at_client == null) it.found_at_client = false;
+    if (it.found_at_client_at == null) it.found_at_client_at = "";
+    if (it.found_at_client_by_user_id == null) it.found_at_client_by_user_id = "";
+    if (it.rebilled_date == null) it.rebilled_date = it.rebilled_at ? String(it.rebilled_at).slice(0, 10) : "";
+    if (it.given_date == null) it.given_date = it.return_to_client_date || (it.given_at ? String(it.given_at).slice(0, 10) : "");
     if (it.adjustment_id == null) it.adjustment_id = "";
     if (it.invoice_no == null) it.invoice_no = "";
     if (it.invoice_ext_id == null) it.invoice_ext_id = "";
@@ -28031,22 +28056,31 @@ function crIsDriverAdj(it) {
 
 function crIsRecountAdj(it) {
     const c = crAdjCode(it.adjustment_id);
-    return c === "none" || c === "recount" || !it.adjustment_id;
+    return c === "none" || c === "recount" || c === "strike" || !it.adjustment_id;
+}
+
+function crIsDriverCase(it) {
+    if (!it || crIsExtraAdj(it)) return false;
+    if (crIsDriverAdj(it)) return true;
+    if (it.recount_result === "driver") return true;
+    if (it.charged_to_driver || it.found_at_client) return true;
+    return false;
 }
 
 function crActiveQueue(it) {
     if (!it || it.is_deleted) return "";
     if (crIsExtraAdj(it)) return "";
-    if (crIsDriverAdj(it) && !it.charged_to_driver) return "driver";
+    if (crIsDriverCase(it) && !it.charged_to_driver && !it.found_at_client) return "driver";
     if (it.recount_result === "give" && !it.given_to_client) return "give";
     if (it.recount_result === "rebill" && !it.rebilled) return "rebill";
-    if (!it.recount_result || it.recount_result === "pending") return "recount";
-    if (crIsRecountAdj(it) && it.recount_result !== "give" && it.recount_result !== "rebill") return "recount";
+    if (crIsRecountAdj(it) && (!it.recount_result || it.recount_result === "pending")) return "recount";
     return "";
 }
 
 function crStatusText(it) {
     if (crIsExtraAdj(it)) return { cls: "adj", text: "Лишний товар" };
+    if (it.recount_result === "refuse") return { cls: "adj", text: "Отказ" };
+    if (it.found_at_client) return { cls: "done", text: "Нашли у клиента" };
     if (it.charged_to_driver) return { cls: "done", text: "Пробито на водителя" };
     if (it.given_to_client) return { cls: "done", text: "Отдано клиенту" };
     if (it.rebilled) return { cls: "done", text: "Перебито" };
@@ -28200,7 +28234,41 @@ function crFiltered() {
 }
 
 function crQueueList(queue) {
+    if (queue === "give") return crGiveJournal().filter(function (it) { return !it.given_to_client; });
+    if (queue === "rebill") return crRebillJournal().filter(function (it) { return !it.rebilled; });
+    if (queue === "driver") return crDriverJournal().filter(function (it) { return !it.charged_to_driver && !it.found_at_client; });
     return crFiltered().filter(function (it) { return crActiveQueue(it) === queue; });
+}
+
+function crGiveJournal() {
+    return crFiltered().filter(function (it) {
+        return !crIsExtraAdj(it) && it.recount_result === "give";
+    });
+}
+
+function crRebillJournal() {
+    return crFiltered().filter(function (it) {
+        return !crIsExtraAdj(it) && it.recount_result === "rebill";
+    });
+}
+
+function crDriverJournal() {
+    return crFiltered().filter(function (it) { return crIsDriverCase(it); });
+}
+
+function crViewFilter(list, view, doneFn) {
+    if (view === "open") return list.filter(function (it) { return !doneFn(it); });
+    if (view === "done") return list.filter(doneFn);
+    return list;
+}
+
+function crDriverJournalView() {
+    const list = crDriverJournal();
+    const v = crUi.driverView || "all";
+    if (v === "open") return list.filter(function (it) { return !it.charged_to_driver && !it.found_at_client; });
+    if (v === "charged") return list.filter(function (it) { return !!it.charged_to_driver; });
+    if (v === "found") return list.filter(function (it) { return !!it.found_at_client; });
+    return list;
 }
 
 function crExtraList() {
@@ -28274,6 +28342,13 @@ function crResetFilters() {
     crUi.adj = "";
     crUi.result = "";
     crUi.q = "";
+    crUi.driverView = "all";
+    crUi.giveView = "all";
+    crUi.rebillView = "all";
+    crUi.anaRole = "";
+    crUi.anaEmp = "";
+    crUi.anaType = "";
+    crUi.anaOpen = "";
     crUi.month = selectedMonth || currentMonthValue();
     renderTerritoryReturns();
 }
@@ -28307,9 +28382,12 @@ function renderTerritoryReturns() {
     if (!crUi.month) crUi.month = selectedMonth || currentMonthValue();
     const all = crFiltered();
     const qRecount = crQueueList("recount");
-    const qGive = crQueueList("give");
-    const qRebill = crQueueList("rebill");
-    const qDriver = crQueueList("driver");
+    const jGive = crGiveJournal();
+    const jRebill = crRebillJournal();
+    const jDriver = crDriverJournal();
+    const qGive = crViewFilter(jGive, crUi.giveView, function (it) { return !!it.given_to_client; });
+    const qRebill = crViewFilter(jRebill, crUi.rebillView, function (it) { return !!it.rebilled; });
+    const qDriver = crDriverJournalView();
     const qExtra = crExtraList();
     const pageTitle = document.getElementById("pageTitle");
     if (pageTitle) pageTitle.textContent = "Возвраты по покупателям";
@@ -28333,9 +28411,9 @@ function renderTerritoryReturns() {
     }
     html += tabBtn("all", "Все возвраты", all.length);
     html += tabBtn("recount", "На пересчёт", qRecount.length);
-    html += tabBtn("give", "Отдать", qGive.length);
-    html += tabBtn("rebill", "Перебить", qRebill.length);
-    html += tabBtn("driver", "На водителя", qDriver.length);
+    html += tabBtn("give", "Отдать", jGive.length);
+    html += tabBtn("rebill", "Перебить", jRebill.length);
+    html += tabBtn("driver", "На водителя", jDriver.length);
     html += tabBtn("extra", "Лишний товар", qExtra.length);
     html += tabBtn("analytics", "Аналитика");
     html += "</div>";
@@ -28343,22 +28421,46 @@ function renderTerritoryReturns() {
     html += '<div class="cr-filters">'
         + '<label>Период<input type="month" value="' + escapeAttribute(crUi.month) + '" onchange="crOnFilter(\'month\',this)"></label>'
         + '<label>Водитель<select onchange="crOnFilter(\'driver\',this)">' + crEmpOptions(crUi.driver, "driver") + "</select></label>";
-    if (crUi.tab !== "extra") {
+    if (crUi.tab !== "extra" && crUi.tab !== "analytics") {
         html += '<label>Автор продаж<select onchange="crOnFilter(\'author\',this)">' + crEmpOptions(crUi.author, "author") + "</select></label>"
             + '<label>Товаросборщик<select onchange="crOnFilter(\'picker\',this)">' + crEmpOptions(crUi.picker, "picker") + "</select></label>"
             + '<label>Корректировка<select onchange="crOnFilter(\'adj\',this)">' + crAdjOptions(crUi.adj) + "</select></label>"
             + '<label>Результат пересчёта<select onchange="crOnFilter(\'result\',this)">'
             + '<option value="">Все</option>'
-            + '<option value="pending"' + (crUi.result === "pending" ? " selected" : "") + ">— выбрать —</option>"
+            + '<option value="pending"' + (crUi.result === "pending" ? " selected" : "") + ">Без результата</option>"
             + '<option value="give"' + (crUi.result === "give" ? " selected" : "") + ">Отдать</option>"
             + '<option value="rebill"' + (crUi.result === "rebill" ? " selected" : "") + ">Перебить</option>"
+            + '<option value="refuse"' + (crUi.result === "refuse" ? " selected" : "") + ">Отказ</option>"
+            + '<option value="driver"' + (crUi.result === "driver" ? " selected" : "") + ">Водитель</option>"
             + "</select></label>"
             + '<label>Поиск<input type="search" placeholder="Поиск по товару, клиенту, накладной..." value="'
             + escapeAttribute(crUi.q) + '" oninput="crOnFilter(\'q\',this)"></label>';
     }
+    if (crUi.tab === "give") {
+        html += '<label>Показ<select onchange="crOnFilter(\'giveView\',this)">'
+            + '<option value="all"' + (crUi.giveView === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="open"' + (crUi.giveView === "open" ? " selected" : "") + ">Не выполнено</option>"
+            + '<option value="done"' + (crUi.giveView === "done" ? " selected" : "") + ">Выполнено</option>"
+            + "</select></label>";
+    }
+    if (crUi.tab === "rebill") {
+        html += '<label>Показ<select onchange="crOnFilter(\'rebillView\',this)">'
+            + '<option value="all"' + (crUi.rebillView === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="open"' + (crUi.rebillView === "open" ? " selected" : "") + ">Не выполнено</option>"
+            + '<option value="done"' + (crUi.rebillView === "done" ? " selected" : "") + ">Выполнено</option>"
+            + "</select></label>";
+    }
+    if (crUi.tab === "driver") {
+        html += '<label>Показ<select onchange="crOnFilter(\'driverView\',this)">'
+            + '<option value="all"' + (crUi.driverView === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="open"' + (crUi.driverView === "open" ? " selected" : "") + ">Не обработано</option>"
+            + '<option value="charged"' + (crUi.driverView === "charged" ? " selected" : "") + ">Пробито</option>"
+            + '<option value="found"' + (crUi.driverView === "found" ? " selected" : "") + ">Нашли у клиента</option>"
+            + "</select></label>";
+    }
     html += '<button type="button" class="btn" onclick="crResetFilters()">Сбросить фильтры</button></div>';
 
-    if (crUi.tab === "analytics") html += crRenderAnalytics(all, qRecount, qGive, qRebill, qDriver);
+    if (crUi.tab === "analytics") html += crRenderAnalytics(all, qRecount, jGive, jRebill, jDriver);
     else if (crUi.tab === "all") html += crRenderAllTable(all);
     else if (crUi.tab === "recount") html += crRenderRecountCopyBar(qRecount) + crRenderQueueTable("recount", qRecount);
     else if (crUi.tab === "give") html += crRenderQueueTable("give", qGive);
@@ -28467,34 +28569,67 @@ function crToggleDriver(id, on) {
         it.charged_at = stamp.now;
         it.charged_by_user_id = stamp.uid;
         crPushHistory(it, "charged_to_driver", "");
+        crRefreshCompleted(it);
         saveApp();
         renderTerritoryReturns();
-        toast("Отмечено: пробито на водителя.");
+        toast("Отмечено: пробито на водителя. Позиция осталась в «На водителя».");
         return;
     }
     it.charged_to_driver = false;
     it.charged_at = "";
     it.charged_by_user_id = "";
-    it.completed = false;
-    it.completed_at = "";
-    it.completed_by_user_id = "";
+    crRefreshCompleted(it);
     crPushHistory(it, "uncharged_to_driver", "");
     saveApp();
     renderTerritoryReturns();
     toast("Снято: пробито на водителя.");
 }
 
+function crCashierLabel(code) {
+    if (code === "cash2") return "Касса 2";
+    if (code === "cash3") return "Касса 3";
+    return "";
+}
+
+function crCashierRadios(selected, name, onchange) {
+    const v = String(selected || "");
+    return '<div class="cr-cash">'
+        + '<label><input type="radio" name="' + name + '" value=""' + (!v ? " checked" : "")
+        + (onchange ? ' onchange="' + onchange + '"' : "") + "><span>Не указана</span></label>"
+        + '<label><input type="radio" name="' + name + '" value="cash2"' + (v === "cash2" ? " checked" : "")
+        + (onchange ? ' onchange="' + onchange + '"' : "") + "><span>Касса 2</span></label>"
+        + '<label><input type="radio" name="' + name + '" value="cash3"' + (v === "cash3" ? " checked" : "")
+        + (onchange ? ' onchange="' + onchange + '"' : "") + "><span>Касса 3</span></label>"
+        + "</div>";
+}
+
+function crSetCashier(id, value) {
+    const it = crFind(id);
+    if (!it || !crHasFullEdit()) return;
+    it.cashier_code = value === "cash2" || value === "cash3" ? value : "";
+    crPushHistory(it, "cashier", crCashierLabel(it.cashier_code) || "не указана");
+    saveApp();
+    renderTerritoryReturns();
+}
+
+function crTodayIso() {
+    const d = new Date();
+    const m = d.getMonth() + 1;
+    const day = d.getDate();
+    return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
+}
+
 function crResultSelect(it, can) {
     const v = it.recount_result || "";
-    if (!can) {
-        const label = v === "give" ? "Отдать" : v === "rebill" ? "Перебить" : "— выбрать —";
-        const cls = v === "give" ? "give" : v === "rebill" ? "rebill" : "recount";
-        return crPill(cls, label);
-    }
+    const label = v === "give" ? "Отдать" : v === "rebill" ? "Перебить" : v === "refuse" ? "Отказ" : v === "driver" ? "Водитель" : "— выбрать —";
+    const cls = v === "give" ? "give" : v === "rebill" ? "rebill" : v === "driver" ? "driver" : "recount";
+    if (!can) return crPill(cls, label);
     return '<select onchange="crSetRecount(\'' + it.return_id + '\',this.value)">'
         + '<option value=""' + (!v || v === "pending" ? " selected" : "") + ">— выбрать —</option>"
         + '<option value="give"' + (v === "give" ? " selected" : "") + ">Отдать</option>"
         + '<option value="rebill"' + (v === "rebill" ? " selected" : "") + ">Перебить</option>"
+        + '<option value="refuse"' + (v === "refuse" ? " selected" : "") + ">Отказ</option>"
+        + '<option value="driver"' + (v === "driver" ? " selected" : "") + ">Водитель</option>"
         + "</select>";
 }
 
@@ -28515,6 +28650,7 @@ function crRenderAllTable(list) {
             + "<td>" + crPill("emp", crEmpShort(it.sales_author_employee_id) || "—") + "</td>"
             + "<td>" + crPill("emp", crEmpShort(it.driver_employee_id) || "—") + "</td>"
             + "<td>" + (it.vehicle_id ? '<span style="color:#2563eb">' + escapeHtml(crVehiclePlate(it.vehicle_id)) + "</span>" : "—") + "</td>"
+            + "<td>" + (can ? crCashierRadios(it.cashier_code, "crCash" + it.return_id, "crSetCashier('" + it.return_id + "',this.value)") : escapeHtml(crCashierLabel(it.cashier_code) || "—")) + "</td>"
             + "<td>" + (it.extra_on_register ? "✓" : "") + "</td>"
             + '<td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td>"
             + '<td class="cr-num">' + money2(it.amount) + "</td>"
@@ -28534,14 +28670,14 @@ function crRenderAllTable(list) {
             + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
             + "</td></tr>";
     });
-    if (!body) body = '<tr><td colspan="20"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
+    if (!body) body = '<tr><td colspan="21"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
     return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>№</th><th>Неделя</th><th>Дата</th><th>Автор продаж</th><th>Водитель</th><th>№ авто</th>"
-        + "<th>Лишний товар</th><th>Товар</th><th>Сумма</th><th>Кол-во</th><th>Клиент</th>"
+        + "<th>Касса</th><th>Лишний товар</th><th>Товар</th><th>Сумма</th><th>Кол-во</th><th>Клиент</th>"
         + "<th>Дата возврата клиенту</th><th>Результат пересчёта</th><th>Корректировка</th>"
         + "<th>№ заявки/накладной</th><th>Товаросборщик</th><th>Комментарий</th><th>Статус</th><th></th>"
-        + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr><td colspan=\"8\">Всего записей: " + list.length
-        + "</td><td>" + money2(crSum(list)) + "</td><td>" + crQty(list) + "</td><td colspan=\"9\"></td></tr></tfoot></table></div>";
+        + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr><td colspan=\"9\">Всего записей: " + list.length
+        + "</td><td>" + money2(crSum(list)) + "</td><td>" + crQty(list) + "</td><td colspan=\"10\"></td></tr></tfoot></table></div>";
 }
 
 function crRenderQueueTable(tab, list) {
@@ -28562,31 +28698,43 @@ function crRenderQueueTable(tab, list) {
                 + crResultSelect(it, can) + "</td></tr>";
         });
     } else if (tab === "give") {
-        cols = "<th>Дата</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Автор продаж</th><th>Комментарий</th><th></th>";
+        cols = "<th>Дата</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Автор продаж</th><th>Комментарий</th><th>Выполнено</th><th>Дата выполнения</th>";
         list.forEach(function (it) {
-            body += '<tr class="cr-row-give"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
+            const done = !!it.given_to_client;
+            const dt = it.return_to_client_date || it.given_date || "";
+            body += '<tr class="cr-row-give' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name) + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || ""))
                 + '</td><td class="cr-num">' + money2(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + escapeHtml(crEmpShort(it.sales_author_employee_id))
-                + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment) + '</td><td class="cr-act">';
-            if (can) body += '<button type="button" class="btn btn-primary btn-small" onclick="crMarkGive(\'' + it.return_id + '\')">Отдано клиенту ✓</button>';
-            body += "</td></tr>";
+                + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment)
+                + '</td><td><label class="cr-check-lab">Выполнено<button type="button" class="cr-check' + (done ? " on" : "") + '"'
+                + (can ? ' onclick="crToggleGive(\'' + it.return_id + '\',' + (done ? "false" : "true") + ')"' : " disabled") + ">"
+                + (done ? "✓" : "") + "</button></label></td>"
+                + '<td><input type="date" value="' + escapeAttribute(dt) + '"'
+                + (can ? ' onchange="crSetGiveDate(\'' + it.return_id + '\',this.value)"' : " disabled") + "></td></tr>";
         });
     } else if (tab === "rebill") {
-        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th></th>";
+        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th>Выполнено</th><th>Дата выполнения</th>";
         list.forEach(function (it) {
-            body += '<tr class="cr-row-rebill"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
+            const done = !!it.rebilled;
+            const dt = it.rebilled_date || (it.rebilled_at ? String(it.rebilled_at).slice(0, 10) : "");
+            body += '<tr class="cr-row-rebill' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
                 + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || "")) + '</td><td class="cr-num">' + money2(it.amount)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + crPill("adj", crAdjName(it.adjustment_id) || "—")
-                + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment) + '</td><td class="cr-act">';
-            if (can) body += '<button type="button" class="btn btn-primary btn-small" onclick="crMarkRebill(\'' + it.return_id + '\')">Перебито ✓</button>';
-            body += "</td></tr>";
+                + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment)
+                + '</td><td><label class="cr-check-lab">Выполнено<button type="button" class="cr-check' + (done ? " on" : "") + '"'
+                + (can ? ' onclick="crToggleRebill(\'' + it.return_id + '\',' + (done ? "false" : "true") + ')"' : " disabled") + ">"
+                + (done ? "✓" : "") + "</button></label></td>"
+                + '<td><input type="date" value="' + escapeAttribute(dt) + '"'
+                + (can ? ' onchange="crSetRebillDate(\'' + it.return_id + '\',this.value)"' : " disabled") + "></td></tr>";
         });
     } else {
-        cols = "<th>Дата</th><th>Водитель</th><th>№ авто</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th>Пробито</th>";
+        cols = "<th>Дата</th><th>Водитель</th><th>№ авто</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th>Пробито</th><th>Товар нашли у клиента</th>";
         list.forEach(function (it) {
-            body += '<tr class="cr-row-driver"><td>' + escapeHtml(crFmtDate(it.date)) + "</td><td>" + escapeHtml(crEmpName(it.driver_employee_id))
+            const found = !!it.found_at_client;
+            body += '<tr class="cr-row-driver' + (it.charged_to_driver || found ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + "</td><td>"
+                + escapeHtml(crEmpName(it.driver_employee_id) || "—")
                 + "</td><td>" + escapeHtml(crVehiclePlate(it.vehicle_id))
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
@@ -28594,7 +28742,10 @@ function crRenderQueueTable(tab, list) {
                 + '</td><td class="cr-num">' + money2(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + crPill("driver", crAdjName(it.adjustment_id) || "ВОДИТЕЛЬ")
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment)
-                + "</td><td>" + crDriverCheck(it, can) + "</td></tr>";
+                + "</td><td>" + crDriverCheck(it, can)
+                + '</td><td><label class="cr-check-lab">Нашли у клиента<button type="button" class="cr-check' + (found ? " on" : "") + '"'
+                + (can ? ' onclick="crToggleFoundClient(\'' + it.return_id + '\',' + (found ? "false" : "true") + ')"' : " disabled") + ">"
+                + (found ? "✓" : "") + "</button></label></td></tr>";
         });
     }
     if (!body) body = '<tr><td colspan="12"><div class="empty-row">Очередь пуста.</div></td></tr>';
@@ -28622,32 +28773,188 @@ function crAnaTable(title, rows) {
         + body + "</tbody></table></div>";
 }
 
+function crRoleLabel(role) {
+    if (role === "author") return "Торговый представитель";
+    if (role === "driver") return "Водитель";
+    if (role === "picker") return "Товаросборщик";
+    return "Не определён";
+}
+
+function crResultLabel(value) {
+    if (value === "give") return "Отдать";
+    if (value === "rebill") return "Перебить";
+    if (value === "refuse") return "Отказ";
+    if (value === "driver") return "Водитель";
+    return "";
+}
+
+function crErrorKind(it) {
+    if (!it || it.is_deleted || crIsExtraAdj(it)) return null;
+    const code = crAdjCode(it.adjustment_id);
+    const res = it.recount_result || "";
+    if (crIsRecountAdj(it) && (!res || res === "pending")) return null;
+    const adjName = crAdjName(it.adjustment_id) || "";
+    if (res === "driver" || crIsDriverAdj(it) || it.charged_to_driver) {
+        return {
+            role: "driver",
+            employee_id: it.driver_employee_id || "",
+            type: code || "driver",
+            typeLabel: adjName || "На водителя"
+        };
+    }
+    if (code === "not_put_wh" || code === "mismatch" || code === "not_display" || code === "not_in_wh" || code === "wrong_ship") {
+        return { role: "picker", employee_id: it.picker_employee_id || "", type: code, typeLabel: adjName };
+    }
+    if (code === "not_order" || code === "not_fixed" || code === "sales_error" || code === "terms") {
+        return { role: "author", employee_id: it.sales_author_employee_id || "", type: code, typeLabel: adjName };
+    }
+    if (res === "refuse") {
+        return { role: "unknown", employee_id: "", type: code || "refuse", typeLabel: adjName ? adjName + " / Отказ" : "Отказ" };
+    }
+    if (!code) return null;
+    return { role: "unknown", employee_id: "", type: code, typeLabel: adjName };
+}
+
+function crErrorRows(list) {
+    const out = [];
+    (list || []).forEach(function (it) {
+        const kind = crErrorKind(it);
+        if (!kind) return;
+        const row = {
+            it: it,
+            role: kind.role,
+            employee_id: kind.employee_id,
+            type: kind.type,
+            typeLabel: kind.typeLabel
+        };
+        if ((kind.role === "driver" || kind.role === "picker" || kind.role === "author") && !kind.employee_id) {
+            row.role = "unknown";
+        }
+        out.push(row);
+    });
+    return out;
+}
+
+function crAggErrors(rows) {
+    const map = {};
+    rows.forEach(function (row) {
+        const id = row.employee_id || "";
+        const key = row.role + ":" + id;
+        if (!map[key]) {
+            map[key] = {
+                role: row.role,
+                employee_id: id,
+                errors: 0,
+                qty: 0,
+                sum: 0,
+                items: []
+            };
+        }
+        map[key].errors += 1;
+        map[key].qty += Number(row.it.qty || 0);
+        map[key].sum += Number(row.it.amount || 0);
+        map[key].items.push(row);
+    });
+    return Object.keys(map).map(function (k) { return map[k]; }).sort(function (a, b) {
+        return b.errors - a.errors || b.sum - a.sum;
+    });
+}
+
+function crAnaEmpOptions(rows, selected) {
+    let html = '<option value="">Все</option>';
+    const seen = {};
+    rows.forEach(function (row) {
+        if (!row.employee_id || seen[row.employee_id]) return;
+        seen[row.employee_id] = true;
+        html += '<option value="' + escapeAttribute(row.employee_id) + '"'
+            + (selected === row.employee_id ? " selected" : "") + ">"
+            + escapeHtml(crEmpName(row.employee_id) || row.employee_id) + "</option>";
+    });
+    return html;
+}
+
+function crAnaTypeOptions(rows, selected) {
+    let html = '<option value="">Все</option>';
+    const seen = {};
+    rows.forEach(function (row) {
+        if (!row.type || seen[row.type]) return;
+        seen[row.type] = true;
+        html += '<option value="' + escapeAttribute(row.type) + '"'
+            + (selected === row.type ? " selected" : "") + ">"
+            + escapeHtml(row.typeLabel || row.type) + "</option>";
+    });
+    return html;
+}
+
+function crToggleAnaEmp(id) {
+    crUi.anaOpen = crUi.anaOpen === id ? "" : id;
+    renderTerritoryReturns();
+}
+
+function crRenderAnaRoleBlock(title, role, groups) {
+    const list = groups.filter(function (g) { return g.role === role; });
+    let html = '<div class="cr-ana-role"><h3>' + title + "</h3>";
+    html += '<div class="cr-wrap"><table class="cr-table"><thead><tr>'
+        + "<th>ФИО</th><th>Роль</th><th>Ошибок</th><th>Количество товара</th><th>Сумма ошибок</th>"
+        + "</tr></thead><tbody>";
+    if (!list.length) {
+        html += '<tr><td colspan="5"><div class="empty-row">Нет ошибок за период.</div></td></tr>';
+    }
+    list.forEach(function (g) {
+        const openId = role + ":" + (g.employee_id || "_none");
+        const name = g.employee_id
+            ? crEmpName(g.employee_id)
+            : (role === "unknown" ? "Не определён ответственный" : "Не указан сотрудник");
+        html += '<tr class="cr-ana-emp" onclick="crToggleAnaEmp(\'' + openId + '\')"><td>'
+            + escapeHtml(name) + "</td><td>" + escapeHtml(crRoleLabel(role))
+            + "</td><td>" + g.errors + '</td><td class="cr-qty">' + g.qty
+            + '</td><td class="cr-num">' + money2(g.sum) + "</td></tr>";
+        if (crUi.anaOpen === openId) {
+            html += '<tr class="cr-ana-detail"><td colspan="5"><table class="cr-table"><thead><tr>'
+                + "<th>Дата</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Тип ошибки</th><th>Корректировка</th><th>Результат</th>"
+                + "</tr></thead><tbody>";
+            g.items.forEach(function (row) {
+                const it = row.it;
+                html += "<tr><td>" + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">'
+                    + escapeHtml(it.client_name) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
+                    + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || ""))
+                    + '</td><td class="cr-num">' + money2(it.amount) + "</td><td>"
+                    + escapeHtml(row.typeLabel) + "</td><td>" + escapeHtml(crAdjName(it.adjustment_id) || "—")
+                    + "</td><td>" + escapeHtml(crResultLabel(it.recount_result) || "—") + "</td></tr>";
+            });
+            html += "</tbody></table></td></tr>";
+        }
+    });
+    html += "</tbody></table></div></div>";
+    return html;
+}
+
 function crRenderAnalytics(all, a, b, c, d) {
-    const doneGive = all.filter(function (it) { return it.given_to_client; });
-    const doneRebill = all.filter(function (it) { return it.rebilled; });
-    const doneDriver = all.filter(function (it) { return it.charged_to_driver; });
-    const open = all.filter(function (it) { return !!crActiveQueue(it); });
+    let rows = crErrorRows(all);
+    if (crUi.anaRole) rows = rows.filter(function (r) { return r.role === crUi.anaRole; });
+    if (crUi.anaEmp) rows = rows.filter(function (r) { return r.employee_id === crUi.anaEmp; });
+    if (crUi.anaType) rows = rows.filter(function (r) { return r.type === crUi.anaType; });
+    const groups = crAggErrors(rows);
     let html = crRenderStats(all, a, b, c, d);
-    html += '<div class="note">Факты по возвратам за период: всего, суммы и активные очереди. Штрафы здесь не считаются.</div>';
-    html += '<div class="cr-ana">';
-    html += crAnaTable("По авторам продаж", crCountBy(all, function (it) { return crEmpName(it.sales_author_employee_id); }));
-    html += crAnaTable("По водителям", crCountBy(all, function (it) { return crEmpName(it.driver_employee_id); }));
-    html += crAnaTable("По товаросборщикам", crCountBy(all, function (it) { return crEmpName(it.picker_employee_id); }));
-    html += crAnaTable("По корректировкам", crCountBy(all, function (it) { return crAdjName(it.adjustment_id); }));
-    html += crAnaTable("Итоги очередей", [
-        { k: "Ушло на пересчёт (активно)", n: a.length, sum: crSum(a) },
-        { k: "Отдать (активно)", n: b.length, sum: crSum(b) },
-        { k: "Перебить (активно)", n: c.length, sum: crSum(c) },
-        { k: "На водителя (активно)", n: d.length, sum: crSum(d) },
-        { k: "Отдано клиенту", n: doneGive.length, sum: crSum(doneGive) },
-        { k: "Перебито", n: doneRebill.length, sum: crSum(doneRebill) },
-        { k: "Пробито на водителя", n: doneDriver.length, sum: crSum(doneDriver) },
-        { k: "Ещё не выполнено", n: open.length, sum: crSum(open) }
-    ]);
-    html += "</div>";
+    html += '<div class="note">Ошибки считаются по корректировке и результату на конкретный employee_id. Штрафы здесь не считаются.</div>';
+    html += '<div class="cr-ana-toolbar">'
+        + '<label>Роль<select onchange="crOnFilter(\'anaRole\',this)">'
+        + '<option value="">Все</option>'
+        + '<option value="author"' + (crUi.anaRole === "author" ? " selected" : "") + ">Торговые представители</option>"
+        + '<option value="driver"' + (crUi.anaRole === "driver" ? " selected" : "") + ">Водители</option>"
+        + '<option value="picker"' + (crUi.anaRole === "picker" ? " selected" : "") + ">Товаросборщики</option>"
+        + '<option value="unknown"' + (crUi.anaRole === "unknown" ? " selected" : "") + ">Не определён ответственный</option>"
+        + "</select></label>"
+        + '<label>Сотрудник<select onchange="crOnFilter(\'anaEmp\',this)">' + crAnaEmpOptions(crErrorRows(all), crUi.anaEmp) + "</select></label>"
+        + '<label>Тип ошибки<select onchange="crOnFilter(\'anaType\',this)">' + crAnaTypeOptions(crErrorRows(all), crUi.anaType) + "</select></label>"
+        + "</div>";
+    if (!crUi.anaRole || crUi.anaRole === "author") html += crRenderAnaRoleBlock("Торговые представители", "author", groups);
+    if (!crUi.anaRole || crUi.anaRole === "driver") html += crRenderAnaRoleBlock("Водители", "driver", groups);
+    if (!crUi.anaRole || crUi.anaRole === "picker") html += crRenderAnaRoleBlock("Товаросборщики", "picker", groups);
+    if (!crUi.anaRole || crUi.anaRole === "unknown") html += crRenderAnaRoleBlock("Не определён ответственный", "unknown", groups);
     if (userHasPerm("settings", "edit") || crHasFullEdit()) {
         html += '<div class="card" style="padding:8px;margin-top:8px"><div class="card-title" style="font-size:13px">Справочник корректировок</div>'
-            + '<div class="note">Можно добавить вариант без изменения кода.</div>'
+            + '<div class="note">Можно добавить вариант без изменения кода. Существующие значения не переименовываются.</div>'
             + '<div class="toolbar"><input id="crNewAdjName" placeholder="Новая корректировка" style="max-width:240px">'
             + '<button type="button" class="btn btn-small" onclick="crAddAdjustment()">Добавить</button></div></div>';
         html += '<div class="card" style="padding:8px;margin-top:8px"><div class="card-title" style="font-size:13px">Автомобили</div>'
@@ -29039,6 +29346,7 @@ function crCreateEditorHtml(rec, can) {
         + '<label>Клиент<input id="crClient" value="' + escapeAttribute(rec.client_name || "") + '"></label>'
         + '<label>Автор продаж<select id="crAuthor">' + crEmpOptions(rec.sales_author_employee_id, "author") + "</select></label>"
         + '<label>Водитель<select id="crDriver" onchange="crSyncEditorFields()">' + crEmpOptions(rec.driver_employee_id, "driver") + "</select></label>"
+        + '<div><span style="font-size:11px;color:var(--muted)">Касса</span>' + crCashierRadios(rec.cashier_code, "crCashier") + "</div>"
         + '<label class="cr-if-driver">№ автомобиля<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
         + '<label>№ заявки / реализации<input id="crInvoice" value="' + escapeAttribute(rec.invoice_no || "") + '"></label>'
         + '<label class="cr-sm">Сумма возврата<input id="crAmount" inputmode="decimal" value="' + escapeAttribute(String(rec.amount || "")) + '"></label>'
@@ -29078,6 +29386,7 @@ function crSingleEditorHtml(id, rec, can) {
         + '<label class="cr-sm">Дата<input id="crDate" type="date" value="' + escapeAttribute(rec.date) + '"' + (can ? "" : " disabled") + "></label>"
         + '<label>Автор продаж<select id="crAuthor">' + crEmpOptions(rec.sales_author_employee_id, "author") + "</select></label>"
         + '<label>Водитель<select id="crDriver" onchange="crSyncEditorFields()">' + crEmpOptions(rec.driver_employee_id, "driver") + "</select></label>"
+        + '<div><span style="font-size:11px;color:var(--muted)">Касса</span>' + crCashierRadios(rec.cashier_code, "crCashier") + "</div>"
         + '<label class="cr-if-driver">№ автомобиля<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
         + '<label>№ заявки / накладной<input id="crInvoice" value="' + escapeAttribute(rec.invoice_no) + '"></label>'
         + '<label>Товаросборщик<select id="crPicker">' + crEmpOptions(rec.picker_employee_id, "picker") + "</select></label>"
@@ -29089,6 +29398,8 @@ function crSingleEditorHtml(id, rec, can) {
         + '<option value=""' + (!rec.recount_result || rec.recount_result === "pending" ? " selected" : "") + ">— выбрать —</option>"
         + '<option value="give"' + (rec.recount_result === "give" ? " selected" : "") + ">Отдать</option>"
         + '<option value="rebill"' + (rec.recount_result === "rebill" ? " selected" : "") + ">Перебить</option>"
+        + '<option value="refuse"' + (rec.recount_result === "refuse" ? " selected" : "") + ">Отказ</option>"
+        + '<option value="driver"' + (rec.recount_result === "driver" ? " selected" : "") + ">Водитель</option>"
         + "</select></label>"
         + '<label>Корректировка<select id="crAdj">' + crAdjOptions(rec.adjustment_id) + "</select></label>"
         + '<label>Лишний товар на реестре<select id="crExtra">'
@@ -29145,7 +29456,8 @@ function crSaveCreateBatch() {
         client_name: String((document.getElementById("crClient") || {}).value || "").trim(),
         invoice_no: String((document.getElementById("crInvoice") || {}).value || "").trim(),
         extra_on_register: false,
-        recount_result: ""
+        recount_result: "",
+        cashier_code: crReadCashier()
     };
     lines.forEach(function (line, i) {
         const it = crNormalizeItem({ return_id: crNextReturnId() });
@@ -29154,6 +29466,7 @@ function crSaveCreateBatch() {
         it.sales_author_employee_id = header.sales_author_employee_id;
         it.driver_employee_id = header.driver_employee_id;
         it.vehicle_id = header.vehicle_id;
+        it.cashier_code = header.cashier_code;
         it.picker_employee_id = String(line.picker_employee_id || "");
         it.product_name = String(line.product_name || "").trim();
         it.qty = crParseQty(line.qty, 0);
@@ -29205,6 +29518,7 @@ function crSaveEditor(id) {
     it.return_to_client_date = String((document.getElementById("crBackDate") || {}).value || "");
     it.adjustment_id = String((document.getElementById("crAdj") || {}).value || "");
     it.recount_result = String((document.getElementById("crResult") || {}).value || "");
+    it.cashier_code = crReadCashier();
     it.extra_on_register = String((document.getElementById("crExtra") || {}).value || "") === "1";
     it.comment = String((document.getElementById("crComment") || {}).value || "").trim();
     crPushHistory(it, "updated", crActiveQueue(it) || "saved");
@@ -29214,11 +29528,38 @@ function crSaveEditor(id) {
     toast("Возврат сохранён.");
 }
 
+function crReadCashier() {
+    const el = document.querySelector('#crModal input[name="crCashier"]:checked');
+    const v = el ? String(el.value || "") : "";
+    return v === "cash2" || v === "cash3" ? v : "";
+}
+
+function crRefreshCompleted(it) {
+    it.completed = !!(it.given_to_client || it.rebilled || it.charged_to_driver || it.found_at_client || it.recount_result === "refuse");
+    if (it.completed && !it.completed_at) {
+        const stamp = { now: new Date().toISOString(), uid: currentAuthUserId() || "" };
+        it.completed_at = stamp.now;
+        it.completed_by_user_id = stamp.uid;
+    }
+    if (!it.completed) {
+        it.completed_at = "";
+        it.completed_by_user_id = "";
+    }
+}
+
 function crSetRecount(id, value) {
     const it = crFind(id);
     if (!it) return;
     if (!crCanAct("recount") && !crHasFullEdit()) return;
+    if (value === "driver" && !it.driver_employee_id) {
+        toast("Выберите конкретного водителя.", "error");
+        renderTerritoryReturns();
+        return;
+    }
     it.recount_result = value || "";
+    it.recount_result_at = new Date().toISOString();
+    it.recount_result_by_user_id = currentAuthUserId() || "";
+    crRefreshCompleted(it);
     crPushHistory(it, "recount_result", value || "pending");
     saveApp();
     renderTerritoryReturns();
@@ -29242,31 +29583,97 @@ function crStampComplete(it) {
     return { now: now, uid: uid };
 }
 
-function crMarkGive(id) {
+function crToggleGive(id, on) {
     const it = crFind(id);
     if (!it || !crCanAct("give")) return;
-    const stamp = crStampComplete(it);
-    it.given_to_client = true;
-    it.given_at = stamp.now;
-    it.given_by_user_id = stamp.uid;
-    if (!it.return_to_client_date) it.return_to_client_date = stamp.now.slice(0, 10);
-    crPushHistory(it, "given_to_client", "");
+    it.given_to_client = !!on;
+    if (on) {
+        const stamp = crStampComplete(it);
+        it.given_at = stamp.now;
+        it.given_by_user_id = stamp.uid;
+        if (!it.return_to_client_date) it.return_to_client_date = crTodayIso();
+        it.given_date = it.return_to_client_date;
+        crPushHistory(it, "given_to_client", it.return_to_client_date);
+        toast("Отмечено: выполнено. Позиция осталась в «Отдать».");
+    } else {
+        it.given_at = "";
+        it.given_by_user_id = "";
+        crRefreshCompleted(it);
+        crPushHistory(it, "ungiven_to_client", "");
+        toast("Снято: выполнено.");
+    }
     saveApp();
     renderTerritoryReturns();
-    toast("Отмечено: отдано клиенту. Запись осталась в «Все возвраты».");
+}
+
+function crSetGiveDate(id, value) {
+    const it = crFind(id);
+    if (!it || !crCanAct("give")) return;
+    it.return_to_client_date = value || "";
+    it.given_date = it.return_to_client_date;
+    crPushHistory(it, "give_date", value || "");
+    saveApp();
+    renderTerritoryReturns();
+}
+
+function crToggleRebill(id, on) {
+    const it = crFind(id);
+    if (!it || !crCanAct("rebill")) return;
+    it.rebilled = !!on;
+    if (on) {
+        const stamp = crStampComplete(it);
+        it.rebilled_at = stamp.now;
+        it.rebilled_by_user_id = stamp.uid;
+        if (!it.rebilled_date) it.rebilled_date = crTodayIso();
+        crPushHistory(it, "rebilled", it.rebilled_date);
+        toast("Отмечено: выполнено. Позиция осталась в «Перебить».");
+    } else {
+        it.rebilled_at = "";
+        it.rebilled_by_user_id = "";
+        crRefreshCompleted(it);
+        crPushHistory(it, "unrebilled", "");
+        toast("Снято: выполнено.");
+    }
+    saveApp();
+    renderTerritoryReturns();
+}
+
+function crSetRebillDate(id, value) {
+    const it = crFind(id);
+    if (!it || !crCanAct("rebill")) return;
+    it.rebilled_date = value || "";
+    crPushHistory(it, "rebill_date", value || "");
+    saveApp();
+    renderTerritoryReturns();
+}
+
+function crMarkGive(id) {
+    crToggleGive(id, true);
 }
 
 function crMarkRebill(id) {
+    crToggleRebill(id, true);
+}
+
+function crToggleFoundClient(id, on) {
     const it = crFind(id);
-    if (!it || !crCanAct("rebill")) return;
-    const stamp = crStampComplete(it);
-    it.rebilled = true;
-    it.rebilled_at = stamp.now;
-    it.rebilled_by_user_id = stamp.uid;
-    crPushHistory(it, "rebilled", "");
+    if (!it || !crCanAct("driver")) return;
+    it.found_at_client = !!on;
+    if (on) {
+        const stamp = crStampComplete(it);
+        it.found_at_client_at = stamp.now;
+        it.found_at_client_by_user_id = stamp.uid;
+        crPushHistory(it, "found_at_client", "");
+        toast("Отмечено: товар нашли у клиента. Позиция осталась в «На водителя».");
+    } else {
+        it.found_at_client_at = "";
+        it.found_at_client_by_user_id = "";
+        crRefreshCompleted(it);
+        crPushHistory(it, "unfound_at_client", "");
+        toast("Снято: нашли у клиента.");
+    }
     saveApp();
     renderTerritoryReturns();
-    toast("Отмечено: перебито. Запись осталась в «Все возвраты».");
 }
 
 function crMarkDriver(id) {
