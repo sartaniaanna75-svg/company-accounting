@@ -1960,12 +1960,12 @@
         #summaryStaffList {
             overflow-x: auto;
         }
-        .name-parts { display: block; min-width: 220px; position: relative; z-index: 5; }
+        .name-parts { display: block; min-width: 0; max-width: 100%; position: relative; z-index: 5; }
         .name-parts input,
         .emp-fio-input {
             width: 100%;
-            min-width: 220px;
-            min-height: 36px;
+            min-width: 0;
+            min-height: 30px;
             box-sizing: border-box;
             pointer-events: auto !important;
             background: #fff;
@@ -1985,8 +1985,8 @@
             display: flex;
             flex-wrap: wrap;
             align-items: flex-end;
-            gap: 6px 8px;
-            margin-bottom: 8px;
+            gap: 4px 8px;
+            margin-bottom: 6px;
             border: 1px solid var(--border);
             padding: 6px 8px;
             border-radius: 8px;
@@ -1995,14 +1995,14 @@
 
         .summary-staff-row {
             display: flex;
-            flex-wrap: nowrap;
+            flex-wrap: wrap;
             align-items: flex-end;
-            gap: 8px;
-            margin-bottom: 10px;
+            gap: 6px 8px;
+            margin-bottom: 8px;
             border: 1px solid var(--border);
-            padding: 10px;
+            padding: 8px;
             border-radius: 9px;
-            min-width: max-content;
+            min-width: 0;
         }
 
         .employee-row > .form-group,
@@ -2016,17 +2016,22 @@
         }
 
         .employee-row > .form-group.emp-field-name {
-            flex: 1 1 100%;
-            width: 100%;
-            max-width: none;
+            flex: 0 1 240px;
+            width: 240px;
+            max-width: 280px;
             position: relative;
             z-index: 5;
             order: 0;
         }
-        .employee-row > .form-group.emp-field-pos { width: 160px; }
-        .employee-row > .form-group.emp-field-dept { width: 150px; }
-        .employee-row > .form-group.emp-field-time { width: 96px; }
-        .employee-row > .form-group.emp-field-status { width: 120px; }
+        .employee-row > .form-group.emp-field-pos {
+            flex: 0 0 148px;
+            width: 148px;
+            order: 1;
+        }
+        .employee-row > .form-group.emp-field-tab { width: 132px; }
+        .employee-row > .form-group.emp-field-dept { width: 128px; }
+        .employee-row > .form-group.emp-field-time { width: 86px; }
+        .employee-row > .form-group.emp-field-status { width: 112px; }
         .employee-row > * { order: 3; }
         .employee-row > .form-group.emp-field-name { order: 0; }
         .employee-row > .form-group.emp-field-pos { order: 1; }
@@ -2037,7 +2042,7 @@
             align-self: stretch;
             order: 2;
         }
-        .employee-row > .emp-actions { order: 4; }
+        .employee-row > .emp-actions { order: 4; margin-left: 0; }
         .emp-extra-fn-list {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -2079,18 +2084,23 @@
         @media (max-width: 720px) {
             .emp-extra-fn-list { grid-template-columns: 1fr; }
             .employee-row > .form-group.emp-field-name {
-                width: 100%;
+                flex: 1 1 160px;
+                width: auto;
                 max-width: none;
             }
         }
 
-        .summary-staff-row > .form-group:nth-child(1) { width: 280px; }
-        .summary-staff-row > .form-group:nth-child(2) { width: 180px; }
-        .summary-staff-row > .form-group:nth-child(3) { width: 120px; }
-        .summary-staff-row > .form-group:nth-child(4) { width: 160px; }
-        .summary-staff-row > .form-group:nth-child(5),
-        .summary-staff-row > .form-group:nth-child(6) { width: 120px; }
-        .summary-staff-row > .form-group:nth-child(7) { width: 110px; }
+        .summary-staff-row > .form-group.emp-field-name {
+            flex: 0 1 240px;
+            width: 240px;
+            max-width: 280px;
+        }
+        .summary-staff-row > .form-group.emp-field-pos { width: 148px; }
+        .summary-staff-row > .form-group.emp-field-dept { width: 150px; }
+        .summary-staff-row > .form-group.emp-field-tab { width: 132px; }
+        .summary-staff-row > .form-group.emp-field-status { width: 112px; }
+        .summary-staff-row > .form-group.emp-field-rate,
+        .summary-staff-row > .form-group.emp-field-taxi { width: 110px; }
         .summary-staff-row > .form-group.rep-accrual {
             width: 230px;
             align-self: flex-start;
@@ -2119,12 +2129,18 @@
             color: var(--muted, #64748b);
         }
 
-        .employee-row input,
+        .employee-row input:not([type="checkbox"]),
         .employee-row select,
         .summary-staff-row input,
         .summary-staff-row select {
             width: 100%;
             margin: 0;
+        }
+        .employee-row > .form-group input:not([type="checkbox"]),
+        .employee-row > .form-group select {
+            height: 30px;
+            padding: 3px 6px;
+            font-size: 13px;
         }
 
         .emp-actions {
@@ -2654,6 +2670,67 @@
 
         .rev-modal-back.show { display: flex; }
         #employeeCreateModalBack { z-index: 360; }
+        #employeeCreateModal.employee-create-modal {
+            width: min(560px, calc(100vw - 24px));
+            max-width: 560px;
+            padding: 12px 14px 10px;
+            max-height: 85vh;
+        }
+        #employeeCreateModal.employee-create-modal h3 {
+            margin: 0 0 8px;
+            font-size: 16px;
+        }
+        .emp-create-form {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .emp-create-form .form-group {
+            margin-bottom: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            min-width: 0;
+        }
+        .emp-create-form .form-group label {
+            font-size: 12px;
+            color: var(--muted);
+            font-weight: 600;
+        }
+        #employeeCreateModal .emp-fio-input {
+            min-width: 0;
+            min-height: 32px;
+            height: 32px;
+            padding: 5px 8px;
+            font-size: 14px;
+        }
+        #employeeCreateModal .emp-create-form select {
+            width: 100%;
+            min-width: 0;
+            height: 32px;
+            padding: 4px 6px;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+        .emp-create-row3 {
+            display: grid;
+            grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 1fr);
+            gap: 8px;
+        }
+        .emp-create-more {
+            display: grid;
+            grid-template-columns: minmax(140px, 180px) 1fr;
+            gap: 8px;
+            align-items: end;
+        }
+        #employeeCreateModal .rev-modal-actions {
+            margin-top: 10px;
+            gap: 6px;
+        }
+        @media (max-width: 560px) {
+            .emp-create-row3,
+            .emp-create-more { grid-template-columns: 1fr; }
+        }
         #metricCatalogModalBack { z-index: 370; }
 
         .rev-modal {
@@ -4747,7 +4824,7 @@
     <div class="rev-modal metric-cat-modal" id="metricCatalogModal" role="dialog" aria-modal="true"></div>
 </div>
 <div id="employeeCreateModalBack" class="rev-modal-back" onclick="if (event.target === this) closeEmployeeCreateForm()">
-    <div class="rev-modal" id="employeeCreateModal" role="dialog" aria-modal="true" aria-labelledby="employeeCreateTitle"></div>
+    <div class="rev-modal employee-create-modal" id="employeeCreateModal" role="dialog" aria-modal="true" aria-labelledby="employeeCreateTitle"></div>
 </div>
 <div id="revisionModalBack" class="rev-modal-back" onclick="if (event.target === this) closeRevisionModal()">
     <div class="rev-modal" id="revisionModal" role="dialog" aria-modal="true"></div>
@@ -6079,6 +6156,30 @@ function officialName(w) {
 
 function isTerritoryCode(code) {
     return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
+}
+
+function isTerritoryEmployeeId(employeeId) {
+    if (!employeeId || employeeId === SHOP_SELF_CHECKOUT_ID) return false;
+    return isTerritoryCode(employeeHomeDeptCode(employeeId));
+}
+
+function isTerritoryEmployee(e) {
+    return !!(e && e.id && isTerritoryEmployeeId(e.id));
+}
+
+function territoryEmployees() {
+    const list = [];
+    const seen = {};
+    TERRITORY_DEPT_CODES.forEach(function (code) {
+        const w = findWorkspaceByCode(code);
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!e || !e.id || seen[e.id] || !isTerritoryEmployeeId(e.id)) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+    });
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
 }
 
 function setCurrentWorkspace(w) {
@@ -18894,7 +18995,12 @@ function metricControlEmployeeReport(employee, month) {
 function metricControlPeople() {
     const f = metricControlFilters;
     let people = [];
-    if (isSummary()) {
+    if (isTerritoryMetricsMode()) {
+        people = territoryEmployees();
+        if (f.dept && isTerritoryCode(f.dept)) {
+            people = people.filter(function (e) { return employeeHomeDeptCode(e.id) === f.dept; });
+        }
+    } else if (isSummary()) {
         summaryDirectoryGroups().forEach(function (g) {
             if (f.dept && g.dept.code !== f.dept) return;
             g.employees.forEach(function (e) { people.push(e); });
@@ -18907,6 +19013,9 @@ function metricControlPeople() {
         }
     }
     people = people.filter(function (e) { return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID; });
+    if (isTerritoryMetricsMode()) {
+        people = people.filter(isTerritoryEmployee);
+    }
     if (f.position) {
         people = people.filter(function (e) { return String(e.position || "") === f.position; });
     }
@@ -20417,7 +20526,7 @@ function refreshMetricCatalogPeopleBox(metricId) {
     const cat = String((document.getElementById("mcCategory") || {}).value || "");
     if (cat && cat !== "returns") {
         const people = territoryCategoryEmployeePool(cat).filter(function (e) {
-            return e && isWorking(e) && employeeHomeDeptCode(e.id) !== "shop";
+            return e && isWorking(e) && isTerritoryEmployee(e);
         }).sort(compareEmployeesByStatusThenName);
         box.innerHTML = people.map(function (e) {
             const on = (metricId && shopEmployeeHasWorkMetric(e.id, metricId))
@@ -20434,8 +20543,12 @@ function refreshMetricCatalogPeopleBox(metricId) {
     const dept = (deptEl && deptEl.value) || catalogDeptContext();
     const w = findWorkspaceByCode(dept);
     const tabIds = typeof collectMetricCatalogTabIds === "function" ? collectMetricCatalogTabIds() : [];
+    if (isTerritoryMetricsMode() && !isTerritoryCode(dept)) {
+        box.innerHTML = '<div class="note">Нет сотрудников в выбранных группах. Сотрудники Магазина Володарского сюда не входят.</div>';
+        return;
+    }
     const people = ((w && w.employees) || []).filter(function (e) {
-        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return false;
+        if (!e || !isWorking(e) || !isTerritoryEmployee(e)) return false;
         if (employeeHomeDeptCode(e.id) !== dept) return false;
         if (!tabIds.length) return true;
         const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
@@ -21869,22 +21982,25 @@ function openEmployeeCreateForm() {
     const deptCode = w.code;
     const locked = staffContextDeptLocked();
     const tab = defaultEmployeeCreateTab(deptCode);
-    const html = '<h3 id="employeeCreateTitle" style="margin:0 0 8px">Добавить сотрудника</h3>'
-        + '<div class="note" style="margin-bottom:10px">Отдел: ' + escapeHtml(officialName(w)) + "</div>"
-        + '<div class="metric-cat-form">'
-        + '<div class="form-group full"><label>ФИО сотрудника *</label>'
+    const html = '<h3 id="employeeCreateTitle">Добавить сотрудника</h3>'
+        + '<div class="emp-create-form">'
+        + '<div class="form-group emp-create-fio"><label for="empFormName">Фамилия, имя, отчество сотрудника</label>'
         + '<input type="text" id="empFormName" class="emp-fio-input" maxlength="120" placeholder="Иванов Иван Иванович"'
         + ' autocomplete="name" onkeydown="if(event.key===\'Enter\'){event.preventDefault();saveEmployeeCreateForm();}"></div>'
-        + '<div class="form-group full"><label>Отдел</label>' + employeeCreateDeptOptionsHtml(deptCode, locked) + "</div>"
-        + '<div class="form-group full"><label>Рабочая группа</label><div id="empFormTabWrap">'
-        + employeeCreateTabOptionsHtml(deptCode, tab) + "</div></div>"
-        + '<div class="form-group full"><label>Должность</label><div id="empFormPosWrap">'
+        + '<div class="emp-create-row3">'
+        + '<div class="form-group"><label>Должность</label><div id="empFormPosWrap">'
         + employeeCreatePositionOptionsHtml(deptCode, "") + "</div></div>"
-        + '<div class="form-group full"><label>Активность</label><select id="empFormStatus">'
+        + '<div class="form-group"><label>Основная группа</label><div id="empFormTabWrap">'
+        + employeeCreateTabOptionsHtml(deptCode, tab) + "</div></div>"
+        + '<div class="form-group"><label>Отдел</label>' + employeeCreateDeptOptionsHtml(deptCode, locked) + "</div>"
+        + "</div>"
+        + '<div class="emp-create-more">'
+        + '<div class="form-group"><label>Активность</label><select id="empFormStatus">'
         + '<option value="working" selected>Работает</option>'
         + '<option value="fired">Уволен</option></select></div>'
         + "</div>"
-        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + "</div>"
+        + '<div class="rev-modal-actions">'
         + '<button type="button" class="btn btn-primary" onclick="saveEmployeeCreateForm()">Сохранить</button>'
         + '<button type="button" class="btn btn-secondary" onclick="closeEmployeeCreateForm()">Отмена</button></div>';
     box.innerHTML = html;
@@ -22137,15 +22253,15 @@ function renderSummaryStaff() {
                 + '<span class="rep-accrual-unit">%</span></div>'
                 + "</div>";
             html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired && employee.id !== justAddedEmployeeId ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-                + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false))
-                + fieldBlock("Рабочий отдел", place)
-                + (tabSel ? fieldBlock("Рабочая группа", tabSel) : "")
-                + fieldBlock("Статус", statusSel)
+                + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false), "emp-field-name")
                 + fieldBlock("Должность", locked
                     ? '<input value="' + escapeAttribute(employee.position || "") + '" disabled>'
-                    : positionSelect(employee, g.dept))
-                + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">")
-                + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">")
+                    : positionSelect(employee, g.dept), "emp-field-pos")
+                + fieldBlock("Рабочий отдел", place, "emp-field-dept")
+                + (tabSel ? fieldBlock("Рабочая группа", tabSel, "emp-field-tab") : "")
+                + fieldBlock("Статус", statusSel, "emp-field-status")
+                + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">", "emp-field-rate")
+                + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">", "emp-field-taxi")
                 + (isDrivers && isRep ? percentBlock : "")
                 + '<div class="emp-actions">'
                 + (g.dept.code === "shop" && canEditShopPayrollRules()
@@ -26808,7 +26924,7 @@ function refreshMgmtMetricsPeopleBox(metricId) {
     if (!box) return;
     const cat = String((document.getElementById("miMetricsCat") || {}).value || "office");
     const people = territoryCategoryEmployeePool(cat).filter(function (e) {
-        return e && isWorking(e) && employeeHomeDeptCode(e.id) !== "shop";
+        return e && isWorking(e) && isTerritoryEmployee(e);
     }).sort(compareEmployeesByStatusThenName);
     box.innerHTML = people.map(function (e) {
         const on = (metricId && shopEmployeeHasWorkMetric(e.id, metricId))
@@ -28210,18 +28326,7 @@ function crCanAct(tab) {
 }
 
 function crPeople() {
-    const list = [];
-    const seen = {};
-    ((appData && appData.workspaces) || []).forEach(function (w) {
-        if (!w || w.type === "summary") return;
-        (w.employees || []).forEach(function (e) {
-            if (!e || !e.id || seen[e.id]) return;
-            seen[e.id] = true;
-            list.push(e);
-        });
-    });
-    list.sort(compareEmployeesByStatusThenName);
-    return list;
+    return territoryEmployees();
 }
 
 function crIsShopEmployee(e) {
@@ -28229,17 +28334,11 @@ function crIsShopEmployee(e) {
 }
 
 function crEmpFitsKind(e, kind) {
-    if (!e || !e.id) return false;
-    if (kind === "cashier") {
-        const pos = String(e.position || "").toLowerCase();
-        if (pos.indexOf("кассир") !== -1) return true;
-        const home = employeeHomeDeptCode(e.id);
-        return employeeMatchesWorkTab(e, home, "cashiers")
-            || employeeMatchesWorkTab(e, "shop", "cashiers")
-            || employeeMatchesWorkTab(e, "warehouse", "cashiers");
-    }
-    if (crIsShopEmployee(e)) return false;
+    if (!e || !isTerritoryEmployee(e)) return false;
     const home = employeeHomeDeptCode(e.id);
+    if (kind === "cashier") {
+        return home === "warehouse" && employeeMatchesWorkTab(e, "warehouse", "cashiers");
+    }
     if (kind === "driver") {
         return home === "drivers" && employeeMatchesWorkTab(e, "drivers", "drivers");
     }
@@ -28252,14 +28351,14 @@ function crEmpFitsKind(e, kind) {
     if (kind === "author") {
         return home === "drivers" && employeeMatchesWorkTab(e, "drivers", "sales");
     }
-    return typeof isTerritoryCode === "function" ? isTerritoryCode(home) : home !== "shop";
+    return isTerritoryCode(home);
 }
 
 function crEmpOptions(selected, kind) {
     let html = '<option value="">—</option>';
     const seen = {};
     function addEmp(e) {
-        if (!e || !e.id || seen[e.id]) return;
+        if (!e || !e.id || seen[e.id] || !isTerritoryEmployee(e)) return;
         seen[e.id] = true;
         const label = kind === "cashier" ? (e.name || e.id) : (e.name + (e.position ? " · " + e.position : ""));
         html += '<option value="' + escapeAttribute(e.id) + '"' + (e.id === selected ? " selected" : "") + ">"
@@ -28267,10 +28366,13 @@ function crEmpOptions(selected, kind) {
     }
     crPeople().forEach(function (e) {
         if (e.jobStatus === "fired" && e.id !== selected) return;
-        if (e.id !== selected && !crEmpFitsKind(e, kind)) return;
+        if (!crEmpFitsKind(e, kind)) return;
         addEmp(e);
     });
-    if (selected && !seen[selected]) addEmp(getEmployee(selected));
+    if (selected && !seen[selected]) {
+        const extra = getEmployee(selected);
+        if (extra && crEmpFitsKind(extra, kind)) addEmp(extra);
+    }
     return html;
 }
 
