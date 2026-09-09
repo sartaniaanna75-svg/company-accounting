@@ -2647,6 +2647,7 @@
 
         .rev-modal-back.show { display: flex; }
         #employeeCreateModalBack { z-index: 360; }
+        #metricCatalogModalBack { z-index: 370; }
 
         .rev-modal {
             width: min(440px, 100%);
@@ -3757,7 +3758,7 @@
                     </div>
                     <div id="deptWorkAdminBar" class="toolbar" style="display:none;flex-wrap:wrap;gap:8px;margin-top:10px">
                         <button type="button" class="btn btn-primary" id="deptWorkAddFioBtn" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>
-                        <button type="button" class="btn btn-primary" id="deptWorkAddMetricBtn" onclick="openMetricFromWorkMetrics()">+ Добавить метрику</button>
+                        <button type="button" class="btn btn-primary" id="deptWorkAddMetricBtn" onclick="openMetricFromWorkMetrics()" style="display:none">+ Добавить метрику</button>
                     </div>
                 </div>
                 <div class="metrics-stats" id="metricsCards"></div>
@@ -3794,7 +3795,7 @@
             <section id="deptMetrics" class="section">
                 <div class="card">
                     <div class="card-title" id="deptMetricsPageTitle">Метрики</div>
-                    <div class="note" id="deptMetricsNote" style="margin-top:6px">Справочник показателей. Ежедневные значения заполняются в рабочих вкладках подразделения и в «Метрики территории». Кто участвует — ФИО → Рабочие метрики.</div>
+                    <div class="note" id="deptMetricsNote" style="margin-top:6px">Просмотр назначенных показателей. Новые метрики создаются только в Территория → Метрики → Справочник метрик.</div>
                     <div class="toolbar" style="margin-top:10px" id="deptMetricsCatalogToolbar"></div>
                     <div class="table-wrapper" style="margin-top:10px;max-height:none">
                         <table class="metric-cat-table">
@@ -4491,7 +4492,7 @@
             <section id="metricCatalog" class="section">
                 <div class="card">
                     <div class="card-title">Метрики</div>
-                    <div class="note" style="margin-top:6px">Единый справочник рабочих показателей всех отделов. Значения заполняются в рабочих разделах (Торговые, Водители, Склад, Офис, магазин). KPI в зарплату назначается отдельно.</div>
+                    <div class="note" style="margin-top:6px">Единственное место создания метрик. Отдел → должность / рабочая группа → сотрудники. Рабочие разделы только показывают назначенные метрики. KPI выбирает уже существующий metric_id.</div>
                     <div class="toolbar" style="margin-top:10px" id="metricCatalogToolbar"></div>
                     <div class="table-wrapper" style="margin-top:10px;max-height:none">
                         <table class="metric-cat-table">
@@ -16181,9 +16182,8 @@ function shopKpiAssignableMetrics(view) {
         return m && canonicalMetricId(m.id) === "metric_arrival_730";
     });
     if (arrival) add(arrival);
-    catalogItemsForDept(view.departmentId).forEach(function (it) {
+    shopMetricCatalogItems().forEach(function (it) {
         if (!it || it.active === false || it.assignable === false) return;
-        if (view.workTabId && !metricShowsOnTab(it, view.workTabId)) return;
         add(shopKpiTemplate(it.id) || {
             id: it.id,
             name: it.name,
@@ -16197,11 +16197,6 @@ function shopKpiAssignableMetrics(view) {
     if (view.departmentId === "shop") {
         (ensureMetricCatalog() || []).forEach(function (m) {
             if (m && m.active !== false && canonicalMetricId(m.id) !== "metric_arrival_730") add(m);
-        });
-        shopMetricCatalogItems().forEach(function (it) {
-            if (metricDepartmentId(it) !== "shop") return;
-            if (it.active === false || it.assignable === false) return;
-            add(shopKpiTemplate(it.id) || { id: it.id, name: it.name, sourceType: "store_metrics", category: it.section_id, field: it.key, calcType: it.fill_type === "check" ? "checklist" : "budget_ratio", active: true });
         });
     }
     return list;
@@ -17672,7 +17667,7 @@ function closeShopKpiDef(kpiId) {
 
 function addShopKpiDef() {
     if (!canEditShopPayrollRules()) return;
-    let html = "<h3>Создать KPI</h3><div class=\"note\" style=\"margin-bottom:12px\">Правило создаётся один раз. Затем его достаточно включить у сотрудников.</div>";
+    let html = "<h3>Создать KPI</h3><div class=\"note\" style=\"margin-bottom:12px\">Выберите метрику из справочника. Новую метрику здесь создать нельзя — правило KPI привязывается к существующему metric_id.</div>";
     shopKpiAssignableMetrics().forEach(function (metric) {
         if (canonicalMetricId(metric.id) === METRIC_SHELF_LABELS_ID) {
             html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
@@ -17723,6 +17718,7 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
     const metricId = tpl.id;
     const sid = String(submetricId || "");
     const srcItem = shopMetricCatalogById(metricId);
+    const metricDept = srcItem ? metricDepartmentId(srcItem) : view.departmentId;
     if (srcItem && metricStructureType(srcItem) === "with_submetrics" && !sid) {
         pickShopKpiSource(metricId, participationRole);
         return;
@@ -17750,8 +17746,8 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
         metricId: metricId,
         submetric_id: sid,
         submetricId: sid,
-        department_id: ts730 ? "all" : view.departmentId,
-        work_tab_id: ts730 ? "" : (view.workTabId || (tpl.category || "")),
+        department_id: ts730 ? "all" : (metricDept || view.departmentId),
+        work_tab_id: ts730 ? "" : (srcItem ? (metricTabId(srcItem) || "") : (view.workTabId || (tpl.category || ""))),
         name: metricId === METRIC_WRITEOFF_LOSSES_ID ? WRITEOFF_KPI_NAME : ((SHOP_KPI_METRIC_NAMES[metricId] || tpl.name) + (sub ? " · " + sub.name : "")),
         type: "plan",
         calcType: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : (check ? "checklist" : "budget_ratio")),
@@ -19532,7 +19528,10 @@ function closeMetricCatalogModal() {
 function openMetricCatalogModal(html) {
     const back = document.getElementById("metricCatalogModalBack");
     const box = document.getElementById("metricCatalogModal");
-    if (!back || !box) return;
+    if (!back || !box) {
+        toast("Форма метрики недоступна: нет окна справочника.", "error");
+        return;
+    }
     box.innerHTML = html;
     back.classList.add("show");
 }
@@ -19542,7 +19541,7 @@ function renderMetricCatalog() {
     const body = document.getElementById(generic ? "deptMetricsCatalogBody" : "metricCatalogBody");
     const bar = document.getElementById(generic ? "deptMetricsCatalogToolbar" : "metricCatalogToolbar");
     if (!body) return;
-    const can = canEditShopMetricCatalog();
+    const can = canMutateMetricCatalogUi();
     const allDepts = catalogViewShowsAllDepts();
     if (isTerritoryMetricsMode() && metricCatalogFilter.dept === "shop") metricCatalogFilter.dept = "";
     const catTitle = document.querySelector("#metricCatalog .card-title");
@@ -19778,13 +19777,29 @@ function shopCatalogPositionOptions() {
     return positionsForWorkspace(findWorkspaceByCode("shop") || workspace()) || [];
 }
 
+function isCentralMetricCatalogScreen() {
+    return currentSection === "metricCatalog" && (isTerritoryMetricsMode() || isCompanyWideCatalogMode());
+}
+
+function canMutateMetricCatalogUi() {
+    if (!canEditShopMetricCatalog()) return false;
+    if (currentSection === "deptMetrics") return false;
+    if (isTerritoryMetricsMode()) return currentSection === "metricCatalog";
+    if (isCompanyWideCatalogMode()) return currentSection === "metricCatalog";
+    return !!(workspace() && workspace().code === "shop" && currentSection === "metricCatalog");
+}
+
 function catalogFormDeptList() {
+    if (isTerritoryMetricsMode()) {
+        return DEPT_DEFAULTS.filter(function (d) { return d.code !== "shop"; });
+    }
     if (isCompanyWideCatalogMode()) return DEPT_DEFAULTS.slice();
     const code = catalogDeptContext();
     return DEPT_DEFAULTS.filter(function (d) { return d.code === code; });
 }
 
 function catalogFormCanPickDept() {
+    if (isTerritoryMetricsMode() && currentSection === "metricCatalog") return true;
     if (!isCompanyWideCatalogMode()) return false;
     return isAppAdmin() || currentSummaryRole === "admin" || userHasPerm("kpi", "manage") || userHasPerm("settings", "edit");
 }
@@ -19833,8 +19848,26 @@ function collectMetricCatalogTabScopes() {
     return scopes;
 }
 
+function defaultWorkTabsForDept(dept) {
+    if (dept === "drivers") return ["drivers"];
+    if (dept === "warehouse") return ["loaders", "pickers", "managers"];
+    if (dept === "office") return ["main"];
+    return [defaultMetricTabId(dept)];
+}
+
 function onMetricCatalogDeptChange() {
-    refreshMetricCatalogTabOptions([]);
+    const deptEl = document.getElementById("mcDept");
+    const catEl = document.getElementById("mcCategory");
+    const dept = (deptEl && deptEl.value) || catalogDeptContext();
+    const guess = inferTerritoryMetricCategory({
+        department_id: dept,
+        work_tab_ids: defaultWorkTabsForDept(dept)
+    });
+    if (catEl && guess) {
+        const has = Array.prototype.some.call(catEl.options, function (o) { return o.value === guess; });
+        if (has) catEl.value = guess;
+    }
+    refreshMetricCatalogTabOptions(defaultWorkTabsForDept(dept));
     refreshMetricCatalogFormulaBox();
     refreshMetricCatalogPeopleBox((document.getElementById("mcMetricId") || {}).value || "");
 }
@@ -19934,28 +19967,35 @@ function openMetricCatalogForm(id, dupIgnore) {
         toast("Нет права создавать или изменять метрики.", "error");
         return;
     }
+    if (!id && !canMutateMetricCatalogUi()) {
+        toast("Новые метрики создаются только в Территория → Метрики → Справочник метрик.", "error");
+        return;
+    }
+    if (id && !canMutateMetricCatalogUi()) {
+        toast("Изменять метрики можно только в Справочнике метрик территории.", "error");
+        return;
+    }
     const existing = id ? shopMetricCatalogById(id) : null;
     const contextDept = catalogDeptContext();
-    if (id && existing && !catalogFormCanPickDept() && metricDepartmentId(existing) !== contextDept) return;
-    let dept = existing ? metricDepartmentId(existing) : contextDept;
-    if (!existing && catalogViewShowsAllDepts() && !metricCatalogFilter.dept) dept = "drivers";
+    if (id && existing && !catalogFormCanPickDept() && metricDepartmentId(existing) !== contextDept) {
+        toast("Эту метрику откройте в справочнике территории без фильтра отдела.", "error");
+        return;
+    }
+    let dept = existing ? metricDepartmentId(existing) : (metricCatalogFilter.dept || contextDept || "office");
+    if (!existing && isTerritoryMetricsMode() && (!dept || dept === "shop")) dept = "office";
     const territoryForm = isTerritoryMetricsMode();
-    const workDeptForm = !territoryForm && workspace() && isGenericMetricsDept(workspace().code);
+    const workDeptForm = false;
     let category = existing ? metricTerritoryCategory(existing) : "";
     if (!existing && territoryForm) {
-        const hub = currentTerritoryMetricsHub();
-        category = (hub && hub.id) || "office";
+        category = "office";
+        if (dept === "drivers") category = "drivers";
+        else if (dept === "warehouse") category = "warehouse";
+        else if (dept === "office") category = "office";
         const spec = territoryMetricCategoryById(category);
         if (spec && spec.departmentId) dept = spec.departmentId;
-        if (spec && spec.allTerritory) dept = "office";
     }
-    if (!existing && workDeptForm) {
-        category = defaultTerritoryCategoryForCurrentWork() || category;
-        const specWork = territoryMetricCategoryById(category);
-        if (specWork && specWork.departmentId) dept = specWork.departmentId;
-    }
-    const tab = existing ? metricTabId(existing) : currentDeptMetricTab(dept);
-    const defaultSpecific = !!(territoryForm || workDeptForm || justAddedEmployeeId);
+    const tab = existing ? metricTabId(existing) : (defaultWorkTabsForDept(dept)[0] || defaultMetricTabId(dept));
+    const defaultSpecific = !!justAddedEmployeeId;
     const it = existing || {
         id: "",
         name: "",
@@ -19971,21 +20011,21 @@ function openMetricCatalogForm(id, dupIgnore) {
         formula: { op: "div", left: "metric_sales", right: "metric_checks" }
     };
     const depts = catalogFormDeptList();
-    const deptLocked = !catalogFormCanPickDept() || !!(it.builtin) || territoryForm || workDeptForm;
+    const deptLocked = !catalogFormCanPickDept() || !!(it.builtin);
     let html = "<h3 style=\"margin:0 0 8px\">" + (id ? "Изменить метрику" : "Создать метрику") + "</h3>"
         + '<div class="metric-cat-form">'
-        + '<div class="form-group full"><label>Название метрики</label>'
+        + '<div class="form-group full"><label>Название метрики *</label>'
         + '<input id="mcName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
         + '<input type="hidden" id="mcMetricId" value="' + escapeAttribute(it.id || "") + '">'
-        + '<div class="form-group full"><label>Категория</label><select id="mcCategory" onchange="onMetricCatalogCategoryChange()">';
-    metricCatalogCategoriesForForm(territoryForm).forEach(function (c) {
+        + '<div class="form-group full"><label>Категория / отдел *</label><select id="mcCategory" onchange="onMetricCatalogCategoryChange()">';
+    metricCatalogCategoriesForForm(territoryForm || isCentralMetricCatalogScreen()).forEach(function (c) {
         html += '<option value="' + c.id + '"' + (category === c.id ? " selected" : "") + ">" + escapeHtml(c.label) + "</option>";
     });
-    if (!territoryForm && !workDeptForm) {
+    if (!territoryForm && !isGenericMetricsDept((workspace() && workspace().code) || "")) {
         html += '<option value=""' + (!category ? " selected" : "") + ">Магазин Володарского / без категории территории</option>";
     }
     html += "</select></div>"
-        + '<div class="form-group"' + (territoryForm ? ' style="display:none"' : "") + '><label>Отдел</label><select id="mcDept" onchange="onMetricCatalogDeptChange()"'
+        + '<div class="form-group"><label>Отдел *</label><select id="mcDept" onchange="onMetricCatalogDeptChange()"'
         + (deptLocked ? " disabled" : "") + ">";
     depts.forEach(function (d) {
         html += '<option value="' + d.code + '"' + (dept === d.code ? " selected" : "") + ">" + escapeHtml(d.name) + "</option>";
@@ -19997,8 +20037,8 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<button type="button" data-struct="plain" class="' + (metricStructureType(it) === "plain" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'plain\')">Обычная</button>'
         + '<button type="button" data-struct="with_submetrics" class="' + (metricStructureType(it) === "with_submetrics" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'with_submetrics\')">С подметриками</button>'
         + "</div></div>"
-        + '<div class="form-group full"' + (territoryForm ? ' style="display:none"' : "") + '><label>Показывать в разделах</label><div class="mc-tabs-checks" id="mcTabsBox"></div></div>'
-        + '<div class="form-group"><label>Тип фиксации</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()"'
+        + '<div class="form-group full"><label>Должность / рабочая группа</label><div class="mc-tabs-checks" id="mcTabsBox"></div></div>'
+        + '<div class="form-group"><label>Тип метрики *</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()"'
         + (it.builtin && it.core_column ? " disabled" : "") + ">";
     SHOP_METRIC_FILL_TYPES.forEach(function (s) {
         html += '<option value="' + s.id + '"' + (it.fill_type === s.id ? " selected" : "") + ">" + escapeHtml(s.label) + "</option>";
@@ -20028,12 +20068,13 @@ function openMetricCatalogForm(id, dupIgnore) {
     openMetricCatalogModal(html);
     const initSpec = territoryMetricCategoryById(category);
     refreshMetricCatalogTabOptions(
-        (territoryForm && initSpec && initSpec.workTabIds) ? initSpec.workTabIds : metricWorkTabIds(it),
+        existing
+            ? metricWorkTabIds(it)
+            : ((initSpec && initSpec.workTabIds) ? initSpec.workTabIds : defaultWorkTabsForDept(dept)),
         it.work_tab_scopes
     );
     refreshMetricCatalogFormulaBox(it.formula);
     onMetricCatalogAssignModeChange();
-    if (!existing && workDeptForm) onMetricCatalogCategoryChange();
     refreshMetricCatalogPeopleBox(it.id);
 }
 
@@ -20112,7 +20153,7 @@ function refreshMetricCatalogPeopleBox(metricId) {
 }
 
 function saveMetricCatalogForm(id, dupIgnore) {
-    if (!canEditShopMetricCatalog()) {
+    if (!canEditShopMetricCatalog() || !canMutateMetricCatalogUi()) {
         toast("Нет права создавать или изменять метрики.", "error");
         return;
     }
@@ -20128,7 +20169,15 @@ function saveMetricCatalogForm(id, dupIgnore) {
     const spec = cat ? territoryMetricCategoryById(cat) : null;
     if (spec && spec.departmentId) {
         dept = spec.departmentId;
-        tabIds = (spec.workTabIds || []).slice();
+        const allowed = metricTabsForDept(dept).map(function (t) { return t.id; });
+        if (tabIds.length) {
+            tabIds = tabIds.filter(function (t) { return allowed.indexOf(t) !== -1; });
+        }
+        if (!tabIds.length) {
+            tabIds = (spec.workTabIds && spec.workTabIds.length)
+                ? spec.workTabIds.slice()
+                : defaultWorkTabsForDept(dept);
+        }
     } else if (spec && spec.allTerritory && (!dept || dept === "shop")) {
         dept = "office";
     }
@@ -20161,7 +20210,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     const assignModeEarly = collectMetricCatalogAssignMode();
     const personIdsEarly = collectMetricCatalogPersonIds();
-    if (assignModeEarly === "specific" && !personIdsEarly.length && metricFormReturnSection) {
+    if (assignModeEarly === "specific" && !personIdsEarly.length) {
         toast("Отметьте сотрудников или выберите «Всем сотрудникам категории».", "error");
         return;
     }
@@ -20224,8 +20273,15 @@ function saveMetricCatalogForm(id, dupIgnore) {
     item.metric_tab_id = item.section_id || item.metric_tab_id;
     item.work_tab_ids = tabIds.slice();
     item.work_tab_scopes = collectMetricCatalogTabScopes();
-    if (cat) applyTerritoryCategoryToMetric(item, cat);
-    else if (dept === "shop") item.territory_category = "";
+    if (cat) {
+        item.territory_category = cat;
+        if (spec && spec.departmentId) item.department_id = spec.departmentId;
+    } else if (dept === "shop") {
+        item.territory_category = "";
+    } else {
+        item.territory_category = inferTerritoryMetricCategory(item);
+    }
+    item.work_tab_ids = tabIds.slice();
     normalizeMetricCatalogItemTabs(item);
     item.structure_type = structure;
     if (structure === "with_submetrics") {
@@ -20573,7 +20629,7 @@ function syncDeptWorkAdminBar() {
     const fioBtn = document.getElementById("deptWorkAddFioBtn");
     const metBtn = document.getElementById("deptWorkAddMetricBtn");
     if (fioBtn) fioBtn.style.display = on && canEditStaff() ? "" : "none";
-    if (metBtn) metBtn.style.display = on && canEditShopMetricCatalog() ? "" : "none";
+    if (metBtn) metBtn.style.display = "none";
 }
 
 function addEmployeeFromWorkMetrics() {
@@ -20604,12 +20660,8 @@ function addEmployeeFromWorkMetrics() {
 }
 
 function openMetricFromWorkMetrics() {
-    if (!canEditShopMetricCatalog()) {
-        toast("Нет права создавать метрики.", "error");
-        return;
-    }
-    metricFormReturnSection = currentSection;
-    openMetricCatalogForm();
+    toast("Новые метрики создаются только в Территория → Метрики → Справочник метрик.", "error");
+    if (isTerritoryMetricsMode()) showSection("metricCatalog");
 }
 
 function defaultTerritoryMetricsHubId() {
@@ -20767,11 +20819,8 @@ function renderTerritoryMetricsHubTabs() {
 }
 
 function openTerritoryMetricForm() {
-    if (!canEditShopMetricCatalog()) {
-        toast("Нет права создавать метрики.", "error");
-        return;
-    }
-    openMetricCatalogForm();
+    toast("Новые метрики создаются только в Справочнике метрик.", "error");
+    showSection("metricCatalog");
 }
 
 function renderTerritoryMetrics() {
@@ -20797,11 +20846,8 @@ function renderTerritoryMetrics() {
         if (canEditStaff()) {
             html += '<button type="button" class="btn btn-primary" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>';
         }
-        if (canEditShopMetricCatalog()) {
-            html += '<button type="button" class="btn btn-primary" onclick="openTerritoryMetricForm()">+ Добавить метрику</button>';
-        }
         html += '<span class="note" style="margin-left:8px">Категория «' + escapeHtml(spec.label)
-            + "». Одна метрика — один metric_id. Значения те же, что в рабочих разделах.</span>";
+            + "». Метрики назначаются в Справочнике метрик. Значения те же, что в рабочих разделах.</span>";
         bar.innerHTML = html;
     }
     fillDeptWorkTable(spec.departmentId || "office", territoryHubTabIds(spec)[0] || "main", {
@@ -20899,10 +20945,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
     if (!body) return;
     if (!fieldsAll.length) {
         if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
-        body.innerHTML = '<tr><td><div class="empty-row">В этой группе пока нет метрик.'
-            + (canEditShopMetricCatalog()
-                ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMetricFromWorkMetrics()">+ Добавить метрику</button>'
-                : "")
+        body.innerHTML = '<tr><td><div class="empty-row">В этой группе пока нет метрик. Назначьте их в Территория → Метрики → Справочник метрик.'
             + (canEditStaff()
                 ? ' <button type="button" class="btn btn-secondary btn-small" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>'
                 : "")
