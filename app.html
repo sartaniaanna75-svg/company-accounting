@@ -1953,8 +1953,26 @@
         #summaryStaffList {
             overflow-x: auto;
         }
-        .name-parts { display: block; min-width: 220px; }
-        .name-parts input { width: 100%; min-width: 220px; box-sizing: border-box; }
+        .name-parts { display: block; min-width: 220px; position: relative; z-index: 5; }
+        .name-parts input,
+        .emp-fio-input {
+            width: 100%;
+            min-width: 220px;
+            min-height: 36px;
+            box-sizing: border-box;
+            pointer-events: auto !important;
+            background: #fff;
+            color: var(--text);
+            opacity: 1 !important;
+            cursor: text;
+        }
+        .employee-row.just-added,
+        .summary-staff-row.just-added {
+            position: relative;
+            z-index: 5;
+            opacity: 1;
+            background: #fff;
+        }
 
         .employee-row {
             display: flex;
@@ -1990,13 +2008,20 @@
             line-height: 1.2;
         }
 
-        .employee-row > .form-group.emp-field-name { width: 280px; max-width: 320px; }
+        .employee-row > .form-group.emp-field-name {
+            flex: 1 1 100%;
+            width: 100%;
+            max-width: none;
+            position: relative;
+            z-index: 5;
+            order: 0;
+        }
         .employee-row > .form-group.emp-field-pos { width: 160px; }
         .employee-row > .form-group.emp-field-dept { width: 150px; }
         .employee-row > .form-group.emp-field-time { width: 96px; }
         .employee-row > .form-group.emp-field-status { width: 120px; }
         .employee-row > * { order: 3; }
-        .employee-row > .form-group.emp-field-name,
+        .employee-row > .form-group.emp-field-name { order: 0; }
         .employee-row > .form-group.emp-field-pos { order: 1; }
         .employee-row > .form-group.emp-extra-fns {
             flex: 1 1 100%;
@@ -2048,7 +2073,7 @@
             .emp-extra-fn-list { grid-template-columns: 1fr; }
             .employee-row > .form-group.emp-field-name {
                 width: 100%;
-                max-width: 280px;
+                max-width: none;
             }
         }
 
@@ -7786,34 +7811,46 @@ function applyEmployeeFullName(employee, fullName) {
     applyEmployeeNameParts(employee, p.last_name, p.first_name, p.middle_name);
 }
 
+function canTypeEmployeeName(employee) {
+    if (employee && justAddedEmployeeId && employee.id === justAddedEmployeeId) return true;
+    return canEditStaff();
+}
+
 function updateEmployeeFullName(employeeId, value) {
     if (shopUiQuiet) return;
-    if (!canEditStaff()) return;
     const employee = getEmployee(employeeId);
     if (!employee) return;
+    if (!canTypeEmployeeName(employee)) return;
     applyEmployeeFullName(employee, value);
     if (!isBlankName(employee.name)) saveApp();
 }
 
+function nameFieldLocked(employee) {
+    return !canTypeEmployeeName(employee);
+}
+
 function namePartsHtml(employee, disabled) {
     const full = composeEmployeeName(employee) || String((employee && employee.name) || "");
-    const dis = disabled ? " disabled" : "";
     return '<div class="name-parts">'
-        + '<input class="emp-fio-input' + (isBlankName(full) ? " name-missing" : "") + '" placeholder="Иванов Иван Иванович" value="' + escapeAttribute(full) + '"'
+        + '<input type="text" class="emp-fio-input' + (isBlankName(full) ? " name-missing" : "") + '"'
+        + ' placeholder="Иванов Иван Иванович" maxlength="120"'
+        + ' autocomplete="name" inputmode="text"'
+        + ' value="' + escapeAttribute(full) + '"'
         + ' oninput="syncNameFieldState(this);updateEmployeeFullName(\'' + employee.id + '\',this.value)"'
         + " onkeydown=\"if(event.key==='Enter'){event.preventDefault();commitEmployeeCard('" + employee.id + "');}\""
-        + " onchange=\"updateEmployeeFullName('" + employee.id + "',this.value)\"" + dis + ">"
+        + " onchange=\"updateEmployeeFullName('" + employee.id + "',this.value)\""
+        + ">"
         + "</div>";
 }
 
 function commitEmployeeCard(employeeId) {
-    if (!canEditStaff()) {
-        toast("Нет права сохранять сотрудников.", "error");
-        return;
-    }
     const employee = getEmployee(employeeId);
     if (!employee) {
         toast("Не найден сотрудник для сохранения.", "error");
+        return;
+    }
+    if (!canTypeEmployeeName(employee) && !canEditStaff()) {
+        toast("Нет права сохранять сотрудников.", "error");
         return;
     }
     const card = document.getElementById("emp-card-" + employeeId);
@@ -21084,8 +21121,8 @@ function renderFio() {
         const fired = !isWorking(employee);
         const added = employee.id === justAddedEmployeeId;
         const tabSel = workTabSelect(employee);
-        return '<div class="employee-row' + (fired ? " staff-fired" : "") + (added ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-            + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, !canEditStaff()), "emp-field-name")
+        return '<div class="employee-row' + (fired && !added ? " staff-fired" : "") + (added ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
+            + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false), "emp-field-name")
             + fieldBlock("Должность", positionSelect(employee), "emp-field-pos")
             + (tabSel ? fieldBlock("Основная группа", tabSel, "emp-field-tab") : "")
             + shopExtraFunctionsHtml(employee)
@@ -21286,17 +21323,31 @@ function toggleAssign(employeeId, checked) {
     refreshAll();
 }
 
+function dismissBlockingOverlays() {
+    document.querySelectorAll(".rev-modal-back.show").forEach(function (el) {
+        el.classList.remove("show");
+    });
+    const overlay = document.querySelector(".sidebar-overlay");
+    if (overlay) overlay.style.display = "none";
+}
+
 function focusNewEmployeeCard(employeeId) {
+    dismissBlockingOverlays();
     setTimeout(function () {
         const el = document.getElementById("emp-card-" + employeeId);
         if (!el) return;
-        if (el.scrollIntoView) el.scrollIntoView({ block: "end", behavior: "smooth" });
-        const nameInput = el.querySelector("input");
-        if (nameInput && !nameInput.disabled) {
+        if (el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+        const nameInput = el.querySelector(".emp-fio-input") || el.querySelector("input[type='text']") || el.querySelector("input");
+        if (!nameInput) return;
+        nameInput.disabled = false;
+        nameInput.readOnly = false;
+        nameInput.removeAttribute("disabled");
+        nameInput.removeAttribute("readonly");
+        try {
             nameInput.focus();
             if (nameInput.select) nameInput.select();
-        }
-    }, 30);
+        } catch (err) {}
+    }, 50);
 }
 
 function addEmployee() {
@@ -21522,8 +21573,8 @@ function renderSummaryStaff() {
                 + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentSpecial) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentSpecial\',this.value)"' + dis + ">"
                 + '<span class="rep-accrual-unit">%</span></div>'
                 + "</div>";
-            html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-                + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, locked))
+            html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired && employee.id !== justAddedEmployeeId ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
+                + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false))
                 + fieldBlock("Рабочий отдел", place)
                 + (tabSel ? fieldBlock("Рабочая группа", tabSel) : "")
                 + fieldBlock("Статус", statusSel)
