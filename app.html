@@ -4987,18 +4987,22 @@ function defaultOrgUnitsForMetric(metric, indicator) {
 }
 function ensureSpuIndicatorOrgLinks() {
     if (!appData || !appData.management || !Array.isArray(appData.management.indicators)) return;
-    (appData.management.indicators || []).forEach(function (it) {
-        if (!it || it.source_type !== "worktime_metric" || !it.source_metric_id) return;
-        const m = shopMetricCatalogById(it.source_metric_id);
-        if (!m) return;
-        if (!Array.isArray(it.org_unit_ids) || !it.org_unit_ids.length) {
-            it.org_unit_ids = defaultOrgUnitsForMetric(m, it);
+    (appData.management.indicators || []).forEach(function (it, idx) {
+        try {
+            if (!it || it.source_type !== "worktime_metric" || !it.source_metric_id) return;
+            const m = shopMetricCatalogById(it.source_metric_id);
+            if (!m) return;
+            if (!Array.isArray(it.org_unit_ids) || !it.org_unit_ids.length) {
+                it.org_unit_ids = defaultOrgUnitsForMetric(m, it);
+            }
+            if (!Array.isArray(m.org_unit_ids) || !m.org_unit_ids.length) {
+                m.org_unit_ids = (it.org_unit_ids || []).slice();
+                mergeMetricWorkTabsFromOrgUnits(m);
+            }
+            m.spu_indicator_id = m.spu_indicator_id || it.indicator_id;
+        } catch (indErr) {
+            console.error("Ошибка загрузки конкретного элемента", idx, indErr);
         }
-        if (!Array.isArray(m.org_unit_ids) || !m.org_unit_ids.length) {
-            m.org_unit_ids = (it.org_unit_ids || []).slice();
-            mergeMetricWorkTabsFromOrgUnits(m);
-        }
-        m.spu_indicator_id = m.spu_indicator_id || it.indicator_id;
     });
 }
 const LEGACY_DEPT_NAMES = ["Магазин", "Водители", "Логистика + Торговая"];
@@ -9164,9 +9168,16 @@ function login(index) {
 }
 
 function openApp() {
-    document.getElementById("loginScreen").style.display = "none";
-    document.getElementById("app").style.display = "flex";
-    loadWorkspace();
+    try {
+        const login = document.getElementById("loginScreen");
+        const app = document.getElementById("app");
+        if (login) login.style.display = "none";
+        if (app) app.style.display = "flex";
+        loadWorkspace();
+    } catch (err) {
+        console.error(err);
+        toast("Ошибка загрузки раздела. Остальные данные не затронуты.", "error");
+    }
 }
 
 function saveSession() {
@@ -9359,16 +9370,22 @@ function applyModeUI() {
     }
 
     const stats = document.getElementById("timesheetStats");
-    stats.classList.toggle("stats-3", !summary);
+    if (stats) stats.classList.toggle("stats-3", !summary);
 
-    document.getElementById("timesheetTitle").textContent = summary
-        ? "Сводка по отделам"
-        : "Табель: " + officialName(workspace());
-    document.getElementById("timesheetNote").textContent = summary
-        ? "Сотрудники собраны по отделам: " + DEPT_DEFAULTS.map(function (d) { return d.name; }).join(", ") + ". Можно показать один отдел или выстроить всех по ФИО."
-        : allowsEarly730(workspace())
-            ? "В ячейке явки можно отметить «с 7:30» — за каждый такой день в Общей в премию добавится 125 ₽."
-            : "В графе «Сотрудник» выберите человека из списка этого отдела. Списки отделов не пересекаются.";
+    const tsTitle = document.getElementById("timesheetTitle");
+    if (tsTitle) {
+        tsTitle.textContent = summary
+            ? "Сводка по отделам"
+            : "Табель: " + officialName(workspace());
+    }
+    const tsNote = document.getElementById("timesheetNote");
+    if (tsNote) {
+        tsNote.textContent = summary
+            ? "Сотрудники собраны по отделам: " + DEPT_DEFAULTS.map(function (d) { return d.name; }).join(", ") + ". Можно показать один отдел или выстроить всех по ФИО."
+            : allowsEarly730(workspace())
+                ? "В ячейке явки можно отметить «с 7:30» — за каждый такой день в Общей в премию добавится 125 ₽."
+                : "В графе «Сотрудник» выберите человека из списка этого отдела. Списки отделов не пересекаются.";
+    }
 
     const table = document.getElementById("timesheetTable");
     if (table) table.classList.toggle("month-table", !summary);
@@ -9578,34 +9595,49 @@ function sectionTitle(id) {
 }
 
 function loadWorkspace() {
-    if (!selectedMonth) selectedMonth = currentMonthValue();
-    if (currentSection === "metrics") currentSection = "metrics-pickers";
-    if (allowedSections().indexOf(currentSection) === -1) currentSection = defaultSection();
+    try {
+        if (!selectedMonth) selectedMonth = currentMonthValue();
+        if (currentSection === "metrics") currentSection = "metrics-pickers";
+        try {
+            if (allowedSections().indexOf(currentSection) === -1) currentSection = defaultSection();
+        } catch (secErr) {
+            console.error(secErr);
+            currentSection = "timesheet";
+        }
 
-    renderDeptNow();
-    applyModeUI();
-    syncSummarySortControls();
-    renderMonthTabs();
-    showSection(currentSection);
-    refreshAll();
-    renderFio();
-    renderEmployees();
-    renderSummaryStaff();
-    loadWorkspaceSettings();
+        try { renderDeptNow(); } catch (err) { console.error(err); }
+        try { applyModeUI(); } catch (err) { console.error(err); }
+        try { syncSummarySortControls(); } catch (err) { console.error(err); }
+        try { renderMonthTabs(); } catch (err) { console.error(err); }
+        try { showSection(currentSection); } catch (err) { console.error(err); }
+        try { refreshAll(); } catch (err) { console.error(err); }
+        try { renderFio(); } catch (err) { console.error(err); }
+        try { renderEmployees(); } catch (err) { console.error(err); }
+        try { renderSummaryStaff(); } catch (err) { console.error(err); }
+        try { loadWorkspaceSettings(); } catch (err) { console.error(err); }
+    } catch (err) {
+        console.error(err);
+        toast("Ошибка загрузки раздела.", "error");
+    }
 }
 
 function showSection(id, button) {
+    try {
     if (id === "metrics") id = "metrics-pickers";
     const requestedSection = id;
-    if (allowedSections().indexOf(id) === -1) {
-        if (isSpuMode() && isMgmtNavSection(requestedSection)) {
-            const spu = allowedSpuSections();
-            if (spu.indexOf(requestedSection) !== -1) id = requestedSection;
-            else if (spu.indexOf("management") !== -1) id = "management";
-            else id = defaultSection();
-        } else {
-            id = defaultSection();
+    try {
+        if (allowedSections().indexOf(id) === -1) {
+            if (isSpuMode() && isMgmtNavSection(requestedSection)) {
+                const spu = allowedSpuSections();
+                if (spu.indexOf(requestedSection) !== -1) id = requestedSection;
+                else if (spu.indexOf("management") !== -1) id = "management";
+                else id = defaultSection();
+            } else {
+                id = defaultSection();
+            }
         }
+    } catch (allowErr) {
+        console.error(allowErr);
     }
     if (id === "metrics-pickers") shopMetricCategory = "pickers";
     if (id === "metrics-cashiers") shopMetricCategory = "cashiers";
@@ -9625,7 +9657,9 @@ function showSection(id, button) {
     if (host) host.classList.add("active");
     const monthBar = document.querySelector(".month-bar");
     if (monthBar) monthBar.style.display = (isMgmtNavSection(id) || isOrgNavSection(id) || id === "territoryReturns") ? "none" : "";
-    if (id === "territoryReturns" && typeof crCanSeeTab === "function" && crCanSeeTab("all")) crUi.tab = "all";
+    if (id === "territoryReturns" && typeof crCanSeeTab === "function") {
+        try { if (crUi && crCanSeeTab("all")) crUi.tab = "all"; } catch (err) { console.error(err); }
+    }
 
     document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         const visible = btn.style.display !== "none";
@@ -9638,12 +9672,19 @@ function showSection(id, button) {
     });
     if (button) button.classList.add("active");
 
-    document.getElementById("pageTitle").textContent = sectionTitle(id);
+    const pageTitleEl = document.getElementById("pageTitle");
+    if (pageTitleEl) pageTitleEl.textContent = sectionTitle(id);
     closeSidebar();
-    syncDeptWorkAdminBar();
+    try { syncDeptWorkAdminBar(); } catch (err) { console.error(err); }
 
-    if (id === "timesheet") renderTimesheet();
-    if (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers") renderShopMetrics();
+    function runSection(fn) {
+        try { fn(); } catch (err) {
+            console.error(err);
+            toast("Ошибка загрузки конкретного элемента", "error");
+        }
+    }
+    if (id === "timesheet") runSection(renderTimesheet);
+    if (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers") runSection(renderShopMetrics);
     if (isDeptWorkSection(id)) {
         const w = workspace();
         const tab = deptWorkTabFromSection(id);
@@ -9653,32 +9694,36 @@ function showSection(id, button) {
             }
             fioFilterByDept[w.code].tab = tab;
         }
-        renderDeptWorkMetrics();
+        runSection(renderDeptWorkMetrics);
     }
-    if (id === "revision") renderShopRevision();
-    if (id === "salesPlan") renderShopSalesPlan();
-    if (id === "salary") renderSalary();
-    if (id === "repSalary") renderRepSalary();
-    if (id === "shopSalary") renderPayrollView(PAYROLL_VIEWS.shop);
-    if (id === "warehouseSalary") renderPayrollView(PAYROLL_VIEWS.warehouse);
-    if (id === "driversSalary") renderPayrollView(PAYROLL_VIEWS.drivers);
-    if (id === "summaryStaff") renderSummaryStaff();
-    if (id === "discipline") renderDiscipline();
+    if (id === "revision") runSection(renderShopRevision);
+    if (id === "salesPlan") runSection(renderShopSalesPlan);
+    if (id === "salary") runSection(renderSalary);
+    if (id === "repSalary") runSection(renderRepSalary);
+    if (id === "shopSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.shop); });
+    if (id === "warehouseSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.warehouse); });
+    if (id === "driversSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.drivers); });
+    if (id === "summaryStaff") runSection(renderSummaryStaff);
+    if (id === "discipline") runSection(renderDiscipline);
     if (id === "users") {
-        renderAccessUsers();
-        renderStaffOrgAdmin();
+        runSection(renderAccessUsers);
+        runSection(renderStaffOrgAdmin);
     }
-    if (id === "analysis") renderAnalysis();
-    if (id === "fio") renderFio();
-    if (id === "employees") renderEmployees();
-    if (id === "settings") loadWorkspaceSettings();
-    if (id === "metricCatalog") renderMetricCatalog();
-    if (id === "deptMetrics") renderDeptMetrics();
-    if (id === "territoryMetrics") renderTerritoryMetrics();
-    if (id === "territoryReturns") renderTerritoryReturns();
-    if (id === "management") renderManagement();
-    if (isMgmtNavSection(id)) renderManagement();
-    if (isOrgNavSection(id)) renderOrgStructure();
+    if (id === "analysis") runSection(renderAnalysis);
+    if (id === "fio") runSection(renderFio);
+    if (id === "employees") runSection(renderEmployees);
+    if (id === "settings") runSection(loadWorkspaceSettings);
+    if (id === "metricCatalog") runSection(renderMetricCatalog);
+    if (id === "deptMetrics") runSection(renderDeptMetrics);
+    if (id === "territoryMetrics") runSection(renderTerritoryMetrics);
+    if (id === "territoryReturns") runSection(renderTerritoryReturns);
+    if (id === "management") runSection(renderManagement);
+    if (isMgmtNavSection(id)) runSection(renderManagement);
+    if (isOrgNavSection(id)) runSection(renderOrgStructure);
+    } catch (err) {
+        console.error(err);
+        toast("Ошибка загрузки раздела.", "error");
+    }
 }
 
 function changeMonth(month) {
@@ -9690,38 +9735,39 @@ function changeMonth(month) {
 }
 
 function refreshAll() {
-    renderTimesheet();
+    function run(fn) { try { fn(); } catch (err) { console.error(err); } }
+    run(renderTimesheet);
     if (isSummary()) {
-        renderSalary();
-        renderRepSalary();
-        renderShopSalary();
+        run(renderSalary);
+        run(renderRepSalary);
+        run(renderShopSalary);
         if (typeof PAYROLL_VIEWS !== "undefined") {
-            renderPayrollView(PAYROLL_VIEWS.warehouse);
-            renderPayrollView(PAYROLL_VIEWS.drivers);
+            run(function () { renderPayrollView(PAYROLL_VIEWS.warehouse); });
+            run(function () { renderPayrollView(PAYROLL_VIEWS.drivers); });
         }
-        renderSummaryStaff();
-        renderAnalysis();
+        run(renderSummaryStaff);
+        run(renderAnalysis);
     }
-    renderDiscipline();
+    run(renderDiscipline);
     if (workspace() && (workspace().code === "shop" || workspace().code === "warehouse")) {
-        if (workspace().code === "shop") renderShopMetrics();
-        renderShopRevision();
-        renderShopSalesPlan();
+        if (workspace().code === "shop") run(renderShopMetrics);
+        run(renderShopRevision);
+        run(renderShopSalesPlan);
     } else if (workspace() && (workspace().code === "office" || workspace().code === "drivers")) {
-        renderShopSalesPlan();
+        run(renderShopSalesPlan);
     }
-    if (currentSection === "metricCatalog") renderMetricCatalog();
-    if (currentSection === "deptMetrics") renderDeptMetrics();
-    if (currentSection === "territoryMetrics") renderTerritoryMetrics();
-    if (currentSection === "territoryReturns") renderTerritoryReturns();
-    if (isDeptWorkSection(currentSection)) renderDeptWorkMetrics();
-    if (isMgmtNavSection(currentSection)) renderManagement();
-    if (isOrgNavSection(currentSection)) renderOrgStructure();
+    if (currentSection === "metricCatalog") run(renderMetricCatalog);
+    if (currentSection === "deptMetrics") run(renderDeptMetrics);
+    if (currentSection === "territoryMetrics") run(renderTerritoryMetrics);
+    if (currentSection === "territoryReturns") run(renderTerritoryReturns);
+    if (isDeptWorkSection(currentSection)) run(renderDeptWorkMetrics);
+    if (isMgmtNavSection(currentSection)) run(renderManagement);
+    if (isOrgNavSection(currentSection)) run(renderOrgStructure);
     if (currentSection === "users") {
-        renderAccessUsers();
-        renderStaffOrgAdmin();
+        run(renderAccessUsers);
+        run(renderStaffOrgAdmin);
     }
-    updateStats();
+    run(updateStats);
 }
 
 
@@ -15736,6 +15782,7 @@ function renderTimesheet() {
         renderSummaryOverview();
         return;
     }
+    if (!workspace()) return;
 
     renderTimesheetGroupFilter();
     ensureMonthIn(workspace());
@@ -15743,7 +15790,8 @@ function renderTimesheet() {
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
     const days = daysInMonth();
-    const filter = (document.getElementById("employeeFilter").value || "").trim().toLowerCase();
+    const filterEl = document.getElementById("employeeFilter");
+    const filter = ((filterEl && filterEl.value) || "").trim().toLowerCase();
     const groupTab = currentTimesheetWorkTabFilter();
     const employees = timesheetEmployeesForView().filter(function (e) {
         if (!filter) return true;
@@ -15757,7 +15805,8 @@ function renderTimesheet() {
         head += '<th class="' + cls + '">' + day + "<br><small>" + weekdayName(day) + "</small></th>";
     }
     head += '<th class="summary-cell">Часы</th><th class="summary-cell">Отработано дней</th><th class="summary-cell">Опоздания</th><th class="summary-cell">Минуты</th></tr>';
-    document.getElementById("timesheetHead").innerHTML = head;
+    const timesheetHead = document.getElementById("timesheetHead");
+    if (timesheetHead) timesheetHead.innerHTML = head;
 
     let body = "";
     employees.forEach(function (employee) {
@@ -20563,8 +20612,13 @@ function refreshMetricCatalogPeopleBox(metricId) {
         return;
     }
     const people = ((w && w.employees) || []).filter(function (e) {
-        if (!e || !isWorking(e) || !isTerritoryEmployee(e)) return false;
+        if (!e || !isWorking(e)) return false;
         if (employeeHomeDeptCode(e.id) !== dept) return false;
+        if (dept === "shop") {
+            if (isTerritoryEmployee(e)) return false;
+        } else if (isTerritoryMetricsMode() && !isTerritoryEmployee(e)) {
+            return false;
+        }
         if (!tabIds.length) return true;
         const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
         return tabIds.indexOf(tab) !== -1 || (metricId && shopEmployeeHasWorkMetric(e.id, metricId));
@@ -21700,15 +21754,17 @@ function setFioPositionFilter(position) {
 
 function renderEmployees() {
     if (currentWorkspaceIndex === null || isSummary()) return;
+    const host = document.getElementById("employeeList");
+    if (!host) return;
 
     const pool = directoryEmployees();
     if (!pool.length) {
-        document.getElementById("employeeList").innerHTML =
+        host.innerHTML =
             '<div class="empty-row">Сначала заведите сотрудников во вкладке «ФИО сотрудника» этого отдела.</div>';
         return;
     }
 
-    document.getElementById("employeeList").innerHTML = pool.map(function (employee) {
+    host.innerHTML = pool.map(function (employee) {
         const on = isAssignedTo(workspace(), employee.id);
         const fired = !isWorking(employee);
         return '<div class="pick-row' + (fired ? " staff-fired" : (on ? "" : " off")) + '">'
@@ -24412,7 +24468,8 @@ function normalizeMgmtIndicator(it) {
 }
 
 function mgmtIndicators() {
-    ensureManagement();
+    try { ensureManagement(); } catch (err) { console.error(err); }
+    if (!appData || !appData.management || !Array.isArray(appData.management.indicators)) return [];
     return appData.management.indicators.filter(function (x) { return x && x.is_active !== false; })
         .sort(function (a, b) { return Number(a.sort_order || 0) - Number(b.sort_order || 0); });
 }
@@ -26775,7 +26832,8 @@ function saveMgmtIndicatorFromWizard() {
 }
 
 function renderMgmtSettingsHtml() {
-    const all = (appData.management.indicators || []).slice().sort(function (a, b) {
+    try { ensureManagement(); } catch (err) { console.error(err); }
+    const all = (((appData && appData.management && appData.management.indicators) || [])).slice().sort(function (a, b) {
         return Number(a.sort_order || 0) - Number(b.sort_order || 0);
     });
     const filtered = all.filter(function (it) {
@@ -26796,6 +26854,8 @@ function renderMgmtSettingsHtml() {
         html += '<tr><td colspan="6"><div class="empty-row">В этом разделе пока нет показателей.</div></td></tr>';
     }
     filtered.forEach(function (it) {
+        try {
+        if (!it) return;
         const m = it.source_metric_id ? shopMetricCatalogById(it.source_metric_id) : null;
         const units = (it.org_unit_ids || []).map(function (id) {
             const u = spuOrgUnitById(id);
@@ -26811,6 +26871,10 @@ function renderMgmtSettingsHtml() {
             + '<td><label class="check"><input type="checkbox"' + (it.show_on_dashboard ? " checked" : "")
             + " onchange=\"setMgmtIndicatorDash('" + it.indicator_id + "',this.checked)\"> Да</label></td>"
             + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openMgmtIndicatorForm(\'' + it.indicator_id + '\')">Настроить</button></td></tr>';
+        } catch (rowErr) {
+            console.error(rowErr);
+            html += '<tr><td colspan="6"><div class="note">Ошибка загрузки конкретного элемента</div></td></tr>';
+        }
     });
     html += "</tbody></table></div>";
     return html;
@@ -28131,7 +28195,13 @@ function ensureCustomerReturns(data) {
             a.is_active = false;
         }
     });
-    store.items.forEach(crNormalizeItem);
+    store.items.forEach(function (it, idx) {
+        try {
+            crNormalizeItem(it, store);
+        } catch (itemErr) {
+            console.error("Ошибка загрузки конкретного элемента возврата", idx, itemErr);
+        }
+    });
     store.vehicles.forEach(function (v, i) {
         if (!v) return;
         if (!v.vehicle_id) v.vehicle_id = nextPrefixedId("veh", store.vehicles.map(function (x) { return x && x.vehicle_id; }));
@@ -28144,12 +28214,14 @@ function ensureCustomerReturns(data) {
 }
 
 function crStore() {
-    return ensureCustomerReturns(appData);
+    const store = ensureCustomerReturns(appData);
+    if (store) return store;
+    return { items: [], vehicles: [], adjustments: [], reasons: [], outcomes: [] };
 }
 
-function crNormalizeItem(it) {
+function crNormalizeItem(it, store) {
     if (!it || typeof it !== "object") return it;
-    if (!it.return_id) it.return_id = crNextReturnId();
+    if (!it.return_id) it.return_id = crNextReturnId(store);
     if (!it.date) it.date = currentMonthValue() + "-01";
     if (it.sales_author_employee_id == null) it.sales_author_employee_id = "";
     if (it.driver_employee_id == null) it.driver_employee_id = "";
@@ -28215,8 +28287,9 @@ function crNormalizeItem(it) {
     return it;
 }
 
-function crNextReturnId() {
-    const ids = (crStore().items || []).map(function (x) { return x && x.return_id; });
+function crNextReturnId(store) {
+    const root = store || (appData && appData.customerReturns) || { items: [] };
+    const ids = (root.items || []).map(function (x) { return x && x.return_id; });
     return nextPrefixedId("ret", ids);
 }
 
@@ -28744,6 +28817,7 @@ function crQty(list) {
 function renderTerritoryReturns() {
     const root = document.getElementById("territoryReturnsRoot");
     if (!root) return;
+    try {
     ensureCustomerReturns(appData);
     if (!crCanSeeTab(crUi.tab)) {
         const tabs = ["all", "video", "recount", "give", "rebill", "driver", "extra", "analytics", "settings"];
@@ -28855,6 +28929,10 @@ function renderTerritoryReturns() {
 
     html += "</div>";
     root.innerHTML = html;
+    } catch (err) {
+        console.error(err);
+        root.innerHTML = '<div class="note">Ошибка загрузки конкретного элемента. Остальные разделы доступны.</div>';
+    }
 }
 
 function crRenderRecountCopyBar(list) {
@@ -30693,6 +30771,7 @@ function requestedLoginView() {
 }
 
 function init() {
+    try {
     try { verifyRepPayExample(); } catch (err) { console.error(err); }
     try {
         appData = loadAppData();
@@ -30723,6 +30802,11 @@ function init() {
         }
     });
     try { tryRestoreSession(); } catch (err) { console.error(err); }
+    } catch (bootErr) {
+        console.error(bootErr);
+        const subtitle = document.getElementById("loginSubtitle");
+        if (subtitle) subtitle.textContent = "Ошибка загрузки приложения. Обновите страницу.";
+    }
 }
 
 init();
