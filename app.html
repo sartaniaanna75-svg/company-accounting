@@ -776,6 +776,8 @@
             border-radius: 8px;
             padding: 8px 14px;
             font-weight: 600;
+            cursor: pointer;
+            pointer-events: auto;
         }
 
         .metrics-tab.active {
@@ -9076,7 +9078,7 @@ function applyModeUI() {
         if (el.getAttribute("data-org") === "1" && !el.classList.contains("nav-btn")) {
             show = isOrgMode();
         }
-        if (isTerritoryMetricsMode() && !el.classList.contains("nav-btn")) {
+        if (isTerritoryMetricsMode() && el.classList.contains("menu-title")) {
             show = mode === "territoryMetricsHub";
         }
         el.style.display = show ? "" : "none";
@@ -9162,27 +9164,21 @@ function allowedOrgSections() {
 
 function allowedSpuSections() {
     const list = [];
-    const open = canOpenManagement() || userHasPerm("management", "view");
+    const open = isAppAdmin() || canOpenManagement() || userHasPerm("management", "view");
     if (open) {
-        list.push("management", "management-planfact");
-        if (userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement()) list.push("management-meetings");
-        if (userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement()) list.push("management-tasks");
-        if (canOpenManagement()) list.push("management-events");
-        list.push("management-finance");
+        list.push("management", "management-planfact", "management-meetings", "management-tasks", "management-events", "management-finance");
     }
-    if (canEditMgmtIndicators() || isAppAdmin()) list.push("management-settings");
+    if (canEditMgmtIndicators() || isAppAdmin() || open) list.push("management-settings");
     return list;
 }
 
 function allowedSections() {
     const code = workspace() && workspace().code;
     if (isTerritoryMetricsMode()) {
-        const list = [];
-        if (isAppAdmin() || userHasPerm("metrics", "view")) list.push("territoryMetrics");
+        const list = ["territoryMetrics"];
         if (typeof canViewCustomerReturns === "function" && canViewCustomerReturns()) list.push("territoryReturns");
         else if (isAppAdmin() || userHasPerm("metrics", "view") || userHasPerm("customerReturns", "view")) list.push("territoryReturns");
-        if (canEditShopMetricCatalog()) list.push("metricCatalog");
-        if (!list.length) list.push("territoryMetrics");
+        if (isAppAdmin() || canEditShopMetricCatalog()) list.push("metricCatalog");
         return list;
     }
     if (isOrgMode()) {
@@ -9660,65 +9656,40 @@ function repairTerritoryMetricHubAssignment(it) {
     if (!it || !it.id || metricDepartmentId(it) === "shop") return;
     if (canonicalMetricId(it.id) === METRIC_RETURNS_COUNT_ID) return;
     const nameKey = typeof shopMetricNameKey === "function" ? shopMetricNameKey(it.name) : String(it.name || "").toLowerCase();
-    if (nameKey === "тест офис") {
-        it.department_id = "office";
-        it.territory_category = "office";
-        it.work_tab_ids = ["main"];
+    const named = {
+        "тест офис": { department_id: "office", territory_category: "office", work_tab_ids: ["main"] },
+        "тест склад": { department_id: "warehouse", territory_category: "warehouse", work_tab_ids: ["loaders", "pickers", "managers"] },
+        "тест водитель": { department_id: "drivers", territory_category: "drivers", work_tab_ids: ["drivers"] },
+        "тест опт": { department_id: "drivers", territory_category: "sales_opt", work_tab_ids: ["sales"] },
+        "тест розница": { department_id: "warehouse", territory_category: "sales_retail", work_tab_ids: ["cashiers"] }
+    };
+    if (named[nameKey]) {
+        it.department_id = named[nameKey].department_id;
+        it.territory_category = named[nameKey].territory_category;
+        it.work_tab_ids = named[nameKey].work_tab_ids.slice();
         normalizeMetricCatalogItemTabs(it);
         return;
     }
-    if (nameKey === "тест склад") {
-        it.department_id = "warehouse";
-        it.territory_category = "warehouse";
-        it.work_tab_ids = ["loaders", "pickers", "managers"];
-        normalizeMetricCatalogItemTabs(it);
-        return;
-    }
-    if (nameKey === "тест опт") {
-        it.department_id = "drivers";
-        it.territory_category = "sales_opt";
-        it.work_tab_ids = ["sales"];
-        normalizeMetricCatalogItemTabs(it);
-        return;
-    }
-    if (nameKey === "тест розница") {
-        it.department_id = "warehouse";
-        it.territory_category = "sales_retail";
-        it.work_tab_ids = ["cashiers"];
-        normalizeMetricCatalogItemTabs(it);
-        return;
-    }
-    const dept = metricDepartmentId(it);
-    const tabs = metricWorkTabIds(it);
-    let cat = String(it.territory_category || "");
-    if (!territoryMetricCategoryById(cat) || cat === "returns") cat = "";
-    if (dept === "warehouse") {
-        const ops = tabs.filter(function (t) { return t !== "cashiers"; });
-        if (cat === "warehouse" || (ops.length && cat !== "sales_retail")) {
-            it.territory_category = "warehouse";
-            it.department_id = "warehouse";
-            it.work_tab_ids = ops.length ? ops : ["loaders", "pickers", "managers"];
-            it.work_tab_ids = it.work_tab_ids.filter(function (t) { return t !== "cashiers"; });
-        } else {
-            it.territory_category = "sales_retail";
-            it.department_id = "warehouse";
-            it.work_tab_ids = ["cashiers"];
-        }
-    } else if (dept === "drivers") {
-        const hasSales = tabs.indexOf("sales") !== -1;
-        const hasDrivers = tabs.indexOf("drivers") !== -1;
-        if (cat === "sales_opt" || (hasSales && !hasDrivers)) {
-            it.territory_category = "sales_opt";
-            it.work_tab_ids = ["sales"];
-        } else if (cat === "drivers" || (hasDrivers && !hasSales) || !cat) {
-            it.territory_category = "drivers";
-            it.work_tab_ids = hasDrivers ? ["drivers"] : ["drivers"];
-        }
-    } else if (dept === "office" && cat !== "common") {
-        it.territory_category = "office";
-        it.work_tab_ids = ["main"];
-    } else if (!cat) {
+    if (!it.territory_category || !territoryMetricCategoryById(it.territory_category) || it.territory_category === "returns") {
         it.territory_category = inferTerritoryMetricCategory(it);
+    }
+    const cat = it.territory_category;
+    if (cat === "warehouse") {
+        const tabs = metricWorkTabIds(it).filter(function (t) { return t !== "cashiers"; });
+        it.department_id = "warehouse";
+        it.work_tab_ids = tabs.length ? tabs : ["loaders", "pickers", "managers"];
+    } else if (cat === "sales_retail") {
+        it.department_id = "warehouse";
+        it.work_tab_ids = ["cashiers"];
+    } else if (cat === "sales_opt") {
+        it.department_id = "drivers";
+        it.work_tab_ids = ["sales"];
+    } else if (cat === "drivers") {
+        it.department_id = "drivers";
+        it.work_tab_ids = ["drivers"];
+    } else if (cat === "office") {
+        it.department_id = "office";
+        it.work_tab_ids = ["main"];
     }
     normalizeMetricCatalogItemTabs(it);
 }
@@ -19486,6 +19457,10 @@ function renderAnalysis() {
 ============================================================ */
 function canEditShopMetricCatalog() {
     if (isAppAdmin()) return true;
+    if (isTerritoryMetricsMode()) {
+        if (userHasPerm("kpi", "manage") || userHasPerm("kpi", "edit") || userHasPerm("settings", "edit")) return true;
+        if (isTableAdmin()) return true;
+    }
     if (userHasPerm("kpi", "manage") || userHasPerm("kpi", "edit") || userHasPerm("settings", "edit")) {
         if (isSummary() || isAdminEntry()) return true;
         if (workspace() && (workspace().code === "shop" || isGenericMetricsDept(workspace().code))) return true;
@@ -19900,6 +19875,8 @@ function isCentralMetricCatalogScreen() {
 function canMutateMetricCatalogUi() {
     if (!canEditShopMetricCatalog()) return false;
     if (currentSection === "deptMetrics") return false;
+    const modal = document.getElementById("metricCatalogModalBack");
+    if (modal && modal.classList.contains("show")) return true;
     if (isTerritoryMetricsMode()) return currentSection === "metricCatalog";
     if (isCompanyWideCatalogMode()) return currentSection === "metricCatalog";
     return !!(workspace() && workspace().code === "shop" && currentSection === "metricCatalog");
@@ -20929,13 +20906,6 @@ function setTerritoryMetricsHub(id) {
         return;
     }
     if (!TERRITORY_METRICS_HUB.some(function (s) { return s.id === id; })) return;
-    if (!isTerritoryMetricsMode()) {
-        const code = workspace() && workspace().code;
-        if (!isGenericMetricsDept(code)) return;
-        if (id !== code && !(id === "sales_retail" && code === "warehouse") && !(id === "sales_opt" && code === "drivers")) {
-            id = code;
-        }
-    }
     territoryMetricsHubId = id;
     saveSession();
     currentSection = "territoryMetrics";
