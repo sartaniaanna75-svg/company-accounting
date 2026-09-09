@@ -339,6 +339,11 @@
         .mgmt-bad { background: #fef2f2; }
         .mgmt-muted { background: #f8fafc; color: #94a3b8; }
         .mgmt-src { font-size: 11px; color: var(--muted); }
+        .spu-ind-note { font-size: 12px; color: var(--muted); margin: 0 0 10px; line-height: 1.4; }
+        .spu-ind-hubs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+        .mi-add-origin { display: grid; gap: 8px; margin: 8px 0 12px; }
+        .mi-add-origin label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
+        .mi-add-origin span { line-height: 1.35; }
         .mgmt-manual { width: 92px; padding: 3px 6px; }
         .mgmt-delta-up { color: #166534; font-weight: 600; }
         .mgmt-delta-down { color: #b91c1c; font-weight: 600; }
@@ -3577,7 +3582,7 @@
             Ввод финансовых показателей
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-settings" onclick="showSection('management-settings', this)">
-            Показатели
+            Настройка показателей
         </button>
         <div class="menu-title" data-for="summary" data-org="1">Оргструктура</div>
         <button type="button" class="nav-btn" data-for="summary" data-org="1" data-section="org-chart" onclick="showSection('org-chart', this)">
@@ -4782,11 +4787,121 @@ const TERRITORY_METRIC_CATEGORIES = [
     { id: "common", label: "Общие метрики", departmentId: "", workTabIds: null, allTerritory: true }
 ];
 const TERRITORY_METRICS_HUB = TERRITORY_METRIC_CATEGORIES.filter(function (c) { return c.id !== "returns"; });
+const SPU_ORG_UNITS = [
+    { id: "office", label: "Офис", dept: "office", tabs: ["main"], category: "office" },
+    { id: "warehouse", label: "Склад", dept: "warehouse", tabs: ["loaders", "pickers", "managers"], category: "warehouse" },
+    { id: "logistics", label: "Логистика", dept: "drivers", tabs: ["drivers"], category: "drivers" },
+    { id: "drivers", label: "Водители", dept: "drivers", tabs: ["drivers"], category: "drivers" },
+    { id: "sales_reps", label: "Торговые представители", dept: "drivers", tabs: ["sales"], category: "sales_opt", salesRep: true },
+    { id: "sales_opt", label: "Продажи ОПТ", dept: "drivers", tabs: ["sales"], category: "sales_opt" },
+    { id: "sales_retail", label: "Продажи Розница", dept: "warehouse", tabs: ["cashiers"], category: "sales_retail" },
+    { id: "shop", label: "Магазин Володарского", dept: "shop", tabs: [], category: "" }
+];
 function isGenericMetricsDept(code) {
     return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
 }
 function territoryMetricCategoryById(id) {
     return TERRITORY_METRIC_CATEGORIES.find(function (c) { return c.id === id; }) || null;
+}
+function spuOrgUnitById(id) {
+    return SPU_ORG_UNITS.find(function (u) { return u.id === id; }) || null;
+}
+function orgUnitMatchesTerritoryHub(unitId, spec) {
+    if (!spec) return false;
+    if (spec.allTerritory) return unitId === "office" || unitId === "warehouse" || unitId === "logistics";
+    const u = spuOrgUnitById(unitId);
+    if (!u) return false;
+    if (u.category && u.category === spec.id) return true;
+    if (spec.id === "drivers" && (unitId === "drivers" || unitId === "logistics")) return true;
+    if (spec.id === "sales_opt" && (unitId === "sales_opt" || unitId === "sales_reps")) return true;
+    return false;
+}
+function employeesForOrgUnit(unitId) {
+    const u = spuOrgUnitById(unitId);
+    if (!u) return [];
+    const w = findWorkspaceByCode(u.dept);
+    const people = ((w && w.employees) || []).filter(function (e) {
+        return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID && isWorking(e);
+    });
+    if (u.salesRep) return people.filter(function (e) { return isSalesRep(e); });
+    if (u.dept !== "shop" && u.tabs && u.tabs.length) {
+        return people.filter(function (e) {
+            const tab = employeePrimaryWorkTabId(e, u.dept) || inferWorkTabIdFromPosition(u.dept, e.position);
+            return u.tabs.indexOf(tab) !== -1;
+        });
+    }
+    return people;
+}
+function mergeMetricWorkTabsFromOrgUnits(item) {
+    if (!item || !Array.isArray(item.org_unit_ids) || !item.org_unit_ids.length) return;
+    const dept = metricDepartmentId(item);
+    if (dept === "shop") return;
+    const allowed = metricTabsForDept(dept).map(function (t) { return t.id; });
+    const tabs = metricWorkTabIds(item).slice();
+    item.org_unit_ids.forEach(function (uid) {
+        const u = spuOrgUnitById(uid);
+        if (!u || u.dept !== dept) return;
+        (u.tabs || []).forEach(function (tab) {
+            if (allowed.indexOf(tab) !== -1 && tabs.indexOf(tab) === -1) tabs.push(tab);
+        });
+    });
+    if (tabs.length) {
+        item.work_tab_ids = tabs;
+        item.section_id = tabs[0];
+        item.metric_tab_id = tabs[0];
+    }
+}
+function applyMetricOrgUnitAssignments(item, unitIds) {
+    if (!item || !item.id) return;
+    const ids = [];
+    (unitIds || []).forEach(function (id) {
+        if (id && ids.indexOf(id) === -1 && spuOrgUnitById(id)) ids.push(id);
+    });
+    item.org_unit_ids = ids;
+    mergeMetricWorkTabsFromOrgUnits(item);
+    if (typeof normalizeMetricCatalogItemTabs === "function") normalizeMetricCatalogItemTabs(item);
+    ids.forEach(function (uid) {
+        employeesForOrgUnit(uid).forEach(function (e) {
+            if (e && e.id) applyShopEmployeeWorkMetric(e.id, item.id, true);
+        });
+    });
+}
+function defaultOrgUnitsForMetric(metric, indicator) {
+    if (!metric) {
+        if (indicator && indicator.department_id === "shop") return ["shop"];
+        if (indicator && indicator.department_id === "warehouse") return ["warehouse"];
+        if (indicator && indicator.department_id === "office") return ["office"];
+        if (indicator && indicator.department_id === "drivers") return ["drivers", "logistics"];
+        return [];
+    }
+    if (metricDepartmentId(metric) === "shop" && !metricTerritoryCategory(metric)) return ["shop"];
+    const cat = metricTerritoryCategory(metric);
+    if (cat === "sales_opt") return ["sales_opt", "sales_reps"];
+    if (cat === "drivers") return ["drivers", "logistics"];
+    if (cat === "warehouse") return ["warehouse"];
+    if (cat === "sales_retail") return ["sales_retail"];
+    if (cat === "office") return ["office"];
+    if (cat === "common") return ["office", "warehouse", "logistics"];
+    if (metricDepartmentId(metric) === "drivers") return ["drivers"];
+    if (metricDepartmentId(metric) === "warehouse") return ["warehouse"];
+    if (metricDepartmentId(metric) === "office") return ["office"];
+    return [];
+}
+function ensureSpuIndicatorOrgLinks() {
+    if (!appData || !appData.management || !Array.isArray(appData.management.indicators)) return;
+    (appData.management.indicators || []).forEach(function (it) {
+        if (!it || it.source_type !== "worktime_metric" || !it.source_metric_id) return;
+        const m = shopMetricCatalogById(it.source_metric_id);
+        if (!m) return;
+        if (!Array.isArray(it.org_unit_ids) || !it.org_unit_ids.length) {
+            it.org_unit_ids = defaultOrgUnitsForMetric(m, it);
+        }
+        if (!Array.isArray(m.org_unit_ids) || !m.org_unit_ids.length) {
+            m.org_unit_ids = (it.org_unit_ids || []).slice();
+            mergeMetricWorkTabsFromOrgUnits(m);
+        }
+        m.spu_indicator_id = m.spu_indicator_id || it.indicator_id;
+    });
 }
 const LEGACY_DEPT_NAMES = ["Магазин", "Водители", "Логистика + Торговая"];
 const SUMMARY_DEFAULT = { code: "summary", name: "Общая", pin: "5555" };
@@ -9318,7 +9433,7 @@ function sectionTitle(id) {
         "management-meetings": "Протокол встреч",
         "management-tasks": "Ежедневные задачи",
         "management-events": "График мероприятий",
-        "management-settings": "Показатели",
+        "management-settings": "Настройка показателей",
         "org-chart": "Оргструктура — схема",
         "org-settings": "Оргструктура — настройки"
     };
@@ -9706,6 +9821,11 @@ function repairTerritoryMetricHubAssignment(it) {
     if (!it.territory_category || !territoryMetricCategoryById(it.territory_category) || it.territory_category === "returns") {
         it.territory_category = inferTerritoryMetricCategory(it);
     }
+    if (Array.isArray(it.org_unit_ids) && it.org_unit_ids.length) {
+        mergeMetricWorkTabsFromOrgUnits(it);
+        normalizeMetricCatalogItemTabs(it);
+        return;
+    }
     const cat = it.territory_category;
     if (cat === "warehouse") {
         const tabs = metricWorkTabIds(it).filter(function (t) { return t !== "cashiers"; });
@@ -9744,6 +9864,11 @@ function migrateTerritoryMetricCategories() {
 function metricBelongsToTerritoryHub(item, spec) {
     if (!item || !spec || !shopCatalogItemShownInUi(item)) return false;
     if (metricDepartmentId(item) === "shop") return false;
+    if (Array.isArray(item.org_unit_ids) && item.org_unit_ids.length) {
+        return item.org_unit_ids.some(function (uid) {
+            return orgUnitMatchesTerritoryHub(uid, spec);
+        });
+    }
     const cat = metricTerritoryCategory(item);
     if (spec.allTerritory) return cat === "common";
     return cat === spec.id;
@@ -22831,6 +22956,7 @@ const MGMT_PF_UI_KEY = "worktime_spu_planfact_ui_v1";
 const MGMT_DASH_UI_KEY = "worktime_spu_dash_ui_v1";
 let mgmtDashPanel = "opt";
 let mgmtDashWeek = "";
+let mgmtSettingsHub = "";
 
 let orgChartScale = 1;
 let orgCollapsed = {};
@@ -23642,6 +23768,7 @@ function ensureManagement() {
     appData.spu = root;
     ensureSpuDepartments();
     ensureSpuDefaultIndicators();
+    ensureSpuIndicatorOrgLinks();
     ensureSpuOrgHistory();
 }
 
@@ -24114,7 +24241,12 @@ function normalizeMgmtIndicator(it) {
     it.unit = it.unit || "number";
     it.owner_employee_id = it.owner_employee_id || "";
     it.invert_score = !!it.invert_score;
-    it.spu_department_id = it.spu_department_id || mgmtDefaultSpuDeptId(it);
+    if (it.spu_hub === "company") {
+        it.spu_department_id = it.spu_department_id || "";
+    } else {
+        it.spu_department_id = it.spu_department_id || mgmtDefaultSpuDeptId(it);
+    }
+    if (!it.spu_hub) it.spu_hub = mgmtHubFromSpuDept(it.spu_department_id);
     it.score_direction = mgmtScoreDirection(it);
     it.invert_score = it.score_direction === "LOWER_IS_BETTER";
     const good = Number(it.good_pct);
@@ -24123,6 +24255,7 @@ function normalizeMgmtIndicator(it) {
     it.warn_pct = Number.isFinite(warn) ? warn : 80;
     it.show_on_dashboard = it.show_on_dashboard !== false;
     it.is_active = it.is_active !== false;
+    if (!Array.isArray(it.org_unit_ids)) it.org_unit_ids = [];
     it.sort_order = Number(it.sort_order || 10);
     return it;
 }
@@ -24412,13 +24545,13 @@ function mgmtFormatPct(pct) {
 }
 
 function mgmtSourceLabel(type) {
-    if (type === "worktime_metric") return "METRIC";
-    if (type === "timesheet") return "TIMESHEET";
+    if (type === "worktime_metric") return "Метрики";
+    if (type === "timesheet") return "Табель";
     if (type === "kpi") return "KPI";
-    if (type === "sales_plan") return "SALES_PLAN";
-    if (type === "manual") return "MANUAL";
-    if (type === "calculated") return "CALCULATED";
-    if (type === "one_c_future") return "ONE_C_FUTURE";
+    if (type === "sales_plan") return "План продаж";
+    if (type === "manual") return "Ручной ввод";
+    if (type === "calculated") return "Расчёт";
+    if (type === "one_c_future") return "1С (позже)";
     return type || "—";
 }
 
@@ -24489,6 +24622,13 @@ function mgmtTimesheetFact(deptCode, agg, days) {
 function mgmtMetricFactDeptCodes(deptCode, metricId) {
     const m = shopMetricCatalogById(metricId);
     if (m) {
+        const fromUnits = {};
+        (m.org_unit_ids || []).forEach(function (uid) {
+            const u = spuOrgUnitById(uid);
+            if (u && u.dept) fromUnits[u.dept] = true;
+        });
+        const unitDepts = Object.keys(fromUnits);
+        if (unitDepts.length) return unitDepts;
         const cat = metricTerritoryCategory(m);
         const spec = territoryMetricCategoryById(cat);
         if (spec && spec.allTerritory) return TERRITORY_DEPT_CODES.slice();
@@ -24743,7 +24883,7 @@ function renderManagement() {
             { id: "tasks", label: "Ежедневные задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement() },
             { id: "events", label: "График мероприятий", show: canOpenManagement() },
             { id: "finance", label: "Ввод финансовых показателей", show: userHasPerm("management", "view") || canOpenManagement() },
-            { id: "settings", label: "⚙ Показатели", show: canEditMgmtIndicators() || isAppAdmin() || canOpenManagement() }
+            { id: "settings", label: "Настройка показателей", show: canEditMgmtIndicators() || isAppAdmin() || canOpenManagement() }
         ].filter(function (t) { return t.show; });
         if (!items.length) {
             body.innerHTML = '<div class="note">Нет доступа к СПУ.</div>';
@@ -24762,7 +24902,7 @@ function renderManagement() {
             meetings: "Протокол встреч",
             tasks: "Ежедневные задачи",
             events: "График мероприятий",
-            settings: "Показатели"
+            settings: "Настройка показателей"
         };
         const head = document.getElementById("mgmtPageTitle");
         if (head) head.textContent = titles[mgmtTab] || "СПУ";
@@ -26101,23 +26241,402 @@ function toggleMgmtWeekLeader(weekKey, empId, on) {
     saveApp();
 }
 
+function mgmtSettingsHubs() {
+    return [
+        { id: "", label: "Все показатели" },
+        { id: "company", label: "Компания" },
+        { id: "spu_sales", label: "Продажи" },
+        { id: "spu_warehouse", label: "Склад" },
+        { id: "spu_logistics", label: "Логистика" },
+        { id: "spu_shop", label: "Магазин" },
+        { id: "spu_personnel", label: "Персонал" },
+        { id: "spu_finance", label: "Финансы" },
+        { id: "other", label: "Другое" }
+    ];
+}
+
+function mgmtHubFromSpuDept(deptId) {
+    const d = String(deptId || "");
+    if (!d || d === "company") return "company";
+    if (d === "spu_sales") return "spu_sales";
+    if (d === "spu_warehouse") return "spu_warehouse";
+    if (d === "spu_logistics") return "spu_logistics";
+    if (d === "spu_shop") return "spu_shop";
+    if (d === "spu_personnel") return "spu_personnel";
+    if (d === "spu_finance") return "spu_finance";
+    return "other";
+}
+
+function mgmtIndicatorHubKey(it) {
+    if (it && it.spu_hub) return it.spu_hub;
+    return mgmtHubFromSpuDept(it && it.spu_department_id);
+}
+
+function mgmtSpuHubLabel(it) {
+    const key = mgmtIndicatorHubKey(it);
+    const hit = mgmtSettingsHubs().find(function (h) { return h.id === key; });
+    return (hit && hit.label) || "Другое";
+}
+
+function mgmtSpuDisplaySectionOptions(selected) {
+    let html = "";
+    mgmtSettingsHubs().forEach(function (h) {
+        if (!h.id) return;
+        html += '<option value="' + h.id + '"' + (selected === h.id ? " selected" : "") + ">" + escapeHtml(h.label) + "</option>";
+    });
+    return html;
+}
+
+function mgmtApplySpuHub(it, hubId) {
+    const hub = hubId || "company";
+    it.spu_hub = hub;
+    if (hub === "company") it.spu_department_id = "";
+    else if (hub === "other") it.spu_department_id = it.spu_department_id || "spu_office";
+    else it.spu_department_id = hub;
+}
+
+function mgmtIndicatorOriginKind(it) {
+    if (it && it.source_type === "worktime_metric" && it.source_metric_id) {
+        const m = shopMetricCatalogById(it.source_metric_id);
+        if (m && metricDepartmentId(m) === "shop" && !metricTerritoryCategory(m)) return "shop";
+        return "territory";
+    }
+    return "own";
+}
+
+function mgmtIndicatorOriginLabel(it) {
+    const kind = mgmtIndicatorOriginKind(it);
+    if (kind === "shop") {
+        const m = shopMetricCatalogById(it.source_metric_id);
+        return "Магазин Володарского → Метрики" + (m ? " → " + m.name : "");
+    }
+    if (kind === "territory") {
+        const m = shopMetricCatalogById(it.source_metric_id);
+        const spec = m ? territoryMetricCategoryById(metricTerritoryCategory(m)) : null;
+        return "Территория → Метрики"
+            + (spec ? " → " + spec.label : "")
+            + (m ? " → " + m.name : "");
+    }
+    return "Собственный показатель СПУ";
+}
+
+function mgmtLinkedIndicatorByMetricId(metricId, exceptId) {
+    const mid = canonicalMetricId(metricId);
+    if (!mid) return null;
+    ensureManagement();
+    return (appData.management.indicators || []).find(function (x) {
+        if (!x || x.indicator_id === exceptId) return false;
+        return x.source_type === "worktime_metric" && canonicalMetricId(x.source_metric_id) === mid;
+    }) || null;
+}
+
+function shopMetricsForSpuLink() {
+    return shopMetricCatalogItems().filter(function (it) {
+        if (!it || it.active === false || it.show_column === false) return false;
+        if (it.fill_type === "auto_sum") return false;
+        return metricDepartmentId(it) === "shop" && !metricTerritoryCategory(it);
+    }).sort(function (a, b) {
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
+    });
+}
+
+function territoryMetricsForSpuLink(catId) {
+    return shopMetricCatalogItems().filter(function (it) {
+        if (!it || it.active === false || it.show_in_work_metrics === false || it.show_column === false) return false;
+        if (it.fill_type === "auto_sum") return false;
+        const spec = territoryMetricCategoryById(catId);
+        if (!spec) return false;
+        return metricBelongsToTerritoryHub(it, spec);
+    }).sort(function (a, b) {
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
+    });
+}
+
+function setMgmtSettingsHub(id) {
+    mgmtSettingsHub = String(id || "");
+    renderManagement();
+}
+
+function setMgmtIndicatorDash(id, on) {
+    if (!canEditMgmtIndicators()) return;
+    const it = (appData.management.indicators || []).find(function (x) { return x && x.indicator_id === id; });
+    if (!it) return;
+    it.show_on_dashboard = !!on;
+    saveApp();
+    renderManagement();
+}
+
+function setMgmtIndicatorHubFromList(id, hub) {
+    if (!canEditMgmtIndicators()) return;
+    const it = (appData.management.indicators || []).find(function (x) { return x && x.indicator_id === id; });
+    if (!it) return;
+    mgmtApplySpuHub(it, hub);
+    saveApp();
+    renderManagement();
+}
+
+function mgmtOrgUnitsChecksHtml(selectedIds) {
+    const on = {};
+    (selectedIds || []).forEach(function (id) { on[id] = true; });
+    return SPU_ORG_UNITS.map(function (u) {
+        return '<label><input type="checkbox" class="mi-org-unit" value="' + u.id + '"'
+            + (on[u.id] ? " checked" : "") + "><span>" + escapeHtml(u.label) + "</span></label>";
+    }).join("");
+}
+
+function collectMgmtAddOrgUnits() {
+    const ids = [];
+    document.querySelectorAll(".mi-org-unit:checked").forEach(function (el) {
+        if (el.value) ids.push(el.value);
+    });
+    return ids;
+}
+
+function defaultUnitsForAddOrigin(origin, cat) {
+    if (origin === "shop") return ["shop"];
+    if (cat === "sales_opt") return ["sales_opt", "sales_reps"];
+    if (cat === "drivers") return ["drivers", "logistics"];
+    if (cat === "warehouse") return ["warehouse"];
+    if (cat === "sales_retail") return ["sales_retail"];
+    if (cat === "office") return ["office"];
+    if (cat === "common") return ["office", "warehouse", "logistics"];
+    return [];
+}
+
+function openMgmtIndicatorAddWizard(id) {
+    if (!canEditMgmtIndicators()) return;
+    const it = id ? ((appData.management.indicators || []).find(function (x) { return x && x.indicator_id === id; }) || null) : null;
+    const kind = it ? mgmtIndicatorOriginKind(it) : "shop";
+    const origin = it ? (kind === "own" ? "own" : kind) : "shop";
+    const html = "<h3>" + (it ? "Настройка показателя" : "Настройка показателя") + "</h3>"
+        + '<div class="note">Метрика не копируется. Выбирается существующая metric_id, назначаются подразделения и место на панели СПУ. Факт вводится только в рабочих Метриках.</div>'
+        + '<input type="hidden" id="miEditId" value="' + escapeAttribute((it && it.indicator_id) || "") + '">'
+        + '<div class="form-group"><label>Источник</label>'
+        + '<div class="mi-add-origin">'
+        + '<label><input type="radio" name="miAddOrigin" value="shop"' + (origin === "shop" ? " checked" : "") + ' onchange="refreshMgmtAddWizard()"><span>Метрики магазина Володарского</span></label>'
+        + '<label><input type="radio" name="miAddOrigin" value="territory"' + (origin === "territory" ? " checked" : "") + ' onchange="refreshMgmtAddWizard()"><span>Территория → Метрики</span></label>'
+        + '<label><input type="radio" name="miAddOrigin" value="own"' + (origin === "own" ? " checked" : "") + ' onchange="refreshMgmtAddWizard()"><span>Собственный показатель СПУ (без рабочей метрики)</span></label>'
+        + "</div></div>"
+        + '<div id="miAddBody"></div>'
+        + '<div class="form-group full" id="miAddDupHint"></div>'
+        + '<div class="mgmt-ind-actions">'
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button>'
+        + '<button type="button" class="btn btn-primary" onclick="saveMgmtIndicatorFromWizard()">Сохранить</button>'
+        + "</div>";
+    openMgmtModal(html, "mgmt-ind-modal");
+    refreshMgmtAddWizard(it);
+}
+
+function mgmtAddWizardOrigin() {
+    const el = document.querySelector('input[name="miAddOrigin"]:checked');
+    return (el && el.value) || "shop";
+}
+
+function refreshMgmtAddWizard(preset) {
+    const box = document.getElementById("miAddBody");
+    if (!box) return;
+    const editId = (document.getElementById("miEditId") || {}).value || "";
+    const it = preset || (editId ? ((appData.management.indicators || []).find(function (x) {
+        return x && x.indicator_id === editId;
+    }) || null) : null);
+    const origin = mgmtAddWizardOrigin();
+    const linked = it && it.source_metric_id ? shopMetricCatalogById(it.source_metric_id) : null;
+    let defaultHub = origin === "shop" ? "spu_shop" : (origin === "territory" ? "spu_sales" : "spu_finance");
+    if (it) defaultHub = mgmtIndicatorHubKey(it);
+    const selectedMetricId = linked ? linked.id : "";
+    const selectedCat = linked ? (metricTerritoryCategory(linked) || "sales_opt") : "sales_opt";
+    const selectedUnits = (it && it.org_unit_ids && it.org_unit_ids.length)
+        ? it.org_unit_ids
+        : (linked && linked.org_unit_ids && linked.org_unit_ids.length ? linked.org_unit_ids : defaultUnitsForAddOrigin(origin, selectedCat));
+    let inner = "";
+    if (origin === "shop") {
+        inner += '<div class="form-group full"><label for="miAddMetric">Показатель / метрика</label><select id="miAddMetric">';
+        shopMetricsForSpuLink().forEach(function (m) {
+            inner += '<option value="' + escapeAttribute(m.id) + '"' + (selectedMetricId === m.id ? " selected" : "") + ">"
+                + escapeHtml(m.name) + "</option>";
+        });
+        inner += "</select></div>";
+    } else if (origin === "territory") {
+        inner += '<div class="form-group full"><label for="miAddTerrCat">Категория метрики</label><select id="miAddTerrCat" onchange="refreshMgmtAddTerritoryMetrics()">';
+        TERRITORY_METRIC_CATEGORIES.forEach(function (c) {
+            if (c.id === "returns") return;
+            inner += '<option value="' + c.id + '"' + (selectedCat === c.id ? " selected" : "") + ">" + escapeHtml(c.label) + "</option>";
+        });
+        inner += '</select></div><div class="form-group full"><label for="miAddMetric">Показатель / метрика</label><select id="miAddMetric"></select></div>';
+    } else {
+        inner += '<div class="form-group full"><label for="miAddName">Название</label><input id="miAddName" maxlength="120" placeholder="Например: Чистая прибыль" value="'
+            + escapeAttribute((it && it.name) || "") + '"></div>'
+            + '<div class="form-group"><label for="miAddUnit">Тип</label><select id="miAddUnit">'
+            + [["number", "Число / количество"], ["money", "Сумма, ₽"], ["percent", "Процент"], ["people", "Количество людей"]].map(function (p) {
+                return '<option value="' + p[0] + '"' + ((it && it.unit) === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+            }).join("") + "</select></div>"
+            + '<div class="form-group"><label for="miAddSource">Источник данных</label><select id="miAddSource">'
+            + [["manual", "Ручной ввод"], ["calculated", "Расчёт"], ["one_c_future", "Будущий источник 1С"]].map(function (p) {
+                return '<option value="' + p[0] + '"' + ((it && it.source_type) === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+            }).join("") + "</select></div>";
+    }
+    if (origin !== "own") {
+        inner += '<div class="form-group full"><label>Подразделения, к которым относится показатель</label>'
+            + '<div class="mi-add-origin" id="miAddUnits">' + mgmtOrgUnitsChecksHtml(selectedUnits) + "</div></div>";
+    }
+    inner += '<div class="form-group"><label for="miAddHub">Где показывать в СПУ</label><select id="miAddHub">'
+        + mgmtSpuDisplaySectionOptions(defaultHub) + "</select></div>"
+        + '<div class="form-group"><label for="miAddOrder">Порядок отображения</label><input id="miAddOrder" type="number" value="'
+        + escapeAttribute(String((it && it.sort_order) || 10)) + '"></div>'
+        + '<label class="mgmt-ind-check"><input id="miAddDash" type="checkbox"'
+        + ((it ? it.show_on_dashboard !== false : true) ? " checked" : "") + "><span>Показывать на панели</span></label>";
+    box.innerHTML = inner;
+    if (origin === "territory") refreshMgmtAddTerritoryMetrics(selectedMetricId);
+    const hint = document.getElementById("miAddDupHint");
+    if (hint) hint.innerHTML = "";
+}
+
+function refreshMgmtAddTerritoryMetrics(keepMetricId) {
+    const sel = document.getElementById("miAddMetric");
+    const cat = (document.getElementById("miAddTerrCat") || {}).value || "drivers";
+    if (!sel) return;
+    const list = territoryMetricsForSpuLink(cat);
+    const keep = keepMetricId || sel.value;
+    sel.innerHTML = list.map(function (m) {
+        return '<option value="' + escapeAttribute(m.id) + '"' + (keep === m.id ? " selected" : "") + ">"
+            + escapeHtml(m.name) + "</option>";
+    }).join("") || '<option value="">Нет метрик в этой категории</option>';
+    const hub = document.getElementById("miAddHub");
+    if (hub && !(document.getElementById("miEditId") || {}).value) {
+        const guess = cat === "warehouse" || cat === "sales_retail" ? "spu_warehouse"
+            : (cat === "office" ? "other" : "spu_sales");
+        if (Array.prototype.some.call(hub.options, function (o) { return o.value === guess; })) hub.value = guess;
+    }
+    const wrap = document.getElementById("miAddUnits");
+    if (wrap && !((document.getElementById("miEditId") || {}).value)) {
+        wrap.innerHTML = mgmtOrgUnitsChecksHtml(defaultUnitsForAddOrigin("territory", cat));
+    }
+}
+
+function confirmMgmtWizardLinkExisting(indicatorId) {
+    closeMgmtModal();
+    openMgmtIndicatorAddWizard(indicatorId);
+}
+
+function saveMgmtIndicatorFromWizard() {
+    if (!canEditMgmtIndicators()) return;
+    ensureManagement();
+    const editId = (document.getElementById("miEditId") || {}).value || "";
+    const origin = mgmtAddWizardOrigin();
+    const hub = (document.getElementById("miAddHub") || {}).value || "company";
+    const order = Number((document.getElementById("miAddOrder") || {}).value || 10);
+    const showDash = !!(document.getElementById("miAddDash") && document.getElementById("miAddDash").checked);
+    const units = collectMgmtAddOrgUnits();
+
+    let it = editId ? appData.management.indicators.find(function (x) { return x && x.indicator_id === editId; }) : null;
+    if (origin === "own") {
+        const name = String((document.getElementById("miAddName") || {}).value || "").replace(/\s+/g, " ").trim();
+        if (!name) { toast("Укажите название.", "error"); return; }
+        if (!it) {
+            it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
+            appData.management.indicators.push(it);
+        }
+        it.name = name;
+        it.source_type = (document.getElementById("miAddSource") || {}).value || "manual";
+        it.unit = (document.getElementById("miAddUnit") || {}).value || "number";
+        it.show_on_dashboard = showDash;
+        it.is_active = true;
+        it.sort_order = order;
+        it.use_in_metrics = false;
+        it.source_metric_id = "";
+        it.org_unit_ids = [];
+        mgmtApplySpuHub(it, hub);
+        if (it.source_type === "one_c_future") it.source_future = "one_c";
+        normalizeMgmtIndicator(it);
+        saveApp();
+        closeMgmtModal();
+        renderManagement();
+        toast("Собственный показатель СПУ сохранён.");
+        return;
+    }
+
+    if (!units.length) {
+        toast("Отметьте хотя бы одно подразделение.", "error");
+        return;
+    }
+    const metricId = (document.getElementById("miAddMetric") || {}).value || "";
+    const metric = shopMetricCatalogById(metricId);
+    if (!metric) { toast("Выберите существующую метрику. Новые метрики создаются в рабочих разделах.", "error"); return; }
+    const existing = mgmtLinkedIndicatorByMetricId(metric.id, editId);
+    if (existing && existing.indicator_id !== editId) {
+        const hint = document.getElementById("miAddDupHint");
+        if (hint) {
+            hint.innerHTML = "Эта metric_id уже связана с показателем СПУ: <strong>"
+                + escapeHtml(existing.name) + "</strong>. Копия метрики и второй показатель не создаются — откройте существующую связь."
+                + '<div class="toolbar" style="margin-top:8px">'
+                + '<button type="button" class="btn btn-primary" onclick="confirmMgmtWizardLinkExisting(\'' + existing.indicator_id + '\')">Открыть настройку</button></div>';
+        }
+        toast("Связь идёт по ID метрики, без дубля.", "error");
+        return;
+    }
+    if (!it) {
+        it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
+        appData.management.indicators.push(it);
+    }
+    it.name = metric.name;
+    it.source_type = "worktime_metric";
+    it.source_metric_id = metric.id;
+    it.department_id = metricDepartmentId(metric);
+    it.show_on_dashboard = showDash;
+    it.is_active = true;
+    it.sort_order = order;
+    it.use_in_metrics = false;
+    it.unit = metric.fill_type === "money" ? "money" : "number";
+    it.period_type = it.period_type || "week";
+    it.aggregation_type = it.aggregation_type || "sum";
+    it.org_unit_ids = units.slice();
+    mgmtApplySpuHub(it, hub);
+    applyMetricOrgUnitAssignments(metric, units);
+    metric.spu_indicator_id = it.indicator_id;
+    normalizeMgmtIndicator(it);
+    saveApp();
+    closeMgmtModal();
+    renderManagement();
+    toast("Связь сохранена: одна метрика, назначения по подразделениям. Факт — только в рабочих Метриках.");
+}
+
 function renderMgmtSettingsHtml() {
     const all = (appData.management.indicators || []).slice().sort(function (a, b) {
         return Number(a.sort_order || 0) - Number(b.sort_order || 0);
     });
-    let html = '<div class="toolbar"><button type="button" class="btn btn-primary btn-small" onclick="openMgmtIndicatorForm(\'\')">+ Показатель</button></div>';
+    const filtered = all.filter(function (it) {
+        if (!mgmtSettingsHub) return true;
+        return mgmtIndicatorHubKey(it) === mgmtSettingsHub;
+    });
+    let html = '<p class="spu-ind-note">Настройка связей: существующая метрика (по ID) → подразделения → место на панели СПУ. Новые метрики создаются только в Территория → Метрики или в Метриках магазина. СПУ копию не создаёт и факты не вводит.</p>'
+        + '<div class="spu-ind-hubs metrics-tabs">';
+    mgmtSettingsHubs().forEach(function (h) {
+        html += '<button type="button" class="metrics-tab' + (String(mgmtSettingsHub) === String(h.id) ? " active" : "") + '"'
+            + " onclick=\"setMgmtSettingsHub('" + h.id + "')\">" + escapeHtml(h.label) + "</button>";
+    });
+    html += "</div>";
+    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openMgmtIndicatorAddWizard()">+ Добавить показатель</button></div>';
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Показатель</th><th>Подразделение</th><th>Источник</th><th>Периодичность</th><th>Ответственный</th><th>Панель</th><th>Активен</th><th></th></tr></thead><tbody>";
-    all.forEach(function (it) {
-        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
-        html += "<tr><td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(it.indicator_id) + "</div></td>"
-            + "<td>" + escapeHtml(mgmtDeptName(it.department_id)) + "</td>"
-            + "<td>" + escapeHtml(mgmtSourceLabel(it.source_type)) + "</td>"
-            + "<td>" + escapeHtml(it.period_type === "month" ? "Месяц" : "Неделя") + "</td>"
-            + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
-            + "<td>" + (it.show_on_dashboard ? "да" : "нет") + "</td>"
-            + "<td>" + (it.is_active === false ? "нет" : "да") + "</td>"
-            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openMgmtIndicatorForm(\'' + it.indicator_id + '\')">⋯</button></td></tr>';
+        + "<th>Показатель</th><th>Источник</th><th>Подразделения</th><th>Раздел СПУ</th><th>Панель</th><th></th></tr></thead><tbody>";
+    if (!filtered.length) {
+        html += '<tr><td colspan="6"><div class="empty-row">В этом разделе пока нет показателей.</div></td></tr>';
+    }
+    filtered.forEach(function (it) {
+        const m = it.source_metric_id ? shopMetricCatalogById(it.source_metric_id) : null;
+        const units = (it.org_unit_ids || []).map(function (id) {
+            const u = spuOrgUnitById(id);
+            return u ? u.label : id;
+        }).join(", ");
+        html += "<tr><td class=\"wrap\">" + escapeHtml(it.name)
+            + (m ? '<div class="mgmt-src">' + escapeHtml(m.name) + "</div>" : "")
+            + "</td>"
+            + '<td class="wrap">' + escapeHtml(mgmtIndicatorOriginLabel(it)) + "</td>"
+            + '<td class="wrap">' + escapeHtml(units || "—") + "</td>"
+            + "<td><select onchange=\"setMgmtIndicatorHubFromList('" + it.indicator_id + "',this.value)\">"
+            + mgmtSpuDisplaySectionOptions(mgmtIndicatorHubKey(it)) + "</select></td>"
+            + '<td><label class="check"><input type="checkbox"' + (it.show_on_dashboard ? " checked" : "")
+            + " onchange=\"setMgmtIndicatorDash('" + it.indicator_id + "',this.checked)\"> Да</label></td>"
+            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openMgmtIndicatorAddWizard(\'' + it.indicator_id + '\')">Настроить</button></td></tr>';
     });
     html += "</tbody></table></div>";
     return html;
@@ -26603,6 +27122,7 @@ function saveMgmtIndicator(id) {
     it.name = name;
     it.department_id = (document.getElementById("miDept") || {}).value || "";
     it.spu_department_id = (document.getElementById("miSpuDept") || {}).value || "";
+    it.spu_hub = mgmtHubFromSpuDept(it.spu_department_id);
     it.source_type = (document.getElementById("miSource") || {}).value || "manual";
     const metricSel = document.getElementById("miMetric");
     if (metricSel) it.source_metric_id = metricSel.value || prevMetricId;
