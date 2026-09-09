@@ -7096,6 +7096,7 @@ function createDefaultData() {
 }
 
 function normalizeEmployee(e) {
+    if (!e || typeof e !== "object") return null;
     if (!e.id) e.id = generateId();
     e.employee_id = e.id;
     if (e.external_1c_id == null) e.external_1c_id = e.extId || "";
@@ -7127,6 +7128,7 @@ function normalizeWorkspace(w) {
     if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
     if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
     if (!Array.isArray(w.employees)) w.employees = [];
+    w.employees = w.employees.filter(function (e) { return e && typeof e === "object"; });
     if (!Array.isArray(w.customPositions)) w.customPositions = [];
     if (!w.type) w.type = "dept";
     if (w.type === "summary" || w.code === "summary") ensureSummaryPins(w);
@@ -7335,7 +7337,9 @@ function employeeFingerprint(e) {
 }
 
 function belongsToWorkspace(w, employeeId) {
-    return (w.employees || []).some(function (e) { return e.id === employeeId; });
+    if (!w || !employeeId) return false;
+    const list = Array.isArray(w.employees) ? w.employees : [];
+    return list.some(function (e) { return e && e.id === employeeId; });
 }
 
 function distributeEmployeesPerDepartment(data) {
@@ -7510,7 +7514,7 @@ function isolateSharedCollections(data) {
             return true;
         });
         w.employeeIds = (w.employeeIds || []).filter(function (id) {
-            return (w.employees || []).some(function (e) { return e.id === id; });
+            return belongsToWorkspace(w, id);
         });
     });
 }
@@ -8017,7 +8021,7 @@ function visibleEmployees() {
 
 function employeeHome(employeeId) {
     return deptWorkspaces().find(function (w) {
-        return (w.employees || []).some(function (e) { return e.id === employeeId; });
+        return belongsToWorkspace(w, employeeId);
     }) || null;
 }
 
@@ -8366,10 +8370,13 @@ function listSalesReps() {
    ЗАПИСИ ТАБЕЛЯ И ОБЩЕЙ ЗАРПЛАТЫ
 ============================================================ */
 function ensureMonthIn(w) {
+    if (!w) return;
+    if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
     if (!w.timesheet[selectedMonth]) w.timesheet[selectedMonth] = {};
 }
 
 function ensureEmployeeTimesheet(w, employeeId) {
+    if (!w || !employeeId) return;
     ensureMonthIn(w);
     if (!w.timesheet[selectedMonth][employeeId]) {
         w.timesheet[selectedMonth][employeeId] = {};
@@ -8377,6 +8384,7 @@ function ensureEmployeeTimesheet(w, employeeId) {
 }
 
 function peekDayRecordIn(w, employeeId, day) {
+    if (!w || !w.timesheet || typeof w.timesheet !== "object") return { status: "", hours: "", lateMinutes: 0 };
     const rec = w.timesheet[selectedMonth]
         && w.timesheet[selectedMonth][employeeId]
         && w.timesheet[selectedMonth][employeeId][day];
@@ -8385,7 +8393,7 @@ function peekDayRecordIn(w, employeeId, day) {
 
 function getDayRecord(employeeId, day) {
     const w = workspace();
-    if (w.type === "summary" || !belongsToWorkspace(w, employeeId)) return { status: "", hours: "", lateMinutes: 0 };
+    if (!w || w.type === "summary" || !belongsToWorkspace(w, employeeId)) return { status: "", hours: "", lateMinutes: 0 };
     ensureEmployeeTimesheet(w, employeeId);
     const days = w.timesheet[selectedMonth][employeeId];
     if (!days[day]) days[day] = { status: "", hours: "", lateMinutes: 0 };
@@ -8409,6 +8417,7 @@ function emptyTotals() {
 }
 
 function addTimesheetTotals(employeeId, w, acc) {
+    if (!w) return;
     const days = daysInMonth();
     for (let day = 1; day <= days; day++) {
         const record = peekDayRecordIn(w, employeeId, day);
@@ -9176,7 +9185,6 @@ function openApp() {
         loadWorkspace();
     } catch (err) {
         console.error(err);
-        toast("Ошибка загрузки раздела. Остальные данные не затронуты.", "error");
     }
 }
 
@@ -9411,14 +9419,17 @@ function applyModeUI() {
 function toggleSidebar() {
     const sidebar = document.getElementById("sidebar");
     const overlay = document.getElementById("sidebarOverlay");
+    if (!sidebar || !overlay) return;
     const open = !sidebar.classList.contains("open");
     sidebar.classList.toggle("open", open);
     overlay.classList.toggle("show", open);
 }
 
 function closeSidebar() {
-    document.getElementById("sidebar").classList.remove("open");
-    document.getElementById("sidebarOverlay").classList.remove("show");
+    const sidebar = document.getElementById("sidebar");
+    const overlay = document.getElementById("sidebarOverlay");
+    if (sidebar) sidebar.classList.remove("open");
+    if (overlay) overlay.classList.remove("show");
 }
 
 function isMgmtNavSection(id) {
@@ -9617,7 +9628,6 @@ function loadWorkspace() {
         try { loadWorkspaceSettings(); } catch (err) { console.error(err); }
     } catch (err) {
         console.error(err);
-        toast("Ошибка загрузки раздела.", "error");
     }
 }
 
@@ -9680,7 +9690,6 @@ function showSection(id, button) {
     function runSection(fn) {
         try { fn(); } catch (err) {
             console.error(err);
-            toast("Ошибка загрузки конкретного элемента", "error");
         }
     }
     if (id === "timesheet") runSection(renderTimesheet);
@@ -9722,7 +9731,6 @@ function showSection(id, button) {
     if (isOrgNavSection(id)) runSection(renderOrgStructure);
     } catch (err) {
         console.error(err);
-        toast("Ошибка загрузки раздела.", "error");
     }
 }
 
@@ -9811,6 +9819,9 @@ function shopMetricWorkDaysCount(employeeId, month) {
 }
 
 function ensureShopMetrics() {
+    if (!appData || typeof appData !== "object") {
+        return { store: {}, channels: {}, channelValues: {}, extraAccess: {}, facts: {}, workAccess: {} };
+    }
     if (!appData.shopMetrics || typeof appData.shopMetrics !== "object") appData.shopMetrics = {};
     const root = appData.shopMetrics;
     if (!root.store || typeof root.store !== "object") root.store = {};
@@ -9842,7 +9853,7 @@ function ensureShopMetrics() {
         root.substitutionPayDefaults = { day_rate: 0, extra_pay: 0, coef: 1, kpi_mode: "keep_primary" };
     }
     ensureShopMetricCatalog();
-    applyReturnsCountGroupIfNeeded();
+    try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
     return root;
 }
 
@@ -9891,9 +9902,11 @@ function ensureShopMetricCatalog() {
         if (!found.formula && seed.formula) found.formula = seed.formula;
         if (!found.name) found.name = seed.name;
     });
-    list.forEach(normalizeMetricCatalogItemTabs);
-    seedReturnsCountMetric();
-    migrateTerritoryMetricCategories();
+    list.forEach(function (it) {
+        try { normalizeMetricCatalogItemTabs(it); } catch (err) { console.error(err); }
+    });
+    try { seedReturnsCountMetric(); } catch (err) { console.error(err); }
+    try { migrateTerritoryMetricCategories(); } catch (err) { console.error(err); }
     return appData.shopMetricCatalog;
 }
 
@@ -10136,7 +10149,7 @@ function metricCatalogGroupEmployees(item) {
 function applyMetricCatalogGroupAssignment(item) {
     if (!item || !item.id || item.assignable === false) return;
     metricCatalogGroupEmployees(item).forEach(function (e) {
-        applyShopEmployeeWorkMetric(e.id, item.id, true);
+        try { applyShopEmployeeWorkMetric(e.id, item.id, true); } catch (err) { console.error(err); }
     });
 }
 
@@ -10296,7 +10309,9 @@ function ensureDeptMetrics(deptCode) {
     if (!root.facts || typeof root.facts !== "object") root.facts = {};
     if (!root.workAccess || typeof root.workAccess !== "object") root.workAccess = {};
     ensureShopMetricCatalog();
-    if (deptCode === "drivers") applyReturnsCountGroupIfNeeded();
+    if (deptCode === "drivers") {
+        try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
+    }
     return root;
 }
 
@@ -10901,7 +10916,10 @@ function shopEmployeeWorkMetricIds(employeeId, month) {
     const m = month || selectedMonth;
     const map = metricsStoreForEmployee(employeeId).workAccess[m];
     if (map && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, employeeId)) {
-        return (map[employeeId] || []).map(function (id) { return canonicalMetricId(id); }).filter(Boolean);
+        const raw = map[employeeId];
+        const list = Array.isArray(raw) ? raw : [];
+        if (!Array.isArray(raw)) map[employeeId] = list;
+        return list.map(function (id) { return canonicalMetricId(id); }).filter(Boolean);
     }
     return shopWorkAccessInheritIds(employeeId, m);
 }
@@ -10920,8 +10938,9 @@ function shopMaterializeWorkAccessMonth(month, deptCode) {
     const w = findWorkspaceByCode(isGenericMetricsDept(code) ? code : "shop");
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
-        if (!Object.prototype.hasOwnProperty.call(map, e.id)) {
-            map[e.id] = shopWorkAccessInheritIds(e.id, m);
+        if (!Object.prototype.hasOwnProperty.call(map, e.id) || !Array.isArray(map[e.id])) {
+            map[e.id] = Array.isArray(map[e.id]) ? map[e.id] : shopWorkAccessInheritIds(e.id, m);
+            if (!Array.isArray(map[e.id])) map[e.id] = [];
         }
     });
     return map;
@@ -10965,8 +10984,9 @@ function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
     const mid = canonicalMetricId(metricId);
     if (!mid || (!shopIsAssignableMetricId(mid) && !SHOP_WORK_METRIC_IDS[mid] && !shopEmployeeHasWorkMetric(employeeId, mid))) return;
     const map = shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId));
-    if (!Object.prototype.hasOwnProperty.call(map, employeeId)) {
-        map[employeeId] = shopWorkAccessInheritIds(employeeId, selectedMonth);
+    if (!Object.prototype.hasOwnProperty.call(map, employeeId) || !Array.isArray(map[employeeId])) {
+        map[employeeId] = Array.isArray(map[employeeId]) ? map[employeeId] : shopWorkAccessInheritIds(employeeId, selectedMonth);
+        if (!Array.isArray(map[employeeId])) map[employeeId] = [];
     }
     const list = map[employeeId];
     const idx = list.indexOf(mid);
@@ -15869,7 +15889,8 @@ function renderTimesheet() {
         body = '<tr><td colspan="' + (days + 5) + '"><div class="empty-row">Нет сотрудников для табеля.</div></td></tr>';
     }
 
-    document.getElementById("timesheetBody").innerHTML = body;
+    const timesheetBody = document.getElementById("timesheetBody");
+    if (timesheetBody) timesheetBody.innerHTML = body;
     if (wrap) {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
@@ -21606,6 +21627,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
 }
 
 function shopExtraFunctionsHtml(employee) {
+    try {
     if (!workspace() || isSummary()) return "";
     const code = workspace().code;
     if (code !== "shop" && !isGenericMetricsDept(code)) return "";
@@ -21632,6 +21654,10 @@ function shopExtraFunctionsHtml(employee) {
             + '<div class="emp-extra-fn-list">' + boxes + "</div>",
         "emp-extra-fns"
     );
+    } catch (err) {
+        console.error(err);
+        return "";
+    }
 }
 
 function renderFio() {
@@ -21640,7 +21666,7 @@ function renderFio() {
     const list = document.getElementById("fioList");
     if (!list) return;
     const code = w.code;
-    const pool = (w.employees || []).slice().filter(function (e) {
+    const pool = (Array.isArray(w.employees) ? w.employees : []).slice().filter(function (e) {
         return e && e.id && employeeHomeDeptCode(e.id) === code;
     });
     const filterHost = document.getElementById("fioFilters");
@@ -21906,7 +21932,7 @@ function toggleAssign(employeeId, checked) {
         toast("Этот сотрудник из другого отдела.", "error");
         return;
     }
-    const ids = workspace().employeeIds;
+    const ids = Array.isArray(workspace().employeeIds) ? workspace().employeeIds : (workspace().employeeIds = []);
     const has = ids.indexOf(employeeId) !== -1;
     if (checked && !has) ids.push(employeeId);
     if (!checked && has) workspace().employeeIds = ids.filter(function (id) { return id !== employeeId; });
@@ -22087,6 +22113,7 @@ function openEmployeeCreateForm() {
 }
 
 function saveEmployeeCreateForm() {
+    try {
     if (!canEditStaff()) {
         toast("Нет права добавлять сотрудников.", "error");
         return;
@@ -22100,7 +22127,7 @@ function saveEmployeeCreateForm() {
     }
     const deptCode = ((document.getElementById("empFormDeptValue") || {}).value)
         || ((document.getElementById("empFormDept") || {}).value)
-        || "";
+        || ((staffTargetWorkspace() && staffTargetWorkspace().code) || "");
     const w = findWorkspaceByCode(deptCode) || staffTargetWorkspace();
     if (!w || w.code === "summary" || w.type === "summary") {
         toast("Не выбран отдел для сотрудника.", "error");
@@ -22136,13 +22163,18 @@ function saveEmployeeCreateForm() {
     applyEmployeeFullName(employee, fullName);
     employee.employee_id = employee.id;
     if (!Array.isArray(w.employees)) w.employees = [];
+    if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
     w.employees.push(employee);
     justAddedEmployeeId = employee.id;
     try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
     saveApp();
     closeEmployeeCreateForm();
-    refreshAfterEmployeeCreate();
+    try { refreshAfterEmployeeCreate(); } catch (err) { console.error(err); }
     toast("Сотрудник сохранён.");
+    } catch (err) {
+        console.error(err);
+        toast("Не удалось сохранить сотрудника: " + (err && err.message ? err.message : String(err)), "error");
+    }
 }
 
 function addEmployee() {
