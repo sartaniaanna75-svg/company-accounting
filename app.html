@@ -2875,6 +2875,25 @@
         .org-emp-filter { width: 100%; margin-bottom: 6px; }
         .mgmt-ind-sec .full,
         .mgmt-ind-check.full { grid-column: 1 / -1; }
+        #miMetricsBox {
+            grid-column: 1 / -1;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 8px 12px;
+        }
+        #miMetricsBox .full { grid-column: 1 / -1; }
+        .mc-spu-badge {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1e40af;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: .04em;
+            vertical-align: middle;
+        }
         .wt-task-actions select { height: 34px; min-width: 140px; }
 
         @media (max-width: 640px) {
@@ -10032,6 +10051,22 @@ function shopMetricCatalogById(id) {
     return shopMetricCatalogItems().find(function (it) { return it.id === mid; }) || null;
 }
 
+function spuIndicatorsLinkedToMetric(metricId) {
+    const mid = canonicalMetricId(metricId);
+    if (!mid) return [];
+    ensureManagement();
+    return (appData.management.indicators || []).filter(function (x) {
+        return x && canonicalMetricId(x.source_metric_id) === mid;
+    });
+}
+
+function metricLinkedToSpu(itemOrId) {
+    const item = itemOrId && itemOrId.id ? itemOrId : shopMetricCatalogById(itemOrId);
+    if (!item) return false;
+    if (item.spu_indicator_id) return true;
+    return spuIndicatorsLinkedToMetric(item.id).length > 0;
+}
+
 function shopMetricDisplayName(metricId, fallback) {
     const it = shopMetricCatalogById(metricId);
     if (it && it.name) return it.name;
@@ -10056,7 +10091,8 @@ function shopCatalogSort(metricId, fallback) {
 
 function shopWorkMetricDefs() {
     return shopMetricCatalogItems().filter(function (it) {
-        return it.assignable !== false && it.show_column !== false && it.fill_type !== "month_money";
+        return it.assignable !== false && it.show_column !== false && it.fill_type !== "month_money"
+            && it.show_in_work_metrics !== false;
     }).sort(function (a, b) {
         return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     }).map(function (it) {
@@ -10090,6 +10126,7 @@ function shopMetricUsesFacts(metricId) {
 
 function shopCatalogItemShownInUi(item) {
     if (!item || item.show_column === false) return false;
+    if (item.show_in_work_metrics === false) return false;
     return item.active !== false;
 }
 
@@ -19727,7 +19764,9 @@ function renderMetricCatalog() {
         let row = '<tr class="' + (on ? "" : "is-inactive") + '"'
             + (can ? ' draggable="true" ondragstart="onMetricCatalogDrag(event,\'' + it.id + '\')" ondragover="onMetricCatalogDragOver(event)" ondrop="onMetricCatalogDrop(event,\'' + it.id + '\')"' : "")
             + "><td>" + arrow + "</td><td class=\"mc-name-cell\">"
-            + escapeHtml(it.name) + "</td>";
+            + escapeHtml(it.name)
+            + (metricLinkedToSpu(it) ? '<span class="mc-spu-badge" title="Используется в СПУ">СПУ</span>' : "")
+            + "</td>";
         row += "<td>" + escapeHtml(deptNames[metricDepartmentId(it)] || metricDepartmentId(it)) + "</td>";
         row += "<td>" + escapeHtml(tabNames || "—") + "</td>";
         row += "<td>" + (metricStructureType(it) === "with_submetrics" ? String(subs.length) : "—") + "</td>";
@@ -24062,6 +24101,7 @@ function normalizeMgmtIndicator(it) {
     it.group = it.group || (it.unit === "money" && it.source_type === "manual" ? "finance" : "");
     it.period_type = it.period_type || "week";
     it.source_metric_id = it.source_metric_id || "";
+    it.use_in_metrics = !!it.use_in_metrics;
     it.source_submetric_id = it.source_submetric_id || "";
     it.source_timesheet_agg = it.source_timesheet_agg || "days";
     it.source_kpi_mode = it.source_kpi_mode || "completion";
@@ -24446,11 +24486,24 @@ function mgmtTimesheetFact(deptCode, agg, days) {
     return ya;
 }
 
+function mgmtMetricFactDeptCodes(deptCode, metricId) {
+    const m = shopMetricCatalogById(metricId);
+    if (m) {
+        const cat = metricTerritoryCategory(m);
+        const spec = territoryMetricCategoryById(cat);
+        if (spec && spec.allTerritory) return TERRITORY_DEPT_CODES.slice();
+        const d = (spec && spec.departmentId) || metricDepartmentId(m);
+        if (d) return [d];
+    }
+    if (deptCode) return [deptCode];
+    return DEPT_DEFAULTS.map(function (d) { return d.code; });
+}
+
 function mgmtMetricFact(deptCode, metricId, subId, days) {
     try {
         const mid = canonicalMetricId(metricId);
         if (!mid) return 0;
-        const codes = deptCode ? [deptCode] : DEPT_DEFAULTS.map(function (d) { return d.code; });
+        const codes = mgmtMetricFactDeptCodes(deptCode, mid);
         let sum = 0;
         codes.forEach(function (code) {
             days.forEach(function (d) {
@@ -26111,6 +26164,237 @@ function mgmtDeptOptions(selected) {
     return html;
 }
 
+function mgmtIndicatorShowsInWorkMetrics(it) {
+    if (!it) return false;
+    if (it.use_in_metrics === false) return false;
+    if (it.use_in_metrics === true) return true;
+    if (it.source_type !== "worktime_metric" || !it.source_metric_id) return false;
+    const linked = shopMetricCatalogById(it.source_metric_id);
+    if (!linked || linked.show_in_work_metrics === false) return false;
+    const cat = metricTerritoryCategory(linked);
+    if (cat && cat !== "returns") return true;
+    return metricDepartmentId(linked) !== "shop";
+}
+
+function findExactWorkMetricsByName(name, exceptId) {
+    const wantKey = typeof shopMetricNameKey === "function" ? shopMetricNameKey(name) : String(name || "").replace(/\s+/g, " ").trim().toLowerCase();
+    if (!wantKey) return [];
+    const except = canonicalMetricId(exceptId);
+    return shopMetricCatalogItems().filter(function (it) {
+        if (!it || !it.id) return false;
+        if (except && canonicalMetricId(it.id) === except) return false;
+        if (metricDepartmentId(it) === "shop" && !metricTerritoryCategory(it)) return false;
+        const other = typeof shopMetricNameKey === "function" ? shopMetricNameKey(it.name) : String(it.name || "").replace(/\s+/g, " ").trim().toLowerCase();
+        return other === wantKey;
+    });
+}
+
+function spuFillTypeFromUnit(unit) {
+    return unit === "money" ? "money" : "number";
+}
+
+function collectMgmtMetricsTabIds() {
+    const ids = [];
+    document.querySelectorAll("#miMetricsBox .mi-tab:checked").forEach(function (el) {
+        if (el.value) ids.push(el.value);
+    });
+    return ids;
+}
+
+function collectMgmtMetricsPersonIds() {
+    const ids = [];
+    document.querySelectorAll("#miMetricsBox .mi-person:checked").forEach(function (el) {
+        if (el.value) ids.push(el.value);
+    });
+    return ids;
+}
+
+function collectMgmtMetricsAssignMode() {
+    const specific = document.querySelector('#miMetricsBox input[name="miAssignMode"][value="specific"]');
+    return (specific && specific.checked) ? "specific" : "group_all";
+}
+
+function refreshMgmtMetricsTabBox(selectedTabs) {
+    const box = document.getElementById("miMetricsTabs");
+    if (!box) return;
+    const cat = String((document.getElementById("miMetricsCat") || {}).value || "");
+    const spec = territoryMetricCategoryById(cat);
+    const dept = (spec && spec.departmentId) || (document.getElementById("miDept") || {}).value || "office";
+    let tabs = metricTabsForDept(dept);
+    if (spec && spec.workTabIds && spec.workTabIds.length) {
+        const allow = spec.workTabIds;
+        tabs = tabs.filter(function (t) { return allow.indexOf(t.id) !== -1; });
+    }
+    const chosen = {};
+    (selectedTabs || []).forEach(function (id) { chosen[id] = true; });
+    if (!Object.keys(chosen).length) {
+        (spec && spec.workTabIds && spec.workTabIds.length ? spec.workTabIds : [defaultMetricTabId(dept)]).forEach(function (id) {
+            chosen[id] = true;
+        });
+    }
+    if (!tabs.length) {
+        box.innerHTML = '<div class="note">Для этой категории отдельная рабочая группа не нужна — используются общие метрики.</div>';
+        return;
+    }
+    box.innerHTML = tabs.map(function (t) {
+        return '<label class="check"><input type="checkbox" class="mi-tab" value="' + t.id + '"'
+            + (chosen[t.id] ? " checked" : "") + ' onchange="refreshMgmtMetricsPeopleBox()">'
+            + "<span>" + escapeHtml(t.label) + "</span></label>";
+    }).join("");
+}
+
+function refreshMgmtMetricsPeopleBox(metricId) {
+    const box = document.getElementById("miMetricsPeople");
+    if (!box) return;
+    const cat = String((document.getElementById("miMetricsCat") || {}).value || "office");
+    const people = territoryCategoryEmployeePool(cat).filter(function (e) {
+        return e && isWorking(e) && employeeHomeDeptCode(e.id) !== "shop";
+    }).sort(compareEmployeesByStatusThenName);
+    box.innerHTML = people.map(function (e) {
+        const on = (metricId && shopEmployeeHasWorkMetric(e.id, metricId))
+            || (!metricId && justAddedEmployeeId && e.id === justAddedEmployeeId);
+        const home = employeeHomeDeptCode(e.id);
+        const tab = employeePrimaryWorkTabId(e, home) || inferWorkTabIdFromPosition(home, e.position);
+        return '<label class="check"><input type="checkbox" class="mi-person" value="' + escapeAttribute(e.id) + '"'
+            + (on ? " checked" : "") + "><span>" + escapeHtml(shopMetricEmployeeCaption(e))
+            + (tab ? " · " + escapeHtml(metricTabLabel(home, tab)) : "") + "</span></label>";
+    }).join("") || '<div class="note">Нет сотрудников в этой категории.</div>';
+}
+
+function onMgmtMetricsAssignModeChange() {
+    const wrap = document.getElementById("miMetricsPeopleWrap");
+    const specific = document.querySelector('#miMetricsBox input[name="miAssignMode"][value="specific"]');
+    if (wrap) wrap.style.display = (specific && specific.checked) ? "" : "none";
+    if (specific && specific.checked) refreshMgmtMetricsPeopleBox((document.getElementById("miLinkedMetricId") || {}).value || "");
+}
+
+function onMgmtMetricsCategoryChange() {
+    refreshMgmtMetricsTabBox([]);
+    refreshMgmtMetricsPeopleBox((document.getElementById("miLinkedMetricId") || {}).value || "");
+}
+
+function refreshMgmtUseMetricsFields(preset) {
+    const on = !!(document.getElementById("miUseMetrics") && document.getElementById("miUseMetrics").checked);
+    const box = document.getElementById("miMetricsBox");
+    if (box) box.style.display = on ? "grid" : "none";
+    const srcNote = document.getElementById("miDataSourceNote");
+    if (srcNote) srcNote.textContent = on ? "Источник данных: Метрики" : "Источник данных: СПУ";
+    const src = document.getElementById("miSource");
+    if (on && src) src.value = "worktime_metric";
+    const it = preset || {};
+    if (on) {
+        const linked = shopMetricCatalogById((document.getElementById("miLinkedMetricId") || {}).value || it.source_metric_id || "");
+        refreshMgmtMetricsTabBox(linked ? metricWorkTabIds(linked) : []);
+        refreshMgmtMetricsPeopleBox(linked ? linked.id : "");
+        onMgmtMetricsAssignModeChange();
+    }
+    refreshMgmtIndicatorSourceFields(it);
+}
+
+function applySpuIndicatorWorkMetric(it, options) {
+    options = options || {};
+    const cat = options.category;
+    const spec = territoryMetricCategoryById(cat);
+    if (!spec || spec.id === "returns") {
+        toast("Выберите раздел / категорию Метрик.", "error");
+        return false;
+    }
+    let item = options.linkItem || null;
+    if (!item && it.source_metric_id) item = shopMetricCatalogById(it.source_metric_id);
+    let created = false;
+    if (!item) {
+        created = true;
+        item = {
+            id: shopCatalogNextCustomId(),
+            key: "",
+            builtin: false,
+            core_column: false,
+            show_column: true,
+            assignable: true,
+            active: true,
+            fill_type: options.fillType || "number",
+            name: it.name,
+            sort_order: shopCatalogNextOrder((spec.workTabIds && spec.workTabIds[0]) || "", spec.departmentId || "office"),
+            assign_mode: options.assignMode || "group_all",
+            position_titles: [],
+            formula: null,
+            structure_type: "plain",
+            submetrics: []
+        };
+        item.key = item.id;
+        ensureShopMetricCatalog().items.push(item);
+    } else if (!item.builtin) {
+        item.name = it.name || item.name;
+        if (options.fillType) item.fill_type = options.fillType;
+    }
+    if (created) item.spu_origin = true;
+    if (item.builtin && metricDepartmentId(item) === "shop") {
+        toast("Встроенную метрику магазина нельзя перенести во вкладки Территория → Метрики. Свяжите другую рабочую метрику.", "error");
+        return false;
+    }
+    item.spu_indicator_id = it.indicator_id;
+    item.show_in_work_metrics = true;
+    item.active = item.active !== false;
+    item.assignable = true;
+    item.show_column = item.show_column !== false;
+    applyTerritoryCategoryToMetric(item, spec.id);
+    item.territory_category = spec.id;
+    const tabIds = options.tabIds && options.tabIds.length
+        ? options.tabIds.slice()
+        : (spec.workTabIds ? spec.workTabIds.slice() : metricWorkTabIds(item));
+    if (tabIds.length) {
+        item.work_tab_ids = tabIds.slice();
+        item.section_id = tabIds[0];
+        item.metric_tab_id = tabIds[0];
+    }
+    normalizeMetricCatalogItemTabs(item);
+    if (item.territory_category && item.territory_category !== "common" && item.territory_category !== "returns") {
+        const allowTabs = workTabsAllowedForTerritoryCategory(item.territory_category, metricDepartmentId(item));
+        item.work_tab_ids = metricWorkTabIds(item).filter(function (t) { return allowTabs.indexOf(t) !== -1; });
+        if (!item.work_tab_ids.length) item.work_tab_ids = allowTabs.slice();
+        normalizeMetricCatalogItemTabs(item);
+    }
+    item.assign_mode = options.assignMode || "group_all";
+    if (item.assign_mode === "specific") {
+        if (!(options.personIds || []).length) {
+            toast("Отметьте сотрудников или выберите назначение всей группе.", "error");
+            return false;
+        }
+        applyMetricCatalogSpecificAssignment(item, options.personIds || []);
+    } else {
+        applyMetricCatalogGroupAssignment(item);
+    }
+    it.source_type = "worktime_metric";
+    it.source_metric_id = item.id;
+    it.use_in_metrics = true;
+    if (spec.departmentId) it.department_id = spec.departmentId;
+    return true;
+}
+
+function hideSpuIndicatorFromWorkMetrics(it) {
+    it.use_in_metrics = false;
+    const item = it.source_metric_id && shopMetricCatalogById(it.source_metric_id);
+    if (!item) return;
+    if (item.spu_origin && item.spu_indicator_id === it.indicator_id) {
+        item.show_in_work_metrics = false;
+    }
+}
+
+function confirmMgmtMetricLink(indicatorId, metricId) {
+    const hid = document.getElementById("miLinkMetricId");
+    if (hid) hid.value = metricId || "";
+    const skip = document.getElementById("miSkipMetricPrompt");
+    if (skip) skip.value = "1";
+    saveMgmtIndicator(indicatorId || "");
+}
+
+function cancelMgmtMetricLinkPrompt() {
+    const hint = document.getElementById("miLinkHint");
+    if (hint) hint.innerHTML = "";
+    const skip = document.getElementById("miSkipMetricPrompt");
+    if (skip) skip.value = "";
+}
+
 function openMgmtIndicatorForm(id) {
     ensureManagement();
     const it = id ? (appData.management.indicators || []).find(function (x) { return x.indicator_id === id; }) : {
@@ -26124,6 +26408,13 @@ function openMgmtIndicatorForm(id) {
         aggregation_type: "sum",
         sort_order: 10
     };
+    const linkedMetric = it.source_metric_id ? shopMetricCatalogById(it.source_metric_id) : null;
+    const useOn = mgmtIndicatorShowsInWorkMetrics(it);
+    let metricsCat = (linkedMetric && metricTerritoryCategory(linkedMetric)) || "";
+    if (!metricsCat && it.department_id === "office") metricsCat = "office";
+    if (!metricsCat && it.department_id === "warehouse") metricsCat = "warehouse";
+    if (!metricsCat && it.department_id === "drivers") metricsCat = "drivers";
+    if (!metricsCat) metricsCat = "office";
     let html = "<h3>Настройка показателя</h3>"
         + '<div class="mgmt-ind-form">'
         + '<section class="mgmt-ind-sec">'
@@ -26163,6 +26454,44 @@ function openMgmtIndicatorForm(id) {
         + '<div class="form-group compact"><label for="miWarn">Жёлтый от, %</label><input id="miWarn" type="number" step="1" value="' + escapeAttribute(String(it.warn_pct == null ? 80 : it.warn_pct)) + '"></div>'
         + "</section>"
         + '<section class="mgmt-ind-sec">'
+        + "<h4>Рабочие метрики</h4>"
+        + '<label class="mgmt-ind-check full"><input id="miUseMetrics" type="checkbox" onchange="refreshMgmtUseMetricsFields()"'
+        + (useOn ? " checked" : "") + '><span>Использовать также в разделе «Метрики»</span></label>'
+        + '<div class="note full" id="miDataSourceNote">' + (useOn ? "Источник данных: Метрики" : "Источник данных: СПУ") + "</div>"
+        + '<input type="hidden" id="miLinkedMetricId" value="' + escapeAttribute((linkedMetric && linkedMetric.id) || it.source_metric_id || "") + '">'
+        + '<input type="hidden" id="miLinkMetricId" value="">'
+        + '<input type="hidden" id="miSkipMetricPrompt" value="">'
+        + '<div id="miMetricsBox" style="display:' + (useOn ? "grid" : "none") + '">'
+        + '<div class="form-group full"><label>Источник данных</label>'
+        + '<input value="Метрики" disabled>'
+        + '<div class="note" id="miLinkedMetricNote">'
+        + (linkedMetric
+            ? ("Связанная метрика: " + escapeHtml(linkedMetric.name)
+                + (metricsCat ? ". Категория: " + escapeHtml((territoryMetricCategoryById(metricsCat) || {}).label || metricsCat) : ""))
+            : "После сохранения появится в выбранной вкладке Территория → Метрики. Факт вводится там и сразу используется СПУ.")
+        + "</div></div>"
+        + '<div class="form-group full"><label for="miMetricsCat">Раздел / категория Метрик</label><select id="miMetricsCat" onchange="onMgmtMetricsCategoryChange()">';
+    TERRITORY_METRIC_CATEGORIES.forEach(function (c) {
+        if (c.id === "returns") return;
+        html += '<option value="' + c.id + '"' + (metricsCat === c.id ? " selected" : "") + ">" + escapeHtml(c.label) + "</option>";
+    });
+    html += "</select></div>"
+        + '<div class="form-group full"><label>Должность / рабочая группа</label><div id="miMetricsTabs" class="mc-tabs-checks"></div></div>'
+        + '<div class="form-group full"><label>Назначение</label><div class="mc-assign">'
+        + '<label class="check"><input type="radio" name="miAssignMode" value="group_all"'
+        + (linkedMetric && linkedMetric.assign_mode === "specific" ? "" : " checked")
+        + ' onchange="onMgmtMetricsAssignModeChange()"> Всем сотрудникам категории</label>'
+        + '<label class="check"><input type="radio" name="miAssignMode" value="specific"'
+        + (linkedMetric && linkedMetric.assign_mode === "specific" ? " checked" : "")
+        + ' onchange="onMgmtMetricsAssignModeChange()"> Выбрать конкретных сотрудников</label>'
+        + "</div></div>"
+        + '<div class="form-group full" id="miMetricsPeopleWrap" style="display:'
+        + (linkedMetric && linkedMetric.assign_mode === "specific" ? "" : "none") + '">'
+        + '<label>Сотрудники</label><div id="miMetricsPeople"></div></div>'
+        + '<div class="form-group full" id="miLinkHint"></div>'
+        + "</div>"
+        + "</section>"
+        + '<section class="mgmt-ind-sec">'
         + "<h4>Отображение</h4>"
         + '<label class="mgmt-ind-check full"><input id="miDash" type="checkbox"' + (it.show_on_dashboard !== false ? " checked" : "") + "><span>Показывать на панели управления</span></label>"
         + '<label class="mgmt-ind-check full"><input id="miActive" type="checkbox"' + (it.is_active !== false ? " checked" : "") + "><span>Активен</span></label>"
@@ -26173,7 +26502,7 @@ function openMgmtIndicatorForm(id) {
         + '<button type="button" class="btn btn-primary" onclick="saveMgmtIndicator(\'' + (it.indicator_id || "") + '\')">Сохранить</button>'
         + "</div>";
     openMgmtModal(html, "mgmt-ind-modal");
-    refreshMgmtIndicatorSourceFields(it);
+    refreshMgmtUseMetricsFields(it);
 }
 
 function refreshMgmtIndicatorSourceFields(preset) {
@@ -26181,7 +26510,13 @@ function refreshMgmtIndicatorSourceFields(preset) {
     const type = (document.getElementById("miSource") || {}).value || "manual";
     const dept = (document.getElementById("miDept") || {}).value || "";
     const it = preset || {};
+    const useMetrics = !!(document.getElementById("miUseMetrics") && document.getElementById("miUseMetrics").checked);
     let inner = "";
+    if (useMetrics && type === "worktime_metric") {
+        inner = '<div class="note">Источник данных: Метрики. Значение вводится в Территория → Метрики; СПУ читает тот же факт, без повторного ввода.</div>';
+        if (box) box.innerHTML = inner ? '<div class="mgmt-ind-source">' + inner + "</div>" : "";
+        return;
+    }
     if (type === "worktime_metric") {
         const items = catalogItemsForDept(dept || "shop");
         inner = '<div class="form-group full"><label>Метрика</label><select id="miMetric" onchange="refreshMgmtSubmetricSelect()">'
@@ -26264,19 +26599,22 @@ function saveMgmtIndicator(id) {
         it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
         appData.management.indicators.push(it);
     }
+    const prevMetricId = it.source_metric_id || "";
     it.name = name;
     it.department_id = (document.getElementById("miDept") || {}).value || "";
     it.spu_department_id = (document.getElementById("miSpuDept") || {}).value || "";
     it.source_type = (document.getElementById("miSource") || {}).value || "manual";
-    it.source_metric_id = (document.getElementById("miMetric") || {}).value || "";
-    it.source_submetric_id = (document.getElementById("miSub") || {}).value || "";
-    it.source_timesheet_agg = (document.getElementById("miTsAgg") || {}).value || "days";
-    it.source_sales_plan_view = (document.getElementById("miSpView") || {}).value || "shop";
-    it.source_sales_plan_field = (document.getElementById("miSpField") || {}).value || "fact";
-    it.source_kpi_mode = (document.getElementById("miKpiMode") || {}).value || "completion";
-    it.calc_op = (document.getElementById("miCalcOp") || {}).value || "ratio";
-    it.calc_left_id = (document.getElementById("miCalcLeft") || {}).value || "";
-    it.calc_right_id = (document.getElementById("miCalcRight") || {}).value || "";
+    const metricSel = document.getElementById("miMetric");
+    if (metricSel) it.source_metric_id = metricSel.value || prevMetricId;
+    else it.source_metric_id = (document.getElementById("miLinkedMetricId") || {}).value || prevMetricId;
+    it.source_submetric_id = (document.getElementById("miSub") || {}).value || it.source_submetric_id || "";
+    it.source_timesheet_agg = (document.getElementById("miTsAgg") || {}).value || it.source_timesheet_agg || "days";
+    it.source_sales_plan_view = (document.getElementById("miSpView") || {}).value || it.source_sales_plan_view || "shop";
+    it.source_sales_plan_field = (document.getElementById("miSpField") || {}).value || it.source_sales_plan_field || "fact";
+    it.source_kpi_mode = (document.getElementById("miKpiMode") || {}).value || it.source_kpi_mode || "completion";
+    it.calc_op = (document.getElementById("miCalcOp") || {}).value || it.calc_op || "ratio";
+    it.calc_left_id = (document.getElementById("miCalcLeft") || {}).value || it.calc_left_id || "";
+    it.calc_right_id = (document.getElementById("miCalcRight") || {}).value || it.calc_right_id || "";
     it.unit = (document.getElementById("miUnit") || {}).value || "number";
     it.aggregation_type = (document.getElementById("miAgg") || {}).value || "sum";
     it.owner_employee_id = (document.getElementById("miOwner") || {}).value || "";
@@ -26290,10 +26628,54 @@ function saveMgmtIndicator(id) {
     if (it.group === "finance" && it.source_type === "manual") it.source_future = it.source_future || "one_c";
     it.show_on_dashboard = !!(document.getElementById("miDash") && document.getElementById("miDash").checked);
     it.is_active = !!(document.getElementById("miActive") && document.getElementById("miActive").checked);
+
+    const useMetrics = !!(document.getElementById("miUseMetrics") && document.getElementById("miUseMetrics").checked);
+    if (useMetrics) {
+        const cat = (document.getElementById("miMetricsCat") || {}).value || "";
+        const assignMode = collectMgmtMetricsAssignMode();
+        const personIds = collectMgmtMetricsPersonIds();
+        const tabIds = collectMgmtMetricsTabIds();
+        const chosenLink = (document.getElementById("miLinkMetricId") || {}).value || "";
+        const skipPrompt = (document.getElementById("miSkipMetricPrompt") || {}).value === "1";
+        let linkItem = chosenLink ? shopMetricCatalogById(chosenLink) : (it.source_metric_id ? shopMetricCatalogById(it.source_metric_id) : null);
+        if (!linkItem && !skipPrompt) {
+            const hits = findExactWorkMetricsByName(name, "");
+            if (hits.length) {
+                const hint = document.getElementById("miLinkHint");
+                if (hint) {
+                    hint.innerHTML = "Найдена существующая рабочая метрика: <strong>"
+                        + escapeHtml(hits[0].name) + "</strong>"
+                        + '<div class="toolbar" style="margin-top:8px">'
+                        + '<button type="button" class="btn btn-primary" onclick="confirmMgmtMetricLink(\''
+                        + it.indicator_id + "','" + hits[0].id + '\')">Связать с существующей</button> '
+                        + '<button type="button" class="btn btn-secondary" onclick="cancelMgmtMetricLinkPrompt()">Отмена</button></div>';
+                }
+                toast("Найдена существующая рабочая метрика. Свяжите её или отмените.", "error");
+                return;
+            }
+        }
+        const ok = applySpuIndicatorWorkMetric(it, {
+            category: cat,
+            tabIds: tabIds,
+            assignMode: assignMode,
+            personIds: personIds,
+            fillType: spuFillTypeFromUnit(it.unit),
+            linkItem: linkItem
+        });
+        if (!ok) return;
+        const hid = document.getElementById("miLinkedMetricId");
+        if (hid) hid.value = it.source_metric_id || "";
+    } else {
+        hideSpuIndicatorFromWorkMetrics(it);
+    }
+
     normalizeMgmtIndicator(it);
     saveApp();
     closeMgmtModal();
     renderManagement();
+    if (typeof renderMetricCatalog === "function") {
+        try { renderMetricCatalog(); } catch (err) {}
+    }
     toast("Показатель сохранён.");
 }
 
