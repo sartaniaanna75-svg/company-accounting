@@ -2646,6 +2646,7 @@
         }
 
         .rev-modal-back.show { display: flex; }
+        #employeeCreateModalBack { z-index: 360; }
 
         .rev-modal {
             width: min(440px, 100%);
@@ -3744,7 +3745,7 @@
                         </div>
                     </div>
                     <div id="deptWorkAdminBar" class="toolbar" style="display:none;flex-wrap:wrap;gap:8px;margin-top:10px">
-                        <button type="button" class="btn btn-primary" id="deptWorkAddFioBtn" onclick="addEmployeeFromWorkMetrics()">+ Добавить ФИО</button>
+                        <button type="button" class="btn btn-primary" id="deptWorkAddFioBtn" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>
                         <button type="button" class="btn btn-primary" id="deptWorkAddMetricBtn" onclick="openMetricFromWorkMetrics()">+ Добавить метрику</button>
                     </div>
                 </div>
@@ -4434,7 +4435,7 @@
                     <div class="toolbar fio-filters" id="fioFilters" style="margin: 12px 0 8px;"></div>
                     <div id="fioList"></div>
                     <div class="toolbar" style="margin-top:14px;">
-                        <button type="button" class="btn btn-primary" id="addFioEmployeeBtn" onclick="addEmployee()">+ Добавить ФИО</button>
+                        <button type="button" class="btn btn-primary" id="addFioEmployeeBtn" onclick="addEmployee()">+ Добавить сотрудника</button>
                     </div>
                 </div>
                 <div class="card">
@@ -4688,6 +4689,9 @@
 </div>
 <div id="metricCatalogModalBack" class="rev-modal-back" onclick="if (event.target === this) closeMetricCatalogModal()">
     <div class="rev-modal metric-cat-modal" id="metricCatalogModal" role="dialog" aria-modal="true"></div>
+</div>
+<div id="employeeCreateModalBack" class="rev-modal-back" onclick="if (event.target === this) closeEmployeeCreateForm()">
+    <div class="rev-modal" id="employeeCreateModal" role="dialog" aria-modal="true" aria-labelledby="employeeCreateTitle"></div>
 </div>
 <div id="revisionModalBack" class="rev-modal-back" onclick="if (event.target === this) closeRevisionModal()">
     <div class="rev-modal" id="revisionModal" role="dialog" aria-modal="true"></div>
@@ -7670,12 +7674,28 @@ function getEmployee(id) {
 }
 
 function staffTargetWorkspace() {
+    if (isTerritoryMetricsMode()) {
+        const hub = typeof currentTerritoryMetricsHub === "function" ? currentTerritoryMetricsHub() : null;
+        if (hub && hub.departmentId) return findWorkspaceByCode(hub.departmentId);
+        return findWorkspaceByCode("office");
+    }
     const w = workspace();
     if (w && w.code && w.code !== "summary" && w.type !== "summary") return w;
     const code = summaryDeptFilter
         || ((document.getElementById("staffDeptFilter") || {}).value || "");
     if (code) return findWorkspaceByCode(code);
     return null;
+}
+
+function staffContextDeptLocked() {
+    if (isTerritoryMetricsMode()) {
+        const hub = typeof currentTerritoryMetricsHub === "function" ? currentTerritoryMetricsHub() : null;
+        return !!(hub && hub.departmentId);
+    }
+    const w = workspace();
+    if (w && w.code && w.code !== "summary" && w.type !== "summary") return true;
+    if (summaryDeptFilter) return true;
+    return false;
 }
 
 function directoryEmployees(w) {
@@ -20550,7 +20570,7 @@ function addEmployeeFromWorkMetrics() {
         toast("Нет права добавлять сотрудников.", "error");
         return;
     }
-    const w = workspace();
+    const w = staffTargetWorkspace() || workspace();
     if (w && isDeptWorkSection(currentSection)) {
         const tab = deptWorkTabFromSection(currentSection);
         if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
@@ -20558,8 +20578,18 @@ function addEmployeeFromWorkMetrics() {
         }
         if (tab) fioFilterByDept[w.code].tab = tab;
     }
+    if (isTerritoryMetricsMode()) {
+        const hub = currentTerritoryMetricsHub();
+        const code = (hub && hub.departmentId) || (w && w.code);
+        const tabs = typeof territoryHubTabIds === "function" ? territoryHubTabIds(hub) : [];
+        if (code && tabs[0]) {
+            if (!fioFilterByDept[code] || typeof fioFilterByDept[code] !== "object") {
+                fioFilterByDept[code] = { tab: "", position: "" };
+            }
+            fioFilterByDept[code].tab = tabs[0];
+        }
+    }
     addEmployee();
-    showSection("fio");
 }
 
 function openMetricFromWorkMetrics() {
@@ -20752,11 +20782,16 @@ function renderTerritoryMetrics() {
     }
     const bar = document.getElementById("territoryMetricsCatalogBar");
     if (bar) {
-        bar.innerHTML = canEditShopMetricCatalog()
-            ? '<button type="button" class="btn btn-primary" onclick="openTerritoryMetricForm()">+ Добавить метрику</button>'
-                + '<span class="note" style="margin-left:8px">Категория «' + escapeHtml(spec.label)
-                + "». Одна метрика — один metric_id. Значения те же, что в рабочих разделах.</span>"
-            : '<span class="note">Просмотр категории «' + escapeHtml(spec.label) + "».</span>";
+        let html = "";
+        if (canEditStaff()) {
+            html += '<button type="button" class="btn btn-primary" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>';
+        }
+        if (canEditShopMetricCatalog()) {
+            html += '<button type="button" class="btn btn-primary" onclick="openTerritoryMetricForm()">+ Добавить метрику</button>';
+        }
+        html += '<span class="note" style="margin-left:8px">Категория «' + escapeHtml(spec.label)
+            + "». Одна метрика — один metric_id. Значения те же, что в рабочих разделах.</span>";
+        bar.innerHTML = html;
     }
     fillDeptWorkTable(spec.departmentId || "office", territoryHubTabIds(spec)[0] || "main", {
         wrap: "territoryMetricsWrap",
@@ -20858,7 +20893,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
                 ? ' <button type="button" class="btn btn-primary btn-small" onclick="openMetricFromWorkMetrics()">+ Добавить метрику</button>'
                 : "")
             + (canEditStaff()
-                ? ' <button type="button" class="btn btn-secondary btn-small" onclick="addEmployeeFromWorkMetrics()">+ Добавить ФИО</button>'
+                ? ' <button type="button" class="btn btn-secondary btn-small" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>'
                 : "")
             + "</div></td></tr>";
         if (wrap) {
@@ -21112,7 +21147,7 @@ function renderFio() {
     }
 
     if (!pool.length) {
-        list.innerHTML = '<div class="empty-row">В этом отделе пока нет сотрудников. Нажмите «Добавить ФИО» внизу.</div>';
+        list.innerHTML = '<div class="empty-row">В этом отделе пока нет сотрудников. Нажмите «Добавить сотрудника».</div>';
         renderPositionList();
         const addBtnEmpty = document.getElementById("addFioEmployeeBtn");
         if (addBtnEmpty) addBtnEmpty.style.display = canEditStaff() ? "" : "none";
@@ -21337,6 +21372,7 @@ function toggleAssign(employeeId, checked) {
 
 function dismissBlockingOverlays() {
     document.querySelectorAll(".rev-modal-back.show").forEach(function (el) {
+        if (el.id === "employeeCreateModalBack") return;
         el.classList.remove("show");
     });
     const overlay = document.querySelector(".sidebar-overlay");
@@ -21362,22 +21398,170 @@ function focusNewEmployeeCard(employeeId) {
     }, 50);
 }
 
-function addEmployee() {
-    if (!canEditStaff()) {
-        toast("Нет права добавлять сотрудников.", "error");
+function closeEmployeeCreateForm() {
+    const back = document.getElementById("employeeCreateModalBack");
+    if (back) back.classList.remove("show");
+}
+
+function defaultEmployeeCreateTab(deptCode) {
+    const code = deptCode || "";
+    if (isDeptWorkSection(currentSection)) {
+        const fromNav = deptWorkTabFromSection(currentSection);
+        if (fromNav && metricTabsForDept(code).some(function (t) { return t.id === fromNav; })) return fromNav;
+    }
+    if (isTerritoryMetricsMode()) {
+        const hub = currentTerritoryMetricsHub();
+        const hubTabs = territoryHubTabIds(hub);
+        if (hubTabs.length) return hubTabs[0];
+    }
+    const filtered = fioFilterByDept[code] && fioFilterByDept[code].tab;
+    if (filtered && metricTabsForDept(code).some(function (t) { return t.id === filtered; })) return filtered;
+    return defaultMetricTabId(code);
+}
+
+function employeeCreateDeptOptionsHtml(selectedCode, locked) {
+    const depts = (isTerritoryMetricsMode() || isSummary() || isAdminEntry())
+        ? DEPT_DEFAULTS.filter(function (d) { return d.code !== "shop"; })
+        : DEPT_DEFAULTS.filter(function (d) { return d.code === selectedCode; });
+    let html = '<select id="empFormDept" onchange="onEmployeeCreateDeptChange()"' + (locked ? " disabled" : "") + ">";
+    depts.forEach(function (d) {
+        html += '<option value="' + d.code + '"' + (d.code === selectedCode ? " selected" : "") + ">"
+            + escapeHtml(d.name) + "</option>";
+    });
+    html += "</select>";
+    if (locked) html += '<input type="hidden" id="empFormDeptValue" value="' + escapeAttribute(selectedCode) + '">';
+    return html;
+}
+
+function employeeCreateTabOptionsHtml(deptCode, selectedTab) {
+    const tabs = metricTabsForDept(deptCode);
+    let html = '<select id="empFormTab">';
+    tabs.forEach(function (t) {
+        html += '<option value="' + t.id + '"' + (t.id === selectedTab ? " selected" : "") + ">"
+            + escapeHtml(t.label) + "</option>";
+    });
+    html += "</select>";
+    return html;
+}
+
+function employeeCreatePositionOptionsHtml(deptCode, selected) {
+    const w = findWorkspaceByCode(deptCode);
+    const list = positionsForWorkspace(w);
+    let html = '<select id="empFormPosition"><option value="">Выберите должность</option>';
+    list.forEach(function (title) {
+        html += '<option value="' + escapeAttribute(title) + '"' + (selected === title ? " selected" : "") + ">"
+            + escapeHtml(title) + "</option>";
+    });
+    html += "</select>";
+    return html;
+}
+
+function onEmployeeCreateDeptChange() {
+    const deptEl = document.getElementById("empFormDept");
+    const code = (deptEl && deptEl.value) || "";
+    const tabHost = document.getElementById("empFormTabWrap");
+    const posHost = document.getElementById("empFormPosWrap");
+    if (tabHost) tabHost.innerHTML = employeeCreateTabOptionsHtml(code, defaultEmployeeCreateTab(code));
+    if (posHost) posHost.innerHTML = employeeCreatePositionOptionsHtml(code, "");
+}
+
+function refreshAfterEmployeeCreate() {
+    if (currentSection === "fio") {
+        renderFio();
+        renderEmployees();
+        return;
+    }
+    if (currentSection === "summaryStaff") {
+        renderSummaryStaff();
+        return;
+    }
+    if (currentSection === "territoryMetrics") {
+        renderTerritoryMetrics();
+        return;
+    }
+    if (isDeptWorkSection(currentSection)) {
+        renderDeptWorkMetrics();
+        return;
+    }
+    if (currentSection === "deptMetrics") {
+        renderDeptMetrics();
+        return;
+    }
+    renderFio();
+    renderEmployees();
+    refreshMetricsUi();
+}
+
+function openEmployeeCreateForm() {
+    const back = document.getElementById("employeeCreateModalBack");
+    const box = document.getElementById("employeeCreateModal");
+    if (!back || !box) {
+        toast("Окно сотрудника не найдено.", "error");
         return;
     }
     const w = staffTargetWorkspace();
     if (!w || w.code === "summary" || w.type === "summary") {
-        toast("Сначала выберите отдел в фильтре (для логистики — «Логистика + Торговые»).", "error");
+        toast("Сначала выберите отдел (Офис, Склад или Логистика + Торговые).", "error");
         return;
     }
-    let tabFilter = (fioFilterByDept[w.code] && fioFilterByDept[w.code].tab)
-        || (timesheetGroupFilterTabs(w.code).length ? defaultMetricTabId(w.code) : "");
-    if (isDeptWorkSection(currentSection)) {
-        const fromNav = deptWorkTabFromSection(currentSection);
-        if (fromNav) tabFilter = fromNav;
+    const deptCode = w.code;
+    const locked = staffContextDeptLocked();
+    const tab = defaultEmployeeCreateTab(deptCode);
+    const html = '<h3 id="employeeCreateTitle" style="margin:0 0 8px">Добавить сотрудника</h3>'
+        + '<div class="note" style="margin-bottom:10px">Отдел: ' + escapeHtml(officialName(w)) + "</div>"
+        + '<div class="metric-cat-form">'
+        + '<div class="form-group full"><label>ФИО сотрудника *</label>'
+        + '<input type="text" id="empFormName" class="emp-fio-input" maxlength="120" placeholder="Иванов Иван Иванович"'
+        + ' autocomplete="name" onkeydown="if(event.key===\'Enter\'){event.preventDefault();saveEmployeeCreateForm();}"></div>'
+        + '<div class="form-group full"><label>Отдел</label>' + employeeCreateDeptOptionsHtml(deptCode, locked) + "</div>"
+        + '<div class="form-group full"><label>Рабочая группа</label><div id="empFormTabWrap">'
+        + employeeCreateTabOptionsHtml(deptCode, tab) + "</div></div>"
+        + '<div class="form-group full"><label>Должность</label><div id="empFormPosWrap">'
+        + employeeCreatePositionOptionsHtml(deptCode, "") + "</div></div>"
+        + '<div class="form-group full"><label>Активность</label><select id="empFormStatus">'
+        + '<option value="working" selected>Работает</option>'
+        + '<option value="fired">Уволен</option></select></div>'
+        + "</div>"
+        + '<div class="rev-modal-actions" style="margin-top:10px">'
+        + '<button type="button" class="btn btn-primary" onclick="saveEmployeeCreateForm()">Сохранить</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="closeEmployeeCreateForm()">Отмена</button></div>';
+    box.innerHTML = html;
+    back.classList.add("show");
+    setTimeout(function () {
+        const input = document.getElementById("empFormName");
+        if (input) {
+            try { input.focus(); } catch (err) {}
+        }
+    }, 30);
+}
+
+function saveEmployeeCreateForm() {
+    if (!canEditStaff()) {
+        toast("Нет права добавлять сотрудников.", "error");
+        return;
     }
+    const nameEl = document.getElementById("empFormName");
+    const fullName = nameEl ? nameEl.value : "";
+    if (isBlankName(fullName)) {
+        toast("Введите ФИО сотрудника", "error");
+        if (nameEl) nameEl.focus();
+        return;
+    }
+    const deptCode = ((document.getElementById("empFormDeptValue") || {}).value)
+        || ((document.getElementById("empFormDept") || {}).value)
+        || "";
+    const w = findWorkspaceByCode(deptCode) || staffTargetWorkspace();
+    if (!w || w.code === "summary" || w.type === "summary") {
+        toast("Не выбран отдел для сотрудника.", "error");
+        return;
+    }
+    const tabEl = document.getElementById("empFormTab");
+    let tab = tabEl ? tabEl.value : "";
+    if (!tab || !metricTabsForDept(w.code).some(function (t) { return t.id === tab; })) {
+        tab = defaultMetricTabId(w.code);
+    }
+    const posEl = document.getElementById("empFormPosition");
+    const statusEl = document.getElementById("empFormStatus");
     const employee = {
         id: generateEmployeeId(),
         employee_id: "",
@@ -21386,31 +21570,36 @@ function addEmployee() {
         last_name: "",
         first_name: "",
         middle_name: "",
-        position: "",
-        work_tab_id: tabFilter || "",
-        work_tab_from: tabFilter ? selectedMonth : "",
+        position: posEl ? String(posEl.value || "") : "",
+        work_tab_id: tab || "",
+        work_tab_from: tab ? selectedMonth : "",
         work_tab_history: [],
         department: officialName(w),
         start: "08:00",
         end: "17:00",
         rate: 0,
         taxiDaily: 0,
-        jobStatus: "working",
+        jobStatus: (statusEl && statusEl.value === "fired") ? "fired" : "working",
         terms: {}
     };
+    applyEmployeeFullName(employee, fullName);
     employee.employee_id = employee.id;
     if (!Array.isArray(w.employees)) w.employees = [];
     w.employees.push(employee);
     justAddedEmployeeId = employee.id;
     try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
     saveApp();
-    if (isSummary() || isAdminEntry()) renderSummaryStaff();
-    else {
-        renderFio();
-        renderEmployees();
+    closeEmployeeCreateForm();
+    refreshAfterEmployeeCreate();
+    toast("Сотрудник сохранён.");
+}
+
+function addEmployee() {
+    if (!canEditStaff()) {
+        toast("Нет права добавлять сотрудников.", "error");
+        return;
     }
-    focusNewEmployeeCard(employee.id);
-    toast("Введите ФИО сотрудника и нажмите «Сохранить».");
+    openEmployeeCreateForm();
 }
 
 function updateEmployee(employeeId, field, value) {
@@ -21626,39 +21815,7 @@ function addSummaryEmployee() {
         toast("Сначала выберите рабочий отдел в фильтре сверху.", "error");
         return;
     }
-    const code = summaryDeptFilter;
-    const target = findWorkspaceByCode(code) || orderedDeptWorkspaces()[0];
-    if (!target) return;
-    const defaultTab = defaultMetricTabId(target.code);
-    const employee = {
-        id: generateEmployeeId(),
-        employee_id: "",
-        external_1c_id: "",
-        name: "",
-        last_name: "",
-        first_name: "",
-        middle_name: "",
-        position: "",
-        work_tab_id: timesheetGroupFilterTabs(target.code).length ? defaultTab : "",
-        work_tab_from: selectedMonth,
-        work_tab_history: [],
-        department: officialName(target),
-        start: "08:00",
-        end: "17:00",
-        rate: 0,
-        taxiDaily: 0,
-        jobStatus: "working",
-        terms: {}
-    };
-    employee.employee_id = employee.id;
-    if (!Array.isArray(target.employees)) target.employees = [];
-    target.employees.push(employee);
-    justAddedEmployeeId = employee.id;
-    assignGroupAllMetricsToEmployee(employee);
-    saveApp();
-    renderSummaryStaff();
-    focusNewEmployeeCard(employee.id);
-    toast("Введите ФИО сотрудника, выберите группу и нажмите «Сохранить».");
+    addEmployee();
 }
 
 function moveEmployeeToDepartment(employeeId, deptCode) {
