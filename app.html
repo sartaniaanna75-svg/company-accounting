@@ -7925,7 +7925,13 @@ function shiftYear(delta) {
    СОТРУДНИКИ И ОТДЕЛЫ
 ============================================================ */
 function findEmployeeIn(w, id) {
-    return (w.employees || []).find(function (e) { return e.id === id; });
+    if (!w || !id) return null;
+    const list = Array.isArray(w.employees) ? w.employees : [];
+    for (let i = 0; i < list.length; i++) {
+        const e = list[i];
+        if (e && e.id === id) return e;
+    }
+    return null;
 }
 
 function getEmployee(id) {
@@ -7969,11 +7975,17 @@ function staffContextDeptLocked() {
 }
 
 function directoryEmployees(w) {
-    return ((w || workspace()).employees || []).slice().sort(compareEmployeesByStatusThenName);
+    const ws = w || workspace();
+    if (!ws) return [];
+    return (Array.isArray(ws.employees) ? ws.employees : []).filter(function (e) {
+        return !!(e && e.id);
+    }).slice().sort(compareEmployeesByStatusThenName);
 }
 
 function assignedIds(w) {
-    return (w || workspace()).employeeIds || [];
+    const ws = w || workspace();
+    if (!ws) return [];
+    return Array.isArray(ws.employeeIds) ? ws.employeeIds.slice() : [];
 }
 
 function isAssignedTo(w, employeeId) {
@@ -21898,9 +21910,11 @@ function defaultEmployeeCreateTab(deptCode) {
 }
 
 function employeeCreateDeptOptionsHtml(selectedCode, locked) {
-    const depts = (isTerritoryMetricsMode() || isSummary() || isAdminEntry())
+    const depts = isTerritoryMetricsMode()
         ? DEPT_DEFAULTS.filter(function (d) { return d.code !== "shop"; })
-        : DEPT_DEFAULTS.filter(function (d) { return d.code === selectedCode; });
+        : (isSummary() || isAdminEntry())
+            ? DEPT_DEFAULTS.slice()
+            : DEPT_DEFAULTS.filter(function (d) { return d.code === selectedCode; });
     let html = '<select id="empFormDept" onchange="onEmployeeCreateDeptChange()"' + (locked ? " disabled" : "") + ">";
     depts.forEach(function (d) {
         html += '<option value="' + d.code + '"' + (d.code === selectedCode ? " selected" : "") + ">"
@@ -21979,7 +21993,7 @@ function openEmployeeCreateForm() {
     }
     const w = staffTargetWorkspace();
     if (!w || w.code === "summary" || w.type === "summary") {
-        toast("Сначала выберите отдел (Офис, Склад или Логистика + Торговые).", "error");
+        toast("Сначала выберите отдел: Магазин Володарского, Офис, Склад или Логистика + Торговые.", "error");
         return;
     }
     const deptCode = w.code;
