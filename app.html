@@ -19415,24 +19415,59 @@ function canEditShopMetricCatalog() {
     return c === "shop" || isGenericMetricsDept(c);
 }
 
+function shopMetricNameKey(name) {
+    return String(name || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function shopMetricNameTokens(name) {
-    return String(name || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/g, " ").trim().split(/\s+/).filter(function (w) {
+    return shopMetricNameKey(name).split(/\s+/).filter(function (w) {
         return w.length >= 4;
     });
 }
 
+const SHOP_METRIC_NAME_STOPWORDS = {
+    количество: true,
+    количеству: true,
+    число: true,
+    сумма: true,
+    метрика: true,
+    показатель: true,
+    всего: true,
+    итого: true,
+    штук: true,
+    штуки: true
+};
+
+function shopMetricDistinctiveTokens(name) {
+    return shopMetricNameTokens(name).filter(function (w) {
+        return !SHOP_METRIC_NAME_STOPWORDS[w];
+    });
+}
+
 function shopMetricSimilarItems(name, exceptId, dept) {
-    const tokens = shopMetricNameTokens(name);
-    if (!tokens.length) return [];
+    const wantKey = shopMetricNameKey(name);
+    if (!wantKey) return [];
+    const except = canonicalMetricId(exceptId);
+    const tokens = shopMetricDistinctiveTokens(name);
     const code = dept || catalogDeptContext();
     return catalogItemsForDept(code).filter(function (it) {
-        if (!it || it.id === exceptId) return false;
-        const other = shopMetricNameTokens(it.name);
+        if (!it || !it.id || !it.name) return false;
+        if (except && canonicalMetricId(it.id) === except) return false;
+        const otherKey = shopMetricNameKey(it.name);
+        if (!otherKey) return false;
+        if (otherKey === wantKey) return true;
+        if (!tokens.length) return false;
+        const other = shopMetricDistinctiveTokens(it.name);
+        if (!other.length) return false;
         let hit = 0;
         tokens.forEach(function (t) {
             if (other.indexOf(t) !== -1) hit += 1;
         });
-        return hit >= Math.min(2, tokens.length);
+        if (!hit) return false;
+        if (tokens.length === 1 || other.length === 1) {
+            return hit === tokens.length && hit === other.length;
+        }
+        return hit >= 2 && hit >= Math.min(tokens.length, other.length);
     });
 }
 
@@ -20191,7 +20226,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
         if (similar.length) {
             const hint = document.getElementById("mcDupHint");
             if (hint) {
-                hint.innerHTML = "Возможно, такая метрика уже существует: "
+                hint.innerHTML = "Возможно, такая метрика уже существует.<br>Похожая метрика: "
                     + similar.map(function (s) {
                         return '<button type="button" class="btn btn-secondary btn-small" onclick="openMetricCatalogForm(\'' + s.id + '\')">'
                             + escapeHtml(s.name) + "</button>";
