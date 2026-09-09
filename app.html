@@ -3312,8 +3312,8 @@
         .cr-act { display: flex; gap: 4px; flex-wrap: wrap; }
         .cr-act .btn { padding: 2px 7px; font-size: 11px; }
         .rev-modal.cr-modal {
-            width: min(1040px, 92vw);
-            max-height: 88vh;
+            width: min(1180px, 94vw);
+            max-height: 90vh;
             overflow-x: hidden;
             overflow-y: auto;
             padding: 18px 20px;
@@ -3322,6 +3322,17 @@
         .cr-form .wide { grid-column: 1 / -1; }
         .cr-form .cr-sm { max-width: 160px; }
         .cr-form .cr-result select { border-color: #fdba74; background: #fffbeb; }
+        .cr-paste-box textarea { min-height: 72px; font-family: inherit; font-size: 12px; }
+        .cr-paste-hint { font-size: 11px; color: var(--muted); margin: 0 0 6px; }
+        .cr-lines-wrap { overflow: auto; max-height: 280px; border: 1px solid var(--border); border-radius: 8px; }
+        .cr-lines { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .cr-lines th, .cr-lines td { padding: 4px 6px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
+        .cr-lines th { background: #f8fafc; font-size: 11px; position: sticky; top: 0; }
+        .cr-lines input, .cr-lines select { width: 100%; font-size: 12px; padding: 4px 6px; box-sizing: border-box; }
+        .cr-need { background: #fef3c7 !important; }
+        .cr-need input, .cr-need select { border-color: #f59e0b; background: #fffbeb; }
+        .cr-need-hint { display: block; color: #b45309; font-size: 10px; margin-top: 2px; }
+        .cr-bulk-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 8px 0; }
         .cr-form label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
         .cr-form input, .cr-form select, .cr-form textarea { font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; width: 100%; box-sizing: border-box; }
         .cr-form textarea { min-height: 72px; resize: vertical; }
@@ -26711,6 +26722,8 @@ const CR_ADJ_DEFAULTS = [
 ];
 
 let crUi = { tab: "all", author: "", driver: "", picker: "", adj: "", result: "", q: "", month: "" };
+let crDraftLines = [];
+let crDraftSeq = 1;
 
 function ensureCustomerReturns(data) {
     const root = data || appData;
@@ -26788,6 +26801,7 @@ function crNormalizeItem(it) {
     if (it.is_deleted == null) it.is_deleted = false;
     if (!it.created_at) it.created_at = new Date().toISOString();
     if (!it.created_by_user_id) it.created_by_user_id = currentAuthUserId() || "";
+    if (it.return_group_id == null) it.return_group_id = "";
     return it;
 }
 
@@ -27016,7 +27030,7 @@ function crMatchFilters(it) {
     if (crUi.result && crUi.result !== "pending" && it.recount_result !== crUi.result) return false;
     const q = String(crUi.q || "").trim().toLowerCase();
     if (q) {
-        const blob = [it.product_name, it.client_name, it.invoice_no, it.comment, it.return_id].join(" ").toLowerCase();
+        const blob = [it.product_name, it.client_name, it.invoice_no, it.comment, it.return_id, it.return_group_id].join(" ").toLowerCase();
         if (blob.indexOf(q) === -1) return false;
     }
     return true;
@@ -27349,9 +27363,11 @@ function crRenderAllTable(list) {
             + '<td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td>"
             + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
             + "<td>" + crResultSelect(it, can) + "</td>"
-            + "<td>" + crAdjSelect(it, can) + "</td>"
+            + '<td class="' + (it.adjustment_id ? "" : "cr-need") + '">' + crAdjSelect(it, can)
+            + (it.adjustment_id ? "" : '<span class="cr-need-hint">⚠ Укажите корректировку</span>') + "</td>"
             + "<td>" + escapeHtml(it.invoice_no) + "</td>"
-            + "<td>" + crPill("emp", crEmpShort(it.picker_employee_id) || "—") + "</td>"
+            + '<td class="' + (it.picker_employee_id ? "" : "cr-need") + '">' + crPill("emp", crEmpShort(it.picker_employee_id) || "—")
+            + (it.picker_employee_id ? "" : '<span class="cr-need-hint">⚠ Выберите товаросборщика</span>') + "</td>"
             + '<td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td>"
             + "<td>" + (crIsDriverAdj(it) ? crDriverCheck(it, crCanAct("driver")) : crPill(st.cls, st.text)) + "</td>"
             + '<td class="cr-act">'
@@ -27524,6 +27540,307 @@ function closeCrModal() {
     if (back) back.classList.remove("show");
 }
 
+function crNextGroupId() {
+    const ids = (crStore().items || []).map(function (x) { return x && x.return_group_id; });
+    return nextPrefixedId("rgrp", ids);
+}
+
+function crParseQty(value, fallback) {
+    if (value === "" || value === null || value === undefined) return fallback;
+    let s = String(value).replace(/\u00a0/g, " ").replace("−", "-").replace("–", "-").trim();
+    if (!s) return fallback;
+    s = s.replace(/\s/g, "");
+    const lastComma = s.lastIndexOf(",");
+    const lastDot = s.lastIndexOf(".");
+    if (lastComma >= 0 && lastDot >= 0) {
+        if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+        else s = s.replace(/,/g, "");
+    } else {
+        s = s.replace(",", ".");
+    }
+    const n = Number(s);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.abs(n);
+}
+
+function crLooksLikeQty(raw) {
+    const s = String(raw || "").replace(/\u00a0/g, " ").trim().replace("−", "-").replace("–", "-");
+    if (!s) return false;
+    return /^-?\d+(?:[.,]\d+)?$/.test(s.replace(/\s/g, ""));
+}
+
+function crTrailingNumRe() {
+    return /^(.*?)[ \t]+([−–\-]?\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?)\s*$/;
+}
+
+function crParseProductQtyLine(line) {
+    line = String(line || "").replace(/\r/g, "").replace(/\u00a0/g, " ").trim();
+    if (!line) return null;
+    if (line.indexOf("\t") >= 0 || line.indexOf("|") >= 0) {
+        const cells = line.split(/\t|\|/).map(function (s) { return s.trim(); }).filter(function (s, i, arr) {
+            return s || i === 0 || i === arr.length - 1;
+        });
+        const nums = [];
+        let cut = cells.length;
+        for (let i = cells.length - 1; i >= 1; i--) {
+            if (!crLooksLikeQty(cells[i])) break;
+            nums.unshift(cells[i]);
+            cut = i;
+            if (nums.length >= 2) break;
+        }
+        const name = cells.slice(0, cut).filter(Boolean).join(" ").trim();
+        if (!name) return null;
+        if (nums.length >= 2) {
+            return { name: name, qty: crParseQty(nums[0], 0), amount: crParseQty(nums[1], 0) };
+        }
+        if (nums.length === 1) return { name: name, qty: crParseQty(nums[0], 0), amount: null };
+        if (cells.length >= 3 && cells[0]) {
+            return { name: cells[0], qty: crParseQty(cells[1], 0), amount: crParseQty(cells[2], null) };
+        }
+        if (cells.length >= 2 && cells[0]) return { name: cells[0], qty: crParseQty(cells[1], 0), amount: null };
+        return { name: cells[0], qty: 0, amount: null };
+    }
+    const nums = [];
+    let rest = line;
+    const re = crTrailingNumRe();
+    while (nums.length < 2) {
+        const m = rest.match(re);
+        if (!m || !crLooksLikeQty(m[2])) break;
+        nums.unshift(m[2]);
+        rest = String(m[1] || "").trim();
+    }
+    if (!rest) return { name: line, qty: 0, amount: null };
+    if (nums.length >= 2) {
+        return { name: rest, qty: crParseQty(nums[0], 0), amount: crParseQty(nums[1], 0) };
+    }
+    if (nums.length === 1) return { name: rest, qty: crParseQty(nums[0], 0), amount: null };
+    return { name: line, qty: 0, amount: null };
+}
+
+function crParsePasteBlock(text) {
+    return String(text || "").split(/\r?\n/).map(crParseProductQtyLine).filter(function (row) {
+        return row && row.name;
+    });
+}
+
+function crEmptyDraftLine() {
+    crDraftSeq += 1;
+    return {
+        key: "ln" + crDraftSeq,
+        product_name: "",
+        qty: 0,
+        amount: null,
+        adjustment_id: "",
+        picker_employee_id: "",
+        comment: "",
+        selected: false
+    };
+}
+
+function crCollectDraftFromDom() {
+    if (!crDraftLines.length) return;
+    crDraftLines.forEach(function (line, i) {
+        const name = document.getElementById("crLnName" + i);
+        const qty = document.getElementById("crLnQty" + i);
+        const amount = document.getElementById("crLnAmount" + i);
+        const adj = document.getElementById("crLnAdj" + i);
+        const picker = document.getElementById("crLnPicker" + i);
+        const comment = document.getElementById("crLnComment" + i);
+        const sel = document.getElementById("crLnSel" + i);
+        if (name) line.product_name = name.value;
+        if (qty) line.qty = crParseQty(qty.value, 0);
+        if (amount) {
+            const raw = String(amount.value || "").trim();
+            line.amount = raw ? crParseQty(raw, 0) : null;
+        }
+        if (adj) line.adjustment_id = adj.value;
+        if (picker) line.picker_employee_id = picker.value;
+        if (comment) line.comment = comment.value;
+        if (sel) line.selected = !!sel.checked;
+    });
+}
+
+function crRenderDraftTable() {
+    const host = document.getElementById("crLinesHost");
+    if (!host) return;
+    if (!crDraftLines.length) {
+        host.innerHTML = '<div class="empty-row">Вставьте товары из 1С или Excel — строки появятся здесь.</div>';
+        return;
+    }
+    let body = "";
+    crDraftLines.forEach(function (line, i) {
+        const missAdj = !line.adjustment_id;
+        const missPick = !line.picker_employee_id;
+        body += "<tr><td><input type=\"checkbox\" id=\"crLnSel" + i + "\"" + (line.selected ? " checked" : "") + "></td>"
+            + "<td>" + (i + 1) + "</td>"
+            + "<td><input id=\"crLnName" + i + "\" value=\"" + escapeAttribute(line.product_name) + "\"></td>"
+            + "<td><input id=\"crLnQty" + i + "\" inputmode=\"decimal\" value=\"" + escapeAttribute(line.qty ? String(line.qty) : "") + "\" onchange=\"crSyncReturnTotal()\"></td>"
+            + "<td><input id=\"crLnAmount" + i + "\" inputmode=\"decimal\" value=\"" + escapeAttribute(line.amount == null || line.amount === "" ? "" : String(line.amount)) + "\" onchange=\"crSyncReturnTotal()\"></td>"
+            + '<td class="' + (missAdj ? "cr-need" : "") + '"><select id="crLnAdj' + i + '">' + crAdjOptions(line.adjustment_id)
+            + "</select>" + (missAdj ? '<span class="cr-need-hint">⚠ Укажите корректировку</span>' : "") + "</td>"
+            + '<td class="' + (missPick ? "cr-need" : "") + '"><select id="crLnPicker' + i + '">' + crEmpOptions(line.picker_employee_id, "picker")
+            + "</select>" + (missPick ? '<span class="cr-need-hint">⚠ Выберите товаросборщика</span>' : "") + "</td>"
+            + "<td><input id=\"crLnComment" + i + "\" value=\"" + escapeAttribute(line.comment || "") + "\"></td>"
+            + '<td><button type="button" class="btn btn-small" onclick="crRemoveDraftLine(' + i + ')">✕</button></td></tr>';
+    });
+    host.innerHTML = '<div class="cr-lines-wrap"><table class="cr-lines"><thead><tr>'
+        + "<th></th><th>№</th><th>Товар</th><th>Количество</th><th>Сумма</th><th>Корректировка</th><th>Товаросборщик</th><th>Комментарий</th><th></th>"
+        + "</tr></thead><tbody>" + body + "</tbody></table></div>";
+}
+
+function crAppendParsedRows(rows) {
+    crCollectDraftFromDom();
+    rows.forEach(function (row) {
+        const line = crEmptyDraftLine();
+        line.product_name = row.name;
+        line.qty = crParseQty(row.qty, 0);
+        line.amount = row.amount == null || row.amount === "" ? null : crParseQty(row.amount, 0);
+        crDraftLines.push(line);
+    });
+    crRenderDraftTable();
+    crSyncReturnTotal();
+}
+
+function crOnPasteProducts(ev) {
+    const text = ev.clipboardData ? ev.clipboardData.getData("text") : "";
+    if (!text || !String(text).trim()) return;
+    ev.preventDefault();
+    const rows = crParsePasteBlock(text);
+    if (!rows.length) {
+        toast("Не удалось разобрать вставку.", "error");
+        return;
+    }
+    crAppendParsedRows(rows);
+    const box = document.getElementById("crPasteProducts");
+    if (box) box.value = "";
+    toast("Добавлено позиций: " + rows.length);
+}
+
+function crImportProductsField() {
+    const box = document.getElementById("crPasteProducts");
+    const text = box ? box.value : "";
+    const rows = crParsePasteBlock(text);
+    if (!rows.length) {
+        toast("Вставьте текст номенклатуры в поле выше.", "error");
+        return;
+    }
+    crAppendParsedRows(rows);
+    if (box) box.value = "";
+    toast("Добавлено позиций: " + rows.length);
+}
+
+function crPasteQtyColumn() {
+    const box = document.getElementById("crPasteQty");
+    const text = box ? box.value : "";
+    const qtys = String(text || "").split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!qtys.length) {
+        toast("Вставьте столбец количества.", "error");
+        return;
+    }
+    crCollectDraftFromDom();
+    if (!crDraftLines.length) {
+        toast("Сначала вставьте список товаров.", "error");
+        return;
+    }
+    qtys.forEach(function (raw, i) {
+        if (crDraftLines[i]) crDraftLines[i].qty = crParseQty(raw, crDraftLines[i].qty);
+    });
+    if (box) box.value = "";
+    crRenderDraftTable();
+    crSyncReturnTotal();
+    toast("Количество проставлено по порядку строк.");
+}
+
+function crPasteAmountColumn() {
+    const box = document.getElementById("crPasteAmount");
+    const text = box ? box.value : "";
+    const sums = String(text || "").split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+    if (!sums.length) {
+        toast("Вставьте столбец суммы.", "error");
+        return;
+    }
+    crCollectDraftFromDom();
+    if (!crDraftLines.length) {
+        toast("Сначала вставьте список товаров.", "error");
+        return;
+    }
+    sums.forEach(function (raw, i) {
+        if (crDraftLines[i]) crDraftLines[i].amount = crParseQty(raw, crDraftLines[i].amount);
+    });
+    if (box) box.value = "";
+    crRenderDraftTable();
+    crSyncReturnTotal();
+    toast("Суммы проставлены по порядку строк.");
+}
+
+function crSyncReturnTotal() {
+    crCollectDraftFromDom();
+    if (!crDraftLines.length) return;
+    const allFilled = crDraftLines.every(function (line) {
+        return line.amount != null && line.amount !== "";
+    });
+    if (!allFilled) return;
+    const sum = crDraftLines.reduce(function (s, line) {
+        return s + Number(line.amount || 0);
+    }, 0);
+    const el = document.getElementById("crAmount");
+    if (el) el.value = String(typeof roundMoney2 === "function" ? roundMoney2(sum) : sum);
+}
+
+function crAddDraftLine() {
+    crCollectDraftFromDom();
+    crDraftLines.push(crEmptyDraftLine());
+    crRenderDraftTable();
+}
+
+function crRemoveDraftLine(index) {
+    crCollectDraftFromDom();
+    crDraftLines.splice(index, 1);
+    crRenderDraftTable();
+    crSyncReturnTotal();
+}
+
+function crDraftSelectedIndexes() {
+    crCollectDraftFromDom();
+    const idx = [];
+    crDraftLines.forEach(function (line, i) {
+        if (line.selected) idx.push(i);
+    });
+    return idx;
+}
+
+function crApplyDraftPicker() {
+    const sel = document.getElementById("crBulkPicker");
+    const id = sel ? String(sel.value || "") : "";
+    if (!id) {
+        toast("Выберите товаросборщика.", "error");
+        return;
+    }
+    const idx = crDraftSelectedIndexes();
+    if (!idx.length) {
+        toast("Отметьте строки.", "error");
+        return;
+    }
+    idx.forEach(function (i) { crDraftLines[i].picker_employee_id = id; });
+    crRenderDraftTable();
+}
+
+function crApplyDraftAdj() {
+    const sel = document.getElementById("crBulkAdj");
+    const id = sel ? String(sel.value || "") : "";
+    if (!id) {
+        toast("Выберите корректировку.", "error");
+        return;
+    }
+    const idx = crDraftSelectedIndexes();
+    if (!idx.length) {
+        toast("Отметьте строки.", "error");
+        return;
+    }
+    idx.forEach(function (i) { crDraftLines[i].adjustment_id = id; });
+    crRenderDraftTable();
+}
+
 function crOpenEditor(id) {
     if (!crHasFullEdit() && id) {
         /* просмотр без прав на правку всей таблицы */
@@ -27531,7 +27848,7 @@ function crOpenEditor(id) {
     const it = id ? crFind(id) : null;
     const rec = it || crNormalizeItem({
         return_id: "",
-        date: (crMonthKey() + "-01").slice(0, 10),
+        date: new Date().toISOString().slice(0, 10),
         extra_on_register: false
     });
     if (!rec.date) rec.date = new Date().toISOString().slice(0, 10);
@@ -27539,7 +27856,65 @@ function crOpenEditor(id) {
     const modal = document.getElementById("crModal");
     const back = document.getElementById("crModalBack");
     if (!modal || !back) return;
-    modal.innerHTML = "<h3 style=\"margin:0 0 10px\">" + (id ? "Возврат " + escapeHtml(id) : "Новый возврат") + "</h3>"
+    if (!id) {
+        crDraftLines = [];
+        crDraftSeq = 1;
+        modal.innerHTML = crCreateEditorHtml(rec, can);
+        if (!can) modal.querySelectorAll("input,select,textarea").forEach(function (el) { el.disabled = true; });
+        crSyncEditorFields();
+        crRenderDraftTable();
+        back.classList.add("show");
+        return;
+    }
+    modal.innerHTML = crSingleEditorHtml(id, rec, can);
+    if (!can) modal.querySelectorAll("input,select,textarea").forEach(function (el) { el.disabled = true; });
+    crSyncEditorFields();
+    back.classList.add("show");
+}
+
+function crCreateEditorHtml(rec, can) {
+    return "<h3 style=\"margin:0 0 10px\">Новый возврат</h3>"
+        + '<p class="note" style="margin:0 0 10px">Общие данные — один раз на всю накладную. Товары вставьте из 1С / Excel одним Ctrl+V.</p>'
+        + '<div class="cr-form">'
+        + '<label class="cr-sm">Дата<input id="crDate" type="date" value="' + escapeAttribute(rec.date) + '"' + (can ? "" : " disabled") + "></label>"
+        + '<label>Клиент<input id="crClient" value="' + escapeAttribute(rec.client_name || "") + '"></label>'
+        + '<label>Автор продаж<select id="crAuthor">' + crEmpOptions(rec.sales_author_employee_id, "author") + "</select></label>"
+        + '<label>Водитель<select id="crDriver" onchange="crSyncEditorFields()">' + crEmpOptions(rec.driver_employee_id, "driver") + "</select></label>"
+        + '<label class="cr-if-driver">№ автомобиля<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
+        + '<label>№ заявки / реализации<input id="crInvoice" value="' + escapeAttribute(rec.invoice_no || "") + '"></label>'
+        + '<label class="cr-sm">Сумма возврата<input id="crAmount" inputmode="decimal" value="' + escapeAttribute(String(rec.amount || "")) + '"></label>'
+        + '<label class="cr-if-driver">Новый госномер<input id="crVehPlate" placeholder="если нет в списке"></label>'
+        + '<label class="wide">Общий комментарий<textarea id="crComment">' + escapeHtml(rec.comment || "") + "</textarea></label>"
+        + "</div>"
+        + '<div class="cr-paste-box" style="margin-top:12px">'
+        + '<div class="cr-paste-hint">Товары возврата. Можно вставить сразу три колонки: Номенклатура, Количество, Сумма (Ctrl+V). Либо отдельно: товары, затем количества, затем суммы. Отрицательные числа станут положительными.</div>'
+        + '<div class="cr-form">'
+        + '<label class="wide">Номенклатура + количество + сумма (Ctrl+V)<textarea id="crPasteProducts" placeholder="В/Д Хмели-сунели 30гр*20        -5,000    -350,00" onpaste="crOnPasteProducts(event)"></textarea></label>'
+        + '<label>Только количества<textarea id="crPasteQty" placeholder="-5,000\n-1,000"></textarea></label>'
+        + '<label>Только суммы<textarea id="crPasteAmount" placeholder="-350,00\n-420,50"></textarea></label>'
+        + "</div>"
+        + '<div class="toolbar" style="margin-top:6px">'
+        + '<button type="button" class="btn" onclick="crImportProductsField()">Добавить товары из поля</button>'
+        + '<button type="button" class="btn" onclick="crPasteQtyColumn()">Проставить количества</button>'
+        + '<button type="button" class="btn" onclick="crPasteAmountColumn()">Проставить суммы</button>'
+        + '<button type="button" class="btn" onclick="crAddDraftLine()">+ Добавить строку</button>'
+        + "</div></div>"
+        + '<div class="cr-bulk-bar">'
+        + '<label>Товаросборщик<select id="crBulkPicker">' + crEmpOptions("", "picker") + "</select></label>"
+        + '<button type="button" class="btn btn-small" onclick="crApplyDraftPicker()">Применить к выбранным</button>'
+        + '<label>Корректировка<select id="crBulkAdj">' + crAdjOptions("") + "</select></label>"
+        + '<button type="button" class="btn btn-small" onclick="crApplyDraftAdj()">Применить к выбранным</button>'
+        + "</div>"
+        + '<div id="crLinesHost"></div>'
+        + '<div class="toolbar" style="margin-top:12px;justify-content:flex-end">'
+        + (can ? '<button type="button" class="btn" onclick="crAddVehicle()">+ Авто</button>' : "")
+        + '<button type="button" class="btn" onclick="closeCrModal()">Отмена</button>'
+        + (can ? '<button type="button" class="btn btn-primary" onclick="crSaveEditor(\'\')">Сохранить возврат</button>' : "")
+        + "</div>";
+}
+
+function crSingleEditorHtml(id, rec, can) {
+    return "<h3 style=\"margin:0 0 10px\">Возврат " + escapeHtml(id) + "</h3>"
         + '<div class="cr-form">'
         + '<label class="cr-sm">Дата<input id="crDate" type="date" value="' + escapeAttribute(rec.date) + '"' + (can ? "" : " disabled") + "></label>"
         + '<label>Автор продаж<select id="crAuthor">' + crEmpOptions(rec.sales_author_employee_id, "author") + "</select></label>"
@@ -27565,7 +27940,7 @@ function crOpenEditor(id) {
         + '<label class="cr-if-give">Дата возврата клиенту<input id="crBackDate" type="date" value="' + escapeAttribute(rec.return_to_client_date) + '"></label>'
         + '<label class="wide">Комментарий<textarea id="crComment">' + escapeHtml(rec.comment) + "</textarea></label>"
         + "</div>"
-        + (id && rec.history && rec.history.length
+        + (rec.history && rec.history.length
             ? '<div class="note" style="margin-top:8px">История: ' + rec.history.map(function (h) {
                 return crFmtDate(String(h.at || "").slice(0, 10)) + " " + escapeHtml(h.action) + (h.detail ? " (" + escapeHtml(h.detail) + ")" : "");
             }).join(" → ") + "</div>"
@@ -27575,11 +27950,6 @@ function crOpenEditor(id) {
         + '<button type="button" class="btn" onclick="closeCrModal()">Отмена</button>'
         + (can ? '<button type="button" class="btn btn-primary" onclick="crSaveEditor(\'' + escapeAttribute(id || "") + '\')">Сохранить возврат</button>' : "")
         + "</div>";
-    if (!can) {
-        modal.querySelectorAll("input,select,textarea").forEach(function (el) { el.disabled = true; });
-    }
-    crSyncEditorFields();
-    back.classList.add("show");
 }
 
 function crSyncEditorFields() {
@@ -27593,8 +27963,63 @@ function crSyncEditorFields() {
     });
 }
 
+function crSaveCreateBatch() {
+    crCollectDraftFromDom();
+    const lines = crDraftLines.filter(function (line) {
+        return String(line.product_name || "").trim();
+    });
+    if (!lines.length) {
+        toast("Добавьте хотя бы один товар.", "error");
+        return;
+    }
+    const plate = String((document.getElementById("crVehPlate") || {}).value || "").trim();
+    if (plate) crAddVehicle();
+    const store = crStore();
+    const groupId = crNextGroupId();
+    const headerComment = String((document.getElementById("crComment") || {}).value || "").trim();
+    const totalAmount = parseMoney2((document.getElementById("crAmount") || {}).value, 0);
+    const header = {
+        date: String((document.getElementById("crDate") || {}).value || new Date().toISOString().slice(0, 10)),
+        sales_author_employee_id: String((document.getElementById("crAuthor") || {}).value || ""),
+        driver_employee_id: String((document.getElementById("crDriver") || {}).value || ""),
+        vehicle_id: String((document.getElementById("crVehicle") || {}).value || ""),
+        client_name: String((document.getElementById("crClient") || {}).value || "").trim(),
+        invoice_no: String((document.getElementById("crInvoice") || {}).value || "").trim(),
+        extra_on_register: false,
+        recount_result: ""
+    };
+    lines.forEach(function (line, i) {
+        const it = crNormalizeItem({ return_id: crNextReturnId() });
+        it.return_group_id = groupId;
+        it.date = header.date;
+        it.sales_author_employee_id = header.sales_author_employee_id;
+        it.driver_employee_id = header.driver_employee_id;
+        it.vehicle_id = header.vehicle_id;
+        it.picker_employee_id = String(line.picker_employee_id || "");
+        it.product_name = String(line.product_name || "").trim();
+        it.qty = crParseQty(line.qty, 0);
+        it.amount = line.amount == null || line.amount === "" ? 0 : crParseQty(line.amount, 0);
+        it.client_name = header.client_name;
+        it.invoice_no = header.invoice_no;
+        it.adjustment_id = String(line.adjustment_id || "");
+        it.recount_result = "";
+        it.extra_on_register = false;
+        it.comment = [headerComment, String(line.comment || "").trim()].filter(Boolean).join(" · ");
+        crPushHistory(it, "created", "group:" + groupId);
+        store.items.push(it);
+    });
+    saveApp();
+    closeCrModal();
+    renderTerritoryReturns();
+    toast("Сохранён возврат: " + lines.length + " товарных позиций.");
+}
+
 function crSaveEditor(id) {
     if (!crHasFullEdit()) return;
+    if (!id) {
+        crSaveCreateBatch();
+        return;
+    }
     const product = String((document.getElementById("crProduct") || {}).value || "").trim();
     if (!product) {
         toast("Укажите товар.", "error");
@@ -27603,8 +28028,7 @@ function crSaveEditor(id) {
     const plate = String((document.getElementById("crVehPlate") || {}).value || "").trim();
     if (plate) crAddVehicle();
     const store = crStore();
-    let it = id ? crFind(id) : null;
-    const isNew = !it;
+    let it = crFind(id);
     if (!it) {
         it = crNormalizeItem({ return_id: crNextReturnId() });
         store.items.push(it);
@@ -27615,8 +28039,8 @@ function crSaveEditor(id) {
     it.vehicle_id = String((document.getElementById("crVehicle") || {}).value || "");
     it.picker_employee_id = String((document.getElementById("crPicker") || {}).value || "");
     it.product_name = product;
-    it.amount = parseMoney2((document.getElementById("crAmount") || {}).value, 0);
-    it.qty = parseDecimal((document.getElementById("crQty") || {}).value, 0);
+    it.amount = crParseQty((document.getElementById("crAmount") || {}).value, 0);
+    it.qty = crParseQty((document.getElementById("crQty") || {}).value, 0);
     it.client_name = String((document.getElementById("crClient") || {}).value || "").trim();
     it.invoice_no = String((document.getElementById("crInvoice") || {}).value || "").trim();
     it.return_to_client_date = String((document.getElementById("crBackDate") || {}).value || "");
@@ -27624,11 +28048,11 @@ function crSaveEditor(id) {
     it.recount_result = String((document.getElementById("crResult") || {}).value || "");
     it.extra_on_register = String((document.getElementById("crExtra") || {}).value || "") === "1";
     it.comment = String((document.getElementById("crComment") || {}).value || "").trim();
-    crPushHistory(it, isNew ? "created" : "updated", crActiveQueue(it) || "saved");
+    crPushHistory(it, "updated", crActiveQueue(it) || "saved");
     saveApp();
     closeCrModal();
     renderTerritoryReturns();
-    toast(isNew ? "Возврат создан." : "Возврат сохранён.");
+    toast("Возврат сохранён.");
 }
 
 function crSetRecount(id, value) {
