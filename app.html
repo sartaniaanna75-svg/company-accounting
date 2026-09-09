@@ -9163,12 +9163,16 @@ function allowedOrgSections() {
 }
 
 function allowedSpuSections() {
-    const list = [];
+    const list = ["management"];
     const open = isAppAdmin() || canOpenManagement() || userHasPerm("management", "view");
     if (open) {
-        list.push("management", "management-planfact", "management-meetings", "management-tasks", "management-events", "management-finance");
+        ["management-planfact", "management-meetings", "management-tasks", "management-events", "management-finance"].forEach(function (sec) {
+            if (list.indexOf(sec) === -1) list.push(sec);
+        });
     }
-    if (canEditMgmtIndicators() || isAppAdmin() || open) list.push("management-settings");
+    if (canEditMgmtIndicators() || isAppAdmin() || open) {
+        if (list.indexOf("management-settings") === -1) list.push("management-settings");
+    }
     return list;
 }
 
@@ -9324,7 +9328,17 @@ function loadWorkspace() {
 
 function showSection(id, button) {
     if (id === "metrics") id = "metrics-pickers";
-    if (allowedSections().indexOf(id) === -1) id = defaultSection();
+    const requestedSection = id;
+    if (allowedSections().indexOf(id) === -1) {
+        if (isSpuMode() && isMgmtNavSection(requestedSection)) {
+            const spu = allowedSpuSections();
+            if (spu.indexOf(requestedSection) !== -1) id = requestedSection;
+            else if (spu.indexOf("management") !== -1) id = "management";
+            else id = defaultSection();
+        } else {
+            id = defaultSection();
+        }
+    }
     if (id === "metrics-pickers") shopMetricCategory = "pickers";
     if (id === "metrics-cashiers") shopMetricCategory = "cashiers";
     if (id === "metrics-managers") shopMetricCategory = "managers";
@@ -23542,9 +23556,10 @@ function orgRunSelfTests() {
 
 function canOpenManagement() {
     if (isAppAdmin()) return true;
+    const u = currentAuthUser();
+    if (currentSummaryRole === "pay" || (u && u.legacy_role === "pay")) return false;
+    if (isSpuMode()) return true;
     if (isSummary()) {
-        const u = currentAuthUser();
-        if (currentSummaryRole === "pay" || (u && u.legacy_role === "pay")) return false;
         if (currentSummaryRole === "admin" || currentSummaryRole === "adjust") return true;
         if (!u) return currentSummaryRole !== "pay";
     }
@@ -24372,10 +24387,11 @@ function mgmtFormatValue(it, value, status) {
     if (value == null || value === "") return "—";
     const n = Number(value);
     if (!Number.isFinite(n)) return "—";
-    if (it.unit === "money") return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
-    if (it.unit === "percent") return (Math.round(n * 10) / 10).toLocaleString("ru-RU") + "%";
-    if (it.unit === "people") return String(Math.round(n));
-    if (it.unit === "days") return (Math.round(n * 10) / 10).toLocaleString("ru-RU");
+    const unit = it && it.unit;
+    if (unit === "money") return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
+    if (unit === "percent") return (Math.round(n * 10) / 10).toLocaleString("ru-RU") + "%";
+    if (unit === "people") return String(Math.round(n));
+    if (unit === "days") return (Math.round(n * 10) / 10).toLocaleString("ru-RU");
     return (Math.round(n * 100) / 100).toLocaleString("ru-RU");
 }
 
@@ -24431,30 +24447,35 @@ function mgmtTimesheetFact(deptCode, agg, days) {
 }
 
 function mgmtMetricFact(deptCode, metricId, subId, days) {
-    const mid = canonicalMetricId(metricId);
-    if (!mid) return 0;
-    const codes = deptCode ? [deptCode] : DEPT_DEFAULTS.map(function (d) { return d.code; });
-    let sum = 0;
-    codes.forEach(function (code) {
-        days.forEach(function (d) {
-            if (code === "shop") {
-                if (mid === "metric_recount") {
-                    sum += shopRecountDayExecutorTotal(d.day, d.month);
+    try {
+        const mid = canonicalMetricId(metricId);
+        if (!mid) return 0;
+        const codes = deptCode ? [deptCode] : DEPT_DEFAULTS.map(function (d) { return d.code; });
+        let sum = 0;
+        codes.forEach(function (code) {
+            days.forEach(function (d) {
+                if (code === "shop") {
+                    if (mid === "metric_recount") {
+                        sum += shopRecountDayExecutorTotal(d.day, d.month);
+                        return;
+                    }
+                    const ids = shopMetricContributorIds(mid, d.month);
+                    ids.forEach(function (id) {
+                        sum += Number(shopMetricStoredFact(id, d.day, mid, d.month, subId) || 0);
+                    });
                     return;
                 }
-                const ids = shopMetricContributorIds(mid, d.month);
-                ids.forEach(function (id) {
-                    sum += Number(shopMetricStoredFact(id, d.day, mid, d.month, subId) || 0);
+                const facts = deptMetricFactsMonth(code, d.month);
+                Object.keys(facts || {}).forEach(function (empId) {
+                    sum += Number(getDeptMetricStored(code, empId, d.day, mid, d.month, subId) || 0);
                 });
-                return;
-            }
-            const facts = deptMetricFactsMonth(code, d.month);
-            Object.keys(facts || {}).forEach(function (empId) {
-                sum += Number(getDeptMetricStored(code, empId, d.day, mid, d.month, subId) || 0);
             });
         });
-    });
-    return sum;
+        return sum;
+    } catch (err) {
+        console.error(err);
+        return 0;
+    }
 }
 
 function mgmtSalesPlanFact(it) {
@@ -24659,26 +24680,27 @@ function renderManagement() {
         const tabs = document.getElementById("mgmtTabs");
         const body = document.getElementById("mgmtBody");
         if (!tabs || !body) return;
+        if (isMgmtNavSection(currentSection)) {
+            mgmtTab = mgmtTabFromSection(currentSection);
+        }
         const items = [
-            { id: "dashboard", label: "Панель управления", show: userHasPerm("management", "view") || canOpenManagement() },
+            { id: "dashboard", label: "Панель управления", show: isSpuMode() || isAppAdmin() || userHasPerm("management", "view") || canOpenManagement() },
             { id: "planfact", label: "План–факт компании", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "meetings", label: "Протокол встреч", show: userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement() },
             { id: "tasks", label: "Ежедневные задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement() },
             { id: "events", label: "График мероприятий", show: canOpenManagement() },
             { id: "finance", label: "Ввод финансовых показателей", show: userHasPerm("management", "view") || canOpenManagement() },
-            { id: "settings", label: "⚙ Показатели", show: canEditMgmtIndicators() || isAppAdmin() }
+            { id: "settings", label: "⚙ Показатели", show: canEditMgmtIndicators() || isAppAdmin() || canOpenManagement() }
         ].filter(function (t) { return t.show; });
         if (!items.length) {
             body.innerHTML = '<div class="note">Нет доступа к СПУ.</div>';
             tabs.innerHTML = "";
             return;
         }
-        if (!items.some(function (t) { return t.id === mgmtTab; })) mgmtTab = items[0].id;
-        if (isSpuMode()) {
-            const sec = mgmtSectionFromTab(mgmtTab);
-            if (currentSection !== sec && allowedSections().indexOf(sec) !== -1) {
-                currentSection = sec;
-            }
+        if (currentSection === "management") mgmtTab = "dashboard";
+        if (!items.some(function (t) { return t.id === mgmtTab; })) {
+            mgmtTab = (currentSection === "management" || !mgmtTab) ? "dashboard" : items[0].id;
+            if (!items.some(function (t) { return t.id === mgmtTab; })) mgmtTab = items[0].id;
         }
         const titles = {
             dashboard: "Панель управления",
@@ -24692,8 +24714,10 @@ function renderManagement() {
         const head = document.getElementById("mgmtPageTitle");
         if (head) head.textContent = titles[mgmtTab] || "СПУ";
         tabs.innerHTML = "";
-        if (mgmtTab === "dashboard") body.innerHTML = renderMgmtDashboardHtml();
-        else if (mgmtTab === "planfact") body.innerHTML = renderMgmtPlanFactHtml();
+        if (mgmtTab === "dashboard" || currentSection === "management") {
+            mgmtTab = "dashboard";
+            body.innerHTML = renderMgmtDashboardHtml();
+        } else if (mgmtTab === "planfact") body.innerHTML = renderMgmtPlanFactHtml();
         else if (mgmtTab === "finance") body.innerHTML = renderMgmtFinanceHtml();
         else if (mgmtTab === "tasks") body.innerHTML = renderMgmtTasksHtml();
         else if (mgmtTab === "meetings") body.innerHTML = renderMgmtMeetingsHtml();
@@ -24999,12 +25023,17 @@ function mgmtDashDeltaHtml(it, curr, prev) {
 }
 
 function mgmtDashReadAt(code, fromIso) {
-    const it = mgmtDashIndicator(code);
-    if (!it) return { it: null, value: null, status: "missing" };
-    return mgmtRunInThuWeek(fromIso, function () {
-        const read = mgmtReadIndicator(it);
-        return { it: it, value: read.value, status: read.status };
-    });
+    try {
+        const it = mgmtDashIndicator(code);
+        if (!it) return { it: null, value: null, status: "missing" };
+        return mgmtRunInThuWeek(fromIso, function () {
+            const read = mgmtReadIndicator(it);
+            return { it: it, value: read.value, status: read.status };
+        });
+    } catch (err) {
+        console.error(err);
+        return { it: mgmtDashIndicator(code), value: null, status: "error" };
+    }
 }
 
 function mgmtDashPrev(code, fromIso) {
@@ -25150,55 +25179,67 @@ function mgmtDashOwnerHtml(spuId) {
 }
 
 function renderMgmtDashboardHtml() {
-    ensureManagement();
-    mgmtEnsureDashWeek();
-    const panels = mgmtDashPanels();
-    if (!panels.some(function (p) { return p.id === mgmtDashPanel; })) mgmtDashPanel = "opt";
-    const panel = panels.find(function (p) { return p.id === mgmtDashPanel; }) || panels[0];
-    const week = mgmtThuWeek(mgmtDashWeek);
-    const weeks = [];
-    for (let i = 7; i >= 0; i--) weeks.push(mgmtShiftThuWeek(week.from, -i));
+    try {
+        ensureManagement();
+        mgmtEnsureDashWeek();
+        const panels = mgmtDashPanels();
+        if (!panels.some(function (p) { return p.id === mgmtDashPanel; })) mgmtDashPanel = "opt";
+        const panel = panels.find(function (p) { return p.id === mgmtDashPanel; }) || panels[0];
+        const week = mgmtThuWeek(mgmtDashWeek);
+        const weeks = [];
+        for (let i = 7; i >= 0; i--) weeks.push(mgmtShiftThuWeek(week.from, -i));
 
-    let html = '<div class="spu-dash">';
-    html += '<div class="spu-dash-tabs">';
-    panels.forEach(function (p) {
-        html += '<button type="button" class="' + (p.id === panel.id ? "on" : "") + '" onclick="setMgmtDashPanel(\'' + p.id + "')\">"
-            + escapeHtml(p.label) + "</button>";
-    });
-    html += "</div>";
-    html += '<div class="spu-kpi">';
-    html += '<div class="spu-kpi-period"><label>ПЕРИОД (чт–ср)</label>'
-        + '<select onchange="setMgmtDashWeek(this.value)">' + mgmtThuWeekOptions(week.from) + "</select>"
-        + '<div class="k-lab" style="margin-top:8px">Неделя</div>'
-        + '<div class="k-val" style="font-size:13px">' + escapeHtml(mgmtFmtRu(week.from) + " – " + mgmtFmtRu(week.to)) + "</div>"
-        + "</div>";
-    html += mgmtDashKpiCol("ОПТ", "opt_revenue", "opt_margin", "opt_rent", week.from);
-    html += mgmtDashKpiCol("СКЛАД", "wh_revenue", "wh_margin", "wh_rent", week.from);
-    html += mgmtDashKpiCol("МАГАЗИН", "shop_sales", "shop_margin", "shop_rent", week.from);
-    html += "</div>";
-
-    html += '<div class="spu-extra">';
-    (panel.extra || []).forEach(function (code) {
-        const pack = mgmtDashReadAt(code, week.from);
-        const prev = mgmtDashPrev(code, week.from);
-        html += "<div><div class=\"k-lab\">" + escapeHtml(pack.it ? pack.it.name : code) + "</div>"
-            + "<b>" + escapeHtml(pack.it ? mgmtFormatValue(pack.it, pack.value, pack.status) : "—") + "</b>"
-            + " " + mgmtDashDeltaHtml(pack.it, pack.value, prev.value)
+        let html = '<div class="spu-dash">';
+        html += '<div class="spu-dash-tabs">';
+        panels.forEach(function (p) {
+            html += '<button type="button" class="' + (p.id === panel.id ? "on" : "") + '" onclick="setMgmtDashPanel(\'' + p.id + "')\">"
+                + escapeHtml(p.label) + "</button>";
+        });
+        html += "</div>";
+        html += '<div class="spu-kpi">';
+        html += '<div class="spu-kpi-period"><label>ПЕРИОД (чт–ср)</label>'
+            + '<select onchange="setMgmtDashWeek(this.value)">' + mgmtThuWeekOptions(week.from) + "</select>"
+            + '<div class="k-lab" style="margin-top:8px">Неделя</div>'
+            + '<div class="k-val" style="font-size:13px">' + escapeHtml(mgmtFmtRu(week.from) + " – " + mgmtFmtRu(week.to)) + "</div>"
             + "</div>";
-    });
-    html += "</div>";
+        html += mgmtDashKpiCol("ОПТ", "opt_revenue", "opt_margin", "opt_rent", week.from);
+        html += mgmtDashKpiCol("СКЛАД", "wh_revenue", "wh_margin", "wh_rent", week.from);
+        html += mgmtDashKpiCol("МАГАЗИН", "shop_sales", "shop_margin", "shop_rent", week.from);
+        html += "</div>";
 
-    html += '<div class="spu-deptbar"><span>' + escapeHtml(panel.label) + "</span>"
-        + "<span>Ответственный " + mgmtDashOwnerHtml(panel.spu) + "</span></div>";
+        html += '<div class="spu-extra">';
+        (panel.extra || []).forEach(function (code) {
+            const pack = mgmtDashReadAt(code, week.from);
+            const prev = mgmtDashPrev(code, week.from);
+            html += "<div><div class=\"k-lab\">" + escapeHtml(pack.it ? pack.it.name : code) + "</div>"
+                + "<b>" + escapeHtml(pack.it ? mgmtFormatValue(pack.it, pack.value, pack.status) : "—") + "</b>"
+                + " " + mgmtDashDeltaHtml(pack.it, pack.value, prev && prev.value)
+                + "</div>";
+        });
+        html += "</div>";
 
-    (panel.charts || []).forEach(function (ch) {
-        const drawn = mgmtSvgComboChart(weeks, ch.bars || [], ch.line || "");
-        html += '<div class="spu-chart"><h4>' + escapeHtml(ch.title) + "</h4>"
-            + '<div class="spu-chart-body">' + drawn.svg + "</div>"
-            + '<div class="spu-leg">' + drawn.legend + "</div></div>";
-    });
-    html += "</div>";
-    return html;
+        html += '<div class="spu-deptbar"><span>' + escapeHtml(panel.label) + "</span>"
+            + "<span>Ответственный " + mgmtDashOwnerHtml(panel.spu) + "</span></div>";
+
+        (panel.charts || []).forEach(function (ch) {
+            let drawn;
+            try {
+                drawn = mgmtSvgComboChart(weeks, ch.bars || [], ch.line || "");
+            } catch (chartErr) {
+                console.error(chartErr);
+                drawn = { svg: '<div class="note">График недоступен</div>', legend: "" };
+            }
+            html += '<div class="spu-chart"><h4>' + escapeHtml(ch.title) + "</h4>"
+                + '<div class="spu-chart-body">' + drawn.svg + "</div>"
+                + '<div class="spu-leg">' + drawn.legend + "</div></div>";
+        });
+        html += "</div>";
+        return html;
+    } catch (err) {
+        console.error(err);
+        return '<div class="spu-dash"><div class="note">Ошибка панели управления: '
+            + escapeHtml(err && err.message ? err.message : String(err)) + "</div></div>";
+    }
 }
 
 function mgmtRowTone(it, fact, plan) {
