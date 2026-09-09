@@ -4898,6 +4898,27 @@ const SPU_ORG_UNITS = [
 function isGenericMetricsDept(code) {
     return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
 }
+
+const wtBusy = {
+    applyReturnsCount: false,
+    shopMetrics: false,
+    shopCatalog: false,
+    customerReturns: false,
+    management: false,
+    deptMetrics: Object.create(null)
+};
+let customerReturnsReady = false;
+let shopCatalogReady = false;
+function wtResetEnsureFlags() {
+    wtBusy.applyReturnsCount = false;
+    wtBusy.shopMetrics = false;
+    wtBusy.shopCatalog = false;
+    wtBusy.customerReturns = false;
+    wtBusy.management = false;
+    wtBusy.deptMetrics = Object.create(null);
+    customerReturnsReady = false;
+    shopCatalogReady = false;
+}
 function territoryMetricCategoryById(id) {
     return TERRITORY_METRIC_CATEGORIES.find(function (c) { return c.id === id; }) || null;
 }
@@ -7829,6 +7850,7 @@ function migrateStableIds(data) {
 }
 
 function loadAppData() {
+    if (typeof wtResetEnsureFlags === "function") wtResetEnsureFlags();
     try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) {
@@ -7985,9 +8007,20 @@ function staffContextDeptLocked() {
 function directoryEmployees(w) {
     const ws = w || workspace();
     if (!ws) return [];
-    return (Array.isArray(ws.employees) ? ws.employees : []).filter(function (e) {
-        return !!(e && e.id);
-    }).slice().sort(compareEmployeesByStatusThenName);
+    const list = [];
+    (Array.isArray(ws.employees) ? ws.employees : []).forEach(function (e) {
+        try {
+            if (e && e.id) list.push(e);
+        } catch (err) {
+            console.error(err);
+        }
+    });
+    try {
+        return list.slice().sort(compareEmployeesByStatusThenName);
+    } catch (err) {
+        console.error(err);
+        return list;
+    }
 }
 
 function assignedIds(w) {
@@ -9731,6 +9764,15 @@ function showSection(id, button) {
     if (isOrgNavSection(id)) runSection(renderOrgStructure);
     } catch (err) {
         console.error(err);
+        try {
+            const active = document.querySelector(".section.active");
+            if (active && !active.querySelector(".wt-section-error")) {
+                const n = document.createElement("div");
+                n.className = "note wt-section-error";
+                n.textContent = "Не удалось полностью открыть раздел. Можно перейти в другой раздел.";
+                active.insertBefore(n, active.firstChild);
+            }
+        } catch (e2) {}
     }
 }
 
@@ -9852,9 +9894,15 @@ function ensureShopMetrics() {
     if (!root.substitutionPayDefaults || typeof root.substitutionPayDefaults !== "object") {
         root.substitutionPayDefaults = { day_rate: 0, extra_pay: 0, coef: 1, kpi_mode: "keep_primary" };
     }
-    ensureShopMetricCatalog();
-    try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
-    return root;
+    if (wtBusy.shopMetrics) return root;
+    wtBusy.shopMetrics = true;
+    try {
+        ensureShopMetricCatalog();
+        try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
+        return root;
+    } finally {
+        wtBusy.shopMetrics = false;
+    }
 }
 
 function ensureShopMetricCatalog() {
@@ -9865,6 +9913,10 @@ function ensureShopMetricCatalog() {
         appData.shopMetricCatalog = { items: [] };
     }
     if (!Array.isArray(appData.shopMetricCatalog.items)) appData.shopMetricCatalog.items = [];
+    if (shopCatalogReady) return appData.shopMetricCatalog;
+    if (wtBusy.shopCatalog) return appData.shopMetricCatalog;
+    wtBusy.shopCatalog = true;
+    try {
     const list = appData.shopMetricCatalog.items;
     shopMetricCatalogSeed().forEach(function (seed) {
         const found = list.find(function (it) { return it && it.id === seed.id; });
@@ -9907,7 +9959,14 @@ function ensureShopMetricCatalog() {
     });
     try { seedReturnsCountMetric(); } catch (err) { console.error(err); }
     try { migrateTerritoryMetricCategories(); } catch (err) { console.error(err); }
+    shopCatalogReady = true;
     return appData.shopMetricCatalog;
+    } catch (err) {
+        console.error(err);
+        return appData.shopMetricCatalog;
+    } finally {
+        wtBusy.shopCatalog = false;
+    }
 }
 
 function seedReturnsCountMetric() {
@@ -10123,25 +10182,39 @@ function territoryCategoryEmployeePool(catId) {
 }
 
 function applyReturnsCountGroupIfNeeded() {
-    const item = seedReturnsCountMetric();
-    if (item && item.assign_mode !== "specific") applyMetricCatalogGroupAssignment(item);
+    if (wtBusy.applyReturnsCount) return;
+    wtBusy.applyReturnsCount = true;
+    try {
+        const item = seedReturnsCountMetric();
+        if (item && item.assign_mode !== "specific") applyMetricCatalogGroupAssignment(item);
+    } catch (err) {
+        console.error(err);
+    } finally {
+        wtBusy.applyReturnsCount = false;
+    }
 }
 
 function metricCatalogGroupEmployees(item) {
     const cat = metricTerritoryCategory(item);
     if (cat) {
-        return territoryCategoryEmployeePool(cat).filter(function (e) { return isWorking(e); });
+        return territoryCategoryEmployeePool(cat).filter(function (e) {
+            try { return !!(e && e.id && isWorking(e)); } catch (err) { console.error(err); return false; }
+        });
     }
     const dept = metricDepartmentId(item);
     const w = findWorkspaceByCode(dept);
     const tabs = metricWorkTabIds(item);
     const out = [];
     ((w && w.employees) || []).forEach(function (e) {
-        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return;
-        if (employeeHomeDeptCode(e.id) === "shop") return;
-        const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
-        if (tabs.indexOf(tab) === -1) return;
-        out.push(e);
+        try {
+            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return;
+            if (employeeHomeDeptCode(e.id) === "shop") return;
+            const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
+            if (tabs.indexOf(tab) === -1) return;
+            out.push(e);
+        } catch (err) {
+            console.error(err);
+        }
     });
     return out;
 }
@@ -10308,11 +10381,17 @@ function ensureDeptMetrics(deptCode) {
     const root = appData.deptMetrics[deptCode];
     if (!root.facts || typeof root.facts !== "object") root.facts = {};
     if (!root.workAccess || typeof root.workAccess !== "object") root.workAccess = {};
-    ensureShopMetricCatalog();
-    if (deptCode === "drivers") {
-        try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
+    if (wtBusy.deptMetrics[deptCode]) return root;
+    wtBusy.deptMetrics[deptCode] = true;
+    try {
+        ensureShopMetricCatalog();
+        if (deptCode === "drivers") {
+            try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
+        }
+        return root;
+    } finally {
+        wtBusy.deptMetrics[deptCode] = false;
     }
-    return root;
 }
 
 function metricsStoreForEmployee(employeeId) {
@@ -10980,9 +11059,23 @@ function withShopUiQuiet(fn) {
     try { fn(); } finally { shopUiQuiet -= 1; }
 }
 
+function peekEmployeeHasWorkMetric(employeeId, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    if (!mid || !employeeId) return false;
+    const m = month || selectedMonth;
+    const dept = employeeHomeDeptCode(employeeId);
+    const root = isGenericMetricsDept(dept)
+        ? (appData.deptMetrics && appData.deptMetrics[dept])
+        : (appData && appData.shopMetrics);
+    const map = root && root.workAccess && root.workAccess[m];
+    if (!map || typeof map !== "object" || !Object.prototype.hasOwnProperty.call(map, employeeId)) return false;
+    const list = map[employeeId];
+    return Array.isArray(list) && list.indexOf(mid) !== -1;
+}
+
 function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
     const mid = canonicalMetricId(metricId);
-    if (!mid || (!shopIsAssignableMetricId(mid) && !SHOP_WORK_METRIC_IDS[mid] && !shopEmployeeHasWorkMetric(employeeId, mid))) return;
+    if (!mid || (!shopIsAssignableMetricId(mid) && !SHOP_WORK_METRIC_IDS[mid] && !peekEmployeeHasWorkMetric(employeeId, mid))) return;
     const map = shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId));
     if (!Object.prototype.hasOwnProperty.call(map, employeeId) || !Array.isArray(map[employeeId])) {
         map[employeeId] = Array.isArray(map[employeeId]) ? map[employeeId] : shopWorkAccessInheritIds(employeeId, selectedMonth);
@@ -24005,10 +24098,18 @@ function ensureManagement() {
     if (!Array.isArray(root.spuDepartments)) root.spuDepartments = [];
     if (!Array.isArray(root.spuResponsibilities)) root.spuResponsibilities = [];
     appData.spu = root;
-    ensureSpuDepartments();
-    ensureSpuDefaultIndicators();
-    ensureSpuIndicatorOrgLinks();
-    ensureSpuOrgHistory();
+    if (wtBusy.management) return;
+    wtBusy.management = true;
+    try {
+        ensureSpuDepartments();
+        ensureSpuDefaultIndicators();
+        ensureSpuIndicatorOrgLinks();
+        ensureSpuOrgHistory();
+    } catch (err) {
+        console.error(err);
+    } finally {
+        wtBusy.management = false;
+    }
 }
 
 function spuDepartmentDefaults() {
@@ -24436,15 +24537,23 @@ function ensureSpuDefaultIndicators() {
         { spu_code: "shop_mp_emp", name: "МП на сотрудника магазина", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_margin", calc_right_code: "shop_headcount", unit: "money", spu_department_id: "spu_personnel", show_on_dashboard: true, sort_order: 820 }
     );
     specs.forEach(function (spec) {
-        if (!spec.spu_department_id) spec.spu_department_id = mgmtDefaultSpuDeptId(spec);
-        spuAdoptIndicator(spec);
+        try {
+            if (!spec.spu_department_id) spec.spu_department_id = mgmtDefaultSpuDeptId(spec);
+            spuAdoptIndicator(spec);
+        } catch (err) {
+            console.error(err);
+        }
     });
     (root.indicators || []).forEach(function (it) {
-        normalizeMgmtIndicator(it);
-        if (it.spu_code) return;
-        if (it.name === "Персонал" || it.name === "Продажи (факт)" || (it.name === "Отработано дней" && it.source_type === "timesheet")) {
-            it.is_active = false;
-            it.show_on_dashboard = false;
+        try {
+            normalizeMgmtIndicator(it);
+            if (it.spu_code) return;
+            if (it.name === "Персонал" || it.name === "Продажи (факт)" || (it.name === "Отработано дней" && it.source_type === "timesheet")) {
+                it.is_active = false;
+                it.show_on_dashboard = false;
+            }
+        } catch (err) {
+            console.error(err);
         }
     });
 }
@@ -28186,6 +28295,10 @@ function ensureCustomerReturns(data) {
     if (!Array.isArray(store.adjustments)) store.adjustments = [];
     if (!Array.isArray(store.reasons)) store.reasons = [];
     if (!Array.isArray(store.outcomes)) store.outcomes = [];
+    if (customerReturnsReady && root === appData && !wtBusy.customerReturns) return store;
+    if (wtBusy.customerReturns) return store;
+    wtBusy.customerReturns = true;
+    try {
     CR_ADJ_DEFAULTS.forEach(function (def) {
         const found = store.adjustments.find(function (a) { return a && a.adjustment_id === def.adjustment_id; });
         if (!found) store.adjustments.push(Object.assign({ is_active: true }, def));
@@ -28242,10 +28355,21 @@ function ensureCustomerReturns(data) {
         if (v.is_active == null) v.is_active = true;
         if (v.sort_order == null) v.sort_order = (i + 1) * 10;
     });
+    if (root === appData) customerReturnsReady = true;
     return store;
+    } catch (err) {
+        console.error(err);
+        return store;
+    } finally {
+        wtBusy.customerReturns = false;
+    }
 }
 
 function crStore() {
+    if (appData && appData.customerReturns && Array.isArray(appData.customerReturns.items)
+        && Array.isArray(appData.customerReturns.reasons) && customerReturnsReady) {
+        return appData.customerReturns;
+    }
     const store = ensureCustomerReturns(appData);
     if (store) return store;
     return { items: [], vehicles: [], adjustments: [], reasons: [], outcomes: [] };
@@ -28370,8 +28494,11 @@ function crAdjCode(id) {
 }
 
 function crReasonById(id) {
+    if (!id) return null;
     const list = (appData && appData.customerReturns && appData.customerReturns.reasons) || [];
-    return list.find(function (a) { return a && a.reason_id === id; }) || null;
+    return list.find(function (a) { return a && a.reason_id === id; })
+        || list.find(function (a) { return a && a.code === id; })
+        || null;
 }
 
 function crReasonName(id) {
@@ -28462,7 +28589,12 @@ function crInferLegacyStage(it) {
 
 function crProcessStage(it) {
     if (!it) return "";
-    return it.process_stage || crInferLegacyStage(it);
+    try {
+        return it.process_stage || crInferLegacyStage(it);
+    } catch (err) {
+        console.error(err);
+        return it.process_stage || "recount";
+    }
 }
 
 function crStageOpen(it) {
@@ -28669,6 +28801,9 @@ function crReasonOptions(selected, withEmpty) {
         html += '<option value="' + escapeAttribute(a.reason_id) + '"' + (a.reason_id === selected ? " selected" : "") + ">"
             + escapeHtml(a.name) + (a.is_active === false ? " (неактивна)" : "") + "</option>";
     });
+    if (selected && !list.some(function (a) { return a && (a.reason_id === selected || a.code === selected); })) {
+        html += '<option value="' + escapeAttribute(selected) + '" selected>' + escapeHtml(String(selected)) + " (старое значение)</option>";
+    }
     return html;
 }
 
@@ -28688,7 +28823,7 @@ function crInPeriod(it) {
 }
 
 function crMatchFilters(it) {
-    if (it.is_deleted) return false;
+    if (!it || it.is_deleted) return false;
     if (!crInPeriod(it)) return false;
     if (crUi.author && it.sales_author_employee_id !== crUi.author) return false;
     if (crUi.driver && it.driver_employee_id !== crUi.driver) return false;
@@ -28706,14 +28841,23 @@ function crMatchFilters(it) {
 }
 
 function crFiltered() {
-    return (crStore().items || []).filter(crMatchFilters);
+    return (crStore().items || []).filter(function (it) {
+        try {
+            return crMatchFilters(it);
+        } catch (err) {
+            console.error(err);
+            return false;
+        }
+    });
 }
 
 function crQueueList(queue) {
     if (queue === "give") return crGiveJournal().filter(function (it) { return !it.given_to_client; });
     if (queue === "rebill") return crRebillJournal().filter(function (it) { return !it.rebilled; });
     if (queue === "driver") return crDriverJournal().filter(function (it) { return !it.charged_to_driver && !it.found_at_client; });
-    return crFiltered().filter(function (it) { return crActiveQueue(it) === queue; });
+    return crFiltered().filter(function (it) {
+        try { return crActiveQueue(it) === queue; } catch (err) { console.error(err); return false; }
+    });
 }
 
 function crGiveJournal() {
@@ -28963,7 +29107,7 @@ function renderTerritoryReturns() {
     root.innerHTML = html;
     } catch (err) {
         console.error(err);
-        root.innerHTML = '<div class="note">Ошибка загрузки конкретного элемента. Остальные разделы доступны.</div>';
+        root.innerHTML = '<div class="note">Не удалось открыть возвраты. Данные не удалены — перейдите в другой раздел или обновите страницу.</div>';
     }
 }
 
