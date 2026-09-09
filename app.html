@@ -3429,6 +3429,9 @@
         <button type="button" class="nav-btn" data-for="territoryMetricsHub" data-section="territoryMetrics" data-hub="common" onclick="setTerritoryMetricsHub('common')">
             Общие метрики
         </button>
+        <button type="button" class="nav-btn" data-for="territoryMetricsHub" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
+            📚 Справочник метрик
+        </button>
 
         <div class="menu-title" data-for="dept">Работа</div>
 
@@ -9026,7 +9029,7 @@ function applyModeUI() {
                 show = (sec === "users" || sec === "settings" || sec === "metricCatalog" || sec === "summaryStaff")
                     && allowed.indexOf(sec) !== -1;
             } else if (isTerritoryMetricsMode()) {
-                show = (mode === "territoryMetricsHub" || sec === "metricCatalog") && (!sec || allowed.indexOf(sec) !== -1);
+                show = mode === "territoryMetricsHub" && (!sec || allowed.indexOf(sec) !== -1);
             } else if (summary) {
                 if (sec === "management" || String(sec || "").indexOf("management-") === 0) show = false;
                 if (sec === "org-chart" || sec === "org-settings") show = false;
@@ -9254,7 +9257,7 @@ function sectionTitle(id) {
         employees: "В табель",
         users: "Сотрудники, должности и доступы",
         settings: "Настройки",
-        metricCatalog: "Метрики",
+        metricCatalog: isTerritoryMetricsMode() ? "Справочник метрик" : "Метрики",
         territoryMetrics: "Метрики территории",
         territoryReturns: "Возвраты по покупателям",
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
@@ -9810,6 +9813,10 @@ function catalogDeptContext() {
         return "shop";
     }
     if (isTerritoryMetricsMode()) {
+        if (currentSection === "metricCatalog" && metricCatalogFilter && metricCatalogFilter.dept) {
+            return metricCatalogFilter.dept;
+        }
+        if (currentSection === "metricCatalog") return "office";
         const hub = currentTerritoryMetricsHub();
         return (hub && hub.departmentId) || "office";
     }
@@ -9819,16 +9826,15 @@ function catalogDeptContext() {
 }
 
 function catalogViewShowsAllDepts() {
-    return currentSection === "metricCatalog" && isCompanyWideCatalogMode();
+    return currentSection === "metricCatalog" && (isCompanyWideCatalogMode() || isTerritoryMetricsMode());
 }
 
 function catalogItemsForView() {
     if (currentSection === "deptMetrics") return catalogItemsForDept(catalogDeptContext());
-    if (isTerritoryMetricsMode()) {
-        const hub = currentTerritoryMetricsHub();
-        const cat = hub && hub.id;
+    if (currentSection === "metricCatalog" && isTerritoryMetricsMode()) {
+        if (metricCatalogFilter.dept) return catalogItemsForDept(metricCatalogFilter.dept);
         return shopMetricCatalogItems().filter(function (it) {
-            return it && metricDepartmentId(it) !== "shop" && metricTerritoryCategory(it) === cat;
+            return it && metricDepartmentId(it) !== "shop";
         });
     }
     if (catalogViewShowsAllDepts()) {
@@ -19507,6 +19513,11 @@ function renderMetricCatalog() {
     if (!body) return;
     const can = canEditShopMetricCatalog();
     const allDepts = catalogViewShowsAllDepts();
+    if (isTerritoryMetricsMode() && metricCatalogFilter.dept === "shop") metricCatalogFilter.dept = "";
+    const catTitle = document.querySelector("#metricCatalog .card-title");
+    if (catTitle && currentSection === "metricCatalog") {
+        catTitle.textContent = isTerritoryMetricsMode() ? "Справочник метрик" : "Метрики";
+    }
     const dept = currentSection === "deptMetrics"
         ? catalogDeptContext()
         : (allDepts ? (metricCatalogFilter.dept || "") : catalogDeptContext());
@@ -19519,6 +19530,7 @@ function renderMetricCatalog() {
             html += '<select onchange="setMetricCatalogFilter(\'dept\',this.value)" style="margin-left:8px">';
             html += '<option value="">Все отделы</option>';
             DEPT_DEFAULTS.forEach(function (d) {
+                if (isTerritoryMetricsMode() && d.code === "shop") return;
                 html += '<option value="' + d.code + '"' + (metricCatalogFilter.dept === d.code ? " selected" : "") + ">"
                     + escapeHtml(d.name) + "</option>";
             });
