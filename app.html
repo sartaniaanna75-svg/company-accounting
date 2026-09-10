@@ -3391,10 +3391,13 @@
         tr.cr-row-driver td { background: #fff1f2; }
         .cr-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
         .cr-filters label { font-size: 10px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
-        .cr-filters select, .cr-filters input[type="search"], .cr-filters input[type="month"] {
+        .cr-filters select, .cr-filters input[type="search"], .cr-filters input[type="month"], .cr-filters input[type="date"] {
             font-size: 12px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; min-width: 120px; background: #fff;
         }
         .cr-filters input[type="search"] { min-width: 240px; }
+        .cr-filters .cr-period-row { display: flex; align-items: center; gap: 4px; }
+        .cr-filters .cr-period-row input[type="date"] { min-width: 132px; max-width: 148px; }
+        .cr-filters .cr-period-row span { color: var(--muted); font-size: 12px; }
         .cr-wrap { overflow: auto; max-height: calc(100vh - 250px); border: 1px solid var(--border); border-radius: 8px; background: #fff; }
         .cr-table { width: 100%; border-collapse: collapse; font-size: 12px; }
         .cr-table th, .cr-table td { border-bottom: 1px solid #e5e7eb; padding: 3px 6px; vertical-align: middle; height: 28px; }
@@ -28287,6 +28290,7 @@ const CR_OUTCOME_DEFAULTS = [
 
 let crUi = {
     tab: "all", author: "", driver: "", picker: "", adj: "", reason: "", result: "", q: "", month: "",
+    dateFrom: "", dateTo: "",
     driverView: "all", giveView: "all", rebillView: "all", videoView: "all",
     anaRole: "", anaEmp: "", anaType: "", anaOpen: "", settingsTab: "reasons"
 };
@@ -28827,9 +28831,51 @@ function crMonthKey() {
     return crUi.month || selectedMonth || currentMonthValue();
 }
 
+function crIsoDay(value) {
+    const s = String(value || "").trim();
+    if (!s) return "";
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    return "";
+}
+
+function crMonthFirstDay(month) {
+    const m = String(month || crMonthKey() || "").slice(0, 7);
+    return /^\d{4}-\d{2}$/.test(m) ? m + "-01" : "";
+}
+
+function crMonthLastDay(month) {
+    const m = String(month || crMonthKey() || "").slice(0, 7);
+    const y = Number(m.slice(0, 4));
+    const mo = Number(m.slice(5, 7));
+    if (!y || !mo) return "";
+    const last = new Date(y, mo, 0).getDate();
+    return m + "-" + (last < 10 ? "0" : "") + last;
+}
+
+function crEnsurePeriod() {
+    if (!crIsoDay(crUi.dateFrom)) crUi.dateFrom = crMonthFirstDay();
+    if (!crIsoDay(crUi.dateTo)) crUi.dateTo = crMonthLastDay();
+}
+
+function crPeriodBounds() {
+    crEnsurePeriod();
+    let from = crIsoDay(crUi.dateFrom);
+    let to = crIsoDay(crUi.dateTo);
+    if (from && to && from > to) {
+        const tmp = from;
+        from = to;
+        to = tmp;
+    }
+    return { from: from, to: to };
+}
+
 function crInPeriod(it) {
-    const m = crMonthKey();
-    return String(it.date || "").indexOf(m) === 0;
+    const d = crIsoDay(it && it.date);
+    if (!d) return false;
+    const b = crPeriodBounds();
+    if (b.from && d < b.from) return false;
+    if (b.to && d > b.to) return false;
+    return true;
 }
 
 function crMatchFilters(it) {
@@ -28979,6 +29025,8 @@ function crResetFilters() {
     crUi.anaType = "";
     crUi.anaOpen = "";
     crUi.month = selectedMonth || currentMonthValue();
+    crUi.dateFrom = crMonthFirstDay(crUi.month);
+    crUi.dateTo = crMonthLastDay(crUi.month);
     renderTerritoryReturns();
 }
 
@@ -29135,6 +29183,7 @@ function renderTerritoryReturns() {
         crUi.tab = tabs.find(crCanSeeTab) || "all";
     }
     if (!crUi.month) crUi.month = selectedMonth || currentMonthValue();
+    crEnsurePeriod();
     const all = crFiltered();
     const qVideo = crQueueList("video");
     const qRecount = crQueueList("recount");
@@ -29177,7 +29226,11 @@ function renderTerritoryReturns() {
     html += "</div>";
 
     html += '<div class="cr-filters">'
-        + '<label>Период<input type="month" value="' + escapeAttribute(crUi.month) + '" onchange="crOnFilter(\'month\',this)"></label>'
+        + '<label>Период<span class="cr-period-row">'
+        + '<input type="date" value="' + escapeAttribute(crUi.dateFrom) + '" onchange="crOnFilter(\'dateFrom\',this)" title="Дата с">'
+        + "<span>—</span>"
+        + '<input type="date" value="' + escapeAttribute(crUi.dateTo) + '" onchange="crOnFilter(\'dateTo\',this)" title="Дата по">'
+        + "</span></label>"
         + '<label>Водитель<select onchange="crOnFilter(\'driver\',this)">' + crEmpOptions(crUi.driver, "driver") + "</select></label>";
     if (crUi.tab !== "extra" && crUi.tab !== "analytics" && crUi.tab !== "settings") {
         html += '<label>Автор продаж<select onchange="crOnFilter(\'author\',this)">' + crEmpOptions(crUi.author, "author") + "</select></label>"
@@ -31156,6 +31209,50 @@ function verifyCrSignedFinance() {
     if (tot3.returnAmount !== 837.5) {
         console.warn("Общая метрика: ожидалось 837.50, получено", tot3.returnAmount);
     }
+    const savedFrom = crUi.dateFrom;
+    const savedTo = crUi.dateTo;
+    crUi.dateFrom = "2026-09-01";
+    crUi.dateTo = "2026-09-10";
+    if (!crInPeriod({ date: "2026-09-01" }) || !crInPeriod({ date: "2026-09-10" }) || crInPeriod({ date: "2026-08-25" })) {
+        console.warn("Период 01.09–10.09 включает границы сентября и не должен брать 25.08");
+    }
+    crUi.dateFrom = "2026-08-25";
+    crUi.dateTo = "2026-09-10";
+    if (!crInPeriod({ date: "2026-08-25" }) || !crInPeriod({ date: "2026-09-10" })) {
+        console.warn("Период может пересекать месяцы: 25.08–10.09");
+    }
+    crUi.dateFrom = "2026-12-20";
+    crUi.dateTo = "2027-01-10";
+    if (!crInPeriod({ date: "2026-12-31" }) || !crInPeriod({ date: "2027-01-01" })) {
+        console.warn("Период может пересекать годы: 20.12.2026–10.01.2027");
+    }
+    const periodItems = [
+        { date: "2026-09-05", amount: 2000, keep_sign: true, return_id: "p37a", return_group_id: "g37p", sales_author_employee_id: "natasha" },
+        { date: "2026-09-05", amount: -2337.5, keep_sign: true, return_id: "p37b", return_group_id: "g37p", sales_author_employee_id: "natasha" },
+        { date: "2026-08-20", amount: -500, keep_sign: true, return_id: "p38a", return_group_id: "g38p", sales_author_employee_id: "natasha" },
+        { date: "2026-09-07", amount: -800, keep_sign: true, return_id: "p40a", return_group_id: "g40p", sales_author_employee_id: "other" }
+    ];
+    crUi.dateFrom = "2026-09-01";
+    crUi.dateTo = "2026-09-10";
+    const sept = periodItems.filter(crInPeriod);
+    const septFin = crFinanceTotals(sept);
+    if (septFin.returnAmount !== 1137.5) {
+        console.warn("Период 01.09–10.09: ожидалась сумма возвратов 1137.50 (337.50+800), получено", septFin.returnAmount);
+    }
+    const natashaSept = sept.filter(function (it) { return it.sales_author_employee_id === "natasha"; });
+    if (crFinanceTotals(natashaSept).returnAmount !== 337.5) {
+        console.warn("Период + торговый: ожидалось 337.50");
+    }
+    crUi.dateFrom = "2026-08-01";
+    crUi.dateTo = "2026-09-10";
+    const wideNatasha = periodItems.filter(function (it) {
+        return crInPeriod(it) && it.sales_author_employee_id === "natasha";
+    });
+    if (crFinanceTotals(wideNatasha).returnAmount !== 837.5) {
+        console.warn("Август+сентябрь Наташа: ожидалось 837.50");
+    }
+    crUi.dateFrom = savedFrom;
+    crUi.dateTo = savedTo;
 }
 
 function requestedLoginView() {
