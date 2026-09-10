@@ -3403,6 +3403,16 @@
         .cr-table td.cr-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
         .cr-table td.cr-qty { text-align: right; white-space: nowrap; width: 52px; }
         .cr-table tfoot td { background: #f1f5f9; font-weight: 600; }
+        .cr-signed-plus { color: #15803d; font-variant-numeric: tabular-nums; font-weight: 600; }
+        .cr-signed-minus { color: #b91c1c; font-variant-numeric: tabular-nums; font-weight: 600; }
+        .cr-signed-zero { color: #64748b; font-variant-numeric: tabular-nums; }
+        tr.cr-fin-row td { background: #eef2ff; font-weight: 600; color: #1e3a8a; }
+        .cr-fin-banner { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+        .cr-fin-item { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; min-width: 180px; }
+        .cr-fin-item span { display: block; font-size: 11px; color: var(--muted); }
+        .cr-fin-item b { display: block; font-size: 16px; margin: 2px 0; }
+        .cr-fin-live { grid-column: 1 / -1; background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px; padding: 8px 10px; font-size: 13px; color: #1e3a8a; }
+        .cr-fin-k { color: #4338ca; }
         .cr-table select, .cr-table input[type="date"] { font-size: 12px; padding: 2px 4px; max-width: 160px; height: 24px; }
         .cr-pill { display: inline-block; border-radius: 6px; padding: 1px 6px; font-size: 10px; line-height: 16px; white-space: nowrap; }
         .cr-pill.give { background: #dcfce7; color: #166534; }
@@ -28920,8 +28930,8 @@ function crRenderExtraJournal(list) {
                 + "<td>" + escapeHtml(crEmpName(it.driver_employee_id) || "—") + "</td>"
                 + "<td>" + escapeHtml(crVehiclePlate(it.vehicle_id) || "—") + "</td>"
                 + '<td class="cr-wrap-text">' + escapeHtml(it.product_name || "") + "</td>"
-                + '<td class="cr-qty">' + escapeHtml(String(it.qty || "")) + "</td>"
-                + '<td class="cr-num">' + money2(it.amount) + "</td></tr>";
+                + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
+                + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td></tr>";
         });
     });
     if (!body) body = '<tr><td colspan="6"><div class="empty-row">Нет лишнего товара за период.</div></td></tr>';
@@ -28988,6 +28998,131 @@ function crSum(list) {
 
 function crQty(list) {
     return list.reduce(function (s, it) { return s + Number(it.qty || 0); }, 0);
+}
+
+function crFinanceKey(it) {
+    if (!it) return "";
+    if (it.return_group_id) return "g:" + String(it.return_group_id);
+    if (it.return_id) return "r:" + String(it.return_id);
+    return "";
+}
+
+function crFinanceOfLines(lines) {
+    const items = lines || [];
+    let signed = 0;
+    let keep = false;
+    items.forEach(function (it) {
+        signed += Number(it && it.amount || 0);
+        if (it && it.keep_sign) keep = true;
+    });
+    signed = typeof roundMoney2 === "function" ? roundMoney2(signed) : signed;
+    const returnAmount = keep
+        ? (signed < 0 ? (typeof roundMoney2 === "function" ? roundMoney2(-signed) : -signed) : 0)
+        : (signed > 0 ? signed : 0);
+    const positiveDiff = keep && signed > 0 ? signed : 0;
+    return {
+        signed: signed,
+        returnAmount: returnAmount,
+        positiveDiff: positiveDiff,
+        zero: signed === 0,
+        usesSigned: keep
+    };
+}
+
+function crFinanceGroups(list) {
+    const keys = [];
+    const map = {};
+    (list || []).forEach(function (it) {
+        const k = crFinanceKey(it) || ("tmp:" + keys.length);
+        if (!map[k]) {
+            map[k] = [];
+            keys.push(k);
+        }
+        map[k].push(it);
+    });
+    return keys.map(function (k) {
+        return { key: k, items: map[k], finance: crFinanceOfLines(map[k]) };
+    });
+}
+
+function crFinanceTotals(list) {
+    const groups = crFinanceGroups(list);
+    let returnAmount = 0;
+    let positiveDiff = 0;
+    groups.forEach(function (g) {
+        returnAmount += g.finance.returnAmount;
+        positiveDiff += g.finance.positiveDiff;
+    });
+    return {
+        groups: groups,
+        returnAmount: typeof roundMoney2 === "function" ? roundMoney2(returnAmount) : returnAmount,
+        positiveDiff: typeof roundMoney2 === "function" ? roundMoney2(positiveDiff) : positiveDiff
+    };
+}
+
+function crGroupLinesOf(rec) {
+    const key = crFinanceKey(rec);
+    if (!key) return rec ? [rec] : [];
+    const siblings = (crStore().items || []).filter(function (it) {
+        return it && !it.is_deleted && crFinanceKey(it) === key;
+    });
+    return siblings.length ? siblings : (rec ? [rec] : []);
+}
+
+function crSignedClass(n) {
+    if (n < 0) return "cr-signed-minus";
+    if (n > 0) return "cr-signed-plus";
+    return "cr-signed-zero";
+}
+
+function crMoneySigned(value) {
+    const n = typeof roundMoney2 === "function" ? roundMoney2(value) : Number(value || 0);
+    const abs = (n < 0 ? -n : n).toLocaleString("ru-RU", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
+    if (n > 0) return "+" + abs + " ₽";
+    if (n < 0) return "-" + abs + " ₽";
+    return abs + " ₽";
+}
+
+function crSignedHtml(value) {
+    const n = typeof roundMoney2 === "function" ? roundMoney2(value) : Number(value || 0);
+    return '<span class="' + crSignedClass(n) + '">' + crMoneySigned(n) + "</span>";
+}
+
+function crQtyHtml(value) {
+    if (value === "" || value == null) return "";
+    const n = Number(value);
+    if (!Number.isFinite(n) || n === 0) return n === 0 ? "" : "";
+    const text = n > 0 ? "+" + String(n) : String(n);
+    return '<span class="' + crSignedClass(n) + '">' + escapeHtml(text) + "</span>";
+}
+
+function crFinanceLabelHtml(fin) {
+    if (!fin) return "";
+    let html = '<span class="cr-fin-k">Итог по строкам:</span> ' + crSignedHtml(fin.signed)
+        + ' · <span class="cr-fin-k">Сумма возврата:</span> ' + money2(fin.returnAmount);
+    if (fin.usesSigned && fin.signed < 0) {
+        html += ' · <span class="cr-fin-k">К возврату клиенту:</span> ' + money2(fin.returnAmount);
+    } else if (fin.usesSigned && fin.signed === 0) {
+        html += ' · <span class="cr-fin-k">Финансовая разница:</span> ' + money2(0);
+    } else if (fin.usesSigned && fin.signed > 0) {
+        html += ' · <span class="cr-fin-k">Положительная разница:</span> ' + money2(fin.positiveDiff);
+    }
+    return html;
+}
+
+function crRenderFinanceBanner(list) {
+    const tot = crFinanceTotals(list);
+    return '<div class="cr-fin-banner">'
+        + '<div class="cr-fin-item"><span>Сумма возвратов</span><b>' + money2(tot.returnAmount)
+        + "</b><span>по каждому возврату отдельно</span></div>"
+        + '<div class="cr-fin-item"><span>Положительная разница</span><b>' + crSignedHtml(tot.positiveDiff)
+        + "</b><span>не уменьшает сумму возвратов</span></div>"
+        + '<div class="cr-fin-item"><span>Возвратов (документов)</span><b>' + tot.groups.length
+        + "</b><span>товарных строк: " + (list || []).length + "</span></div>"
+        + "</div>";
 }
 
 function renderTerritoryReturns() {
@@ -29091,6 +29226,8 @@ function renderTerritoryReturns() {
     }
     html += '<button type="button" class="btn" onclick="crResetFilters()">Сбросить фильтры</button></div>';
 
+    if (crUi.tab === "all" || crUi.tab === "analytics") html += crRenderFinanceBanner(all);
+
     if (crUi.tab === "analytics") html += crRenderAnalytics(all, qRecount, jGive, jRebill, jDriver);
     else if (crUi.tab === "settings") html += crRenderDictsAdmin();
     else if (crUi.tab === "all") html += crRenderAllTable(all);
@@ -29151,12 +29288,12 @@ function crCopyTextFallback(text, done) {
 }
 
 function crRenderStats(all, a, b, c, d) {
-    function card(title, list, extraClass) {
+    function card(title, list, extraClass, moneyText) {
         return '<div class="cr-stat ' + (extraClass || "") + '"><span>' + title + "</span><b>" + list.length
-            + "</b><span>" + money2(crSum(list)) + " · " + crQty(list) + " шт.</span></div>";
+            + "</b><span>" + (moneyText || money2(crFinanceTotals(list).returnAmount)) + " · " + crQty(list) + " шт.</span></div>";
     }
     return '<div class="cr-stats">'
-        + card("Всего возвратов", all)
+        + card("Всего возвратов", all, "", money2(crFinanceTotals(all).returnAmount))
         + card("На видео", all.filter(function (it) { return crProcessStage(it) === "video"; }))
         + card("На пересчёт", a)
         + card("Отдать", b)
@@ -29171,8 +29308,8 @@ function crRenderQueueCards(a, b, c, d) {
         let rows = "";
         list.slice(0, 5).forEach(function (it) {
             rows += "<tr><td>" + escapeHtml(crFmtDate(it.date)) + "</td><td class=\"cr-wrap-text\">"
-                + escapeHtml(it.product_name) + "</td><td>" + escapeHtml(String(it.qty || ""))
-                + "</td><td>" + money2(it.amount) + "</td><td>" + escapeHtml(it.client_name) + "</td></tr>";
+                + escapeHtml(it.product_name) + "</td><td>" + crQtyHtml(it.qty)
+                + "</td><td>" + crSignedHtml(it.amount) + "</td><td>" + escapeHtml(it.client_name) + "</td></tr>";
         });
         if (!rows) rows = '<tr><td colspan="5"><div class="empty-row">Нет записей</div></td></tr>';
         return '<div class="cr-q"><h4>' + title + " (" + list.length + ")"
@@ -29335,46 +29472,61 @@ function crCashierSelect(it, can) {
 
 function crRenderAllTable(list) {
     const can = crHasFullEdit();
+    const groups = crFinanceGroups(list);
     let body = "";
-    list.forEach(function (it, i) {
-        const st = crStatusText(it);
-        body += '<tr class="' + crRowClass(it) + '">'
-            + "<td>" + (i + 1) + "</td>"
-            + "<td>" + crIsoWeek(it.date) + "</td>"
-            + "<td>" + escapeHtml(crFmtDate(it.date)) + "</td>"
-            + "<td>" + crPill("emp", crEmpShort(it.sales_author_employee_id) || "—") + "</td>"
-            + "<td>" + crPill("emp", crEmpShort(it.driver_employee_id) || "—") + "</td>"
-            + "<td>" + (it.vehicle_id ? '<span style="color:#2563eb">' + escapeHtml(crVehiclePlate(it.vehicle_id)) + "</span>" : "—") + "</td>"
-            + "<td>" + crCashierSelect(it, can) + "</td>"
-            + "<td>" + (it.extra_on_register ? "✓" : "") + "</td>"
-            + '<td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td>"
-            + '<td class="cr-num">' + money2(it.amount) + "</td>"
-            + '<td class="cr-qty">' + escapeHtml(String(it.qty || "")) + "</td>"
-            + '<td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td>"
-            + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
-            + "<td>" + crStageSelect(it, can) + "</td>"
-            + "<td>" + crResultSelect(it, can) + "</td>"
-            + '<td class="' + (crItemReasonId(it) ? "" : "cr-need") + '">' + crReasonSelect(it, can)
-            + (crItemReasonId(it) ? "" : '<span class="cr-need-hint">⚠ Укажите причину</span>') + "</td>"
-            + "<td>" + crAdjSelect(it, can) + "</td>"
-            + "<td>" + escapeHtml(it.invoice_no) + "</td>"
-            + '<td class="' + (it.picker_employee_id ? "" : "cr-need") + '">' + crPill("emp", crEmpShort(it.picker_employee_id) || "—")
-            + (it.picker_employee_id ? "" : '<span class="cr-need-hint">⚠ Выберите товаросборщика</span>') + "</td>"
-            + '<td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td>"
-            + "<td>" + (crIsDriverAdj(it) ? crDriverCheck(it, crCanAct("driver")) : crPill(st.cls, st.text)) + "</td>"
-            + '<td class="cr-act">'
-            + (can ? '<button type="button" class="btn btn-small" onclick="crOpenEditor(\'' + it.return_id + '\')">✎</button>' : "")
-            + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
-            + "</td></tr>";
+    let i = 0;
+    groups.forEach(function (g) {
+        g.items.forEach(function (it) {
+            const st = crStatusText(it);
+            i += 1;
+            body += '<tr class="' + crRowClass(it) + '">'
+                + "<td>" + i + "</td>"
+                + "<td>" + crIsoWeek(it.date) + "</td>"
+                + "<td>" + escapeHtml(crFmtDate(it.date)) + "</td>"
+                + "<td>" + crPill("emp", crEmpShort(it.sales_author_employee_id) || "—") + "</td>"
+                + "<td>" + crPill("emp", crEmpShort(it.driver_employee_id) || "—") + "</td>"
+                + "<td>" + (it.vehicle_id ? '<span style="color:#2563eb">' + escapeHtml(crVehiclePlate(it.vehicle_id)) + "</span>" : "—") + "</td>"
+                + "<td>" + crCashierSelect(it, can) + "</td>"
+                + "<td>" + (it.extra_on_register ? "✓" : "") + "</td>"
+                + '<td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td>"
+                + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td>"
+                + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
+                + '<td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td>"
+                + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
+                + "<td>" + crStageSelect(it, can) + "</td>"
+                + "<td>" + crResultSelect(it, can) + "</td>"
+                + '<td class="' + (crItemReasonId(it) ? "" : "cr-need") + '">' + crReasonSelect(it, can)
+                + (crItemReasonId(it) ? "" : '<span class="cr-need-hint">⚠ Укажите причину</span>') + "</td>"
+                + "<td>" + crAdjSelect(it, can) + "</td>"
+                + "<td>" + escapeHtml(it.invoice_no) + "</td>"
+                + '<td class="' + (it.picker_employee_id ? "" : "cr-need") + '">' + crPill("emp", crEmpShort(it.picker_employee_id) || "—")
+                + (it.picker_employee_id ? "" : '<span class="cr-need-hint">⚠ Выберите товаросборщика</span>') + "</td>"
+                + '<td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td>"
+                + "<td>" + (crIsDriverAdj(it) ? crDriverCheck(it, crCanAct("driver")) : crPill(st.cls, st.text)) + "</td>"
+                + '<td class="cr-act">'
+                + (can ? '<button type="button" class="btn btn-small" onclick="crOpenEditor(\'' + it.return_id + '\')">✎</button>' : "")
+                + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
+                + "</td></tr>";
+        });
+        if (g.items.length > 1 || g.finance.usesSigned) {
+            body += '<tr class="cr-fin-row"><td colspan="9">Итог возврата</td>'
+                + '<td class="cr-num">' + crSignedHtml(g.finance.signed) + "</td><td></td>"
+                + '<td colspan="11">' + crFinanceLabelHtml(g.finance) + "</td></tr>";
+        }
     });
     if (!body) body = '<tr><td colspan="22"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
+    const tot = crFinanceTotals(list);
     return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>№</th><th>Неделя</th><th>Дата</th><th>Автор продаж</th><th>Водитель</th><th>№ авто</th>"
         + "<th>Кассир</th><th>Лишний товар</th><th>Товар</th><th>Сумма</th><th>Кол-во</th><th>Клиент</th>"
         + "<th>Дата возврата клиенту</th><th>Этап</th><th>Результат обработки</th><th>Причина</th><th>Корректировка</th>"
         + "<th>№ заявки/накладной</th><th>Товаросборщик</th><th>Комментарий</th><th>Статус</th><th></th>"
         + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr><td colspan=\"9\">Всего записей: " + list.length
-        + "</td><td>" + money2(crSum(list)) + "</td><td>" + crQty(list) + "</td><td colspan=\"11\"></td></tr></tfoot></table></div>";
+        + " · документов: " + tot.groups.length
+        + "</td><td>" + money2(tot.returnAmount) + "</td><td>" + crQty(list) + "</td><td colspan=\"11\">Сумма возвратов: "
+        + money2(tot.returnAmount)
+        + (tot.positiveDiff ? " · Положительная разница: " + crMoneySigned(tot.positiveDiff) : "")
+        + "</td></tr></tfoot></table></div>";
 }
 
 function crRenderQueueTable(tab, list) {
@@ -29386,7 +29538,7 @@ function crRenderQueueTable(tab, list) {
         list.forEach(function (it) {
             const done = it.stage_status === "done" || !!it.video_outcome_id;
             body += '<tr class="cr-row-video' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
-                + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || "")) + '</td><td class="cr-num">' + money2(it.amount)
+                + '</td><td class="cr-qty">' + crQtyHtml(it.qty) + '</td><td class="cr-num">' + crSignedHtml(it.amount)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + escapeHtml(crEmpShort(it.driver_employee_id))
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
@@ -29398,7 +29550,7 @@ function crRenderQueueTable(tab, list) {
         cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Автор продаж</th><th>Водитель</th><th>Товаросборщик</th><th>Причина</th><th>Корректировка</th><th>Комментарий</th><th>Результат</th>";
         list.forEach(function (it) {
             body += '<tr class="cr-row-recount"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
-                + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || "")) + '</td><td class="cr-num">' + money2(it.amount)
+                + '</td><td class="cr-qty">' + crQtyHtml(it.qty) + '</td><td class="cr-num">' + crSignedHtml(it.amount)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + escapeHtml(crEmpShort(it.sales_author_employee_id))
                 + "</td><td>" + escapeHtml(crEmpShort(it.driver_employee_id))
@@ -29414,8 +29566,8 @@ function crRenderQueueTable(tab, list) {
             const done = !!it.given_to_client;
             const dt = it.return_to_client_date || it.given_date || "";
             body += '<tr class="cr-row-give' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
-                + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name) + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || ""))
-                + '</td><td class="cr-num">' + money2(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
+                + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name) + '</td><td class="cr-qty">' + crQtyHtml(it.qty)
+                + '</td><td class="cr-num">' + crSignedHtml(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + escapeHtml(crEmpShort(it.sales_author_employee_id))
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment)
                 + '</td><td><label class="cr-check-lab">Выполнено<button type="button" class="cr-check' + (done ? " on" : "") + '"'
@@ -29430,7 +29582,7 @@ function crRenderQueueTable(tab, list) {
             const done = !!it.rebilled;
             const dt = it.rebilled_date || (it.rebilled_at ? String(it.rebilled_at).slice(0, 10) : "");
             body += '<tr class="cr-row-rebill' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
-                + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || "")) + '</td><td class="cr-num">' + money2(it.amount)
+                + '</td><td class="cr-qty">' + crQtyHtml(it.qty) + '</td><td class="cr-num">' + crSignedHtml(it.amount)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment)
@@ -29449,8 +29601,8 @@ function crRenderQueueTable(tab, list) {
                 + "</td><td>" + escapeHtml(crVehiclePlate(it.vehicle_id))
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
-                + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || ""))
-                + '</td><td class="cr-num">' + money2(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
+                + '</td><td class="cr-qty">' + crQtyHtml(it.qty)
+                + '</td><td class="cr-num">' + crSignedHtml(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + crPill("driver", crReasonName(crItemReasonId(it)) || crAdjName(it.adjustment_id) || "ВОДИТЕЛЬ")
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment)
                 + "</td><td>" + crDriverCheck(it, can)
@@ -29476,7 +29628,7 @@ function crCountBy(list, fn) {
 
 function crAnaTable(title, rows) {
     let body = rows.map(function (r) {
-        return "<tr><td>" + escapeHtml(r.k) + "</td><td>" + r.n + "</td><td>" + money2(r.sum) + "</td></tr>";
+        return "<tr><td>" + escapeHtml(r.k) + "</td><td>" + r.n + "</td><td>" + crSignedHtml(r.sum) + "</td></tr>";
     }).join("");
     if (!body) body = '<tr><td colspan="3">Нет данных</td></tr>';
     return '<div class="card" style="padding:8px"><div class="card-title" style="font-size:13px">' + title
@@ -29624,7 +29776,7 @@ function crRenderAnaRoleBlock(title, role, groups) {
         html += '<tr class="cr-ana-emp" onclick="crToggleAnaEmp(\'' + openId + '\')"><td>'
             + escapeHtml(name) + "</td><td>" + escapeHtml(crRoleLabel(role))
             + "</td><td>" + g.errors + '</td><td class="cr-qty">' + g.qty
-            + '</td><td class="cr-num">' + money2(g.sum) + "</td></tr>";
+            + '</td><td class="cr-num">' + crSignedHtml(g.sum) + "</td></tr>";
         if (crUi.anaOpen === openId) {
             html += '<tr class="cr-ana-detail"><td colspan="5"><table class="cr-table"><thead><tr>'
                 + "<th>Дата</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Причина</th><th>Корректировка</th><th>Результат</th>"
@@ -29644,8 +29796,8 @@ function crRenderAnaRoleBlock(title, role, groups) {
                 const it = row.it;
                 html += "<tr><td>" + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">'
                     + escapeHtml(it.client_name) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
-                    + '</td><td class="cr-qty">' + escapeHtml(String(it.qty || ""))
-                    + '</td><td class="cr-num">' + money2(it.amount) + "</td><td>"
+                    + '</td><td class="cr-qty">' + crQtyHtml(it.qty)
+                    + '</td><td class="cr-num">' + crSignedHtml(it.amount) + "</td><td>"
                     + escapeHtml(row.typeLabel) + "</td><td>" + escapeHtml(crAdjName(crItemAdjEditId(it)) || "—")
                     + "</td><td>" + escapeHtml(crResultLabel(it.recount_result) || "—") + "</td></tr>";
             });
@@ -29669,7 +29821,7 @@ function crRenderAnalytics(all, a, b, c, d) {
         + crAnaTable("По корректировкам", crCountBy(all, function (it) { return crAdjName(crItemAdjEditId(it)) || "—"; }))
         + crAnaTable("По этапам", crCountBy(all, function (it) { return crStageName(crProcessStage(it)) || "—"; }))
         + "</div>";
-    html += '<div class="note">Ошибки считаются по причине и по роли сотрудника. Этап и результат обработки — отдельные признаки. Штрафы здесь не считаются.</div>';
+    html += '<div class="note">Сумма возвратов считается по каждому документу возврата отдельно: сначала складываются строки со знаками, и только отрицательный итог даёт сумму возврата. Положительная разница другого клиента не уменьшает этот показатель. Ошибки ниже считаются по причине и по роли сотрудника. Этап и результат обработки — отдельные признаки и не меняют знак суммы. Штрафы здесь не считаются.</div>';
     html += '<div class="cr-ana-toolbar">'
         + '<label>Роль<select onchange="crOnFilter(\'anaRole\',this)">'
         + '<option value="">Все</option>'
@@ -30037,34 +30189,41 @@ function crNextGroupId() {
 
 function crParseQty(value, fallback) {
     if (value === "" || value === null || value === undefined) return fallback;
-    let s = String(value).replace(/\u00a0/g, " ").replace("−", "-").replace("–", "-").trim();
+    let s = String(value)
+        .replace(/[\u00a0\u202f\u2007\u2009\u2008\u2002\u2003]/g, " ")
+        .replace(/[−–—]/g, "-")
+        .trim();
     if (!s) return fallback;
     s = s.replace(/\s/g, "");
+    if (s === "+" || s === "-" || s === "." || s === ",") return fallback;
     const lastComma = s.lastIndexOf(",");
     const lastDot = s.lastIndexOf(".");
     if (lastComma >= 0 && lastDot >= 0) {
         if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
         else s = s.replace(/,/g, "");
-    } else {
+    } else if (lastComma >= 0) {
         s = s.replace(",", ".");
     }
     const n = Number(s);
     if (!Number.isFinite(n)) return fallback;
-    return Math.abs(n);
+    return n;
 }
 
 function crLooksLikeQty(raw) {
-    const s = String(raw || "").replace(/\u00a0/g, " ").trim().replace("−", "-").replace("–", "-");
+    const s = String(raw || "")
+        .replace(/[\u00a0\u202f\u2007\u2009\u2008\u2002\u2003]/g, " ")
+        .trim()
+        .replace(/[−–—]/g, "-");
     if (!s) return false;
-    return /^-?\d+(?:[.,]\d+)?$/.test(s.replace(/\s/g, ""));
+    return /^[+\-]?\d+(?:[.,]\d+)?$/.test(s.replace(/\s/g, ""));
 }
 
 function crTrailingNumRe() {
-    return /^(.*?)[ \t]+([−–\-]?\d+(?:[ \u00a0]\d{3})*(?:[.,]\d+)?)\s*$/;
+    return /^(.*?)[ \t]+([−–—+\-]?\d+(?:[ \u00a0\u202f]\d{3})*(?:[.,]\d+)?)\s*$/;
 }
 
 function crParseProductQtyLine(line) {
-    line = String(line || "").replace(/\r/g, "").replace(/\u00a0/g, " ").trim();
+    line = String(line || "").replace(/\r/g, "").replace(/[\u00a0\u202f\u2007\u2009\u2008\u2002\u2003]/g, " ").trim();
     if (!line) return null;
     if (line.indexOf("\t") >= 0 || line.indexOf("|") >= 0) {
         const cells = line.split(/\t|\|/).map(function (s) { return s.trim(); }).filter(function (s, i, arr) {
@@ -30271,16 +30430,21 @@ function crPasteAmountColumn() {
 
 function crSyncReturnTotal() {
     crCollectDraftFromDom();
-    if (!crDraftLines.length) return;
-    const allFilled = crDraftLines.every(function (line) {
-        return line.amount != null && line.amount !== "";
-    });
-    if (!allFilled) return;
-    const sum = crDraftLines.reduce(function (s, line) {
-        return s + Number(line.amount || 0);
-    }, 0);
+    const box = document.getElementById("crFinanceLive");
     const el = document.getElementById("crAmount");
-    if (el) el.value = String(typeof roundMoney2 === "function" ? roundMoney2(sum) : sum);
+    if (!crDraftLines.length) {
+        if (box) box.innerHTML = "Вставьте товары — здесь появится итог возврата и сумма возврата.";
+        if (el) el.value = "";
+        return;
+    }
+    const fin = crFinanceOfLines(crDraftLines.map(function (line) {
+        return {
+            amount: line.amount == null || line.amount === "" ? 0 : line.amount,
+            keep_sign: true
+        };
+    }));
+    if (el) el.value = String(fin.signed);
+    if (box) box.innerHTML = crFinanceLabelHtml(fin);
 }
 
 function crAddDraftLine() {
@@ -30395,12 +30559,13 @@ function crCreateEditorHtml(rec, can) {
         + '<label>Кассир<select id="crCashier">' + crEmpOptions(rec.cashier_employee_id, "cashier") + "</select></label>"
         + '<label class="cr-if-driver">№ автомобиля<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
         + '<label>№ заявки / реализации<input id="crInvoice" value="' + escapeAttribute(rec.invoice_no || "") + '"></label>'
-        + '<label class="cr-sm">Сумма возврата<input id="crAmount" inputmode="decimal" value="' + escapeAttribute(String(rec.amount || "")) + '"></label>'
         + '<label class="cr-if-driver">Новый госномер<input id="crVehPlate" placeholder="если нет в списке"></label>'
         + '<label class="wide">Общий комментарий<textarea id="crComment">' + escapeHtml(rec.comment || "") + "</textarea></label>"
+        + '<div id="crFinanceLive" class="cr-fin-live">Вставьте товары — здесь появится итог возврата и сумма возврата.</div>'
+        + '<input type="hidden" id="crAmount" value="">'
         + "</div>"
         + '<div class="cr-paste-box" style="margin-top:12px">'
-        + '<div class="cr-paste-hint">Товары возврата. Можно вставить сразу три колонки: Номенклатура, Количество, Сумма (Ctrl+V). Либо отдельно: товары, затем количества, затем суммы. Отрицательные числа станут положительными.</div>'
+        + '<div class="cr-paste-hint">Товары возврата. Можно вставить сразу три колонки: Номенклатура, Количество, Сумма (Ctrl+V). Либо отдельно: товары, затем количества, затем суммы. Знак минус из 1С сохраняется: −2 337,50 останется отрицательным.</div>'
         + '<div class="cr-form">'
         + '<label class="wide">Номенклатура + количество + сумма (Ctrl+V)<textarea id="crPasteProducts" placeholder="В/Д Хмели-сунели 30гр*20        -5,000    -350,00" onpaste="crOnPasteProducts(event)"></textarea></label>'
         + '<label>Только количества<textarea id="crPasteQty" placeholder="-5,000\n-1,000"></textarea></label>'
@@ -30459,6 +30624,7 @@ function crSingleEditorHtml(id, rec, can) {
         + '<label class="cr-if-give">Дата возврата клиенту<input id="crBackDate" type="date" value="' + escapeAttribute(rec.return_to_client_date) + '"></label>'
         + '<label class="wide">Комментарий<textarea id="crComment">' + escapeHtml(rec.comment) + "</textarea></label>"
         + "</div>"
+        + '<div class="cr-fin-live" style="margin-top:8px">' + crFinanceLabelHtml(crFinanceOfLines(crGroupLinesOf(rec))) + "</div>"
         + (rec.history && rec.history.length
             ? '<div class="note" style="margin-top:8px">История: ' + rec.history.map(function (h) {
                 return crFmtDate(String(h.at || "").slice(0, 10)) + " " + escapeHtml(h.action) + (h.detail ? " (" + escapeHtml(h.detail) + ")" : "");
@@ -30504,7 +30670,6 @@ function crSaveCreateBatch() {
     const store = crStore();
     const groupId = crNextGroupId();
     const headerComment = String((document.getElementById("crComment") || {}).value || "").trim();
-    const totalAmount = parseMoney2((document.getElementById("crAmount") || {}).value, 0);
     const header = {
         date: String((document.getElementById("crDate") || {}).value || new Date().toISOString().slice(0, 10)),
         sales_author_employee_id: String((document.getElementById("crAuthor") || {}).value || ""),
@@ -30532,7 +30697,8 @@ function crSaveCreateBatch() {
         it.picker_employee_id = String(line.picker_employee_id || "");
         it.product_name = String(line.product_name || "").trim();
         it.qty = crParseQty(line.qty, 0);
-        it.amount = line.amount == null || line.amount === "" ? 0 : crParseQty(line.amount, 0);
+        it.amount = line.amount == null || line.amount === "" ? 0 : (typeof roundMoney2 === "function" ? roundMoney2(crParseQty(line.amount, 0)) : crParseQty(line.amount, 0));
+        it.keep_sign = true;
         it.client_name = header.client_name;
         it.invoice_no = header.invoice_no;
         it.reason_id = String(line.reason_id || "");
@@ -30578,9 +30744,11 @@ function crSaveEditor(id) {
     if (plate) crAddVehicle();
     const store = crStore();
     let it = crFind(id);
+    let createdNew = false;
     if (!it) {
         it = crNormalizeItem({ return_id: crNextReturnId() });
         store.items.push(it);
+        createdNew = true;
     }
     it.date = String((document.getElementById("crDate") || {}).value || it.date);
     it.sales_author_employee_id = String((document.getElementById("crAuthor") || {}).value || "");
@@ -30588,8 +30756,11 @@ function crSaveEditor(id) {
     it.vehicle_id = String((document.getElementById("crVehicle") || {}).value || "");
     it.picker_employee_id = String((document.getElementById("crPicker") || {}).value || "");
     it.product_name = product;
-    it.amount = crParseQty((document.getElementById("crAmount") || {}).value, 0);
+    it.amount = typeof roundMoney2 === "function"
+        ? roundMoney2(crParseQty((document.getElementById("crAmount") || {}).value, 0))
+        : crParseQty((document.getElementById("crAmount") || {}).value, 0);
     it.qty = crParseQty((document.getElementById("crQty") || {}).value, 0);
+    if (createdNew || it.amount < 0 || it.qty < 0) it.keep_sign = true;
     it.client_name = String((document.getElementById("crClient") || {}).value || "").trim();
     it.invoice_no = String((document.getElementById("crInvoice") || {}).value || "").trim();
     it.return_to_client_date = String((document.getElementById("crBackDate") || {}).value || "");
@@ -30931,6 +31102,62 @@ function verifyRepPayExample() {
     }
 }
 
+function verifyCrSignedFinance() {
+    const parseCases = [
+        ["2000", 2000],
+        ["2 000", 2000],
+        ["2 000,00", 2000],
+        ["2000,00", 2000],
+        ["+2 000,00", 2000],
+        ["-2000", -2000],
+        ["-2 000", -2000],
+        ["-2 000,00", -2000],
+        ["-2337,50", -2337.5],
+        ["-2 337,50", -2337.5],
+        ["-2\u00a0337,50", -2337.5],
+        ["−2 337.50", -2337.5],
+        ["-1", -1],
+        ["1", 1]
+    ];
+    parseCases.forEach(function (c) {
+        const got = crParseQty(c[0], null);
+        if (got !== c[1]) console.warn("crParseQty: ожидалось", c[1], "для", c[0], "получено", got);
+    });
+    if (crParseQty("-2 337,50", 0) >= 0) {
+        console.warn("crParseQty больше не должен снимать минус");
+    }
+    const rows = crParsePasteBlock("Рис ОСМАН\t1\t2 000,00\nРис Бальдо\t-1\t-2 337,50");
+    if (!rows[0] || rows[0].qty !== 1 || rows[0].amount !== 2000
+        || !rows[1] || rows[1].qty !== -1 || rows[1].amount !== -2337.5) {
+        console.warn("Вставка из 1С потеряла знак", rows);
+    }
+    const fin37 = crFinanceOfLines([
+        { amount: 2000, keep_sign: true, return_id: "ret37a", return_group_id: "rgrp37" },
+        { amount: -2337.5, keep_sign: true, return_id: "ret37b", return_group_id: "rgrp37" }
+    ]);
+    if (fin37.signed !== -337.5 || fin37.returnAmount !== 337.5) {
+        console.warn("Возврат №37: ожидался итог -337.50 и сумма возврата 337.50", fin37);
+    }
+    const tot = crFinanceTotals([
+        { amount: 2000, keep_sign: true, return_id: "a1", return_group_id: "ga" },
+        { amount: -2337.5, keep_sign: true, return_id: "a2", return_group_id: "ga" },
+        { amount: 1500, keep_sign: true, return_id: "b1", return_group_id: "gb" },
+        { amount: -1200, keep_sign: true, return_id: "b2", return_group_id: "gb" }
+    ]);
+    if (tot.returnAmount !== 337.5) {
+        console.warn("Разные клиенты: ожидалась сумма возвратов 337.50, получено", tot.returnAmount);
+    }
+    const tot3 = crFinanceTotals([
+        { amount: 2000, keep_sign: true, return_id: "c1", return_group_id: "g37" },
+        { amount: -2337.5, keep_sign: true, return_id: "c2", return_group_id: "g37" },
+        { amount: -500, keep_sign: true, return_id: "d1", return_group_id: "g38" },
+        { amount: 300, keep_sign: true, return_id: "e1", return_group_id: "g39" }
+    ]);
+    if (tot3.returnAmount !== 837.5) {
+        console.warn("Общая метрика: ожидалось 837.50, получено", tot3.returnAmount);
+    }
+}
+
 function requestedLoginView() {
     try {
         var hash = String(location.hash || "").replace("#", "");
@@ -30949,6 +31176,7 @@ function requestedLoginView() {
 function init() {
     try {
     try { verifyRepPayExample(); } catch (err) { console.error(err); }
+    try { verifyCrSignedFinance(); } catch (err) { console.error(err); }
     try {
         appData = loadAppData();
     } catch (err) {
