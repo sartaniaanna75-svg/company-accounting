@@ -3406,6 +3406,19 @@
         .cr-table td.cr-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
         .cr-table td.cr-qty { text-align: right; white-space: nowrap; width: 52px; }
         .cr-table tfoot td { background: #f1f5f9; font-weight: 600; }
+        .cr-table tfoot tr.cr-period-total td {
+            background: #1e3a8a;
+            color: #fff;
+            font-size: 14px;
+            font-weight: 700;
+            position: sticky;
+            bottom: 0;
+            z-index: 2;
+        }
+        .cr-table tfoot tr.cr-period-total .cr-signed-plus { color: #86efac; }
+        .cr-table tfoot tr.cr-period-total .cr-signed-minus { color: #fecaca; }
+        .cr-table tfoot tr.cr-period-total .cr-signed-zero { color: #e2e8f0; }
+        .cr-period-total-label { margin-right: 8px; letter-spacing: 0.02em; }
         .cr-signed-plus { color: #15803d; font-variant-numeric: tabular-nums; font-weight: 600; }
         .cr-signed-minus { color: #b91c1c; font-variant-numeric: tabular-nums; font-weight: 600; }
         .cr-signed-zero { color: #64748b; font-variant-numeric: tabular-nums; }
@@ -28984,7 +28997,7 @@ function crRenderExtraJournal(list) {
     return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>Дата</th><th>Водитель</th><th>№ автомобиля</th><th>Товар</th><th>Количество</th><th>Сумма</th>"
         + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr><td colspan=\"4\">Записей: " + rows.length
-        + '</td><td class="cr-qty">' + crQty(rows) + '</td><td class="cr-num">' + money2(crSum(rows))
+        + '</td><td class="cr-qty">' + crQty(rows) + '</td><td class="cr-num">' + crSignedHtml(crPeriodTotal(rows))
         + "</td></tr></tfoot></table></div>";
 }
 window.crRenderExtraJournal = crRenderExtraJournal;
@@ -29041,7 +29054,12 @@ function crPill(cls, text) {
 }
 
 function crSum(list) {
-    return list.reduce(function (s, it) { return s + Number(it.amount || 0); }, 0);
+    return (list || []).reduce(function (s, it) { return s + Number(it && it.amount || 0); }, 0);
+}
+
+function crPeriodTotal(list) {
+    const n = crSum(list);
+    return typeof roundMoney2 === "function" ? roundMoney2(n) : n;
 }
 
 function crQty(list) {
@@ -29064,14 +29082,10 @@ function crFinanceOfLines(lines) {
         if (it && it.keep_sign) keep = true;
     });
     signed = typeof roundMoney2 === "function" ? roundMoney2(signed) : signed;
-    const returnAmount = keep
-        ? (signed < 0 ? (typeof roundMoney2 === "function" ? roundMoney2(-signed) : -signed) : 0)
-        : (signed > 0 ? signed : 0);
-    const positiveDiff = keep && signed > 0 ? signed : 0;
     return {
         signed: signed,
-        returnAmount: returnAmount,
-        positiveDiff: positiveDiff,
+        returnAmount: signed,
+        positiveDiff: signed > 0 ? signed : 0,
         zero: signed === 0,
         usesSigned: keep
     };
@@ -29149,28 +29163,7 @@ function crQtyHtml(value) {
 
 function crFinanceLabelHtml(fin) {
     if (!fin) return "";
-    let html = '<span class="cr-fin-k">Итог по строкам:</span> ' + crSignedHtml(fin.signed)
-        + ' · <span class="cr-fin-k">Сумма возврата:</span> ' + money2(fin.returnAmount);
-    if (fin.usesSigned && fin.signed < 0) {
-        html += ' · <span class="cr-fin-k">К возврату клиенту:</span> ' + money2(fin.returnAmount);
-    } else if (fin.usesSigned && fin.signed === 0) {
-        html += ' · <span class="cr-fin-k">Финансовая разница:</span> ' + money2(0);
-    } else if (fin.usesSigned && fin.signed > 0) {
-        html += ' · <span class="cr-fin-k">Положительная разница:</span> ' + money2(fin.positiveDiff);
-    }
-    return html;
-}
-
-function crRenderFinanceBanner(list) {
-    const tot = crFinanceTotals(list);
-    return '<div class="cr-fin-banner">'
-        + '<div class="cr-fin-item"><span>Сумма возвратов</span><b>' + money2(tot.returnAmount)
-        + "</b><span>по каждому возврату отдельно</span></div>"
-        + '<div class="cr-fin-item"><span>Положительная разница</span><b>' + crSignedHtml(tot.positiveDiff)
-        + "</b><span>не уменьшает сумму возвратов</span></div>"
-        + '<div class="cr-fin-item"><span>Возвратов (документов)</span><b>' + tot.groups.length
-        + "</b><span>товарных строк: " + (list || []).length + "</span></div>"
-        + "</div>";
+    return '<span class="cr-fin-k">Сумма строк:</span> ' + crSignedHtml(fin.signed);
 }
 
 function renderTerritoryReturns() {
@@ -29227,9 +29220,9 @@ function renderTerritoryReturns() {
 
     html += '<div class="cr-filters">'
         + '<label>Период<span class="cr-period-row">'
-        + '<input type="date" value="' + escapeAttribute(crUi.dateFrom) + '" onchange="crOnFilter(\'dateFrom\',this)" title="Дата с">'
+        + '<input type="date" value="' + escapeAttribute(crUi.dateFrom) + '" onchange="crOnFilter(\'dateFrom\',this)" title="Дата с" aria-label="Дата с">'
         + "<span>—</span>"
-        + '<input type="date" value="' + escapeAttribute(crUi.dateTo) + '" onchange="crOnFilter(\'dateTo\',this)" title="Дата по">'
+        + '<input type="date" value="' + escapeAttribute(crUi.dateTo) + '" onchange="crOnFilter(\'dateTo\',this)" title="Дата по" aria-label="Дата по">'
         + "</span></label>"
         + '<label>Водитель<select onchange="crOnFilter(\'driver\',this)">' + crEmpOptions(crUi.driver, "driver") + "</select></label>";
     if (crUi.tab !== "extra" && crUi.tab !== "analytics" && crUi.tab !== "settings") {
@@ -29278,8 +29271,6 @@ function renderTerritoryReturns() {
             + "</select></label>";
     }
     html += '<button type="button" class="btn" onclick="crResetFilters()">Сбросить фильтры</button></div>';
-
-    if (crUi.tab === "all" || crUi.tab === "analytics") html += crRenderFinanceBanner(all);
 
     if (crUi.tab === "analytics") html += crRenderAnalytics(all, qRecount, jGive, jRebill, jDriver);
     else if (crUi.tab === "settings") html += crRenderDictsAdmin();
@@ -29343,10 +29334,10 @@ function crCopyTextFallback(text, done) {
 function crRenderStats(all, a, b, c, d) {
     function card(title, list, extraClass, moneyText) {
         return '<div class="cr-stat ' + (extraClass || "") + '"><span>' + title + "</span><b>" + list.length
-            + "</b><span>" + (moneyText || money2(crFinanceTotals(list).returnAmount)) + " · " + crQty(list) + " шт.</span></div>";
+            + "</b><span>" + (moneyText || crMoneySigned(crPeriodTotal(list))) + " · " + crQty(list) + " шт.</span></div>";
     }
     return '<div class="cr-stats">'
-        + card("Всего возвратов", all, "", money2(crFinanceTotals(all).returnAmount))
+        + card("Всего возвратов", all, "", crMoneySigned(crPeriodTotal(all)))
         + card("На видео", all.filter(function (it) { return crProcessStage(it) === "video"; }))
         + card("На пересчёт", a)
         + card("Отдать", b)
@@ -29525,61 +29516,50 @@ function crCashierSelect(it, can) {
 
 function crRenderAllTable(list) {
     const can = crHasFullEdit();
-    const groups = crFinanceGroups(list);
+    const rows = list || [];
     let body = "";
-    let i = 0;
-    groups.forEach(function (g) {
-        g.items.forEach(function (it) {
-            const st = crStatusText(it);
-            i += 1;
-            body += '<tr class="' + crRowClass(it) + '">'
-                + "<td>" + i + "</td>"
-                + "<td>" + crIsoWeek(it.date) + "</td>"
-                + "<td>" + escapeHtml(crFmtDate(it.date)) + "</td>"
-                + "<td>" + crPill("emp", crEmpShort(it.sales_author_employee_id) || "—") + "</td>"
-                + "<td>" + crPill("emp", crEmpShort(it.driver_employee_id) || "—") + "</td>"
-                + "<td>" + (it.vehicle_id ? '<span style="color:#2563eb">' + escapeHtml(crVehiclePlate(it.vehicle_id)) + "</span>" : "—") + "</td>"
-                + "<td>" + crCashierSelect(it, can) + "</td>"
-                + "<td>" + (it.extra_on_register ? "✓" : "") + "</td>"
-                + '<td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td>"
-                + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td>"
-                + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
-                + '<td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td>"
-                + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
-                + "<td>" + crStageSelect(it, can) + "</td>"
-                + "<td>" + crResultSelect(it, can) + "</td>"
-                + '<td class="' + (crItemReasonId(it) ? "" : "cr-need") + '">' + crReasonSelect(it, can)
-                + (crItemReasonId(it) ? "" : '<span class="cr-need-hint">⚠ Укажите причину</span>') + "</td>"
-                + "<td>" + crAdjSelect(it, can) + "</td>"
-                + "<td>" + escapeHtml(it.invoice_no) + "</td>"
-                + '<td class="' + (it.picker_employee_id ? "" : "cr-need") + '">' + crPill("emp", crEmpShort(it.picker_employee_id) || "—")
-                + (it.picker_employee_id ? "" : '<span class="cr-need-hint">⚠ Выберите товаросборщика</span>') + "</td>"
-                + '<td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td>"
-                + "<td>" + (crIsDriverAdj(it) ? crDriverCheck(it, crCanAct("driver")) : crPill(st.cls, st.text)) + "</td>"
-                + '<td class="cr-act">'
-                + (can ? '<button type="button" class="btn btn-small" onclick="crOpenEditor(\'' + it.return_id + '\')">✎</button>' : "")
-                + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
-                + "</td></tr>";
-        });
-        if (g.items.length > 1 || g.finance.usesSigned) {
-            body += '<tr class="cr-fin-row"><td colspan="9">Итог возврата</td>'
-                + '<td class="cr-num">' + crSignedHtml(g.finance.signed) + "</td><td></td>"
-                + '<td colspan="11">' + crFinanceLabelHtml(g.finance) + "</td></tr>";
-        }
+    rows.forEach(function (it, idx) {
+        const st = crStatusText(it);
+        body += '<tr class="' + crRowClass(it) + '">'
+            + "<td>" + (idx + 1) + "</td>"
+            + "<td>" + crIsoWeek(it.date) + "</td>"
+            + "<td>" + escapeHtml(crFmtDate(it.date)) + "</td>"
+            + "<td>" + crPill("emp", crEmpShort(it.sales_author_employee_id) || "—") + "</td>"
+            + "<td>" + crPill("emp", crEmpShort(it.driver_employee_id) || "—") + "</td>"
+            + "<td>" + (it.vehicle_id ? '<span style="color:#2563eb">' + escapeHtml(crVehiclePlate(it.vehicle_id)) + "</span>" : "—") + "</td>"
+            + "<td>" + crCashierSelect(it, can) + "</td>"
+            + "<td>" + (it.extra_on_register ? "✓" : "") + "</td>"
+            + '<td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td>"
+            + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td>"
+            + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
+            + '<td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td>"
+            + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
+            + "<td>" + crStageSelect(it, can) + "</td>"
+            + "<td>" + crResultSelect(it, can) + "</td>"
+            + '<td class="' + (crItemReasonId(it) ? "" : "cr-need") + '">' + crReasonSelect(it, can)
+            + (crItemReasonId(it) ? "" : '<span class="cr-need-hint">⚠ Укажите причину</span>') + "</td>"
+            + "<td>" + crAdjSelect(it, can) + "</td>"
+            + "<td>" + escapeHtml(it.invoice_no) + "</td>"
+            + '<td class="' + (it.picker_employee_id ? "" : "cr-need") + '">' + crPill("emp", crEmpShort(it.picker_employee_id) || "—")
+            + (it.picker_employee_id ? "" : '<span class="cr-need-hint">⚠ Выберите товаросборщика</span>') + "</td>"
+            + '<td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td>"
+            + "<td>" + (crIsDriverAdj(it) ? crDriverCheck(it, crCanAct("driver")) : crPill(st.cls, st.text)) + "</td>"
+            + '<td class="cr-act">'
+            + (can ? '<button type="button" class="btn btn-small" onclick="crOpenEditor(\'' + it.return_id + '\')">✎</button>' : "")
+            + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
+            + "</td></tr>";
     });
     if (!body) body = '<tr><td colspan="22"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
-    const tot = crFinanceTotals(list);
+    const periodTotal = crPeriodTotal(rows);
     return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>№</th><th>Неделя</th><th>Дата</th><th>Автор продаж</th><th>Водитель</th><th>№ авто</th>"
         + "<th>Кассир</th><th>Лишний товар</th><th>Товар</th><th>Сумма</th><th>Кол-во</th><th>Клиент</th>"
         + "<th>Дата возврата клиенту</th><th>Этап</th><th>Результат обработки</th><th>Причина</th><th>Корректировка</th>"
         + "<th>№ заявки/накладной</th><th>Товаросборщик</th><th>Комментарий</th><th>Статус</th><th></th>"
-        + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr><td colspan=\"9\">Всего записей: " + list.length
-        + " · документов: " + tot.groups.length
-        + "</td><td>" + money2(tot.returnAmount) + "</td><td>" + crQty(list) + "</td><td colspan=\"11\">Сумма возвратов: "
-        + money2(tot.returnAmount)
-        + (tot.positiveDiff ? " · Положительная разница: " + crMoneySigned(tot.positiveDiff) : "")
-        + "</td></tr></tfoot></table></div>";
+        + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr class=\"cr-period-total\"><td colspan=\"9\">Записей: " + rows.length
+        + '</td><td class="cr-num">' + crSignedHtml(periodTotal) + "</td><td>" + crQty(rows)
+        + '</td><td colspan="11"><span class="cr-period-total-label">ИТОГО ЗА ПЕРИОД:</span> '
+        + crSignedHtml(periodTotal) + "</td></tr></tfoot></table></div>";
 }
 
 function crRenderQueueTable(tab, list) {
@@ -30486,7 +30466,7 @@ function crSyncReturnTotal() {
     const box = document.getElementById("crFinanceLive");
     const el = document.getElementById("crAmount");
     if (!crDraftLines.length) {
-        if (box) box.innerHTML = "Вставьте товары — здесь появится итог возврата и сумма возврата.";
+        if (box) box.innerHTML = "Вставьте товары — здесь появится сумма строк со знаками.";
         if (el) el.value = "";
         return;
     }
@@ -31184,33 +31164,23 @@ function verifyCrSignedFinance() {
         || !rows[1] || rows[1].qty !== -1 || rows[1].amount !== -2337.5) {
         console.warn("Вставка из 1С потеряла знак", rows);
     }
-    const fin37 = crFinanceOfLines([
-        { amount: 2000, keep_sign: true, return_id: "ret37a", return_group_id: "rgrp37" },
-        { amount: -2337.5, keep_sign: true, return_id: "ret37b", return_group_id: "rgrp37" }
-    ]);
-    if (fin37.signed !== -337.5 || fin37.returnAmount !== 337.5) {
-        console.warn("Возврат №37: ожидался итог -337.50 и сумма возврата 337.50", fin37);
+    if (crPeriodTotal([{ amount: -500 }, { amount: 2000 }]) !== 1500) {
+        console.warn("ИТОГО ЗА ПЕРИОД: ожидалось +1500 от -500 + 2000");
     }
-    const tot = crFinanceTotals([
-        { amount: 2000, keep_sign: true, return_id: "a1", return_group_id: "ga" },
-        { amount: -2337.5, keep_sign: true, return_id: "a2", return_group_id: "ga" },
-        { amount: 1500, keep_sign: true, return_id: "b1", return_group_id: "gb" },
-        { amount: -1200, keep_sign: true, return_id: "b2", return_group_id: "gb" }
-    ]);
-    if (tot.returnAmount !== 337.5) {
-        console.warn("Разные клиенты: ожидалась сумма возвратов 337.50, получено", tot.returnAmount);
+    if (crPeriodTotal([{ amount: 2000 }, { amount: -2337.5 }]) !== -337.5) {
+        console.warn("ИТОГО ЗА ПЕРИОД: ожидалось -337.50 от +2000 - 2337.50");
     }
-    const tot3 = crFinanceTotals([
-        { amount: 2000, keep_sign: true, return_id: "c1", return_group_id: "g37" },
-        { amount: -2337.5, keep_sign: true, return_id: "c2", return_group_id: "g37" },
-        { amount: -500, keep_sign: true, return_id: "d1", return_group_id: "g38" },
-        { amount: 300, keep_sign: true, return_id: "e1", return_group_id: "g39" }
-    ]);
-    if (tot3.returnAmount !== 837.5) {
-        console.warn("Общая метрика: ожидалось 837.50, получено", tot3.returnAmount);
+    if (crPeriodTotal([{ amount: -500 }, { amount: 2000 }, { amount: -300 }]) !== 1200) {
+        console.warn("ИТОГО ЗА ПЕРИОД: ожидалось +1200 после добавления -300");
     }
     const savedFrom = crUi.dateFrom;
     const savedTo = crUi.dateTo;
+    const savedAuthor = crUi.author;
+    crUi.dateFrom = "2026-09-14";
+    crUi.dateTo = "2026-09-14";
+    if (!crInPeriod({ date: "2026-09-14" }) || crInPeriod({ date: "2026-09-13" })) {
+        console.warn("Период 14.09–14.09 должен включать только 14 число");
+    }
     crUi.dateFrom = "2026-09-01";
     crUi.dateTo = "2026-09-10";
     if (!crInPeriod({ date: "2026-09-01" }) || !crInPeriod({ date: "2026-09-10" }) || crInPeriod({ date: "2026-08-25" })) {
@@ -31227,32 +31197,29 @@ function verifyCrSignedFinance() {
         console.warn("Период может пересекать годы: 20.12.2026–10.01.2027");
     }
     const periodItems = [
-        { date: "2026-09-05", amount: 2000, keep_sign: true, return_id: "p37a", return_group_id: "g37p", sales_author_employee_id: "natasha" },
-        { date: "2026-09-05", amount: -2337.5, keep_sign: true, return_id: "p37b", return_group_id: "g37p", sales_author_employee_id: "natasha" },
-        { date: "2026-08-20", amount: -500, keep_sign: true, return_id: "p38a", return_group_id: "g38p", sales_author_employee_id: "natasha" },
-        { date: "2026-09-07", amount: -800, keep_sign: true, return_id: "p40a", return_group_id: "g40p", sales_author_employee_id: "other" }
+        { date: "2026-09-14", amount: -500, sales_author_employee_id: "petya", driver_employee_id: "vasya" },
+        { date: "2026-09-14", amount: 2000, sales_author_employee_id: "vasya", driver_employee_id: "vasya" },
+        { date: "2026-09-13", amount: -300, sales_author_employee_id: "petya", driver_employee_id: "other" }
     ];
-    crUi.dateFrom = "2026-09-01";
-    crUi.dateTo = "2026-09-10";
-    const sept = periodItems.filter(crInPeriod);
-    const septFin = crFinanceTotals(sept);
-    if (septFin.returnAmount !== 1137.5) {
-        console.warn("Период 01.09–10.09: ожидалась сумма возвратов 1137.50 (337.50+800), получено", septFin.returnAmount);
+    crUi.dateFrom = "2026-09-14";
+    crUi.dateTo = "2026-09-14";
+    const day14 = periodItems.filter(crInPeriod);
+    if (crPeriodTotal(day14) !== 1500) {
+        console.warn("14.09: ожидалось ИТОГО +1500, получено", crPeriodTotal(day14));
     }
-    const natashaSept = sept.filter(function (it) { return it.sales_author_employee_id === "natasha"; });
-    if (crFinanceTotals(natashaSept).returnAmount !== 337.5) {
-        console.warn("Период + торговый: ожидалось 337.50");
+    const petya14 = day14.filter(function (it) { return it.sales_author_employee_id === "petya"; });
+    if (crPeriodTotal(petya14) !== -500) {
+        console.warn("14.09 + Петя: ожидалось -500");
     }
-    crUi.dateFrom = "2026-08-01";
-    crUi.dateTo = "2026-09-10";
-    const wideNatasha = periodItems.filter(function (it) {
-        return crInPeriod(it) && it.sales_author_employee_id === "natasha";
-    });
-    if (crFinanceTotals(wideNatasha).returnAmount !== 837.5) {
-        console.warn("Август+сентябрь Наташа: ожидалось 837.50");
+    crUi.dateFrom = "2026-09-13";
+    crUi.dateTo = "2026-09-14";
+    const twoDays = periodItems.filter(crInPeriod);
+    if (crPeriodTotal(twoDays) !== 1200) {
+        console.warn("13–14.09: ожидалось +1200, получено", crPeriodTotal(twoDays));
     }
     crUi.dateFrom = savedFrom;
     crUi.dateTo = savedTo;
+    crUi.author = savedAuthor;
 }
 
 function requestedLoginView() {
