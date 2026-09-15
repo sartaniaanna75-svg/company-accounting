@@ -5645,11 +5645,7 @@ function employeePrimaryWorkTabId(employee, dept, month) {
     return "";
 }
 function employeeMatchesWorkTab(employee, dept, workTabId) {
-    const tab = String(workTabId || "");
-    if (!tab) return false;
-    const primary = employeePrimaryWorkTabId(employee, dept);
-    if (primary) return primary === tab;
-    return metricTabsForDept(dept).length <= 1;
+    return employeeBelongsToWorkGroup(employee, dept, workTabId);
 }
 function metricStructureType(item) {
     return item && item.structure_type === "with_submetrics" ? "with_submetrics" : "plain";
@@ -5800,10 +5796,10 @@ function metricEmployeeGroupId(employee, item) {
     const dept = metricRollupDeptCode(item);
     const tabs = metricWorkTabIds(item);
     if (!employee || !tabs.length) return "";
-    const primary = employeePrimaryWorkTabId(employee, dept)
-        || employeeWorkTabId(employee, dept)
-        || inferWorkTabIdFromPosition(dept, employee && employee.position);
-    if (tabs.indexOf(primary) !== -1) return primary;
+    const ids = employeeWorkGroupIds(employee, dept);
+    for (let i = 0; i < ids.length; i++) {
+        if (tabs.indexOf(ids[i]) !== -1) return ids[i];
+    }
     return "";
 }
 
@@ -6296,6 +6292,67 @@ function employeeWorkTabId(employee, dept, month) {
     }
     return inferWorkTabIdFromPosition(code, employee.position);
 }
+function allowedWorkTabIdsForDept(dept) {
+    return metricTabsForDept(dept).map(function (t) { return t.id; });
+}
+function employeeWorkGroupIds(employee, dept, month) {
+    const ids = [];
+    if (!employee) return ids;
+    const code = dept || employeeHomeDeptCode(employee.id) || "";
+    const allowed = allowedWorkTabIdsForDept(code);
+    function add(id) {
+        const s = String(id || "").trim();
+        if (!s) return;
+        if (allowed.length && allowed.indexOf(s) === -1) return;
+        if (ids.indexOf(s) === -1) ids.push(s);
+    }
+    if (Array.isArray(employee.work_group_ids)) employee.work_group_ids.forEach(add);
+    if (Array.isArray(employee.work_tab_ids)) employee.work_tab_ids.forEach(add);
+    add(employee.work_group_id);
+    const m = month || selectedMonth;
+    employeeWorkTabHistory(employee).forEach(function (rec) {
+        if (!rec || !rec.metric_tab_id) return;
+        if (rec.valid_from && m < rec.valid_from) return;
+        if (rec.valid_to && m > rec.valid_to) return;
+        add(rec.metric_tab_id);
+    });
+    if (employee.work_tab_id) {
+        if (!employee.work_tab_from || m >= employee.work_tab_from) add(employee.work_tab_id);
+    }
+    add(employee.primary_work_tab_id);
+    add(employee.role_id);
+    return ids;
+}
+function employeeBelongsToWorkGroup(employee, dept, workTabId, month) {
+    const tab = String(workTabId || "");
+    if (!tab) return true;
+    return employeeWorkGroupIds(employee, dept, month).indexOf(tab) !== -1;
+}
+function territoryDeptEmployeePool(deptCode) {
+    const code = String(deptCode || "");
+    if (!code || code === "shop") return [];
+    const w = findWorkspaceByCode(code);
+    const out = [];
+    const seen = {};
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        if (employeeHomeDeptCode(e.id) !== code) return;
+        if (employeeHomeDeptCode(e.id) === "shop") return;
+        if (isTerritoryCode(code) && !isTerritoryEmployee(e)) return;
+        seen[e.id] = true;
+        out.push(e);
+    });
+    return out;
+}
+function employeesForWorkGroup(deptCode, workTabId, options) {
+    options = options || {};
+    const tab = String(workTabId || "");
+    return territoryDeptEmployeePool(deptCode).filter(function (e) {
+        if (!options.includeInactive && !isWorking(e)) return false;
+        if (tab && !employeeBelongsToWorkGroup(e, deptCode, tab, options.month || selectedMonth)) return false;
+        return true;
+    }).sort(compareEmployeesByStatusThenName);
+}
 function setEmployeePrimaryWorkTab(employeeId, tabId) {
     const employee = getEmployee(employeeId);
     if (!employee) return;
@@ -6344,7 +6401,7 @@ function timesheetEmployeesForView() {
     const seen = {};
     return list.filter(function (e) {
         if (!e || !e.id || seen[e.id]) return false;
-        if (employeeWorkTabId(e, w.code, selectedMonth) !== tab) return false;
+        if (!employeeBelongsToWorkGroup(e, w.code, tab, selectedMonth)) return false;
         seen[e.id] = true;
         return true;
     });
@@ -10800,8 +10857,8 @@ function territoryCategoryEmployeePool(catId) {
             if (employeeHomeDeptCode(e.id) !== code) return;
             if (employeeHomeDeptCode(e.id) === "shop") return;
             if (tabs && tabs.length) {
-                const tab = employeePrimaryWorkTabId(e, code) || inferWorkTabIdFromPosition(code, e.position);
-                if (tabs.indexOf(tab) === -1) return;
+                const ok = tabs.some(function (t) { return employeeBelongsToWorkGroup(e, code, t); });
+                if (!ok) return;
             }
             seen[e.id] = true;
             out.push(e);
@@ -10844,8 +10901,8 @@ function metricCatalogGroupEmployees(item) {
         try {
             if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return;
             if (employeeHomeDeptCode(e.id) === "shop") return;
-            const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
-            if (tabs.indexOf(tab) === -1) return;
+            if (!tabs.length) return;
+            if (!tabs.some(function (tab) { return employeeBelongsToWorkGroup(e, dept, tab); })) return;
             out.push(e);
         } catch (err) {
             console.error(err);
@@ -16461,11 +16518,18 @@ function statusSelect(employeeId, day, status, disabled) {
 
 function employeePicker(selectedId) {
     const used = assignedIds();
+    const w = workspace();
+    const code = w && w.code;
+    const tab = typeof currentTimesheetWorkTabFilter === "function" ? currentTimesheetWorkTabFilter() : "";
     let html = '<select class="employee-pick" onchange="setTimesheetEmployee(\''
         + (selectedId || "") + '\', this.value)" title="Подбор сотрудника">';
     html += '<option value="">— выбрать сотрудника —</option>';
 
     directoryEmployees().forEach(function (e) {
+        if (!e || !e.id) return;
+        if (employeeHomeDeptCode(e.id) === "shop" && code !== "shop") return;
+        if (code && employeeHomeDeptCode(e.id) !== code) return;
+        if (tab && !employeeBelongsToWorkGroup(e, code, tab, selectedMonth) && e.id !== selectedId) return;
         if (!isWorking(e) && e.id !== selectedId) return;
         const taken = used.indexOf(e.id) !== -1 && e.id !== selectedId;
         html += '<option value="' + e.id + '"'
@@ -16492,6 +16556,12 @@ function setTimesheetEmployee(fromId, toId) {
 
     if (toId && !belongsToWorkspace(workspace(), toId)) {
         toast("Можно выбрать только сотрудника этого отдела.", "error");
+        renderTimesheet();
+        return;
+    }
+    const tab = typeof currentTimesheetWorkTabFilter === "function" ? currentTimesheetWorkTabFilter() : "";
+    if (toId && tab && !employeeBelongsToWorkGroup(getEmployee(toId), workspace().code, tab, selectedMonth)) {
+        toast("Этот сотрудник не относится к выбранной рабочей группе.", "error");
         renderTimesheet();
         return;
     }
@@ -17207,7 +17277,7 @@ function payrollEmployees(view) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id]) return;
         if (!includeInMonthPayroll(e)) return;
         if (isSalesRep(e)) return;
-        if (view.workTabId && employeeWorkTabId(e, view.departmentId, selectedMonth) !== view.workTabId) return;
+        if (view.workTabId && !employeeBelongsToWorkGroup(e, view.departmentId, view.workTabId, selectedMonth)) return;
         seen[e.id] = true;
         list.push(e);
     }
@@ -19831,7 +19901,8 @@ function metricControlPeople() {
         }
     }
     people = people.filter(function (e) { return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID; });
-    if (isTerritoryMetricsMode()) {
+    people = people.filter(function (e) { return employeeHomeDeptCode(e.id) !== "shop" || (workspace() && workspace().code === "shop"); });
+    if (isTerritoryMetricsMode() || (workspace() && isTerritoryCode(workspace().code))) {
         people = people.filter(isTerritoryEmployee);
     }
     if (f.position) {
@@ -19840,7 +19911,7 @@ function metricControlPeople() {
     if (f.workTab) {
         people = people.filter(function (e) {
             const home = employeeHomeDeptCode(e.id);
-            return employeeWorkTabId(e, home, selectedMonth) === f.workTab;
+            return employeeBelongsToWorkGroup(e, home, f.workTab, selectedMonth);
         });
     }
     if (f.employeeId) people = people.filter(function (e) { return e.id === f.employeeId; });
@@ -19921,6 +19992,12 @@ function setMetricControlFilter(field, value) {
         metricControlFilters.position = "";
         metricControlFilters.employeeId = "";
         metricControlFilters.metricId = "";
+    }
+    if (field === "workTab") {
+        const peopleNow = metricControlPeople();
+        if (metricControlFilters.employeeId && !peopleNow.some(function (e) { return e && e.id === metricControlFilters.employeeId; })) {
+            metricControlFilters.employeeId = "";
+        }
     }
     if (field === "position") metricControlFilters.employeeId = "";
     if (field === "metricId" && value) metricControlView = "metrics";
@@ -20097,7 +20174,21 @@ function renderMetricControlFilters() {
         });
     }
     html += "</select></div>";
+    const groupTabs = metricTabsForDept(deptCode);
+    if (groupTabs && groupTabs.length > 1) {
+        html += '<div class="form-group"><label>Рабочая группа</label><select onchange="setMetricControlFilter(\'workTab\',this.value)">'
+            + '<option value="">Все</option>';
+        groupTabs.forEach(function (t) {
+            html += '<option value="' + escapeAttribute(t.id) + '"' + (f.workTab === t.id ? " selected" : "") + ">"
+                + escapeHtml(t.label) + "</option>";
+        });
+        html += "</select></div>";
+    }
     const people = metricControlPeople();
+    if (f.employeeId && !people.some(function (e) { return e && e.id === f.employeeId; })) {
+        metricControlFilters.employeeId = "";
+        f.employeeId = "";
+    }
     const positions = [];
     people.forEach(function (e) {
         const p = String(e.position || "").trim();
@@ -21387,53 +21478,52 @@ function refreshMetricCatalogFormulaBox(formula) {
     box.innerHTML = html;
 }
 
+function employeeWorkGroupCaption(employee, dept) {
+    const home = dept || employeeHomeDeptCode(employee && employee.id) || "";
+    const ids = employeeWorkGroupIds(employee, home);
+    if (!ids.length) return "";
+    return ids.map(function (id) { return metricTabLabel(home, id); }).join(", ");
+}
+
 function refreshMetricCatalogPeopleBox(metricId) {
     const box = document.getElementById("mcPeopleBox");
     if (!box) return;
     const cat = String((document.getElementById("mcCategory") || {}).value || "");
+    const tabIds = typeof collectMetricCatalogTabIds === "function" ? collectMetricCatalogTabIds() : [];
+    function personLabel(e, dept) {
+        const cap = employeeWorkGroupCaption(e, dept);
+        return '<label class="check"><input type="checkbox" class="mc-person" value="' + escapeAttribute(e.id) + '"'
+            + ((metricId && shopEmployeeHasWorkMetric(e.id, metricId))
+                || (!metricId && justAddedEmployeeId && e.id === justAddedEmployeeId) ? " checked" : "")
+            + "><span>" + escapeHtml(shopMetricEmployeeCaption(e))
+            + (cap ? " · " + escapeHtml(cap) : "") + "</span></label>";
+    }
     if (cat && cat !== "returns") {
+        const spec = territoryMetricCategoryById(cat);
         const people = territoryCategoryEmployeePool(cat).filter(function (e) {
-            return e && isWorking(e) && isTerritoryEmployee(e);
+            if (!e || !isWorking(e) || !isTerritoryEmployee(e)) return false;
+            if (!tabIds.length) return true;
+            const home = employeeHomeDeptCode(e.id);
+            return tabIds.some(function (t) { return employeeBelongsToWorkGroup(e, home, t); });
         }).sort(compareEmployeesByStatusThenName);
         box.innerHTML = people.map(function (e) {
-            const on = (metricId && shopEmployeeHasWorkMetric(e.id, metricId))
-                || (!metricId && justAddedEmployeeId && e.id === justAddedEmployeeId);
-            const home = employeeHomeDeptCode(e.id);
-            const tab = employeePrimaryWorkTabId(e, home) || inferWorkTabIdFromPosition(home, e.position);
-            return '<label class="check"><input type="checkbox" class="mc-person" value="' + escapeAttribute(e.id) + '"'
-                + (on ? " checked" : "") + "><span>" + escapeHtml(shopMetricEmployeeCaption(e))
-                + (tab ? " · " + escapeHtml(metricTabLabel(home, tab)) : "") + "</span></label>";
+            return personLabel(e, employeeHomeDeptCode(e.id) || (spec && spec.departmentId) || "");
         }).join("") || '<div class="note">Нет сотрудников в этой категории. Сотрудники Магазина Володарского сюда не входят.</div>';
         return;
     }
     const deptEl = document.getElementById("mcDept");
     const dept = (deptEl && deptEl.value) || catalogDeptContext();
-    const w = findWorkspaceByCode(dept);
-    const tabIds = typeof collectMetricCatalogTabIds === "function" ? collectMetricCatalogTabIds() : [];
     if (isTerritoryMetricsMode() && !isTerritoryCode(dept)) {
         box.innerHTML = '<div class="note">Нет сотрудников в выбранных группах. Сотрудники Магазина Володарского сюда не входят.</div>';
         return;
     }
-    const people = ((w && w.employees) || []).filter(function (e) {
-        if (!e || !isWorking(e)) return false;
-        if (employeeHomeDeptCode(e.id) !== dept) return false;
-        if (dept === "shop") {
-            if (isTerritoryEmployee(e)) return false;
-        } else if (isTerritoryMetricsMode() && !isTerritoryEmployee(e)) {
-            return false;
-        }
+    const people = territoryDeptEmployeePool(dept).filter(function (e) {
+        if (!isWorking(e)) return false;
         if (!tabIds.length) return true;
-        const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
-        return tabIds.indexOf(tab) !== -1 || (metricId && shopEmployeeHasWorkMetric(e.id, metricId));
+        return tabIds.some(function (t) { return employeeBelongsToWorkGroup(e, dept, t); });
     }).sort(compareEmployeesByStatusThenName);
-    box.innerHTML = people.map(function (e) {
-        const on = (metricId && shopEmployeeHasWorkMetric(e.id, metricId))
-            || (!metricId && justAddedEmployeeId && e.id === justAddedEmployeeId);
-        const tab = employeePrimaryWorkTabId(e, dept) || inferWorkTabIdFromPosition(dept, e.position);
-        return '<label class="check"><input type="checkbox" class="mc-person" value="' + escapeAttribute(e.id) + '"'
-            + (on ? " checked" : "") + "><span>" + escapeHtml(shopMetricEmployeeCaption(e))
-            + (tab ? " · " + escapeHtml(metricTabLabel(dept, tab)) : "") + "</span></label>";
-    }).join("") || '<div class="note">Нет сотрудников в выбранных группах.</div>';
+    box.innerHTML = people.map(function (e) { return personLabel(e, dept); }).join("")
+        || '<div class="note">Нет сотрудников в выбранных группах.</div>';
 }
 
 function saveMetricCatalogForm(id, dupIgnore) {
@@ -21667,16 +21757,16 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     if (!mid) return [];
     const code = isGenericMetricsDept(deptCode) ? deptCode : (deptCode || "shop");
     const tab = workTabId || defaultMetricTabId(code);
-    const item = shopMetricCatalogById(mid);
-    const scope = metricEmployeeScope(item, tab);
     const w = findWorkspaceByCode(code);
     const list = [];
     const seen = {};
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (employeeHomeDeptCode(e.id) !== code) return;
+        if (code !== "shop" && employeeHomeDeptCode(e.id) === "shop") return;
+        if (isGenericMetricsDept(code) && !isTerritoryEmployee(e)) return;
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
-        if (scope === "same_work_tab" && !employeeMatchesWorkTab(e, code, tab)) return;
+        if (tab && !employeeBelongsToWorkGroup(e, code, tab)) return;
         if (!isWorking(e)) {
             if (isGenericMetricsDept(code)) {
                 if (!deptMetricEmployeeHasData(code, e.id, mid)) return;
@@ -22063,25 +22153,19 @@ function territoryHubFields(spec) {
 }
 
 function territoryHubPeople(spec, metricId) {
-    const seen = {};
-    const list = [];
-    const catId = spec && spec.allTerritory ? "common" : ((spec && spec.id) || "");
-    if (isTerritoryMetricsMode() || (spec && (spec.workTabIds || spec.allTerritory))) {
-        territoryCategoryEmployeePool(catId).forEach(function (e) {
-            if (!e || !e.id || seen[e.id] || employeeHomeDeptCode(e.id) === "shop") return;
-            if (!shopEmployeeHasWorkMetric(e.id, metricId)) return;
-            seen[e.id] = true;
-            list.push(e);
-        });
-        list.sort(compareEmployeesByStatusThenName);
-        return list;
-    }
-    territoryHubTabIds(spec).forEach(function (tab) {
-        workMetricPeopleForTab(spec.departmentId, metricId, tab).forEach(function (e) {
-            if (!e || !e.id || seen[e.id] || employeeHomeDeptCode(e.id) === "shop") return;
-            seen[e.id] = true;
-            list.push(e);
-        });
+    const tabs = territoryHubTabIds(spec);
+    const dept = (spec && spec.departmentId) || "";
+    const pool = (spec && spec.allTerritory)
+        ? territoryCategoryEmployeePool("common")
+        : territoryDeptEmployeePool(dept);
+    const list = pool.filter(function (e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
+        if (!isWorking(e) || !isTerritoryEmployee(e)) return false;
+        if (employeeHomeDeptCode(e.id) === "shop") return false;
+        if (!shopEmployeeHasWorkMetric(e.id, metricId)) return false;
+        if (!tabs.length) return true;
+        const home = employeeHomeDeptCode(e.id) || dept;
+        return tabs.some(function (tab) { return employeeBelongsToWorkGroup(e, home, tab); });
     });
     list.sort(compareEmployeesByStatusThenName);
     return list;
@@ -22534,7 +22618,7 @@ function renderFio() {
         if (employee.id === justAddedEmployeeId) return true;
         if (tabs.length) {
             if (!filters.tab) return true;
-            return employeeWorkTabId(employee, code) === filters.tab;
+            return employeeBelongsToWorkGroup(employee, code, filters.tab, selectedMonth);
         }
         if (!filters.position) return true;
         return String(employee.position || "").replace(/\s+/g, " ").trim() === filters.position;
@@ -29142,17 +29226,23 @@ function refreshMgmtMetricsPeopleBox(metricId) {
     const box = document.getElementById("miMetricsPeople");
     if (!box) return;
     const cat = String((document.getElementById("miMetricsCat") || {}).value || "office");
+    const tabIds = [];
+    document.querySelectorAll("#miMetricsTabs .mi-tab:checked").forEach(function (el) {
+        if (el.value) tabIds.push(el.value);
+    });
     const people = territoryCategoryEmployeePool(cat).filter(function (e) {
-        return e && isWorking(e) && isTerritoryEmployee(e);
+        if (!e || !isWorking(e) || !isTerritoryEmployee(e)) return false;
+        if (!tabIds.length) return true;
+        const home = employeeHomeDeptCode(e.id);
+        return tabIds.some(function (t) { return employeeBelongsToWorkGroup(e, home, t); });
     }).sort(compareEmployeesByStatusThenName);
     box.innerHTML = people.map(function (e) {
         const on = (metricId && shopEmployeeHasWorkMetric(e.id, metricId))
             || (!metricId && justAddedEmployeeId && e.id === justAddedEmployeeId);
-        const home = employeeHomeDeptCode(e.id);
-        const tab = employeePrimaryWorkTabId(e, home) || inferWorkTabIdFromPosition(home, e.position);
+        const cap = employeeWorkGroupCaption(e, employeeHomeDeptCode(e.id));
         return '<label class="check"><input type="checkbox" class="mi-person" value="' + escapeAttribute(e.id) + '"'
             + (on ? " checked" : "") + "><span>" + escapeHtml(shopMetricEmployeeCaption(e))
-            + (tab ? " · " + escapeHtml(metricTabLabel(home, tab)) : "") + "</span></label>";
+            + (cap ? " · " + escapeHtml(cap) : "") + "</span></label>";
     }).join("") || '<div class="note">Нет сотрудников в этой категории.</div>';
 }
 
