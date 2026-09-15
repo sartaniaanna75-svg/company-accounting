@@ -364,7 +364,9 @@
         .spu-tree-metrics { margin: 4px 0 0; font-size: 12px; color: #334155; }
         .spu-tree-metrics div { display: flex; justify-content: space-between; gap: 12px; max-width: 420px; }
         .spu-route-block { margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
-        .spu-route-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: end; margin: 6px 0; }
+        .spu-form-tabs { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; }
+        .spu-usage { font-size: 13px; margin: 8px 0; }
+        .spu-usage li { margin: 4px 0; }
         @media (max-width: 900px) { .spu-route-row { grid-template-columns: 1fr; } }
         .spu-dash { font-size: 12px; }
         .spu-dash-tabs {
@@ -24799,27 +24801,10 @@ function ensureSpuOrgNodes() {
         if (n.parent_org_node_id == null) n.parent_org_node_id = n.parent_node_id || "";
         if (n.responsible_employee_id == null) n.responsible_employee_id = n.manager_employee_id || "";
         if (n.is_active == null) n.is_active = true;
+        if (n.aggregate_from_children == null) n.aggregate_from_children = false;
         n.sort_order = Number(n.sort_order || 0);
         if (!n.created_at) n.created_at = spuOrgNowIso();
         if (!n.updated_at) n.updated_at = n.created_at;
-    });
-    (root.spuDepartments || []).forEach(function (d) {
-        if (!d || !d.spu_department_id) return;
-        const exists = root.spuOrgNodes.some(function (n) {
-            return n && (n.org_node_id === d.spu_department_id || n.spu_department_id === d.spu_department_id);
-        });
-        if (exists) return;
-        root.spuOrgNodes.push({
-            org_node_id: d.spu_department_id,
-            parent_org_node_id: "",
-            name: d.name || d.spu_department_id,
-            responsible_employee_id: (root.deptHeads && root.deptHeads[d.spu_department_id]) || "",
-            is_active: d.is_active !== false,
-            sort_order: Number(d.sort_order || 0),
-            spu_department_id: d.spu_department_id,
-            created_at: spuOrgNowIso(),
-            updated_at: spuOrgNowIso()
-        });
     });
 }
 
@@ -24876,6 +24861,147 @@ function spuOrgNextId() {
     return nextPrefixedId("spuorg", spuOrgNodes().map(function (n) { return n && n.org_node_id; }));
 }
 
+function mgmtIndicatorTargetNodeId(it) {
+    if (!it) return "";
+    if (it.target_org_node_id && spuOrgGetNode(it.target_org_node_id)) return it.target_org_node_id;
+    if (it.spu_department_id && spuOrgGetNode(it.spu_department_id)) return it.spu_department_id;
+    const linked = spuOrgNodes().find(function (n) {
+        return n && n.spu_department_id && it.spu_department_id && n.spu_department_id === it.spu_department_id;
+    });
+    return linked ? linked.org_node_id : "";
+}
+
+function spuOrgIndicatorsForNode(nodeId, includeInactiveInd) {
+    if (!nodeId) return [];
+    return ((appData.management && appData.management.indicators) || []).filter(function (it) {
+        if (!it) return false;
+        if (!includeInactiveInd && it.is_active === false) return false;
+        return mgmtIndicatorTargetNodeId(it) === nodeId;
+    }).sort(function (a, b) { return Number(a.sort_order || 0) - Number(b.sort_order || 0); });
+}
+
+function spuOrgShowInPlanFact(it) {
+    return !!(it && it.is_active !== false && it.show_in_planfact !== false);
+}
+
+function mgmtSpuOrgOptionsHtml(selected, includeInactive, excludeId) {
+    let html = '<option value="">— не назначен —</option>';
+    function walk(parentId, depth) {
+        spuOrgChildren(parentId, !!includeInactive).forEach(function (n) {
+            if (excludeId && (n.org_node_id === excludeId || spuOrgWouldCycle(excludeId, n.org_node_id))) return;
+            const pad = Array(depth + 1).join("· ");
+            const off = n.is_active === false ? " (неактивен)" : "";
+            html += '<option value="' + escapeAttribute(n.org_node_id) + '"'
+                + (n.org_node_id === selected ? " selected" : "") + ">"
+                + escapeHtml(pad + (n.name || n.org_node_id) + off) + "</option>";
+            walk(n.org_node_id, depth + 1);
+        });
+    }
+    walk("", 0);
+    return html;
+}
+
+function spuTerritoryWorkMetrics() {
+    return shopMetricCatalogItems().filter(function (m) {
+        if (!m || !m.id) return false;
+        if (metricDepartmentId(m) === "shop") return false;
+        return m.active !== false;
+    });
+}
+
+function spuFindTerritoryRetailSalesMetric() {
+    return spuTerritoryWorkMetrics().find(function (m) {
+        if (metricTerritoryCategory(m) !== "sales_retail") return false;
+        const name = String(m.name || "").toLowerCase();
+        return m.fill_type === "money" || name.indexOf("продаж") !== -1 || m.key === "sales";
+    }) || null;
+}
+
+function spuOrgDuplicateIndicator(payload) {
+    const list = (appData.management && appData.management.indicators) || [];
+    return list.find(function (it) {
+        if (!it || it.indicator_id === payload.skip_id) return false;
+        if (mgmtIndicatorTargetNodeId(it) !== payload.target_org_node_id) return false;
+        if (String(it.source_type || "") !== String(payload.source_type || "")) return false;
+        if (String(it.source_metric_id || "") !== String(payload.source_metric_id || "")) return false;
+        if (String(it.source_result || "department_total") !== String(payload.source_result || "department_total")) return false;
+        if (String(it.source_work_tab_id || "") !== String(payload.source_work_tab_id || "")) return false;
+        if (String(it.source_submetric_id || "") !== String(payload.source_submetric_id || "")) return false;
+        if (String(it.source_sales_plan_view || "") !== String(payload.source_sales_plan_view || "")) return false;
+        if (String(it.source_timesheet_agg || "") !== String(payload.source_timesheet_agg || "")) return false;
+        return true;
+    }) || null;
+}
+
+function spuOrgUsageDetails(nodeId) {
+    const node = spuOrgGetNode(nodeId);
+    const children = spuOrgChildren(nodeId, true);
+    const indicators = ((appData.management && appData.management.indicators) || []).filter(function (it) {
+        return it && mgmtIndicatorTargetNodeId(it) === nodeId;
+    });
+    const finance = indicators.filter(mgmtIsFinanceIndicator);
+    const routes = spuOrgRoutesForNode(nodeId);
+    return {
+        node: node,
+        children: children,
+        indicators: indicators,
+        finance: finance,
+        routes: routes,
+        used: !!(children.length || indicators.length || routes.length)
+    };
+}
+
+function spuOrgTransferLinks(fromId, toId) {
+    if (!fromId || !toId || fromId === toId || !spuOrgGetNode(toId)) return false;
+    if (spuOrgWouldCycle(fromId, toId)) return false;
+    spuOrgChildren(fromId, true).forEach(function (ch) {
+        ch.parent_org_node_id = toId;
+        ch.updated_at = spuOrgNowIso();
+    });
+    ((appData.management && appData.management.indicators) || []).forEach(function (it) {
+        if (it && mgmtIndicatorTargetNodeId(it) === fromId) {
+            it.target_org_node_id = toId;
+            const dest = spuOrgGetNode(toId);
+            if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+        }
+    });
+    const items = typeof shopMetricCatalogItems === "function" ? shopMetricCatalogItems() : [];
+    items.forEach(function (item) {
+        if (!item) return;
+        (item.result_routes || []).forEach(function (r) {
+            if (r && r.target_org_node_id === fromId) r.target_org_node_id = toId;
+        });
+        if (item.result_route && item.result_route.target_org_node_id === fromId) {
+            item.result_route.target_org_node_id = toId;
+        }
+    });
+    return true;
+}
+
+function setSpuOrgResponsible(nodeId, employeeId) {
+    if (!canEditSpuStructure() && !canEditMgmtIndicators()) return;
+    const node = spuOrgGetNode(nodeId);
+    if (!node) return;
+    node.responsible_employee_id = String(employeeId || "");
+    node.updated_at = spuOrgNowIso();
+    spuOrgSyncLinkedDepartment(node);
+    saveApp();
+    renderManagement();
+}
+
+function setMgmtIndicatorOrgNode(indicatorId, nodeId) {
+    if (!canEditSpuStructure() && !canEditMgmtIndicators()) return;
+    const it = ((appData.management && appData.management.indicators) || []).find(function (x) {
+        return x && x.indicator_id === indicatorId;
+    });
+    if (!it) return;
+    it.target_org_node_id = String(nodeId || "");
+    const dest = nodeId ? spuOrgGetNode(nodeId) : null;
+    if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+    saveApp();
+    renderManagement();
+}
+
 function spuOrgSyncLinkedDepartment(node) {
     if (!node || !node.spu_department_id || !appData.management) return;
     const d = (appData.management.spuDepartments || []).find(function (x) {
@@ -24927,6 +25053,9 @@ function spuOrgUpsertNode(payload, persist) {
     node.parent_org_node_id = parentId;
     node.responsible_employee_id = String((payload && payload.responsible_employee_id) || "");
     node.is_active = payload && payload.is_active === false ? false : true;
+    if (payload && payload.aggregate_from_children != null) {
+        node.aggregate_from_children = !!payload.aggregate_from_children;
+    }
     if (payload && payload.sort_order != null && payload.sort_order !== "") {
         node.sort_order = Number(payload.sort_order) || 0;
     } else if (node.sort_order == null) {
@@ -24962,13 +25091,15 @@ function saveSpuOrgNodeFromForm(orgNodeId) {
     const respEl = document.getElementById("spuOrgResp");
     const statusEl = document.getElementById("spuOrgStatus");
     const sortEl = document.getElementById("spuOrgSort");
+    const aggEl = document.getElementById("spuOrgAgg");
     const res = spuOrgUpsertNode({
         org_node_id: orgNodeId || "",
         name: nameEl ? nameEl.value : "",
         parent_org_node_id: parentEl ? parentEl.value : "",
         responsible_employee_id: respEl ? respEl.value : "",
         is_active: !(statusEl && statusEl.value === "0"),
-        sort_order: sortEl ? sortEl.value : ""
+        sort_order: sortEl ? sortEl.value : "",
+        aggregate_from_children: !!(aggEl && aggEl.checked)
     }, true);
     if (!res.ok) {
         toast(res.error || "Не удалось сохранить", "error");
@@ -24988,21 +25119,93 @@ function deactivateSpuOrgNode(orgNodeId) {
     renderManagement();
 }
 
+function confirmDeleteSpuOrgNode(orgNodeId) {
+    if (!canEditSpuStructure()) return;
+    const usage = spuOrgUsageDetails(orgNodeId);
+    if (!usage.used) {
+        if (!window.confirm("Удалить подразделение без восстановления?")) return;
+        deleteSpuOrgNode(orgNodeId);
+        return;
+    }
+    openSpuOrgDeleteForm(orgNodeId);
+}
+
+function openSpuOrgDeleteForm(orgNodeId) {
+    const usage = spuOrgUsageDetails(orgNodeId);
+    const node = usage.node;
+    if (!node) return;
+    let html = "<h3>Этот департамент используется</h3>"
+        + '<p class="note">' + escapeHtml(node.name) + ". Данные не будут уничтожены без вашего выбора.</p><ul class=\"spu-usage\">";
+    if (usage.children.length) html += "<li>Дочерние подразделения: " + escapeHtml(usage.children.map(function (n) { return n.name; }).join(", ")) + "</li>";
+    if (usage.indicators.length) html += "<li>Показатели: " + escapeHtml(usage.indicators.map(function (it) { return it.name; }).join(", ")) + "</li>";
+    if (usage.finance.length) html += "<li>Финансовые показатели: " + escapeHtml(usage.finance.map(function (it) { return it.name; }).join(", ")) + "</li>";
+    if (usage.routes.length) html += "<li>Маршруты метрик: " + usage.routes.length + "</li>";
+    html += "</ul>"
+        + '<div class="form-group"><label>Куда перенести связи</label><select id="spuOrgMoveTo">'
+        + mgmtSpuOrgOptionsHtml("", false, orgNodeId) + "</select></div>"
+        + '<div class="toolbar">'
+        + '<button type="button" class="btn btn-primary" onclick="transferThenDeleteSpuOrgNode(\'' + orgNodeId + '\')">Перенести в другой департамент</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="deactivateSpuOrgNode(\'' + orgNodeId + '\');closeMgmtModal()">Сделать неактивным</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button>'
+        + "</div>";
+    openMgmtModal(html);
+}
+
+function transferThenDeleteSpuOrgNode(fromId) {
+    if (!canEditSpuStructure()) return;
+    const toId = ((document.getElementById("spuOrgMoveTo") || {}).value || "");
+    if (!toId) {
+        toast("Выберите, куда перенести", "error");
+        return;
+    }
+    if (!spuOrgTransferLinks(fromId, toId)) {
+        toast("Не удалось перенести связи", "error");
+        return;
+    }
+    const still = spuOrgUsageDetails(fromId);
+    if (still.used) {
+        toast("После переноса узел ещё используется — сделан неактивным", "error");
+        const node = spuOrgGetNode(fromId);
+        if (node) node.is_active = false;
+        saveApp();
+    } else {
+        appData.management.spuOrgNodes = spuOrgNodes().filter(function (n) { return n.org_node_id !== fromId; });
+        saveApp();
+    }
+    closeMgmtModal();
+    renderManagement();
+}
+
 function deleteSpuOrgNode(orgNodeId) {
     if (!canEditSpuStructure()) return;
     const node = spuOrgGetNode(orgNodeId);
     if (!node) return;
-    if (spuOrgNodeIsUsed(orgNodeId)) {
-        toast("Узел уже используется — отключите его, не удаляйте", "error");
+    if (spuOrgUsageDetails(orgNodeId).used) {
+        openSpuOrgDeleteForm(orgNodeId);
         return;
     }
     appData.management.spuOrgNodes = spuOrgNodes().filter(function (n) { return n.org_node_id !== orgNodeId; });
     saveApp();
+    closeMgmtModal();
     renderManagement();
 }
 
-function openSpuOrgNodeForm(orgNodeId, parentPreset) {
-    if (!canEditSpuStructure()) return;
+function spuOrgFormTab(tab) {
+    const main = document.getElementById("spuOrgTabMain");
+    const inds = document.getElementById("spuOrgTabInds");
+    const b1 = document.getElementById("spuOrgTabBtnMain");
+    const b2 = document.getElementById("spuOrgTabBtnInds");
+    if (main) main.style.display = tab === "inds" ? "none" : "";
+    if (inds) inds.style.display = tab === "inds" ? "" : "none";
+    if (b1) b1.classList.toggle("on", tab !== "inds");
+    if (b2) b2.classList.toggle("on", tab === "inds");
+}
+
+function openSpuOrgNodeForm(orgNodeId, parentPreset, startTab) {
+    if (!canEditSpuStructure() && orgNodeId) {
+        /* view-only indicators still useful for admin-less users? skip */
+    }
+    if (!canEditSpuStructure() && !orgNodeId) return;
     const node = orgNodeId ? spuOrgGetNode(orgNodeId) : null;
     const parentId = node ? String(node.parent_org_node_id || "") : String(parentPreset || "");
     let parentOpts = '<option value="">Компания</option>';
@@ -25017,7 +25220,14 @@ function openSpuOrgNodeForm(orgNodeId, parentPreset) {
         });
     }
     walk("", 0);
-    const html = '<h3>' + (node ? "Редактировать подразделение" : "Добавить департамент") + "</h3>"
+    const canEdit = canEditSpuStructure();
+    let html = '<h3>' + (node ? escapeHtml(node.name) : "Добавить департамент") + "</h3>";
+    if (node) {
+        html += '<div class="spu-form-tabs">'
+            + '<button type="button" class="mgmt-chip' + (startTab === "inds" ? "" : " on") + '" id="spuOrgTabBtnMain" onclick="spuOrgFormTab(\'main\')">Основное</button>'
+            + '<button type="button" class="mgmt-chip' + (startTab === "inds" ? " on" : "") + '" id="spuOrgTabBtnInds" onclick="spuOrgFormTab(\'inds\')">Показатели</button></div>';
+    }
+    html += '<div id="spuOrgTabMain" style="' + (startTab === "inds" ? "display:none" : "") + '">'
         + '<div class="form-group"><label>Название *</label><input id="spuOrgName" type="text" value="' + escapeAttribute(node ? node.name : "") + '"></div>'
         + '<div class="form-group"><label>Родительский департамент</label><select id="spuOrgParent">' + parentOpts + "</select></div>"
         + '<div class="form-group"><label>Ответственный</label><select id="spuOrgResp">' + mgmtEmployeeOptions(node ? node.responsible_employee_id : "") + "</select></div>"
@@ -25025,18 +25235,292 @@ function openSpuOrgNodeForm(orgNodeId, parentPreset) {
         + '>Активен</option><option value="0"' + (node && node.is_active === false ? " selected" : "")
         + ">Неактивен</option></select></div>"
         + '<div class="form-group"><label>Порядок отображения</label><input id="spuOrgSort" type="number" value="' + escapeAttribute(node && node.sort_order != null ? node.sort_order : "") + '"></div>'
-        + '<div class="toolbar">'
-        + '<button type="button" class="btn btn-primary" onclick="saveSpuOrgNodeFromForm(\''
-        + escapeAttribute(node ? node.org_node_id : "") + '\')">Сохранить</button>'
-        + (node ? '<button type="button" class="btn btn-secondary" onclick="deactivateSpuOrgNode(\''
-            + node.org_node_id + '\');closeMgmtModal()">Отключить</button>' : "")
-        + (node && !spuOrgNodeIsUsed(node.org_node_id)
-            ? '<button type="button" class="btn btn-secondary" onclick="deleteSpuOrgNode(\''
-                + node.org_node_id + '\');closeMgmtModal()">Удалить</button>'
-            : "")
+        + '<label class="check"><input id="spuOrgAgg" type="checkbox"' + (node && node.aggregate_from_children ? " checked" : "")
+        + "> Считать итог из поддепартаментов</label>"
+        + '<div class="note">Итог родителя — расчёт, не новый факт. Дочерние значения не складываются с этим итогом повторно.</div>'
+        + "</div>";
+    if (node) {
+        const inds = spuOrgIndicatorsForNode(node.org_node_id, true);
+        html += '<div id="spuOrgTabInds" style="' + (startTab === "inds" ? "" : "display:none") + '">';
+        if (canEditMgmtIndicators() || canEditSpuStructure()) {
+            html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgIndicatorForm(\''
+                + node.org_node_id + '\')">+ Добавить показатель</button></div>';
+        }
+        if (!inds.length) html += '<div class="note">Показатели не назначены. Они не создаются автоматически при создании департамента.</div>';
+        inds.forEach(function (it) {
+            html += '<div class="spu-tree-metrics" style="margin:6px 0"><span>' + escapeHtml(it.name)
+                + '</span><span>' + escapeHtml(mgmtSourcePath(it)) + "</span></div>"
+                + '<div class="spu-tree-actions">'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\''
+                + node.org_node_id + "','" + it.indicator_id + '\')">Настроить</button></div>';
+        });
+        html += "</div>";
+    }
+    html += '<div class="toolbar" style="margin-top:10px">'
+        + (canEdit ? '<button type="button" class="btn btn-primary" onclick="saveSpuOrgNodeFromForm(\''
+            + escapeAttribute(node ? node.org_node_id : "") + '\')">Сохранить</button> ' : "")
+        + (node && canEdit ? '<button type="button" class="btn btn-secondary" onclick="confirmDeleteSpuOrgNode(\''
+            + node.org_node_id + '\')">Удалить</button> ' : "")
         + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button>'
         + "</div>";
     openMgmtModal(html);
+}
+
+function openSpuOrgIndicatorForm(nodeId, indicatorId) {
+    if (!canEditSpuStructure() && !canEditMgmtIndicators()) return;
+    ensureManagement();
+    const node = spuOrgGetNode(nodeId);
+    const it = indicatorId ? ((appData.management.indicators || []).find(function (x) { return x && x.indicator_id === indicatorId; }) || null) : null;
+    const metrics = spuTerritoryWorkMetrics();
+    const retail = spuFindTerritoryRetailSalesMetric();
+    const src = it ? it.source_type : "worktime_metric";
+    let existOpts = '<option value="">— новый показатель —</option>';
+    mgmtIndicators().forEach(function (x) {
+        existOpts += '<option value="' + escapeAttribute(x.indicator_id) + '"' + (it && it.indicator_id === x.indicator_id ? " selected" : "") + ">"
+            + escapeHtml(x.name) + "</option>";
+    });
+    let html = "<h3>" + (it ? "Показатель" : "Добавить показатель") + "</h3>"
+        + '<div class="note">' + escapeHtml(node ? node.name : "") + ". Метрика Work Time не копируется.</div>"
+        + '<input type="hidden" id="spuIndNode" value="' + escapeAttribute(nodeId || "") + '">'
+        + '<input type="hidden" id="spuIndId" value="' + escapeAttribute((it && it.indicator_id) || "") + '">'
+        + '<div class="form-group"><label>Существующий показатель СПУ</label><select id="spuIndExist" onchange="spuOrgFillExistingIndicator()">' + existOpts + "</select></div>"
+        + '<div class="form-group"><label>Название показателя</label><input id="spuIndName" value="' + escapeAttribute(it ? it.name : "") + '"></div>'
+        + '<div class="form-group"><label>Источник</label><select id="spuIndSource" onchange="refreshSpuOrgIndicatorFields()">'
+        + [["worktime_metric", "Метрика Work Time"], ["sales_plan", "Продажи (план продаж / ТП / склад)"], ["timesheet", "Табель рабочего времени"], ["manual", "Ручной показатель СПУ"], ["one_c_future", "Финансовый / 1С позже"], ["kpi", "KPI"], ["calculated", "Расчёт"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + (src === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div id="spuIndSourceBox"></div>'
+        + '<div class="form-group"><label>Относится к департаменту</label><select id="spuIndTarget">'
+        + mgmtSpuOrgOptionsHtml(nodeId, false) + "</select></div>"
+        + '<div class="form-group"><label>Тип расчёта</label><select id="spuIndAgg">'
+        + [["sum", "Сумма"], ["average", "Среднее"], ["last", "Последнее"], ["none", "Как есть"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + ((it && it.aggregation_type) === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>План (текущий период СПУ)</label><input id="spuIndPlan" value="'
+        + escapeAttribute(it ? (mgmtPlanValue(it.indicator_id) == null ? "" : String(mgmtPlanValue(it.indicator_id))) : "") + '"></div>'
+        + '<div class="form-group"><label>Факт</label><div class="note" id="spuIndFactNote">Автоматически из источника. Ручной ввод — только для ручного показателя.</div>'
+        + '<input id="spuIndFact" style="' + (it && it.source_type === "manual" ? "" : "display:none") + '" value="'
+        + escapeAttribute(it && it.source_type === "manual" && mgmtManualFact(it.indicator_id) != null ? String(mgmtManualFact(it.indicator_id)) : "") + '"></div>'
+        + '<label class="check"><input id="spuIndPf" type="checkbox"' + (!it || it.show_in_planfact !== false ? " checked" : "") + "> Показывать в План–факт</label>"
+        + '<div class="form-group"><label>Порядок</label><input id="spuIndOrder" type="number" value="' + escapeAttribute(String((it && it.sort_order) || 10)) + '"></div>'
+        + '<div class="note" id="spuIndRetailNote">' + (retail
+            ? ("Розница Территории: найдена метрика «" + escapeHtml(retail.name) + "».")
+            : "Розница Территории: отдельная метрика продаж кассиров пока не найдена — фиктивные цифры не подставляются.") + "</div>"
+        + '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="saveSpuOrgIndicator()">Сохранить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="openSpuOrgNodeForm(\'' + nodeId + '\',\'\',\'inds\')">Назад</button></div>';
+    openMgmtModal(html);
+    refreshSpuOrgIndicatorFields(it);
+}
+
+function spuOrgFillExistingIndicator() {
+    const id = ((document.getElementById("spuIndExist") || {}).value || "");
+    const nodeId = ((document.getElementById("spuIndNode") || {}).value || "");
+    if (!id) return;
+    openSpuOrgIndicatorForm(nodeId, id);
+}
+
+function refreshSpuOrgIndicatorFields(preset) {
+    const box = document.getElementById("spuIndSourceBox");
+    if (!box) return;
+    const type = ((document.getElementById("spuIndSource") || {}).value || "worktime_metric");
+    const it = preset || {};
+    const fact = document.getElementById("spuIndFact");
+    const note = document.getElementById("spuIndFactNote");
+    if (fact) fact.style.display = type === "manual" ? "" : "none";
+    if (note) note.textContent = type === "manual"
+        ? "Факт вводится вручную в СПУ."
+        : "Факт приходит автоматически из источника за период СПУ, повторно не вводится.";
+    let inner = "";
+    if (type === "worktime_metric") {
+        inner = '<div class="form-group"><label>Метрика Work Time</label><select id="spuIndMetric" onchange="refreshSpuOrgMetricScope()">'
+            + '<option value="">Выберите существующую метрику</option>';
+        spuTerritoryWorkMetrics().forEach(function (m) {
+            inner += '<option value="' + escapeAttribute(m.id) + '"' + (it.source_metric_id === m.id ? " selected" : "") + ">"
+                + escapeHtml(m.name) + " · " + escapeHtml(metricDepartmentId(m) || "") + "</option>";
+        });
+        inner += '</select></div><div id="spuIndMetricScope"></div>';
+    } else if (type === "sales_plan") {
+        inner = '<div class="form-group"><label>Источник продаж</label><select id="spuIndSpView">'
+            + '<option value="sales"' + ((it.source_sales_plan_view || "sales") === "sales" ? " selected" : "")
+            + ">ОПТ: торговые представители · Общие продажи</option>"
+            + '<option value="warehouse"' + (it.source_sales_plan_view === "warehouse" ? " selected" : "")
+            + ">Склад: план продаж склада (факт из раздела плана; не ТП)</option>";
+        const retail = spuFindTerritoryRetailSalesMetric();
+        if (retail) {
+            inner += '<option value="territory_retail"' + (it.source_sales_plan_view === "territory_retail" ? " selected" : "")
+                + ">Розница Территории: " + escapeHtml(retail.name) + "</option>";
+        } else {
+            inner += '<option value="territory_retail_missing" disabled>Розница Территории: источник пока отсутствует</option>';
+        }
+        inner += '</select></div><div class="note">Магазин Володарского сюда не подключается.</div>';
+    } else if (type === "timesheet") {
+        inner = '<div class="form-group"><label>Операционный отдел табеля (источник данных)</label><select id="spuIndTsDept">'
+            + mgmtDeptOptions(it.department_id || "") + "</select></div>"
+            + '<div class="form-group"><label>Показатель табеля</label><select id="spuIndTsAgg">';
+        [["headcount", "Количество сотрудников"], ["days", "Отработанные дни"], ["hours", "Отработанные часы"], ["late", "Опоздания"], ["skip", "Прогулы"], ["sick", "Больничные"], ["vacation", "Отпуска"]].forEach(function (p) {
+            inner += '<option value="' + p[0] + '"' + (it.source_timesheet_agg === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        });
+        inner += '</select></div><div class="note">Табель не копируется. Отдел Work Time и департамент СПУ — разные поля.</div>';
+    } else if (type === "one_c_future") {
+        inner = '<div class="note">Существующий финансовый показатель можно выбрать сверху. Источник 1С пока не подключён — значения не выдумываются.</div>';
+    } else if (type === "kpi") {
+        inner = '<div class="form-group"><label>KPI</label><select id="spuIndKpi">'
+            + '<option value="completion">% выполненных</option></select></div>';
+    } else if (type === "calculated") {
+        inner = '<div class="note">Расчёт из других показателей СПУ настраивается в «Настройка показателей».</div>';
+    }
+    box.innerHTML = inner;
+    if (type === "worktime_metric") refreshSpuOrgMetricScope(it);
+}
+
+function refreshSpuOrgMetricScope(preset) {
+    const box = document.getElementById("spuIndMetricScope");
+    if (!box) return;
+    const it = preset || {};
+    const mid = ((document.getElementById("spuIndMetric") || {}).value || it.source_metric_id || "");
+    const item = shopMetricCatalogById(mid);
+    if (!item) {
+        box.innerHTML = "";
+        return;
+    }
+    let html = '<div class="form-group"><label>Какой итог использовать</label><select id="spuIndResult">';
+    html += '<option value="department_total"' + (it.source_result !== "group_total" ? " selected" : "") + ">Итого подразделения</option>";
+    metricWorkTabIds(item).forEach(function (tabId) {
+        html += '<option value="group:' + escapeAttribute(tabId) + '"'
+            + (it.source_result === "group_total" && it.source_work_tab_id === tabId ? " selected" : "") + ">Итого группы: "
+            + escapeHtml(metricTabLabel(metricRollupDeptCode(item) || metricDepartmentId(item), tabId)) + "</option>";
+    });
+    html += "</select></div>";
+    const subs = metricSubmetrics(item, true);
+    if (subs.length) {
+        html += '<div class="form-group"><label>Подметрика</label><select id="spuIndSub"><option value="">Все / родитель</option>';
+        subs.forEach(function (s) {
+            html += '<option value="' + escapeAttribute(s.id) + '"' + (it.source_submetric_id === s.id ? " selected" : "") + ">"
+                + escapeHtml(s.name) + "</option>";
+        });
+        html += "</select></div>";
+    }
+    box.innerHTML = html;
+}
+
+function saveSpuOrgIndicator() {
+    if (!canEditSpuStructure() && !canEditMgmtIndicators()) return;
+    ensureManagement();
+    const existId = ((document.getElementById("spuIndExist") || {}).value || "");
+    const editId = ((document.getElementById("spuIndId") || {}).value || existId);
+    const name = String((document.getElementById("spuIndName") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!name) {
+        toast("Укажите название", "error");
+        return;
+    }
+    const target = ((document.getElementById("spuIndTarget") || {}).value || "");
+    const sourceType = ((document.getElementById("spuIndSource") || {}).value || "manual");
+    const metricId = ((document.getElementById("spuIndMetric") || {}).value || "");
+    const resultRaw = ((document.getElementById("spuIndResult") || {}).value || "department_total");
+    let sourceResult = "department_total";
+    let workTab = "";
+    if (String(resultRaw).indexOf("group:") === 0) {
+        sourceResult = "group_total";
+        workTab = String(resultRaw).slice(6);
+    }
+    const payload = {
+        skip_id: editId,
+        target_org_node_id: target,
+        source_type: sourceType,
+        source_metric_id: metricId,
+        source_result: sourceResult,
+        source_work_tab_id: workTab,
+        source_submetric_id: ((document.getElementById("spuIndSub") || {}).value || ""),
+        source_sales_plan_view: ((document.getElementById("spuIndSpView") || {}).value || ""),
+        source_timesheet_agg: ((document.getElementById("spuIndTsAgg") || {}).value || "")
+    };
+    const dup = spuOrgDuplicateIndicator(payload);
+    let it = editId ? ((appData.management.indicators || []).find(function (x) { return x && x.indicator_id === editId; }) || null) : null;
+    if (dup && (!it || dup.indicator_id !== it.indicator_id)) {
+        toast("Такая связь уже есть: " + (dup.name || dup.indicator_id), "error");
+        return;
+    }
+    if (!it) {
+        it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
+        appData.management.indicators.push(it);
+    }
+    it.name = name;
+    it.target_org_node_id = target;
+    const dest = spuOrgGetNode(target);
+    if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+    it.source_type = sourceType;
+    it.show_in_planfact = !!(document.getElementById("spuIndPf") && document.getElementById("spuIndPf").checked);
+    it.sort_order = Number((document.getElementById("spuIndOrder") || {}).value || 10);
+    it.aggregation_type = ((document.getElementById("spuIndAgg") || {}).value || "sum");
+    it.is_active = true;
+    it.department_id = ((document.getElementById("spuIndTsDept") || {}).value || it.department_id || "");
+    if (sourceType === "worktime_metric") {
+        it.source_metric_id = metricId;
+        it.source_result = sourceResult;
+        it.source_work_tab_id = workTab;
+        it.source_submetric_id = payload.source_submetric_id;
+        const m = shopMetricCatalogById(metricId);
+        if (m && !it.department_id) it.department_id = metricDepartmentId(m);
+        if (m) {
+            const routeDup = metricResultRoutes(m).some(function (r) {
+                return r && r.spu_indicator_id === it.indicator_id
+                    && String(r.target_org_node_id || "") === String(target)
+                    && String(r.source || "") === (sourceResult === "group_total" ? "group_total" : "department_total")
+                    && String(r.source_work_tab_id || "") === workTab;
+            });
+            if (!routeDup) {
+                if (!Array.isArray(m.result_routes)) m.result_routes = [];
+                m.result_routes.push({
+                    route_id: nextPrefixedId("rr", m.result_routes.map(function (r) { return r && r.route_id; })),
+                    source: sourceResult === "group_total" ? "group_total" : "department_total",
+                    source_work_tab_id: workTab,
+                    target: "spu",
+                    target_org_node_id: target,
+                    spu_indicator_id: it.indicator_id
+                });
+            }
+            applyMetricResultRoute(m);
+        }
+    } else if (sourceType === "sales_plan") {
+        const view = payload.source_sales_plan_view;
+        if (view === "territory_retail") {
+            const retail = spuFindTerritoryRetailSalesMetric();
+            if (!retail) {
+                toast("Источник розницы Территории пока отсутствует", "error");
+                return;
+            }
+            it.source_type = "worktime_metric";
+            it.source_metric_id = retail.id;
+            it.source_result = "department_total";
+            it.department_id = metricDepartmentId(retail);
+        } else if (view === "territory_retail_missing") {
+            toast("Источник пока отсутствует", "error");
+            return;
+        } else {
+            it.source_sales_plan_view = view || "sales";
+            it.source_sales_plan_field = "fact";
+            if (view === "sales") it.department_id = "drivers";
+            if (view === "warehouse") it.department_id = "warehouse";
+        }
+        it.unit = "money";
+    } else if (sourceType === "timesheet") {
+        it.source_timesheet_agg = payload.source_timesheet_agg || "days";
+    } else if (sourceType === "one_c_future") {
+        it.group = "finance";
+        it.source_future = "one_c";
+        it.unit = it.unit || "money";
+    } else if (sourceType === "kpi") {
+        it.source_kpi_mode = ((document.getElementById("spuIndKpi") || {}).value || "completion");
+    }
+    const planVal = ((document.getElementById("spuIndPlan") || {}).value || "");
+    if (planVal !== "") setMgmtPlanValue(it.indicator_id, planVal);
+    if (it.source_type === "manual") {
+        const factVal = ((document.getElementById("spuIndFact") || {}).value || "");
+        if (factVal !== "") setMgmtManualFact(it.indicator_id, factVal);
+    }
+    saveApp();
+    closeMgmtModal();
+    openSpuOrgNodeForm(target || ((document.getElementById("spuIndNode") || {}).value || ""), "", "inds");
 }
 
 function spuOrgRoutesForNode(nodeId) {
@@ -25092,6 +25576,7 @@ function renderSpuOrgTreeHtml(mode) {
             html += '<div class="spu-tree-actions">'
                 + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'' + node.org_node_id + '\')">Редактировать</button>'
                 + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'\',\'' + node.org_node_id + '\')">+ Поддепартамент</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="confirmDeleteSpuOrgNode(\'' + node.org_node_id + '\')">Удалить</button>'
                 + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',-1)">↑</button>'
                 + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',1)">↓</button>'
                 + "</div>";
@@ -25111,7 +25596,7 @@ function renderSpuOrgTreeHtml(mode) {
 function renderSpuStructureHtml() {
     try { ensureManagement(); } catch (err) { console.error(err); }
     const canEdit = canEditSpuStructure();
-    let html = '<p class="spu-ind-note">Административная структура СПУ для показателей и маршрутов. Это не раздел «Оргструктура»: карточки оргсхемы не изменяются. Показатели при создании департамента не копируются.</p>';
+    let html = '<p class="spu-ind-note">Это управленческая структура СПУ и «План–факта компании». Она не копирует Офис/Склад/Логистику Work Time. Показатели назначаются вручную. Оргструктура (схема) не изменяется.</p>';
     if (canEdit) {
         html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgNodeForm()">+ Добавить департамент</button></div>';
     } else {
@@ -26231,6 +26716,28 @@ function mgmtReadIndicator(it, stack) {
     if (type === "timesheet") return { value: mgmtTimesheetFact(it.department_id, it.source_timesheet_agg, days), status: "auto" };
     if (type === "worktime_metric") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days, it), status: "auto" };
     if (type === "sales_plan") return { value: mgmtSalesPlanFact(it), status: "auto" };
+    if (type === "aggregate_children") {
+        const nodeId = mgmtIndicatorTargetNodeId(it) || String(it.indicator_id || "").replace(/^agg:/, "");
+        let sum = 0;
+        let any = false;
+        const seen = stack || [];
+        function addNode(pid) {
+            spuOrgChildren(pid, false).forEach(function (ch) {
+                spuOrgIndicatorsForNode(ch.org_node_id).forEach(function (childIt) {
+                    if (!spuOrgShowInPlanFact(childIt) || childIt.source_type === "aggregate_children") return;
+                    if (seen.indexOf(childIt.indicator_id) !== -1) return;
+                    const v = mgmtReadIndicator(childIt, seen.concat([it.indicator_id])).value;
+                    if (v != null && Number.isFinite(Number(v))) {
+                        sum += Number(v);
+                        any = true;
+                    }
+                });
+                addNode(ch.org_node_id);
+            });
+        }
+        addNode(nodeId);
+        return { value: any ? sum : null, status: "auto" };
+    }
     if (type === "kpi") {
         const k = mgmtKpiFact(it);
         return { value: k.value, status: k.status || "auto" };
@@ -26263,12 +26770,26 @@ function mgmtSourcePath(it) {
         const sub = m && it.source_submetric_id
             ? (metricSubmetrics(m, false).find(function (s) { return s.id === it.source_submetric_id; }) || null)
             : null;
-        return mgmtDeptName(it.department_id || (m && metricDepartmentId(m))) + " → Метрики"
-            + (m ? " → " + m.name : "")
-            + (sub ? " → " + sub.name : "");
+        let path = "Территория → Метрики";
+        const cat = m && metricTerritoryCategory(m);
+        if (cat) path += " → " + ((territoryMetricCategoryById(cat) || {}).label || cat);
+        path += m ? " → " + m.name : "";
+        if (it.source_result === "group_total" && it.source_work_tab_id) {
+            path += " → Итого " + metricTabLabel(metricRollupDeptCode(m) || metricDepartmentId(m), it.source_work_tab_id);
+        } else if (m) {
+            path += " → Итого подразделения";
+        }
+        if (sub) path += " → " + sub.name;
+        return path;
     }
-    if (it.source_type === "timesheet") return mgmtDeptName(it.department_id) + " → Табель";
-    if (it.source_type === "sales_plan") return mgmtDeptName(it.department_id) + " → План продаж";
+    if (it.source_type === "timesheet") return "Табель → " + mgmtDeptName(it.department_id) + " → " + (it.source_timesheet_agg || "дни");
+    if (it.source_type === "sales_plan") {
+        if (it.source_sales_plan_view === "sales") return "Территория → Торговые представители → Общие продажи";
+        if (it.source_sales_plan_view === "warehouse") return "Территория → Склад → Продажи (план продаж склада)";
+        if (it.source_sales_plan_view === "shop") return "Магазин Володарского → Продажи";
+        return "План продаж";
+    }
+    if (it.source_type === "aggregate_children") return "Итог поддепартаментов (расчёт, не новый факт)";
     if (it.source_type === "kpi") return mgmtDeptName(it.department_id) + " → KPI";
     if (it.source_type === "manual") return "Ручной ввод";
     if (it.source_type === "calculated") return "Расчёт";
@@ -27018,11 +27539,17 @@ function setMgmtPfFact(indicatorId, fromIso, value) {
 
 function mgmtSpuDeptOptionsHtml(selected, allowAll) {
     let html = allowAll === false ? "" : '<option value="">Все</option>';
-    mgmtSpuDepartments().forEach(function (d) {
-        html += '<option value="' + escapeAttribute(d.spu_department_id) + '"'
-            + (d.spu_department_id === selected ? " selected" : "") + ">"
-            + escapeHtml(d.name) + "</option>";
-    });
+    function walk(parentId, depth) {
+        spuOrgChildren(parentId, false).forEach(function (n) {
+            const pad = Array(depth + 1).join("· ");
+            html += '<option value="' + escapeAttribute(n.org_node_id) + '"'
+                + (n.org_node_id === selected ? " selected" : "") + ">"
+                + escapeHtml(pad + n.name) + "</option>";
+            walk(n.org_node_id, depth + 1);
+        });
+    }
+    walk("", 0);
+    if (allowAll !== false && !html) html = '<option value="">Все</option>';
     return html;
 }
 
@@ -27041,14 +27568,6 @@ function renderMgmtPlanFactHtml() {
     const canEdit = canEditMgmtIndicators();
     const w1 = mgmtThuWeek(mgmtPfWeek1);
     const w2 = mgmtThuWeek(mgmtPfWeek2);
-    const depts = mgmtSpuDepartments();
-    const byDept = {};
-    mgmtIndicators().forEach(function (it) {
-        const key = it.spu_department_id || mgmtDefaultSpuDeptId(it);
-        if (!byDept[key]) byDept[key] = [];
-        byDept[key].push(it);
-    });
-
     let html = '<div class="pf-title">НЕДЕЛЬНЫЙ ПЛАН ОРГАНИЗАЦИИ</div>';
     html += '<div class="pf-bar">'
         + '<div><label>Неделя 1 (базовая)</label><select onchange="setMgmtPfWeek(1,this.value)">' + mgmtThuWeekOptions(w1.from) + "</select></div>"
@@ -27057,6 +27576,7 @@ function renderMgmtPlanFactHtml() {
         + '<div><label>Ответственный</label><select onchange="setMgmtPfHead(this.value)">' + mgmtPfLeaderOptions(mgmtPfHead) + "</select></div>"
         + '<div><label>Департамент</label><select onchange="setMgmtPfDept(this.value)">' + mgmtSpuDeptOptionsHtml(mgmtPfDept) + "</select></div>"
         + "</div>";
+    html += '<p class="note">Структура берётся из «Структура СПУ». Переименование узла сразу видно здесь, org_node_id не меняется.</p>';
     html += '<div class="table-wrapper pf-wrap"><table class="mgmt-table pf-table"><thead>'
         + "<tr>"
         + '<th class="pf-left pf-sticky-0" rowspan="2">№</th>'
@@ -27070,77 +27590,120 @@ function renderMgmtPlanFactHtml() {
         + '<th class="pf-g2">План</th><th class="pf-g2">Факт</th><th class="pf-g2">Выполнение, %</th>'
         + '<th class="pf-g3">Изм., п.п.</th><th class="pf-g3">Динамика</th><th class="pf-g3">Статус</th>'
         + "</tr></thead><tbody>";
-
     let n = 0;
-    depts.forEach(function (dept) {
-        if (mgmtPfDept && dept.spu_department_id !== mgmtPfDept) return;
-        const headNow = mgmtDeptHeadId(dept.spu_department_id)
-            || (typeof orgManagerForSpuDept === "function" ? orgManagerForSpuDept(dept.spu_department_id) : "");
-        const head1 = mgmtDeptHeadIdAt(dept.spu_department_id, w1.from)
-            || (typeof orgManagerForSpuDeptAt === "function" ? orgManagerForSpuDeptAt(dept.spu_department_id, w1.from) : "");
-        const head2 = mgmtDeptHeadIdAt(dept.spu_department_id, w2.from)
-            || (typeof orgManagerForSpuDeptAt === "function" ? orgManagerForSpuDeptAt(dept.spu_department_id, w2.from) : "");
-        if (mgmtPfHead) {
-            const linked = head1 === mgmtPfHead || head2 === mgmtPfHead || headNow === mgmtPfHead
-                || mgmtEmployeeSpuIdsAt(mgmtPfHead, w1.from).indexOf(dept.spu_department_id) !== -1
-                || mgmtEmployeeSpuIdsAt(mgmtPfHead, w2.from).indexOf(dept.spu_department_id) !== -1;
-            if (!linked) return;
+    const assigned = {};
+    function nodeMatchesFilter(nodeId) {
+        if (!mgmtPfDept) return true;
+        if (nodeId === mgmtPfDept) return true;
+        let cur = spuOrgGetNode(nodeId);
+        while (cur && cur.parent_org_node_id) {
+            if (cur.parent_org_node_id === mgmtPfDept) return true;
+            cur = spuOrgGetNode(cur.parent_org_node_id);
         }
-        const headEmp = (head2 && getEmployee(head2)) || (head1 && getEmployee(head1)) || (headNow && getEmployee(headNow));
-        const emp1 = head1 ? getEmployee(head1) : null;
-        const emp2 = head2 ? getEmployee(head2) : null;
-        const items = byDept[dept.spu_department_id] || [];
-        const collapsed = !!mgmtPfCollapsed[dept.spu_department_id];
-        let headLabel = dept.name;
-        if (emp1 && emp2 && emp1.id !== emp2.id) headLabel = emp1.name + " → " + emp2.name + " | " + dept.name;
-        else if (headEmp) headLabel = headEmp.name + " | " + dept.name;
+        return false;
+    }
+    function renderPfIndicatorRow(it, headEmp, indent, editOk) {
+        n += 1;
+        const a = mgmtPfRead(it, w1.from);
+        const b = mgmtPfRead(it, w2.from);
+        const delta = (a.pct != null && b.pct != null) ? (b.pct - a.pct) : null;
+        const good = mgmtDeltaIsGood(it, delta);
+        const dyn = good == null ? "—" : (good === 0 ? "→" : (good > 0 ? "▲" : "▼"));
+        const st = good == null ? "Нет данных" : (good === 0 ? "Без изменений" : (good > 0 ? "Улучшение" : "Ухудшение"));
+        const dCls = good == null ? "pf-na" : (good === 0 ? "" : (good > 0 ? "mgmt-ok" : "mgmt-bad"));
+        const owner = it.owner_employee_id ? getEmployee(it.owner_employee_id) : headEmp;
+        const pad = indent ? Array(indent + 1).join("· ") : "";
+        html += "<tr>"
+            + '<td class="pf-left pf-sticky-0">' + n + "</td>"
+            + '<td class="pf-left pf-sticky-1">' + escapeHtml(owner ? owner.name : (headEmp ? headEmp.name : "—")) + "</td>"
+            + '<td class="pf-left pf-sticky-2 wrap">' + escapeHtml(pad + it.name)
+            + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
+            + mgmtPfNumCell(it, w1.from, "plan", a, editOk)
+            + mgmtPfNumCell(it, w1.from, "fact", a, editOk)
+            + '<td class="pf-pct ' + mgmtPctClass(it, a.pct) + '">' + escapeHtml(mgmtFormatPct(a.pct)) + "</td>"
+            + mgmtPfNumCell(it, w2.from, "plan", b, editOk)
+            + mgmtPfNumCell(it, w2.from, "fact", b, editOk)
+            + '<td class="pf-pct ' + mgmtPctClass(it, b.pct) + '">' + escapeHtml(mgmtFormatPct(b.pct)) + "</td>"
+            + '<td class="pf-pct ' + dCls + '">' + escapeHtml(mgmtFormatPp(delta)) + "</td>"
+            + '<td class="pf-pct ' + dCls + '">' + dyn + "</td>"
+            + '<td class="pf-pct ' + dCls + '">' + escapeHtml(st) + "</td>"
+            + "</tr>";
+    }
+    function renderPfNode(node, depth) {
+        if (!node || node.is_active === false) return;
+        if (mgmtPfDept) {
+            const isSel = node.org_node_id === mgmtPfDept;
+            const isDesc = spuOrgDescendantIds(mgmtPfDept).indexOf(node.org_node_id) !== -1;
+            if (!isSel && !isDesc) {
+                spuOrgChildren(node.org_node_id, false).forEach(function (ch) { renderPfNode(ch, 0); });
+                return;
+            }
+        }
+        const headNow = node.responsible_employee_id || "";
+        if (mgmtPfHead && headNow !== mgmtPfHead) {
+            let hit = headNow === mgmtPfHead;
+            spuOrgDescendantIds(node.org_node_id).forEach(function (id) {
+                const ch = spuOrgGetNode(id);
+                if (ch && ch.responsible_employee_id === mgmtPfHead) hit = true;
+            });
+            if (!hit) {
+                spuOrgChildren(node.org_node_id, false).forEach(function (ch) { renderPfNode(ch, depth + 1); });
+                return;
+            }
+        }
+        const headEmp = headNow ? getEmployee(headNow) : null;
+        const items = spuOrgIndicatorsForNode(node.org_node_id).filter(spuOrgShowInPlanFact);
+        items.forEach(function (it) { assigned[it.indicator_id] = true; });
+        const collapsed = !!mgmtPfCollapsed[node.org_node_id];
+        const pad = depth ? Array(depth + 1).join("· ") : "";
         html += '<tr class="pf-dept">'
             + '<td class="pf-left pf-sticky-0"></td>'
             + '<td class="pf-left pf-sticky-1">'
             + (canHead
-                ? '<select class="pf-head-select" onclick="event.stopPropagation()" onchange="setMgmtDeptHead(\''
-                    + escapeAttribute(dept.spu_department_id) + "',this.value);renderManagement()\">"
+                ? '<select class="pf-head-select" onclick="event.stopPropagation()" onchange="setSpuOrgResponsible(\''
+                    + escapeAttribute(node.org_node_id) + "',this.value)\">"
                     + mgmtLeaderOptions(headNow) + "</select>"
                 : escapeHtml(headEmp ? headEmp.name : "—"))
             + "</td>"
-            + '<td class="pf-left pf-sticky-2" colspan="1">' + escapeHtml(headLabel)
+            + '<td class="pf-left pf-sticky-2" colspan="1">' + escapeHtml(pad + node.name)
             + '<button type="button" class="pf-toggle" onclick="toggleMgmtPfDept(\''
-            + escapeAttribute(dept.spu_department_id) + "')\">" + (collapsed ? "▲" : "▼") + "</button></td>";
+            + escapeAttribute(node.org_node_id) + "')\">" + (collapsed ? "▲" : "▼") + "</button></td>";
         for (let i = 0; i < 9; i++) html += "<td></td>";
         html += "</tr>";
-        if (collapsed) return;
-        if (!items.length) {
-            html += '<tr><td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
-                + '<td class="pf-left pf-sticky-2"><span class="mgmt-src">Нет показателей. Добавьте в «Показатели».</span></td>'
-                + '<td colspan="9" class="pf-na">—</td></tr>';
-            return;
+        if (!collapsed) {
+            if (!items.length && !node.aggregate_from_children) {
+                html += '<tr><td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
+                    + '<td class="pf-left pf-sticky-2"><span class="mgmt-src">Нет показателей. Добавьте в «Структура СПУ».</span></td>'
+                    + '<td colspan="9" class="pf-na">—</td></tr>';
+            }
+            items.forEach(function (it) {
+                renderPfIndicatorRow(it, headEmp, depth + 1, canEdit);
+            });
+            if (node.aggregate_from_children) {
+                const agg = {
+                    indicator_id: "agg:" + node.org_node_id,
+                    name: "Итого",
+                    source_type: "aggregate_children",
+                    target_org_node_id: node.org_node_id,
+                    unit: items[0] ? items[0].unit : "money"
+                };
+                renderPfIndicatorRow(agg, headEmp, depth + 1, false);
+            }
+            spuOrgChildren(node.org_node_id, false).forEach(function (ch) { renderPfNode(ch, depth + 1); });
         }
-        items.forEach(function (it) {
-            n += 1;
-            const a = mgmtPfRead(it, w1.from);
-            const b = mgmtPfRead(it, w2.from);
-            const delta = (a.pct != null && b.pct != null) ? (b.pct - a.pct) : null;
-            const good = mgmtDeltaIsGood(it, delta);
-            const dyn = good == null ? "—" : (good === 0 ? "→" : (good > 0 ? "▲" : "▼"));
-            const st = good == null ? "Нет данных" : (good === 0 ? "Без изменений" : (good > 0 ? "Улучшение" : "Ухудшение"));
-            const dCls = good == null ? "pf-na" : (good === 0 ? "" : (good > 0 ? "mgmt-ok" : "mgmt-bad"));
-            const owner = it.owner_employee_id ? getEmployee(it.owner_employee_id) : headEmp;
-            html += "<tr>"
-                + '<td class="pf-left pf-sticky-0">' + n + "</td>"
-                + '<td class="pf-left pf-sticky-1">' + escapeHtml(owner ? owner.name : (headEmp ? headEmp.name : "—")) + "</td>"
-                + '<td class="pf-left pf-sticky-2 wrap">' + escapeHtml(it.name) + "</td>"
-                + mgmtPfNumCell(it, w1.from, "plan", a, canEdit)
-                + mgmtPfNumCell(it, w1.from, "fact", a, canEdit)
-                + '<td class="pf-pct ' + mgmtPctClass(it, a.pct) + '">' + escapeHtml(mgmtFormatPct(a.pct)) + "</td>"
-                + mgmtPfNumCell(it, w2.from, "plan", b, canEdit)
-                + mgmtPfNumCell(it, w2.from, "fact", b, canEdit)
-                + '<td class="pf-pct ' + mgmtPctClass(it, b.pct) + '">' + escapeHtml(mgmtFormatPct(b.pct)) + "</td>"
-                + '<td class="pf-pct ' + dCls + '">' + escapeHtml(mgmtFormatPp(delta)) + "</td>"
-                + '<td class="pf-pct ' + dCls + '">' + dyn + "</td>"
-                + '<td class="pf-pct ' + dCls + '">' + escapeHtml(st) + "</td>"
-                + "</tr>";
-        });
+    }
+    spuOrgChildren("", false).forEach(function (n) { renderPfNode(n, 0); });
+    const leftover = mgmtIndicators().filter(function (it) {
+        return spuOrgShowInPlanFact(it) && !assigned[it.indicator_id] && !mgmtIndicatorTargetNodeId(it);
     });
+    if (leftover.length && !mgmtPfDept) {
+        html += '<tr class="pf-dept"><td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
+            + '<td class="pf-left pf-sticky-2">Не назначены на структуру СПУ</td>';
+        for (let i = 0; i < 9; i++) html += "<td></td>";
+        html += "</tr>";
+        leftover.forEach(function (it) { renderPfIndicatorRow(it, null, 1, canEdit); });
+    }
+
     html += "</tbody></table></div>";
     html += '<div class="pf-legend">'
         + '<span><i class="mgmt-ok"></i>≥ 100%</span>'
@@ -27211,16 +27774,22 @@ function renderMgmtFinanceHtml() {
     let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
     html += '<div class="note" style="margin:6px 0">Ручной ввод только если нет Метрик / Табеля / Плана продаж / KPI. ONE_C_FUTURE — тот же показатель, позже источник меняется на 1С.</div>';
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Показатель</th><th>Период</th><th>План</th><th>Факт</th><th>Источник</th><th>Ответственный</th>"
+        + "<th>Показатель</th><th>Департамент СПУ</th><th>Период</th><th>План</th><th>Факт</th><th>Источник</th><th>Ответственный</th>"
         + "</tr></thead><tbody>";
-    if (!list.length) html += '<tr><td colspan="6"><div class="empty-row">Нет финансовых показателей.</div></td></tr>';
+    if (!list.length) html += '<tr><td colspan="7"><div class="empty-row">Нет финансовых показателей.</div></td></tr>';
     list.forEach(function (it) {
         const read = mgmtReadIndicator(it);
         const plan = mgmtPlanValue(it.indicator_id);
         const fact = read.value;
         const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+        const canAssign = canEditMgmtIndicators() || canEditSpuStructure();
         html += "<tr>"
             + "<td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
+            + "<td>" + (canAssign
+                ? "<select onchange=\"setMgmtIndicatorOrgNode('" + it.indicator_id + "',this.value)\">"
+                    + mgmtSpuOrgOptionsHtml(mgmtIndicatorTargetNodeId(it), false) + "</select>"
+                : escapeHtml((spuOrgGetNode(mgmtIndicatorTargetNodeId(it)) || {}).name || "—"))
+            + "</td>"
             + "<td>" + escapeHtml(mgmtPeriodKey()) + "</td>"
             + "<td>" + (canPlan
                 ? '<input class="mgmt-manual" value="' + escapeAttribute(plan == null ? "" : String(plan)) + '" onchange="setMgmtPlanValue(\'' + it.indicator_id + "',this.value);renderManagement()\">"
@@ -28418,7 +28987,7 @@ function openMgmtIndicatorForm(id) {
         + "<h4>Основное</h4>"
         + '<div class="form-group full"><label for="miName">Название показателя</label><input id="miName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
         + '<div class="form-group"><label for="miDept">Подразделение Work Time</label><select id="miDept" onchange="refreshMgmtIndicatorSourceFields()">' + mgmtDeptOptions(it.department_id) + "</select></div>"
-        + '<div class="form-group"><label for="miSpuDept">Департамент СПУ</label><select id="miSpuDept">' + mgmtSpuDeptOptionsHtml(it.spu_department_id || "", false) + "</select></div>"
+        + '<div class="form-group"><label for="miSpuDept">Департамент СПУ</label><select id="miSpuDept">' + mgmtSpuOrgOptionsHtml(it.target_org_node_id || it.spu_department_id || "", false) + "</select></div>"
         + '<div class="form-group"><label for="miOwner">Ответственный</label><select id="miOwner">'
         + mgmtEmployeeOptions(it.owner_employee_id || (typeof orgManagerForSpuDept === "function" ? orgManagerForSpuDept(it.spu_department_id || mgmtDefaultSpuDeptId(it)) : ""))
         + "</select></div>"
@@ -28491,6 +29060,7 @@ function openMgmtIndicatorForm(id) {
         + '<section class="mgmt-ind-sec">'
         + "<h4>Отображение</h4>"
         + '<label class="mgmt-ind-check full"><input id="miDash" type="checkbox"' + (it.show_on_dashboard !== false ? " checked" : "") + "><span>Показывать на панели управления</span></label>"
+        + '<label class="mgmt-ind-check full"><input id="miPlanFact" type="checkbox"' + (it.show_in_planfact !== false ? " checked" : "") + "><span>Показывать в План–факт</span></label>"
         + '<label class="mgmt-ind-check full"><input id="miActive" type="checkbox"' + (it.is_active !== false ? " checked" : "") + "><span>Активен</span></label>"
         + "</section>"
         + "</div>"
@@ -28522,7 +29092,7 @@ function refreshMgmtIndicatorSourceFields(preset) {
             inner += '<option value="' + escapeAttribute(m.id) + '"' + (it.source_metric_id === m.id ? " selected" : "") + ">"
                 + escapeHtml(m.name) + "</option>";
         });
-        inner += '</select></div><div class="form-group full" id="miSubBox"></div>';
+        inner += '</select></div><div class="form-group full" id="miSubBox"></div><div class="form-group full" id="miResultBox"></div>';
     } else if (type === "timesheet") {
         inner = '<div class="form-group"><label>Показатель табеля</label><select id="miTsAgg">';
         [["headcount", "Количество сотрудников"], ["days", "Отработано дней"], ["hours", "Отработано часов"], ["ya", "Явки"], ["late", "Опоздания"], ["skip", "Прогулы"], ["sick", "Больничные"], ["vacation", "Отпуска"]].forEach(function (p) {
@@ -28570,20 +29140,35 @@ function refreshMgmtIndicatorSourceFields(preset) {
 
 function refreshMgmtSubmetricSelect(selected) {
     const box = document.getElementById("miSubBox");
+    const rbox = document.getElementById("miResultBox");
     const mid = (document.getElementById("miMetric") || {}).value || "";
-    if (!box) return;
     const item = shopMetricCatalogById(mid);
-    const subs = item ? metricSubmetrics(item, true) : [];
-    if (!subs.length) {
-        box.innerHTML = "";
-        return;
+    if (box) {
+        const subs = item ? metricSubmetrics(item, true) : [];
+        if (!subs.length) box.innerHTML = "";
+        else {
+            let html = '<div class="form-group"><label>Подметрика</label><select id="miSub"><option value="">—</option>';
+            subs.forEach(function (s) {
+                html += '<option value="' + escapeAttribute(s.id) + '"' + (selected === s.id ? " selected" : "") + ">" + escapeHtml(s.name) + "</option>";
+            });
+            html += "</select></div>";
+            box.innerHTML = html;
+        }
     }
-    let html = '<div class="form-group"><label>Подметрика</label><select id="miSub"><option value="">—</option>';
-    subs.forEach(function (s) {
-        html += '<option value="' + escapeAttribute(s.id) + '"' + (selected === s.id ? " selected" : "") + ">" + escapeHtml(s.name) + "</option>";
-    });
-    html += "</select></div>";
-    box.innerHTML = html;
+    if (rbox) {
+        if (!item) {
+            rbox.innerHTML = "";
+            return;
+        }
+        let rh = '<div class="form-group"><label>Итог источника</label><select id="miResult">';
+        rh += '<option value="department_total">Итого подразделения</option>';
+        metricWorkTabIds(item).forEach(function (tabId) {
+            rh += '<option value="group:' + escapeAttribute(tabId) + '">Итого '
+                + escapeHtml(metricTabLabel(metricRollupDeptCode(item) || metricDepartmentId(item), tabId)) + "</option>";
+        });
+        rh += "</select></div>";
+        rbox.innerHTML = rh;
+    }
 }
 
 function mgmtClearFieldInvalid() {
@@ -28622,6 +29207,25 @@ function saveMgmtIndicator(id) {
     it.name = name;
     it.department_id = (document.getElementById("miDept") || {}).value || "";
     it.spu_department_id = (document.getElementById("miSpuDept") || {}).value || "";
+    it.target_org_node_id = (document.getElementById("miOrgNode") || document.getElementById("miSpuDept") || {}).value || it.target_org_node_id || "";
+    if (it.target_org_node_id && spuOrgGetNode(it.target_org_node_id)) {
+        const dest = spuOrgGetNode(it.target_org_node_id);
+        if (dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+    }
+    const miResult = document.getElementById("miResult");
+    if (miResult) {
+        const raw = String(miResult.value || "department_total");
+        if (raw.indexOf("group:") === 0) {
+            it.source_result = "group_total";
+            it.source_work_tab_id = raw.slice(6);
+        } else {
+            it.source_result = "department_total";
+            it.source_work_tab_id = "";
+        }
+    }
+    it.show_in_planfact = document.getElementById("miPlanFact")
+        ? !!(document.getElementById("miPlanFact").checked)
+        : (it.show_in_planfact !== false);
     it.spu_hub = mgmtHubFromSpuDept(it.spu_department_id);
     it.source_type = (document.getElementById("miSource") || {}).value || "manual";
     const metricSel = document.getElementById("miMetric");
