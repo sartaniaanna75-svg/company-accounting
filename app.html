@@ -28270,7 +28270,9 @@ const CR_REASON_DEFAULTS = CR_ADJ_DEFAULTS.filter(function (d) { return CR_REASO
         source_adjustment_id: d.adjustment_id,
         default_stage_id: (d.code === "driver" || d.code === "driver_not_gave" || d.code === "driver_unload")
             ? "driver"
-            : (d.code === "extra" ? "extra" : "recount")
+            : (d.code === "extra" ? "extra" : "recount"),
+        send_to_recount: !(d.code === "driver" || d.code === "driver_not_gave" || d.code === "driver_unload"
+            || d.code === "extra" || d.code === "sales_error")
     };
 });
 CR_REASON_DEFAULTS.push({
@@ -28278,7 +28280,8 @@ CR_REASON_DEFAULTS.push({
     code: "not_received",
     name: "Товар клиент не получил",
     sort_order: 5,
-    default_stage_id: "video"
+    default_stage_id: "recount",
+    send_to_recount: true
 });
 const CR_STAGES = [
     { id: "video", name: "На видео" },
@@ -28345,7 +28348,12 @@ function ensureCustomerReturns(data) {
             if (!found.name) found.name = def.name;
             if (found.is_active == null) found.is_active = true;
             if (!found.default_stage_id) found.default_stage_id = def.default_stage_id || "recount";
+            if (found.send_to_recount == null) found.send_to_recount = def.send_to_recount !== false;
         }
+    });
+    store.reasons.forEach(function (r) {
+        if (!r) return;
+        if (r.send_to_recount == null) r.send_to_recount = crDefaultSendToRecount(r.code);
     });
     CR_OUTCOME_DEFAULTS.forEach(function (def) {
         const found = store.outcomes.find(function (a) { return a && a.outcome_id === def.outcome_id; })
@@ -28535,7 +28543,10 @@ function crReasonName(id) {
 
 function crReasonCode(id) {
     const a = crReasonById(id);
-    return a ? String(a.code || "") : "";
+    if (a) return String(a.code || "");
+    const s = String(id || "");
+    if (s.indexOf("rsn_") === 0 && s.length > 4) return s.slice(4);
+    return "";
 }
 
 function crReasonIdFromLegacyAdj(adjId) {
@@ -28590,6 +28601,29 @@ function crOutcomeName(id) {
     return o ? o.name : "";
 }
 
+function crDefaultSendToRecount(code) {
+    return !(code === "driver" || code === "driver_not_gave" || code === "driver_unload"
+        || code === "extra" || code === "sales_error");
+}
+
+function crReasonSendsToRecount(reasonId) {
+    const r = crReasonById(reasonId);
+    if (r && r.send_to_recount != null) return r.send_to_recount !== false;
+    return crDefaultSendToRecount(crReasonCode(reasonId));
+}
+
+function crCreateStageForItem(it) {
+    if (crIsExtraAdj(it)) return "extra";
+    const reasonId = crItemReasonId(it);
+    const code = crItemRouteCode(it);
+    if (code === "extra") return "extra";
+    if (crReasonSendsToRecount(reasonId)) return "recount";
+    if (code === "driver" || code === "driver_not_gave" || code === "driver_unload") return "driver";
+    const r = crReasonById(reasonId);
+    if (r && (r.default_stage_id === "driver" || r.default_stage_id === "extra")) return r.default_stage_id;
+    return "hold";
+}
+
 function crDefaultStageForReason(reasonId) {
     const r = crReasonById(reasonId);
     if (r && r.default_stage_id) return r.default_stage_id;
@@ -28628,7 +28662,7 @@ function crStageOpen(it) {
     if (!it) return false;
     if (it.stage_status === "done") return false;
     const st = crProcessStage(it);
-    if (st === "closed" || st === "extra") return false;
+    if (st === "closed" || st === "extra" || st === "hold") return false;
     if (st === "give") return !it.given_to_client;
     if (st === "rebill") return !it.rebilled;
     if (st === "driver") return !it.charged_to_driver && !it.found_at_client;
@@ -28673,7 +28707,7 @@ function crActiveQueue(it) {
     if (!it || it.is_deleted) return "";
     if (crIsExtraAdj(it) || crProcessStage(it) === "extra") return "";
     const st = crProcessStage(it);
-    if (st === "closed") return "";
+    if (st === "closed" || st === "hold") return "";
     if (st === "video" && crStageOpen(it)) return "video";
     if (st === "driver" && !it.charged_to_driver && !it.found_at_client) return "driver";
     if ((st === "give" || it.recount_result === "give") && !it.given_to_client) return "give";
@@ -28693,6 +28727,7 @@ function crStatusText(it) {
     if (it.rebilled) return { cls: "done", text: "Перебито" };
     const st = crProcessStage(it);
     if (st === "closed") return { cls: "done", text: "Закрыто" };
+    if (st === "hold") return { cls: "done", text: "Журнал" };
     const q = crActiveQueue(it);
     if (q === "video") return { cls: "recount", text: "На видео" };
     if (q === "driver") return { cls: "driver", text: "На водителя" };
@@ -29228,7 +29263,8 @@ function renderTerritoryReturns() {
     if (crUi.tab !== "extra" && crUi.tab !== "analytics" && crUi.tab !== "settings") {
         html += '<label>Автор продаж<select onchange="crOnFilter(\'author\',this)">' + crEmpOptions(crUi.author, "author") + "</select></label>"
             + '<label>Товаросборщик<select onchange="crOnFilter(\'picker\',this)">' + crEmpOptions(crUi.picker, "picker") + "</select></label>"
-            + '<label>Причина<select onchange="crOnFilter(\'reason\',this)">' + crReasonOptions(crUi.reason) + "</select></label>"
+        + '<label>Причина<select onchange="crOnFilter(\'reason\',this)">'
+            + '<option value="">Все</option>' + crReasonOptions(crUi.reason, false) + "</select></label>"
             + '<label>Корректировка<select onchange="crOnFilter(\'adj\',this)">' + crAdjOptions(crUi.adj) + "</select></label>"
             + '<label>Результат пересчёта<select onchange="crOnFilter(\'result\',this)">'
             + '<option value="">Все</option>'
@@ -29534,8 +29570,6 @@ function crRenderAllTable(list) {
             + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
             + '<td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td>"
             + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
-            + "<td>" + crStageSelect(it, can) + "</td>"
-            + "<td>" + crResultSelect(it, can) + "</td>"
             + '<td class="' + (crItemReasonId(it) ? "" : "cr-need") + '">' + crReasonSelect(it, can)
             + (crItemReasonId(it) ? "" : '<span class="cr-need-hint">⚠ Укажите причину</span>') + "</td>"
             + "<td>" + crAdjSelect(it, can) + "</td>"
@@ -29549,16 +29583,16 @@ function crRenderAllTable(list) {
             + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
             + "</td></tr>";
     });
-    if (!body) body = '<tr><td colspan="22"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
+    if (!body) body = '<tr><td colspan="20"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
     const periodTotal = crPeriodTotal(rows);
     return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>№</th><th>Неделя</th><th>Дата</th><th>Автор продаж</th><th>Водитель</th><th>№ авто</th>"
         + "<th>Кассир</th><th>Лишний товар</th><th>Товар</th><th>Сумма</th><th>Кол-во</th><th>Клиент</th>"
-        + "<th>Дата возврата клиенту</th><th>Этап</th><th>Результат обработки</th><th>Причина</th><th>Корректировка</th>"
+        + "<th>Дата возврата клиенту</th><th>Причина</th><th>Корректировка</th>"
         + "<th>№ заявки/накладной</th><th>Товаросборщик</th><th>Комментарий</th><th>Статус</th><th></th>"
         + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr class=\"cr-period-total\"><td colspan=\"9\">Записей: " + rows.length
         + '</td><td class="cr-num">' + crSignedHtml(periodTotal) + "</td><td>" + crQty(rows)
-        + '</td><td colspan="11"><span class="cr-period-total-label">ИТОГО ЗА ПЕРИОД:</span> '
+        + '</td><td colspan="9"><span class="cr-period-total-label">ИТОГО ЗА ПЕРИОД:</span> '
         + crSignedHtml(periodTotal) + "</td></tr></tfoot></table></div>";
 }
 
@@ -29580,7 +29614,7 @@ function crRenderQueueTable(tab, list) {
                 + "</td><td>" + crResultSelect(it, can) + "</td></tr>";
         });
     } else if (tab === "recount") {
-        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Автор продаж</th><th>Водитель</th><th>Товаросборщик</th><th>Причина</th><th>Корректировка</th><th>Комментарий</th><th>Результат</th>";
+        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Автор продаж</th><th>Водитель</th><th>Товаросборщик</th><th>Причина</th><th>Этап</th><th>Комментарий</th><th>Результат обработки</th>";
         list.forEach(function (it) {
             body += '<tr class="cr-row-recount"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
                 + '</td><td class="cr-qty">' + crQtyHtml(it.qty) + '</td><td class="cr-num">' + crSignedHtml(it.amount)
@@ -29589,7 +29623,7 @@ function crRenderQueueTable(tab, list) {
                 + "</td><td>" + escapeHtml(crEmpShort(it.driver_employee_id))
                 + "</td><td>" + escapeHtml(crEmpShort(it.picker_employee_id))
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
-                + "</td><td>" + crPill("adj", crAdjName(crItemAdjEditId(it)) || "—")
+                + "</td><td>" + crStageSelect(it, can)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td><td>"
                 + crResultSelect(it, can) + "</td></tr>";
         });
@@ -29923,6 +29957,8 @@ function crRenderDictsAdmin() {
             if (!r || !r.reason_id) return;
             const used = crReasonInUse(r.reason_id);
             rBody += "<tr><td><input value=\"" + escapeAttribute(r.name || "") + "\" onchange=\"crRenameReason('" + r.reason_id + "',this.value)\"></td>"
+                + '<td><label class="cr-check-lab"><input type="checkbox"' + (r.send_to_recount !== false ? " checked" : "")
+                + ' onchange="crSetReasonSendToRecount(\'' + r.reason_id + '\',this.checked)"> Да</label></td>'
                 + '<td><select onchange="crSetReasonDefaultStage(\'' + r.reason_id + '\',this.value)">' + crStageOptions(r.default_stage_id || "recount", true) + "</select></td>"
                 + '<td><label class="cr-check-lab"><input type="checkbox"' + (r.is_active !== false ? " checked" : "")
                 + ' onchange="crToggleReasonActive(\'' + r.reason_id + '\',this.checked)"> Активна</label></td>'
@@ -29930,12 +29966,12 @@ function crRenderDictsAdmin() {
                     : '<button type="button" class="btn btn-small" onclick="crDeleteReason(\'' + r.reason_id + '\')">Удалить</button>')
                 + "</td></tr>";
         });
-        if (!rBody) rBody = '<tr><td colspan="4">Нет причин</td></tr>';
-        html += '<div class="note">Первичный этап назначается при создании возврата. Его можно сменить на карточке.</div>'
-            + '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Название</th><th>Куда направлять по умолчанию</th><th>Активна</th><th></th></tr></thead><tbody>'
+        if (!rBody) rBody = '<tr><td colspan="5">Нет причин</td></tr>';
+        html += '<div class="note">Маршрут на пересчёт задаётся галочкой и не зависит от названия причины. Этап при создании не выбирается: его ставит ответственный во вкладке «На пересчёт».</div>'
+            + '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Название</th><th>На пересчёт</th><th>Этап, если не на пересчёт</th><th>Активна</th><th></th></tr></thead><tbody>'
             + rBody + "</tbody></table></div>"
             + '<div class="toolbar"><input id="crNewReasonName" placeholder="Новая причина" style="max-width:240px">'
-            + '<select id="crNewReasonStage">' + crStageOptions("recount", true) + "</select>"
+            + '<label class="cr-check-lab"><input type="checkbox" id="crNewReasonRecount" checked> На пересчёт</label>'
             + '<button type="button" class="btn btn-small" onclick="crAddReason()">+ Добавить причину</button></div>';
     } else if (pane === "outcomes") {
         const list = (crStore().outcomes || []).slice().sort(function (a, b) {
@@ -29987,10 +30023,11 @@ function crRenderDictsAdmin() {
             + '<button type="button" class="btn btn-small" onclick="crAddAdjustment()">+ Добавить корректировку</button></div>';
     } else {
         html += '<div class="note">Сводка маршрутов. Изменения делаются во вкладках Причины и Результаты.</div>';
-        html += '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Причина</th><th>Первичный этап</th></tr></thead><tbody>';
+        html += '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Причина</th><th>На пересчёт</th><th>Этап, если не на пересчёт</th></tr></thead><tbody>';
         (crStore().reasons || []).forEach(function (r) {
             if (!r || r.is_active === false) return;
-            html += "<tr><td>" + escapeHtml(r.name) + "</td><td>" + escapeHtml(crStageName(r.default_stage_id || "recount")) + "</td></tr>";
+            html += "<tr><td>" + escapeHtml(r.name) + "</td><td>" + (r.send_to_recount !== false ? "да" : "нет")
+                + "</td><td>" + escapeHtml(crStageName(r.default_stage_id || "recount")) + "</td></tr>";
         });
         html += "</tbody></table></div>";
         html += '<div class="cr-wrap" style="margin-top:8px"><table class="cr-table"><thead><tr><th>Результат</th><th>После этапа</th><th>Следующий этап</th></tr></thead><tbody>';
@@ -30014,14 +30051,15 @@ function crAddReason() {
         return;
     }
     const store = crStore();
-    const stageEl = document.getElementById("crNewReasonStage");
+    const recountEl = document.getElementById("crNewReasonRecount");
     store.reasons.push({
         reason_id: nextPrefixedId("rsn", store.reasons.map(function (a) { return a && a.reason_id; })),
         code: "custom",
         name: name,
         sort_order: (store.reasons.length + 1) * 10,
         is_active: true,
-        default_stage_id: (stageEl && stageEl.value) || "recount"
+        default_stage_id: "recount",
+        send_to_recount: !(recountEl && recountEl.checked === false)
     });
     saveApp();
     renderTerritoryReturns();
@@ -30033,6 +30071,14 @@ function crSetReasonDefaultStage(id, stage) {
     const r = crReasonById(id);
     if (!r) return;
     r.default_stage_id = stage || "recount";
+    saveApp();
+}
+
+function crSetReasonSendToRecount(id, on) {
+    if (!crCanManageDicts()) return;
+    const r = crReasonById(id);
+    if (!r) return;
+    r.send_to_recount = !!on;
     saveApp();
 }
 
@@ -30354,7 +30400,6 @@ function crRenderDraftTable() {
     }
     let body = "";
     crDraftLines.forEach(function (line, i) {
-        const missAdj = !line.adjustment_id;
         const missReason = !line.reason_id;
         const missPick = !line.picker_employee_id;
         body += "<tr><td><input type=\"checkbox\" id=\"crLnSel" + i + "\"" + (line.selected ? " checked" : "") + "></td>"
@@ -30364,15 +30409,13 @@ function crRenderDraftTable() {
             + "<td><input id=\"crLnAmount" + i + "\" inputmode=\"decimal\" value=\"" + escapeAttribute(line.amount == null || line.amount === "" ? "" : String(line.amount)) + "\" onchange=\"crSyncReturnTotal()\"></td>"
             + '<td class="' + (missReason ? "cr-need" : "") + '"><select id="crLnReason' + i + '">' + crReasonOptions(line.reason_id)
             + "</select>" + (missReason ? '<span class="cr-need-hint">⚠ Укажите причину</span>' : "") + "</td>"
-            + '<td class="' + (missAdj ? "cr-need" : "") + '"><select id="crLnAdj' + i + '">' + crAdjOptions(line.adjustment_id)
-            + "</select></td>"
             + '<td class="' + (missPick ? "cr-need" : "") + '"><select id="crLnPicker' + i + '">' + crEmpOptions(line.picker_employee_id, "picker")
             + "</select>" + (missPick ? '<span class="cr-need-hint">⚠ Выберите товаросборщика</span>' : "") + "</td>"
             + "<td><input id=\"crLnComment" + i + "\" value=\"" + escapeAttribute(line.comment || "") + "\"></td>"
             + '<td><button type="button" class="btn btn-small" onclick="crRemoveDraftLine(' + i + ')">✕</button></td></tr>';
     });
     host.innerHTML = '<div class="cr-lines-wrap"><table class="cr-lines"><thead><tr>'
-        + "<th></th><th>№</th><th>Товар</th><th>Количество</th><th>Сумма</th><th>Причина</th><th>Корректировка</th><th>Товаросборщик</th><th>Комментарий</th><th></th>"
+        + "<th></th><th>№</th><th>Товар</th><th>Количество</th><th>Сумма</th><th>Причина</th><th>Товаросборщик</th><th>Комментарий</th><th></th>"
         + "</tr></thead><tbody>" + body + "</tbody></table></div>";
 }
 
@@ -30615,8 +30658,6 @@ function crCreateEditorHtml(rec, can) {
         + '<button type="button" class="btn btn-small" onclick="crApplyDraftPicker()">Применить к выбранным</button>'
         + '<label>Причина<select id="crBulkReason">' + crReasonOptions("") + "</select></label>"
         + '<button type="button" class="btn btn-small" onclick="crApplyDraftReason()">Применить к выбранным</button>'
-        + '<label>Корректировка<select id="crBulkAdj">' + crAdjOptions("") + "</select></label>"
-        + '<button type="button" class="btn btn-small" onclick="crApplyDraftAdj()">Применить к выбранным</button>'
         + "</div>"
         + '<div id="crLinesHost"></div>'
         + '<div class="toolbar" style="margin-top:12px;justify-content:flex-end">'
@@ -30735,12 +30776,12 @@ function crSaveCreateBatch() {
         it.client_name = header.client_name;
         it.invoice_no = header.invoice_no;
         it.reason_id = String(line.reason_id || "");
-        it.adjustment_id = String(line.adjustment_id || "");
+        it.adjustment_id = "";
         it.recount_result = "";
         it.outcome_id = "";
-        it.process_stage = crDefaultStageForReason(it.reason_id);
-        it.stage_status = it.process_stage === "closed" ? "done" : "open";
-        it.extra_on_register = false;
+        it.extra_on_register = crReasonCode(it.reason_id) === "extra";
+        it.process_stage = crCreateStageForItem(it);
+        it.stage_status = (it.process_stage === "closed" || it.process_stage === "hold") ? "done" : "open";
         it.comment = [headerComment, String(line.comment || "").trim()].filter(Boolean).join(" · ");
         crPushHistory(it, "created", "group:" + groupId);
         crPushHistory(it, "stage", crStageName(it.process_stage));
@@ -30909,7 +30950,7 @@ function crApplyOutcome(id, outcomeId) {
 
 function crSetProcessStage(id, stage) {
     const it = crFind(id);
-    if (!it || !crHasFullEdit()) return;
+    if (!it || (!crHasFullEdit() && !crCanAct("recount"))) return;
     const prev = crProcessStage(it);
     it.process_stage = stage || "recount";
     it.stage_status = it.process_stage === "closed" ? "done" : "open";
@@ -30956,11 +30997,12 @@ function crSetReason(id, value) {
     it.reason_id = value || "";
     crPushHistory(it, "reason", crReasonName(value) || "не указана");
     if (!it.outcome_id && !it.recount_result) {
-        const next = crDefaultStageForReason(it.reason_id);
+        if (crReasonCode(it.reason_id) === "extra") it.extra_on_register = true;
+        const next = crCreateStageForItem(it);
         if (next && next !== crProcessStage(it)) {
             const prev = crProcessStage(it);
             it.process_stage = next;
-            it.stage_status = "open";
+            it.stage_status = (next === "closed" || next === "hold") ? "done" : "open";
             crPushHistory(it, "stage", crStageName(prev) + " → " + crStageName(next));
             crLogStage(it, "stage", { stage: prev, next_stage: next });
         }
@@ -31220,6 +31262,22 @@ function verifyCrSignedFinance() {
     crUi.dateFrom = savedFrom;
     crUi.dateTo = savedTo;
     crUi.author = savedAuthor;
+    if (crDefaultSendToRecount("refuse") !== true || crCreateStageForItem({ reason_id: "rsn_refuse" }) !== "recount") {
+        console.warn("Обычная причина должна идти на пересчёт");
+    }
+    if (crDefaultSendToRecount("driver") !== false || crDefaultSendToRecount("sales_error") !== false
+        || crDefaultSendToRecount("extra") !== false) {
+        console.warn("Водитель / ошибка торгового / лишний товар не должны идти на пересчёт");
+    }
+    if (crCreateStageForItem({ reason_id: "rsn_driver" }) !== "driver") {
+        console.warn("Причина Водитель должна давать этап driver");
+    }
+    if (crCreateStageForItem({ reason_id: "rsn_sales_error" }) !== "hold") {
+        console.warn("Ошибка торгового не должна попадать на пересчёт");
+    }
+    if (crCreateStageForItem({ reason_id: "rsn_extra", extra_on_register: true }) !== "extra") {
+        console.warn("Лишний товар должен идти в extra");
+    }
 }
 
 function requestedLoginView() {
