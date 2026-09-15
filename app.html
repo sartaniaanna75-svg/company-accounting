@@ -353,6 +353,19 @@
         @media (max-width: 1100px) {
             .mgmt-dept-grid { grid-template-columns: 1fr; }
         }
+        .spu-tree { margin: 10px 0; font-size: 13px; }
+        .spu-tree-company { font-weight: 700; margin-bottom: 8px; }
+        .spu-tree-node { border-left: 2px solid #e2e8f0; margin-left: 10px; padding: 6px 0 6px 12px; }
+        .spu-tree-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+        .spu-tree-name { font-weight: 600; }
+        .spu-tree-owner { color: #64748b; font-size: 12px; }
+        .spu-tree-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+        .spu-tree-off { opacity: .65; }
+        .spu-tree-metrics { margin: 4px 0 0; font-size: 12px; color: #334155; }
+        .spu-tree-metrics div { display: flex; justify-content: space-between; gap: 12px; max-width: 420px; }
+        .spu-route-block { margin-top: 10px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+        .spu-route-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 6px; align-items: end; margin: 6px 0; }
+        @media (max-width: 900px) { .spu-route-row { grid-template-columns: 1fr; } }
         .spu-dash { font-size: 12px; }
         .spu-dash-tabs {
             display: flex;
@@ -3812,6 +3825,9 @@
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-settings" onclick="showSection('management-settings', this)">
             Настройка показателей
         </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-structure" onclick="showSection('management-structure', this)">
+            Структура СПУ
+        </button>
         <div class="menu-title" data-for="summary" data-org="1">Оргструктура</div>
         <button type="button" class="nav-btn" data-for="summary" data-org="1" data-section="org-chart" onclick="showSection('org-chart', this)">
             Схема
@@ -5877,19 +5893,135 @@ function metricRollupSpuIndicators(item) {
     });
 }
 
+function metricResultRoutes(item) {
+    if (!item) return [];
+    if (!Array.isArray(item.result_routes)) item.result_routes = [];
+    if (item.result_route && item.result_route.spu_indicator_id) {
+        const src = item.result_route.source || "department_total";
+        const tab = item.result_route.source_work_tab_id || "";
+        const has = item.result_routes.some(function (r) {
+            return r && r.spu_indicator_id === item.result_route.spu_indicator_id
+                && String(r.source || "department_total") === src
+                && String(r.source_work_tab_id || "") === tab;
+        });
+        if (!has) {
+            item.result_routes.push({
+                route_id: nextPrefixedId("rr", item.result_routes.map(function (r) { return r && r.route_id; })),
+                source: src,
+                source_work_tab_id: tab,
+                target: "spu",
+                target_org_node_id: item.result_route.target_org_node_id || "",
+                spu_indicator_id: item.result_route.spu_indicator_id
+            });
+        }
+    }
+    return item.result_routes.filter(function (r) { return r; });
+}
+
 function applyMetricResultRoute(item) {
     if (!item || !metricRollupEnabled(item)) return;
-    const route = item.result_route;
-    if (!route || route.target !== "spu" || !route.spu_indicator_id) return;
     ensureManagement();
-    const ind = (appData.management.indicators || []).find(function (x) {
-        return x && x.indicator_id === route.spu_indicator_id;
+    metricResultRoutes(item).forEach(function (route) {
+        if (!route || (route.target && route.target !== "spu")) return;
+        const ind = (appData.management.indicators || []).find(function (x) {
+            return x && x.indicator_id === route.spu_indicator_id;
+        });
+        if (!ind) return;
+        ind.source_type = "worktime_metric";
+        ind.source_metric_id = item.id;
+        ind.source_result = route.source === "group_total" ? "group_total" : "department_total";
+        ind.source_work_tab_id = route.source_work_tab_id || "";
+        ind.target_org_node_id = route.target_org_node_id || "";
+        ind.department_id = metricDepartmentId(item);
     });
-    if (!ind) return;
-    ind.source_type = "worktime_metric";
-    ind.source_metric_id = item.id;
-    ind.source_result = "department_total";
-    ind.department_id = metricDepartmentId(item);
+    const first = metricResultRoutes(item)[0];
+    if (first) item.result_route = {
+        source: first.source || "department_total",
+        source_work_tab_id: first.source_work_tab_id || "",
+        target: "spu",
+        target_org_node_id: first.target_org_node_id || "",
+        spu_indicator_id: first.spu_indicator_id
+    };
+}
+
+function metricRouteSourceOptions(item, selectedSource, selectedTab) {
+    let html = '<option value="department_total"' + (selectedSource !== "group_total" ? " selected" : "") + ">Итого подразделения</option>";
+    metricWorkTabIds(item).forEach(function (tabId) {
+        const sel = selectedSource === "group_total" && selectedTab === tabId;
+        html += '<option value="group:' + escapeAttribute(tabId) + '"' + (sel ? " selected" : "") + ">Итого "
+            + escapeHtml(metricTabLabel(metricRollupDeptCode(item), tabId)) + "</option>";
+    });
+    return html;
+}
+
+function spuOrgNodeSelectOptions(selected, includeInactive) {
+    try { ensureSpuOrgNodes(); } catch (err) { console.error(err); }
+    let html = '<option value="">— узел СПУ —</option>';
+    function walk(parentId, depth) {
+        spuOrgChildren(parentId, !!includeInactive).forEach(function (n) {
+            const pad = Array(depth + 1).join("· ");
+            const off = n.is_active === false ? " (неактивен)" : "";
+            html += '<option value="' + escapeAttribute(n.org_node_id) + '"'
+                + (n.org_node_id === selected ? " selected" : "") + ">"
+                + escapeHtml(pad + (n.name || n.org_node_id) + off) + "</option>";
+            walk(n.org_node_id, depth + 1);
+        });
+    }
+    walk("", 0);
+    return html;
+}
+
+function addMetricResultRoute(metricId) {
+    const item = shopMetricCatalogById(metricId);
+    if (!item || !metricRollupEnabled(item)) return;
+    metricResultRoutes(item);
+    item.result_routes.push({
+        route_id: nextPrefixedId("rr", item.result_routes.map(function (r) { return r && r.route_id; })),
+        source: "department_total",
+        source_work_tab_id: "",
+        target: "spu",
+        target_org_node_id: "",
+        spu_indicator_id: ""
+    });
+    saveApp();
+    if (typeof refreshMetricsUi === "function") refreshMetricsUi();
+}
+
+function removeMetricResultRoute(metricId, routeId) {
+    const item = shopMetricCatalogById(metricId);
+    if (!item) return;
+    item.result_routes = (Array.isArray(item.result_routes) ? item.result_routes : []).filter(function (r) {
+        return r && r.route_id !== routeId;
+    });
+    applyMetricResultRoute(item);
+    saveApp();
+    if (typeof refreshMetricsUi === "function") refreshMetricsUi();
+}
+
+function updateMetricResultRoute(metricId, routeId, field, value) {
+    const item = shopMetricCatalogById(metricId);
+    if (!item || !metricRollupEnabled(item)) return;
+    const route = (Array.isArray(item.result_routes) ? item.result_routes : []).find(function (r) {
+        return r && r.route_id === routeId;
+    });
+    if (!route) return;
+    if (field === "source") {
+        if (String(value).indexOf("group:") === 0) {
+            route.source = "group_total";
+            route.source_work_tab_id = String(value).slice(6);
+        } else {
+            route.source = "department_total";
+            route.source_work_tab_id = "";
+        }
+    } else if (field === "target_org_node_id") {
+        route.target_org_node_id = String(value || "");
+    } else if (field === "spu_indicator_id") {
+        route.spu_indicator_id = String(value || "");
+    }
+    route.target = "spu";
+    applyMetricResultRoute(item);
+    saveApp();
+    if (typeof refreshMetricsUi === "function") refreshMetricsUi();
 }
 
 function metricRollupPanelHtml(deptCode) {
@@ -5943,25 +6075,34 @@ function metricRollupPanelHtml(deptCode) {
             + metricRollupFormat(leftSum) + "</b></div>";
     }
     html += '<div class="metric-rollup-total"><span>ИТОГО СКЛАД</span><span>' + metricRollupFormat(deptTotal) + "</span></div>";
-    const route = item.result_route || {};
     const inds = metricRollupSpuIndicators(item);
-    html += '<div class="note" style="margin-top:8px"><b>Маршрутизация итога</b><br>Источник результата: Итого подразделения. Куда: СПУ.</div>'
-        + '<div style="margin-top:6px"><label style="font-size:12px">Показатель СПУ</label> '
-        + '<select onchange="setMetricRollupSpu(\'' + item.id + '\',this.value)">'
-        + '<option value="">— показатель СПУ не выбран —</option>';
-    inds.forEach(function (x) {
-        html += '<option value="' + escapeAttribute(x.indicator_id) + '"'
-            + (route.spu_indicator_id === x.indicator_id ? " selected" : "") + ">"
-            + escapeHtml(x.name || x.spu_code || x.indicator_id) + "</option>";
+    const routes = metricResultRoutes(item);
+    html += '<div class="spu-route-block"><div class="note"><b>Маршрутизация в СПУ</b><br>'
+        + "Каждый маршрут передаёт уже рассчитанный итог в выбранный узел структуры. "
+        + "Маршруты не складываются между собой.</div>";
+    routes.forEach(function (route) {
+        if (!route || !route.route_id) return;
+        html += '<div class="spu-route-row">'
+            + '<div><label style="font-size:11px">Источник результата</label><select onchange="updateMetricResultRoute(\''
+            + item.id + "','" + route.route_id + "','source',this.value)\">"
+            + metricRouteSourceOptions(item, route.source, route.source_work_tab_id) + "</select></div>"
+            + '<div><label style="font-size:11px">Узел СПУ</label><select onchange="updateMetricResultRoute(\''
+            + item.id + "','" + route.route_id + "','target_org_node_id',this.value)\">"
+            + spuOrgNodeSelectOptions(route.target_org_node_id, false) + "</select></div>"
+            + '<div><label style="font-size:11px">Показатель СПУ</label><select onchange="updateMetricResultRoute(\''
+            + item.id + "','" + route.route_id + "','spu_indicator_id',this.value)\">"
+            + '<option value="">— не выбран —</option>';
+        inds.forEach(function (x) {
+            html += '<option value="' + escapeAttribute(x.indicator_id) + '"'
+                + (route.spu_indicator_id === x.indicator_id ? " selected" : "") + ">"
+                + escapeHtml(x.name || x.spu_code || x.indicator_id) + "</option>";
+        });
+        html += "</select></div>"
+            + '<div><button type="button" class="btn btn-secondary btn-small" onclick="removeMetricResultRoute(\''
+            + item.id + "','" + route.route_id + '\')">Удалить</button></div></div>';
     });
-    html += "</select></div>";
-    if (route.spu_indicator_id) {
-        const ind = inds.find(function (x) { return x.indicator_id === route.spu_indicator_id; });
-        html += '<div class="note">СПУ читает рассчитанный итог за свой выбранный период (для совпадения с 3310 откройте в СПУ тот же месяц). Отдельный факт не создаётся.</div>';
-        if (ind) html += '<div class="note">Текущий показатель: ' + escapeHtml(ind.name) + " (" + escapeHtml(ind.indicator_id) + ")</div>";
-    } else {
-        html += '<div class="note">Показатель СПУ не выбран. Выберите существующий показатель выше — новый не создаётся.</div>';
-    }
+    html += '<button type="button" class="btn btn-secondary btn-small" onclick="addMetricResultRoute(\'' + item.id + '\')">+ Маршрут</button>';
+    html += '<div class="note">СПУ читает рассчитанный итог, новый факт не создаётся.</div></div>';
     html += "</div>";
     return html;
 }
@@ -5974,6 +6115,7 @@ function setMetricRollupSpu(metricId, indicatorId) {
         target: "spu",
         spu_indicator_id: String(indicatorId || "")
     };
+    metricResultRoutes(item);
     applyMetricResultRoute(item);
     saveApp();
     if (typeof refreshMetricsUi === "function") refreshMetricsUi();
@@ -6844,6 +6986,7 @@ const ACCESS_PERM_KEYS = [
     { key: "settings", label: "Настройки" },
     { key: "management", label: "СПУ" },
     { key: "managementIndicators", label: "СПУ · показатели" },
+    { key: "managementStructure", label: "СПУ · структура" },
     { key: "managementTasks", label: "СПУ · ежедневные задачи" },
     { key: "managementMeetings", label: "СПУ · встречи" },
     { key: "orgStructure", label: "Оргструктура" },
@@ -9975,6 +10118,9 @@ function allowedSpuSections() {
     if (canEditMgmtIndicators() || isAppAdmin() || open) {
         if (list.indexOf("management-settings") === -1) list.push("management-settings");
     }
+    if (open || canEditSpuStructure() || isAppAdmin()) {
+        if (list.indexOf("management-structure") === -1) list.push("management-structure");
+    }
     return list;
 }
 
@@ -10102,6 +10248,7 @@ function sectionTitle(id) {
         "management-tasks": "Ежедневные задачи",
         "management-events": "График мероприятий",
         "management-settings": "Настройка показателей",
+        "management-structure": "Структура СПУ",
         "org-chart": "Оргструктура — схема",
         "org-settings": "Оргструктура — настройки"
     };
@@ -24629,6 +24776,385 @@ function canEditMgmtMeetings() {
     return userHasPerm("managementMeetings", "edit");
 }
 
+function canEditSpuStructure() {
+    return isAppAdmin()
+        || userHasPerm("managementStructure", "edit")
+        || userHasPerm("managementIndicators", "edit");
+}
+
+function spuOrgNowIso() {
+    try { return new Date().toISOString(); } catch (err) { return ""; }
+}
+
+function ensureSpuOrgNodes() {
+    if (!appData || !appData.management || typeof appData.management !== "object") return;
+    const root = appData.management;
+    if (!Array.isArray(root.spuOrgNodes)) root.spuOrgNodes = [];
+    root.spuOrgNodes = root.spuOrgNodes.filter(function (n) { return n && typeof n === "object"; });
+    root.spuOrgNodes.forEach(function (n) {
+        if (!n.org_node_id) {
+            n.org_node_id = nextPrefixedId("spuorg", root.spuOrgNodes.map(function (x) { return x && x.org_node_id; }));
+        }
+        n.name = String(n.name || "").trim();
+        if (n.parent_org_node_id == null) n.parent_org_node_id = n.parent_node_id || "";
+        if (n.responsible_employee_id == null) n.responsible_employee_id = n.manager_employee_id || "";
+        if (n.is_active == null) n.is_active = true;
+        n.sort_order = Number(n.sort_order || 0);
+        if (!n.created_at) n.created_at = spuOrgNowIso();
+        if (!n.updated_at) n.updated_at = n.created_at;
+    });
+    (root.spuDepartments || []).forEach(function (d) {
+        if (!d || !d.spu_department_id) return;
+        const exists = root.spuOrgNodes.some(function (n) {
+            return n && (n.org_node_id === d.spu_department_id || n.spu_department_id === d.spu_department_id);
+        });
+        if (exists) return;
+        root.spuOrgNodes.push({
+            org_node_id: d.spu_department_id,
+            parent_org_node_id: "",
+            name: d.name || d.spu_department_id,
+            responsible_employee_id: (root.deptHeads && root.deptHeads[d.spu_department_id]) || "",
+            is_active: d.is_active !== false,
+            sort_order: Number(d.sort_order || 0),
+            spu_department_id: d.spu_department_id,
+            created_at: spuOrgNowIso(),
+            updated_at: spuOrgNowIso()
+        });
+    });
+}
+
+function spuOrgNodes() {
+    ensureSpuOrgNodes();
+    return (appData.management && appData.management.spuOrgNodes) || [];
+}
+
+function spuOrgGetNode(id) {
+    if (!id) return null;
+    return spuOrgNodes().find(function (n) { return n && n.org_node_id === id; }) || null;
+}
+
+function spuOrgChildren(parentId, includeInactive) {
+    const pid = String(parentId || "");
+    return spuOrgNodes().filter(function (n) {
+        if (!n) return false;
+        if (!includeInactive && n.is_active === false) return false;
+        return String(n.parent_org_node_id || "") === pid;
+    }).sort(function (a, b) {
+        const sa = Number(a.sort_order || 0);
+        const sb = Number(b.sort_order || 0);
+        if (sa !== sb) return sa - sb;
+        return String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+}
+
+function spuOrgDescendantIds(id) {
+    const out = [];
+    function walk(pid) {
+        spuOrgChildren(pid, true).forEach(function (n) {
+            out.push(n.org_node_id);
+            walk(n.org_node_id);
+        });
+    }
+    walk(id);
+    return out;
+}
+
+function spuOrgWouldCycle(nodeId, newParentId) {
+    const nid = String(nodeId || "");
+    const pid = String(newParentId || "");
+    if (!nid || !pid) return false;
+    if (nid === pid) return true;
+    return spuOrgDescendantIds(nid).indexOf(pid) !== -1;
+}
+
+function spuOrgEmployeeName(employeeId) {
+    const e = getEmployee(employeeId);
+    return e ? (e.name || employeeId) : (employeeId ? String(employeeId) : "");
+}
+
+function spuOrgNextId() {
+    return nextPrefixedId("spuorg", spuOrgNodes().map(function (n) { return n && n.org_node_id; }));
+}
+
+function spuOrgSyncLinkedDepartment(node) {
+    if (!node || !node.spu_department_id || !appData.management) return;
+    const d = (appData.management.spuDepartments || []).find(function (x) {
+        return x && x.spu_department_id === node.spu_department_id;
+    });
+    if (d && node.name) d.name = node.name;
+    if (!appData.management.deptHeads) appData.management.deptHeads = {};
+    if (node.responsible_employee_id) {
+        appData.management.deptHeads[node.spu_department_id] = node.responsible_employee_id;
+    }
+}
+
+function spuOrgNodeIsUsed(nodeId) {
+    if (!nodeId) return false;
+    if (spuOrgChildren(nodeId, true).length) return true;
+    let used = false;
+    const items = typeof shopMetricCatalogItems === "function" ? shopMetricCatalogItems() : [];
+    items.forEach(function (item) {
+        if (!item) return;
+        (item.result_routes || []).forEach(function (r) {
+            if (r && r.target_org_node_id === nodeId) used = true;
+        });
+        if (item.result_route && item.result_route.target_org_node_id === nodeId) used = true;
+    });
+    ((appData.management && appData.management.indicators) || []).forEach(function (it) {
+        if (it && it.target_org_node_id === nodeId) used = true;
+    });
+    return used;
+}
+
+function spuOrgUpsertNode(payload, persist) {
+    ensureSpuOrgNodes();
+    const name = String((payload && payload.name) || "").trim();
+    if (!name) return { ok: false, error: "Укажите название" };
+    const parentId = String((payload && payload.parent_org_node_id) || "");
+    if (parentId && !spuOrgGetNode(parentId)) return { ok: false, error: "Родитель не найден" };
+    let node = payload.org_node_id ? spuOrgGetNode(payload.org_node_id) : null;
+    if (node && spuOrgWouldCycle(node.org_node_id, parentId)) {
+        return { ok: false, error: "Нельзя создать цикл в структуре" };
+    }
+    if (!node) {
+        node = {
+            org_node_id: spuOrgNextId(),
+            created_at: spuOrgNowIso()
+        };
+        appData.management.spuOrgNodes.push(node);
+    }
+    node.name = name;
+    node.parent_org_node_id = parentId;
+    node.responsible_employee_id = String((payload && payload.responsible_employee_id) || "");
+    node.is_active = payload && payload.is_active === false ? false : true;
+    if (payload && payload.sort_order != null && payload.sort_order !== "") {
+        node.sort_order = Number(payload.sort_order) || 0;
+    } else if (node.sort_order == null) {
+        const sib = spuOrgChildren(parentId, true);
+        node.sort_order = sib.length ? Number(sib[sib.length - 1].sort_order || 0) + 10 : 10;
+    }
+    node.updated_at = spuOrgNowIso();
+    spuOrgSyncLinkedDepartment(node);
+    if (persist !== false) saveApp();
+    return { ok: true, node: node };
+}
+
+function spuOrgMoveSibling(nodeId, dir) {
+    const node = spuOrgGetNode(nodeId);
+    if (!node || !canEditSpuStructure()) return;
+    const sib = spuOrgChildren(node.parent_org_node_id, true);
+    const idx = sib.findIndex(function (n) { return n.org_node_id === nodeId; });
+    const swap = sib[idx + (dir < 0 ? -1 : 1)];
+    if (!swap) return;
+    const a = Number(node.sort_order || 0);
+    node.sort_order = Number(swap.sort_order || 0);
+    swap.sort_order = a;
+    node.updated_at = spuOrgNowIso();
+    swap.updated_at = node.updated_at;
+    saveApp();
+    renderManagement();
+}
+
+function saveSpuOrgNodeFromForm(orgNodeId) {
+    if (!canEditSpuStructure()) return;
+    const nameEl = document.getElementById("spuOrgName");
+    const parentEl = document.getElementById("spuOrgParent");
+    const respEl = document.getElementById("spuOrgResp");
+    const statusEl = document.getElementById("spuOrgStatus");
+    const sortEl = document.getElementById("spuOrgSort");
+    const res = spuOrgUpsertNode({
+        org_node_id: orgNodeId || "",
+        name: nameEl ? nameEl.value : "",
+        parent_org_node_id: parentEl ? parentEl.value : "",
+        responsible_employee_id: respEl ? respEl.value : "",
+        is_active: !(statusEl && statusEl.value === "0"),
+        sort_order: sortEl ? sortEl.value : ""
+    }, true);
+    if (!res.ok) {
+        toast(res.error || "Не удалось сохранить", "error");
+        return;
+    }
+    closeMgmtModal();
+    renderManagement();
+}
+
+function deactivateSpuOrgNode(orgNodeId) {
+    if (!canEditSpuStructure()) return;
+    const node = spuOrgGetNode(orgNodeId);
+    if (!node) return;
+    node.is_active = false;
+    node.updated_at = spuOrgNowIso();
+    saveApp();
+    renderManagement();
+}
+
+function deleteSpuOrgNode(orgNodeId) {
+    if (!canEditSpuStructure()) return;
+    const node = spuOrgGetNode(orgNodeId);
+    if (!node) return;
+    if (spuOrgNodeIsUsed(orgNodeId)) {
+        toast("Узел уже используется — отключите его, не удаляйте", "error");
+        return;
+    }
+    appData.management.spuOrgNodes = spuOrgNodes().filter(function (n) { return n.org_node_id !== orgNodeId; });
+    saveApp();
+    renderManagement();
+}
+
+function openSpuOrgNodeForm(orgNodeId, parentPreset) {
+    if (!canEditSpuStructure()) return;
+    const node = orgNodeId ? spuOrgGetNode(orgNodeId) : null;
+    const parentId = node ? String(node.parent_org_node_id || "") : String(parentPreset || "");
+    let parentOpts = '<option value="">Компания</option>';
+    function walk(pid, depth) {
+        spuOrgChildren(pid, true).forEach(function (n) {
+            if (node && (n.org_node_id === node.org_node_id || spuOrgWouldCycle(node.org_node_id, n.org_node_id))) return;
+            const pad = Array(depth + 1).join("· ");
+            parentOpts += '<option value="' + escapeAttribute(n.org_node_id) + '"'
+                + (n.org_node_id === parentId ? " selected" : "") + ">"
+                + escapeHtml(pad + n.name) + "</option>";
+            walk(n.org_node_id, depth + 1);
+        });
+    }
+    walk("", 0);
+    const html = '<h3>' + (node ? "Редактировать подразделение" : "Добавить департамент") + "</h3>"
+        + '<div class="form-group"><label>Название *</label><input id="spuOrgName" type="text" value="' + escapeAttribute(node ? node.name : "") + '"></div>'
+        + '<div class="form-group"><label>Родительский департамент</label><select id="spuOrgParent">' + parentOpts + "</select></div>"
+        + '<div class="form-group"><label>Ответственный</label><select id="spuOrgResp">' + mgmtEmployeeOptions(node ? node.responsible_employee_id : "") + "</select></div>"
+        + '<div class="form-group"><label>Статус</label><select id="spuOrgStatus"><option value="1"' + (!node || node.is_active !== false ? " selected" : "")
+        + '>Активен</option><option value="0"' + (node && node.is_active === false ? " selected" : "")
+        + ">Неактивен</option></select></div>"
+        + '<div class="form-group"><label>Порядок отображения</label><input id="spuOrgSort" type="number" value="' + escapeAttribute(node && node.sort_order != null ? node.sort_order : "") + '"></div>'
+        + '<div class="toolbar">'
+        + '<button type="button" class="btn btn-primary" onclick="saveSpuOrgNodeFromForm(\''
+        + escapeAttribute(node ? node.org_node_id : "") + '\')">Сохранить</button>'
+        + (node ? '<button type="button" class="btn btn-secondary" onclick="deactivateSpuOrgNode(\''
+            + node.org_node_id + '\');closeMgmtModal()">Отключить</button>' : "")
+        + (node && !spuOrgNodeIsUsed(node.org_node_id)
+            ? '<button type="button" class="btn btn-secondary" onclick="deleteSpuOrgNode(\''
+                + node.org_node_id + '\');closeMgmtModal()">Удалить</button>'
+            : "")
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button>'
+        + "</div>";
+    openMgmtModal(html);
+}
+
+function spuOrgRoutesForNode(nodeId) {
+    const out = [];
+    const items = typeof shopMetricCatalogItems === "function" ? shopMetricCatalogItems() : [];
+    items.forEach(function (item) {
+        if (!item) return;
+        metricResultRoutes(item).forEach(function (r) {
+            if (!r || r.target_org_node_id !== nodeId || !r.spu_indicator_id) return;
+            out.push({ item: item, route: r });
+        });
+    });
+    return out;
+}
+
+function spuOrgRoutedValueHtml(nodeId) {
+    const month = selectedMonth || (typeof currentMonthValue === "function" ? currentMonthValue() : "");
+    const days = typeof metricRollupDaysForMonth === "function" ? metricRollupDaysForMonth(month) : [];
+    let html = "";
+    const seen = {};
+    spuOrgRoutesForNode(nodeId).forEach(function (pack) {
+        const item = pack.item;
+        const route = pack.route;
+        const key = (item && item.id) + ":" + (route.source || "") + ":" + (route.source_work_tab_id || "") + ":" + route.spu_indicator_id;
+        if (seen[key]) return;
+        seen[key] = true;
+        let value = 0;
+        if (route.source === "group_total" && route.source_work_tab_id) {
+            value = metricGroupRollupTotal(item, route.source_work_tab_id, days);
+        } else {
+            value = metricDeptRollupTotal(item, days);
+        }
+        const ind = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === route.spu_indicator_id;
+        });
+        html += "<div><span>" + escapeHtml((ind && ind.name) || item.name)
+            + "</span><b>" + metricRollupFormat(value) + "</b></div>";
+    });
+    return html;
+}
+
+function renderSpuOrgTreeHtml(mode) {
+    const canEdit = mode === "edit" && canEditSpuStructure();
+    function row(node) {
+        const owner = spuOrgEmployeeName(node.responsible_employee_id);
+        const metrics = spuOrgRoutedValueHtml(node.org_node_id);
+        let html = '<div class="spu-tree-node' + (node.is_active === false ? " spu-tree-off" : "") + '">'
+            + '<div class="spu-tree-head"><span class="spu-tree-name">' + escapeHtml(node.name)
+            + (node.is_active === false ? " · неактивен" : "") + "</span>"
+            + '<span class="spu-tree-owner">Ответственный: ' + escapeHtml(owner || "—") + "</span></div>";
+        if (metrics) html += '<div class="spu-tree-metrics">' + metrics + "</div>";
+        if (canEdit) {
+            html += '<div class="spu-tree-actions">'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'' + node.org_node_id + '\')">Редактировать</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'\',\'' + node.org_node_id + '\')">+ Поддепартамент</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',-1)">↑</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',1)">↓</button>'
+                + "</div>";
+        }
+        spuOrgChildren(node.org_node_id, true).forEach(function (ch) { html += row(ch); });
+        html += "</div>";
+        return html;
+    }
+    let html = '<div class="spu-tree"><div class="spu-tree-company">Компания</div>';
+    const roots = spuOrgChildren("", true);
+    if (!roots.length) html += '<div class="note">Структура ещё не задана. Добавьте департамент — названия не создаются автоматически.</div>';
+    roots.forEach(function (n) { html += row(n); });
+    html += "</div>";
+    return html;
+}
+
+function renderSpuStructureHtml() {
+    try { ensureManagement(); } catch (err) { console.error(err); }
+    const canEdit = canEditSpuStructure();
+    let html = '<p class="spu-ind-note">Административная структура СПУ для показателей и маршрутов. Это не раздел «Оргструктура»: карточки оргсхемы не изменяются. Показатели при создании департамента не копируются.</p>';
+    if (canEdit) {
+        html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgNodeForm()">+ Добавить департамент</button></div>';
+    } else {
+        html += '<div class="note">Просмотр. Изменять структуру может только пользователь с правом «СПУ · структура» или «СПУ · показатели».</div>';
+    }
+    html += renderSpuOrgTreeHtml(canEdit ? "edit" : "view");
+    return html;
+}
+
+function spuOrgRunSelfTests() {
+    ensureSpuOrgNodes();
+    const snap = JSON.parse(JSON.stringify(appData.management.spuOrgNodes));
+    const results = [];
+    function ok(name, pass, detail) {
+        results.push({ name: name, pass: !!pass, detail: detail || "" });
+    }
+    try {
+        const r1 = spuOrgUpsertNode({ name: "Тест департамент склада", parent_org_node_id: "", responsible_employee_id: "", is_active: true }, false);
+        ok("создание узла", r1.ok && r1.node && r1.node.org_node_id, r1.node && r1.node.org_node_id);
+        const parentId = r1.node && r1.node.org_node_id;
+        const c1 = spuOrgUpsertNode({ name: "Тест грузчики", parent_org_node_id: parentId, is_active: true }, false);
+        const c2 = spuOrgUpsertNode({ name: "Тест товароразборщики", parent_org_node_id: parentId, is_active: true }, false);
+        const c3 = spuOrgUpsertNode({ name: "Тест руководители", parent_org_node_id: parentId, is_active: true }, false);
+        ok("дети", !!(c1.ok && c2.ok && c3.ok && c1.node.org_node_id !== c2.node.org_node_id), parentId);
+        const keep = c1.node.org_node_id;
+        const renamed = spuOrgUpsertNode({ org_node_id: parentId, name: "Складской департамент", parent_org_node_id: "", responsible_employee_id: r1.node.responsible_employee_id, is_active: true }, false);
+        ok("переименование без смены id", renamed.ok && renamed.node.org_node_id === parentId, parentId);
+        const cycle = spuOrgUpsertNode({ org_node_id: parentId, name: renamed.node.name, parent_org_node_id: keep, is_active: true }, false);
+        ok("цикл запрещён", !cycle.ok, cycle.error);
+        const emp = (mgmtAllEmployees() || []).find(function (e) { return e && e.id; });
+        if (emp) {
+            const rEmp = spuOrgUpsertNode({ org_node_id: parentId, name: "Складской департамент", parent_org_node_id: "", responsible_employee_id: emp.id, is_active: true }, false);
+            ok("ответственный employee_id", rEmp.ok && spuOrgGetNode(parentId).responsible_employee_id === emp.id, emp.id);
+        } else {
+            ok("ответственный employee_id", true, "нет сотрудников — пропуск");
+        }
+    } catch (err) {
+        ok("исключение", false, err && err.message ? err.message : String(err));
+    }
+    appData.management.spuOrgNodes = snap;
+    return results;
+}
+
 function ensureManagement() {
     if (!appData || typeof appData !== "object") return;
     if ((!appData.management || typeof appData.management !== "object") && appData.spu && typeof appData.spu === "object") {
@@ -24647,12 +25173,14 @@ function ensureManagement() {
     if (!root.deptHeads || typeof root.deptHeads !== "object") root.deptHeads = {};
     if (!root.meetingWeeks || typeof root.meetingWeeks !== "object") root.meetingWeeks = {};
     if (!Array.isArray(root.spuDepartments)) root.spuDepartments = [];
+    if (!Array.isArray(root.spuOrgNodes)) root.spuOrgNodes = [];
     if (!Array.isArray(root.spuResponsibilities)) root.spuResponsibilities = [];
     appData.spu = root;
     if (wtBusy.management) return;
     wtBusy.management = true;
     try {
         ensureSpuDepartments();
+        ensureSpuOrgNodes();
         ensureSpuDefaultIndicators();
         ensureSpuIndicatorOrgLinks();
         ensureSpuOrgHistory();
@@ -25545,6 +26073,10 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
         if (!mid) return 0;
         const catalogItem = shopMetricCatalogById(mid);
         if (catalogItem && metricRollupEnabled(catalogItem) && metricDepartmentId(catalogItem) !== "shop") {
+            const src = indicator && indicator.source_result;
+            if (src === "group_total" && indicator.source_work_tab_id) {
+                return metricGroupRollupTotal(catalogItem, indicator.source_work_tab_id, days || []);
+            }
             return metricDeptRollupTotal(catalogItem, days || []);
         }
         const codes = mgmtMetricFactDeptCodes(deptCode, mid);
@@ -25787,7 +26319,8 @@ function renderManagement() {
             { id: "tasks", label: "Ежедневные задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement() },
             { id: "events", label: "График мероприятий", show: canOpenManagement() },
             { id: "finance", label: "Ввод финансовых показателей", show: userHasPerm("management", "view") || canOpenManagement() },
-            { id: "settings", label: "Настройка показателей", show: canEditMgmtIndicators() || isAppAdmin() || canOpenManagement() }
+            { id: "settings", label: "Настройка показателей", show: canEditMgmtIndicators() || isAppAdmin() || canOpenManagement() },
+            { id: "structure", label: "Структура СПУ", show: canOpenManagement() || canEditSpuStructure() || isAppAdmin() }
         ].filter(function (t) { return t.show; });
         if (!items.length) {
             body.innerHTML = '<div class="note">Нет доступа к СПУ.</div>';
@@ -25806,7 +26339,8 @@ function renderManagement() {
             meetings: "Протокол встреч",
             tasks: "Ежедневные задачи",
             events: "График мероприятий",
-            settings: "Настройка показателей"
+            settings: "Настройка показателей",
+            structure: "Структура СПУ"
         };
         const head = document.getElementById("mgmtPageTitle");
         if (head) head.textContent = titles[mgmtTab] || "СПУ";
@@ -25819,6 +26353,7 @@ function renderManagement() {
         else if (mgmtTab === "tasks") body.innerHTML = renderMgmtTasksHtml();
         else if (mgmtTab === "meetings") body.innerHTML = renderMgmtMeetingsHtml();
         else if (mgmtTab === "events") body.innerHTML = renderMgmtEventsHtml();
+        else if (mgmtTab === "structure") body.innerHTML = renderSpuStructureHtml();
         else body.innerHTML = renderMgmtSettingsHtml();
     } catch (err) {
         console.error(err);
@@ -26330,6 +26865,15 @@ function renderMgmtDashboardHtml() {
                 + '<div class="spu-chart-body">' + drawn.svg + "</div>"
                 + '<div class="spu-leg">' + drawn.legend + "</div></div>";
         });
+        html += '<div style="margin-top:16px"><h4 style="margin:0 0 6px">Структура СПУ</h4>'
+            + '<div class="note">Значения маршрутов за выбранный месяц метрик, без сложения итогов разных уровней.</div>';
+        try {
+            html += renderSpuOrgTreeHtml("view");
+        } catch (treeErr) {
+            console.error(treeErr);
+            html += '<div class="note">Не удалось показать структуру СПУ</div>';
+        }
+        html += "</div>";
         html += "</div>";
         return html;
     } catch (err) {
