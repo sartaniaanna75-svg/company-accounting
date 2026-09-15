@@ -519,6 +519,19 @@
         .pf-dept .pf-sticky-0,
         .pf-dept .pf-sticky-1,
         .pf-dept .pf-sticky-2 { background: #cfe2f3; font-weight: 700; }
+        .pf-dept-d1 td,
+        .pf-dept-d1 .pf-sticky-0,
+        .pf-dept-d1 .pf-sticky-1,
+        .pf-dept-d1 .pf-sticky-2 { background: #dceaf7; font-weight: 700; }
+        .pf-dept-d2 td,
+        .pf-dept-d2 .pf-sticky-0,
+        .pf-dept-d2 .pf-sticky-1,
+        .pf-dept-d2 .pf-sticky-2 { background: #e8f1f8; font-weight: 600; }
+        .pf-ind-row td,
+        .pf-ind-row .pf-sticky-0,
+        .pf-ind-row .pf-sticky-1,
+        .pf-ind-row .pf-sticky-2 { background: #fff; font-weight: 400; }
+        .pf-name-pad { display: inline-block; }
         .pf-pct { text-align: center; min-width: 72px; width: 72px; }
         .pf-n { text-align: right; min-width: 78px; width: 78px; font-variant-numeric: tabular-nums; }
         .pf-na { background: #f8fafc; color: #94a3b8; }
@@ -24805,6 +24818,10 @@ function ensureSpuOrgNodes() {
         n.sort_order = Number(n.sort_order || 0);
         if (!n.created_at) n.created_at = spuOrgNowIso();
         if (!n.updated_at) n.updated_at = n.created_at;
+        n.org_node_id = String(n.org_node_id || "").trim();
+        const parent = String(n.parent_org_node_id == null ? "" : n.parent_org_node_id).trim();
+        const altParent = String(n.parent_node_id || "").trim();
+        n.parent_org_node_id = parent || altParent || "";
     });
 }
 
@@ -24863,12 +24880,9 @@ function spuOrgNextId() {
 
 function mgmtIndicatorTargetNodeId(it) {
     if (!it) return "";
-    if (it.target_org_node_id && spuOrgGetNode(it.target_org_node_id)) return it.target_org_node_id;
-    if (it.spu_department_id && spuOrgGetNode(it.spu_department_id)) return it.spu_department_id;
-    const linked = spuOrgNodes().find(function (n) {
-        return n && n.spu_department_id && it.spu_department_id && n.spu_department_id === it.spu_department_id;
-    });
-    return linked ? linked.org_node_id : "";
+    const id = String(it.target_org_node_id || "").trim();
+    if (id && spuOrgGetNode(id)) return id;
+    return "";
 }
 
 function spuOrgIndicatorsForNode(nodeId, includeInactiveInd) {
@@ -25572,14 +25586,22 @@ function renderSpuOrgTreeHtml(mode) {
             + (node.is_active === false ? " · неактивен" : "") + "</span>"
             + '<span class="spu-tree-owner">Ответственный: ' + escapeHtml(owner || "—") + "</span></div>";
         if (metrics) html += '<div class="spu-tree-metrics">' + metrics + "</div>";
-        if (canEdit) {
-            html += '<div class="spu-tree-actions">'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'' + node.org_node_id + '\')">Редактировать</button>'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'\',\'' + node.org_node_id + '\')">+ Поддепартамент</button>'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="confirmDeleteSpuOrgNode(\'' + node.org_node_id + '\')">Удалить</button>'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',-1)">↑</button>'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',1)">↓</button>'
-                + "</div>";
+        const canInd = typeof canEditMgmtIndicators === "function" && canEditMgmtIndicators();
+        if (canEdit || canInd) {
+            html += '<div class="spu-tree-actions">';
+            if (canEdit) {
+                html += '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'' + node.org_node_id + '\')">Редактировать</button>'
+                    + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgNodeForm(\'\',\'' + node.org_node_id + '\')">+ Поддепартамент</button>';
+            }
+            if (canEdit || canInd) {
+                html += '<button type="button" class="btn btn-primary btn-small" onclick="openSpuOrgIndicatorForm(\'' + node.org_node_id + '\')">+ Показатель</button>';
+            }
+            if (canEdit) {
+                html += '<button type="button" class="btn btn-secondary btn-small" onclick="confirmDeleteSpuOrgNode(\'' + node.org_node_id + '\')">Удалить</button>'
+                    + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',-1)">↑</button>'
+                    + '<button type="button" class="btn btn-secondary btn-small" onclick="spuOrgMoveSibling(\'' + node.org_node_id + '\',1)">↓</button>';
+            }
+            html += "</div>";
         }
         spuOrgChildren(node.org_node_id, true).forEach(function (ch) { html += row(ch); });
         html += "</div>";
@@ -27576,7 +27598,7 @@ function renderMgmtPlanFactHtml() {
         + '<div><label>Ответственный</label><select onchange="setMgmtPfHead(this.value)">' + mgmtPfLeaderOptions(mgmtPfHead) + "</select></div>"
         + '<div><label>Департамент</label><select onchange="setMgmtPfDept(this.value)">' + mgmtSpuDeptOptionsHtml(mgmtPfDept) + "</select></div>"
         + "</div>";
-    html += '<p class="note">Структура берётся из «Структура СПУ». Переименование узла сразу видно здесь, org_node_id не меняется.</p>';
+    html += '<p class="note">Дерево — из «Структура СПУ». Показатель виден у того узла, куда назначен «Относится к». Старые показатели без назначения — внизу, их можно привязать вручную.</p>';
     html += '<div class="table-wrapper pf-wrap"><table class="mgmt-table pf-table"><thead>'
         + "<tr>"
         + '<th class="pf-left pf-sticky-0" rowspan="2">№</th>'
@@ -27602,7 +27624,7 @@ function renderMgmtPlanFactHtml() {
         }
         return false;
     }
-    function renderPfIndicatorRow(it, headEmp, indent, editOk) {
+    function renderPfIndicatorRow(it, headEmp, depth, editOk) {
         n += 1;
         const a = mgmtPfRead(it, w1.from);
         const b = mgmtPfRead(it, w2.from);
@@ -27612,12 +27634,13 @@ function renderMgmtPlanFactHtml() {
         const st = good == null ? "Нет данных" : (good === 0 ? "Без изменений" : (good > 0 ? "Улучшение" : "Ухудшение"));
         const dCls = good == null ? "pf-na" : (good === 0 ? "" : (good > 0 ? "mgmt-ok" : "mgmt-bad"));
         const owner = it.owner_employee_id ? getEmployee(it.owner_employee_id) : headEmp;
-        const pad = indent ? Array(indent + 1).join("· ") : "";
-        html += "<tr>"
+        const pad = 10 + Number(depth || 0) * 14;
+        html += '<tr class="pf-ind-row">'
             + '<td class="pf-left pf-sticky-0">' + n + "</td>"
             + '<td class="pf-left pf-sticky-1">' + escapeHtml(owner ? owner.name : (headEmp ? headEmp.name : "—")) + "</td>"
-            + '<td class="pf-left pf-sticky-2 wrap">' + escapeHtml(pad + it.name)
-            + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
+            + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad" style="padding-left:' + pad + 'px">· '
+            + escapeHtml(it.name) + "</span>"
+            + '<div class="mgmt-src" style="padding-left:' + pad + 'px">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
             + mgmtPfNumCell(it, w1.from, "plan", a, editOk)
             + mgmtPfNumCell(it, w1.from, "fact", a, editOk)
             + '<td class="pf-pct ' + mgmtPctClass(it, a.pct) + '">' + escapeHtml(mgmtFormatPct(a.pct)) + "</td>"
@@ -27631,6 +27654,7 @@ function renderMgmtPlanFactHtml() {
     }
     function renderPfNode(node, depth) {
         if (!node || node.is_active === false) return;
+        try {
         if (mgmtPfDept) {
             const isSel = node.org_node_id === mgmtPfDept;
             const isDesc = spuOrgDescendantIds(mgmtPfDept).indexOf(node.org_node_id) !== -1;
@@ -27639,15 +27663,18 @@ function renderMgmtPlanFactHtml() {
                 return;
             }
         }
+        const children = spuOrgChildren(node.org_node_id, false);
         const headNow = node.responsible_employee_id || "";
-        if (mgmtPfHead && headNow !== mgmtPfHead) {
+        if (mgmtPfHead) {
             let hit = headNow === mgmtPfHead;
-            spuOrgDescendantIds(node.org_node_id).forEach(function (id) {
-                const ch = spuOrgGetNode(id);
-                if (ch && ch.responsible_employee_id === mgmtPfHead) hit = true;
-            });
             if (!hit) {
-                spuOrgChildren(node.org_node_id, false).forEach(function (ch) { renderPfNode(ch, depth + 1); });
+                spuOrgDescendantIds(node.org_node_id).forEach(function (id) {
+                    const ch = spuOrgGetNode(id);
+                    if (ch && ch.responsible_employee_id === mgmtPfHead) hit = true;
+                });
+            }
+            if (!hit) {
+                children.forEach(function (ch) { renderPfNode(ch, depth + 1); });
                 return;
             }
         }
@@ -27655,8 +27682,9 @@ function renderMgmtPlanFactHtml() {
         const items = spuOrgIndicatorsForNode(node.org_node_id).filter(spuOrgShowInPlanFact);
         items.forEach(function (it) { assigned[it.indicator_id] = true; });
         const collapsed = !!mgmtPfCollapsed[node.org_node_id];
-        const pad = depth ? Array(depth + 1).join("· ") : "";
-        html += '<tr class="pf-dept">'
+        const pad = 4 + Number(depth || 0) * 14;
+        const dCls = depth >= 2 ? "pf-dept pf-dept-d2" : (depth === 1 ? "pf-dept pf-dept-d1" : "pf-dept");
+        html += '<tr class="' + dCls + '">'
             + '<td class="pf-left pf-sticky-0"></td>'
             + '<td class="pf-left pf-sticky-1">'
             + (canHead
@@ -27665,43 +27693,49 @@ function renderMgmtPlanFactHtml() {
                     + mgmtLeaderOptions(headNow) + "</select>"
                 : escapeHtml(headEmp ? headEmp.name : "—"))
             + "</td>"
-            + '<td class="pf-left pf-sticky-2" colspan="1">' + escapeHtml(pad + node.name)
+            + '<td class="pf-left pf-sticky-2" colspan="1"><span class="pf-name-pad" style="padding-left:' + pad + 'px">'
+            + escapeHtml(node.name) + "</span>"
             + '<button type="button" class="pf-toggle" onclick="toggleMgmtPfDept(\''
-            + escapeAttribute(node.org_node_id) + "')\">" + (collapsed ? "▲" : "▼") + "</button></td>";
+            + escapeAttribute(node.org_node_id) + "')\">" + (collapsed ? "▶" : "▼") + "</button></td>";
         for (let i = 0; i < 9; i++) html += "<td></td>";
         html += "</tr>";
-        if (!collapsed) {
-            if (!items.length && !node.aggregate_from_children) {
-                html += '<tr><td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
-                    + '<td class="pf-left pf-sticky-2"><span class="mgmt-src">Нет показателей. Добавьте в «Структура СПУ».</span></td>'
-                    + '<td colspan="9" class="pf-na">—</td></tr>';
-            }
-            items.forEach(function (it) {
-                renderPfIndicatorRow(it, headEmp, depth + 1, canEdit);
-            });
-            if (node.aggregate_from_children) {
-                const agg = {
-                    indicator_id: "agg:" + node.org_node_id,
-                    name: "Итого",
-                    source_type: "aggregate_children",
-                    target_org_node_id: node.org_node_id,
-                    unit: items[0] ? items[0].unit : "money"
-                };
-                renderPfIndicatorRow(agg, headEmp, depth + 1, false);
-            }
-            spuOrgChildren(node.org_node_id, false).forEach(function (ch) { renderPfNode(ch, depth + 1); });
+        if (collapsed) return;
+        items.forEach(function (it) {
+            renderPfIndicatorRow(it, headEmp, depth + 1, canEdit);
+        });
+        if (node.aggregate_from_children) {
+            renderPfIndicatorRow({
+                indicator_id: "agg:" + node.org_node_id,
+                name: "Итого",
+                source_type: "aggregate_children",
+                target_org_node_id: node.org_node_id,
+                unit: items[0] ? items[0].unit : "money"
+            }, headEmp, depth + 1, false);
+        }
+        children.forEach(function (ch) { renderPfNode(ch, depth + 1); });
+        } catch (nodeErr) {
+            console.error(nodeErr);
         }
     }
     spuOrgChildren("", false).forEach(function (n) { renderPfNode(n, 0); });
     const leftover = mgmtIndicators().filter(function (it) {
-        return spuOrgShowInPlanFact(it) && !assigned[it.indicator_id] && !mgmtIndicatorTargetNodeId(it);
+        return spuOrgShowInPlanFact(it) && !assigned[it.indicator_id];
     });
     if (leftover.length && !mgmtPfDept) {
         html += '<tr class="pf-dept"><td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
-            + '<td class="pf-left pf-sticky-2">Не назначены на структуру СПУ</td>';
+            + '<td class="pf-left pf-sticky-2">Не назначены на узел Структуры СПУ</td>';
         for (let i = 0; i < 9; i++) html += "<td></td>";
         html += "</tr>";
-        leftover.forEach(function (it) { renderPfIndicatorRow(it, null, 1, canEdit); });
+        leftover.forEach(function (it) {
+            renderPfIndicatorRow(it, null, 1, canEdit);
+            if (canEdit || canEditSpuStructure()) {
+                html += '<tr class="pf-ind-row"><td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
+                    + '<td class="pf-left pf-sticky-2 wrap" colspan="10">Относится к: <select onchange="setMgmtIndicatorOrgNode(\''
+                    + it.indicator_id + "',this.value)\">"
+                    + mgmtSpuOrgOptionsHtml(mgmtIndicatorTargetNodeId(it), false)
+                    + "</select></td></tr>";
+            }
+        });
     }
 
     html += "</tbody></table></div>";
@@ -28658,7 +28692,7 @@ function renderMgmtSettingsHtml() {
     html += "</div>";
     html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openMgmtIndicatorForm()">+ Добавить показатель</button></div>';
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Показатель</th><th>Источник</th><th>Подразделения</th><th>Раздел СПУ</th><th>Панель</th><th></th></tr></thead><tbody>";
+        + "<th>Показатель</th><th>Источник</th><th>Относится к</th><th>Раздел панели</th><th>Панель</th><th></th></tr></thead><tbody>";
     if (!filtered.length) {
         html += '<tr><td colspan="6"><div class="empty-row">В этом разделе пока нет показателей.</div></td></tr>';
     }
@@ -28666,15 +28700,16 @@ function renderMgmtSettingsHtml() {
         try {
         if (!it) return;
         const m = it.source_metric_id ? shopMetricCatalogById(it.source_metric_id) : null;
-        const units = (it.org_unit_ids || []).map(function (id) {
-            const u = spuOrgUnitById(id);
-            return u ? u.label : id;
-        }).join(", ");
+        const canAssign = canEditMgmtIndicators() || canEditSpuStructure();
         html += "<tr><td class=\"wrap\">" + escapeHtml(it.name)
             + (m ? '<div class="mgmt-src">' + escapeHtml(m.name) + "</div>" : "")
             + "</td>"
             + '<td class="wrap">' + escapeHtml(mgmtIndicatorOriginLabel(it)) + "</td>"
-            + '<td class="wrap">' + escapeHtml(units || "—") + "</td>"
+            + "<td>" + (canAssign
+                ? "<select onchange=\"setMgmtIndicatorOrgNode('" + it.indicator_id + "',this.value)\">"
+                    + mgmtSpuOrgOptionsHtml(mgmtIndicatorTargetNodeId(it), false) + "</select>"
+                : escapeHtml((spuOrgGetNode(mgmtIndicatorTargetNodeId(it)) || {}).name || "—"))
+            + "</td>"
             + "<td><select onchange=\"setMgmtIndicatorHubFromList('" + it.indicator_id + "',this.value)\">"
             + mgmtSpuDisplaySectionOptions(mgmtIndicatorHubKey(it)) + "</select></td>"
             + '<td><label class="check"><input type="checkbox"' + (it.show_on_dashboard ? " checked" : "")
@@ -28987,7 +29022,7 @@ function openMgmtIndicatorForm(id) {
         + "<h4>Основное</h4>"
         + '<div class="form-group full"><label for="miName">Название показателя</label><input id="miName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
         + '<div class="form-group"><label for="miDept">Подразделение Work Time</label><select id="miDept" onchange="refreshMgmtIndicatorSourceFields()">' + mgmtDeptOptions(it.department_id) + "</select></div>"
-        + '<div class="form-group"><label for="miSpuDept">Департамент СПУ</label><select id="miSpuDept">' + mgmtSpuOrgOptionsHtml(it.target_org_node_id || it.spu_department_id || "", false) + "</select></div>"
+        + '<div class="form-group"><label for="miSpuDept">Относится к</label><select id="miSpuDept">' + mgmtSpuOrgOptionsHtml(it.target_org_node_id || "", false) + "</select></div>"
         + '<div class="form-group"><label for="miOwner">Ответственный</label><select id="miOwner">'
         + mgmtEmployeeOptions(it.owner_employee_id || (typeof orgManagerForSpuDept === "function" ? orgManagerForSpuDept(it.spu_department_id || mgmtDefaultSpuDeptId(it)) : ""))
         + "</select></div>"
