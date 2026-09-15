@@ -3389,7 +3389,33 @@
         tr.cr-row-give td { background: #f0fdf4; }
         tr.cr-row-rebill td { background: #ecfeff; }
         tr.cr-row-driver td { background: #fff1f2; }
-        .cr-filters { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+        .cr-filters-box {
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 10px 10px;
+            margin: 0 0 8px;
+        }
+        .cr-filters-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            margin: 0 0 8px;
+        }
+        .cr-filters-head b {
+            font-size: 11px;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #334155;
+        }
+        .cr-filters-reset {
+            background: #eff6ff;
+            border-color: #93c5fd;
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+        .cr-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
         .cr-filters label { font-size: 10px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
         .cr-filters select, .cr-filters input[type="search"], .cr-filters input[type="month"], .cr-filters input[type="date"] {
             font-size: 12px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; min-width: 120px; background: #fff;
@@ -3398,6 +3424,33 @@
         .cr-filters .cr-period-row { display: flex; align-items: center; gap: 4px; }
         .cr-filters .cr-period-row input[type="date"] { min-width: 132px; max-width: 148px; }
         .cr-filters .cr-period-row span { color: var(--muted); font-size: 12px; }
+        .cr-filters label.cr-filter-on { color: #1e3a8a; font-weight: 600; }
+        .cr-filters label.cr-filter-on select,
+        .cr-filters label.cr-filter-on input {
+            border-color: #93c5fd;
+            background: #eff6ff;
+        }
+        .cr-from-video {
+            display: inline-block;
+            margin-left: 6px;
+            background: #e0e7ff;
+            color: #312e81;
+            border: 1px solid #818cf8;
+            border-radius: 6px;
+            padding: 1px 7px;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 16px;
+            white-space: nowrap;
+            cursor: help;
+            vertical-align: middle;
+        }
+        .cr-stage-cell {
+            white-space: nowrap;
+        }
+        .cr-stage-cell select {
+            vertical-align: middle;
+        }
         .cr-wrap { overflow: auto; max-height: calc(100vh - 250px); border: 1px solid var(--border); border-radius: 8px; background: #fff; }
         .cr-table { width: 100%; border-collapse: collapse; font-size: 12px; }
         .cr-table th, .cr-table td { border-bottom: 1px solid #e5e7eb; padding: 3px 6px; vertical-align: middle; height: 28px; }
@@ -3486,6 +3539,13 @@
         .cr-ana table { width: 100%; font-size: 12px; border-collapse: collapse; background: #fff; }
         .cr-ana th, .cr-ana td { padding: 4px 6px; border-bottom: 1px solid #eef2f7; text-align: left; }
         tr.cr-extra-date td { background: #fffbeb; font-weight: 700; color: #92400e; position: sticky; left: 0; }
+        .cr-extra-views { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+        .cr-extra-views button { font-size: 12px; }
+        .cr-extra-views button.on { background: #1d4ed8; color: #fff; border-color: #1d4ed8; }
+        .cr-pill.extra-free { background: #fef3c7; color: #92400e; }
+        .cr-pill.extra-id { background: #dbeafe; color: #1e40af; }
+        .cr-pill.extra-given { background: #dcfce7; color: #166534; }
+        .rev-modal.cr-modal-sm { width: min(460px, 94vw); }
         .cr-cash { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; min-height: 28px; }
         .cr-cash label { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #0f172a; font-weight: 600; cursor: pointer; }
         .cr-cash input { width: 16px; height: 16px; margin: 0; }
@@ -28314,8 +28374,8 @@ const CR_OUTCOME_DEFAULTS = [
 
 let crUi = {
     tab: "all", author: "", driver: "", picker: "", adj: "", reason: "", result: "", q: "", month: "",
-    dateFrom: "", dateTo: "",
-    driverView: "all", giveView: "all", rebillView: "all", videoView: "all",
+    dateFrom: "", dateTo: "", client: "", vehicle: "",
+    driverView: "all", giveView: "all", rebillView: "all", videoView: "all", extraView: "all",
     anaRole: "", anaEmp: "", anaType: "", anaOpen: "", settingsTab: "reasons"
 };
 let crDraftLines = [];
@@ -28421,6 +28481,14 @@ function ensureCustomerReturns(data) {
             is_active: o.is_active !== false
         });
     });
+    store.videoResults.forEach(function (v) {
+        if (!v) return;
+        if (v.next_stage_id) v.next_stage_id = crResolveStageId(v.next_stage_id) || v.next_stage_id;
+    });
+    store.outcomes.forEach(function (o) {
+        if (!o) return;
+        if (o.next_stage_id) o.next_stage_id = crResolveStageId(o.next_stage_id) || o.next_stage_id;
+    });
     store.adjustments.forEach(function (a) {
         if (!a || !CR_REASON_CODES[a.code]) return;
         if (a.legacy_reason == null) {
@@ -28470,6 +28538,7 @@ function crNormalizeItem(it, store) {
     if (it.sales_author_employee_id == null) it.sales_author_employee_id = "";
     if (it.driver_employee_id == null) it.driver_employee_id = "";
     if (it.vehicle_id == null) it.vehicle_id = "";
+    crLinkLegacyVehicleId(it, store);
     if (it.extra_on_register == null) it.extra_on_register = false;
     if (it.product_name == null) it.product_name = "";
     if (it.product_ext_id == null) it.product_ext_id = "";
@@ -28501,6 +28570,9 @@ function crNormalizeItem(it, store) {
     if (it.picker_employee_id == null) it.picker_employee_id = "";
     if (it.comment == null) it.comment = "";
     if (it.given_to_client == null) it.given_to_client = false;
+    if (!it.extra_status) {
+        it.extra_status = it.given_to_client ? "given" : "free";
+    }
     if (it.given_at == null) it.given_at = "";
     if (it.given_by_user_id == null) it.given_by_user_id = "";
     if (it.rebilled == null) it.rebilled = false;
@@ -28526,6 +28598,18 @@ function crNormalizeItem(it, store) {
     if (it.video_result_id == null) it.video_result_id = "";
     if (it.stage_status == null) it.stage_status = "";
     if (!it.process_stage) it.process_stage = crInferLegacyStage(it);
+    if (it.process_stage) it.process_stage = crResolveStageId(it.process_stage) || it.process_stage;
+    if (it.video_result_id && (it.process_stage === "video" || !it.process_stage)) {
+        const vrCatch = ((store && store.videoResults) || []).find(function (a) {
+            return a && (a.video_result_id === it.video_result_id || a.source_outcome_id === it.video_result_id);
+        });
+        const nextCatch = crResolveStageId(vrCatch && vrCatch.next_stage_id);
+        if (nextCatch && nextCatch !== "video") {
+            it.process_stage = nextCatch;
+            const kindCatch = crStageKind(nextCatch);
+            it.stage_status = (nextCatch === "closed" || kindCatch === "closed") ? "done" : "open";
+        }
+    }
     if (!it.stage_status) {
         it.stage_status = (it.process_stage === "closed" || it.completed) ? "done" : "open";
     }
@@ -28637,6 +28721,19 @@ function crStageById(id) {
         || null;
 }
 
+function crResolveStageId(value) {
+    const raw = String(value || "").replace(/\s+/g, " ").trim();
+    if (!raw) return "";
+    const byId = crStageById(raw);
+    if (byId && byId.stage_id) return byId.stage_id;
+    const lower = raw.toLowerCase();
+    const all = crStagesList().concat(CR_STAGE_DEFAULTS);
+    const byName = all.find(function (s) {
+        return s && String(s.name || "").replace(/\s+/g, " ").trim().toLowerCase() === lower;
+    });
+    return byName && byName.stage_id ? byName.stage_id : "";
+}
+
 function crStageKind(id) {
     const s = crStageById(id);
     if (s && s.kind) return s.kind;
@@ -28653,19 +28750,23 @@ function crStageName(id) {
     return legacy ? legacy.name : (id || "");
 }
 
-function crStageOptions(selected, withClosed) {
+function crStageOptions(selected, withClosed, emptyLabel) {
+    const sel = crResolveStageId(selected) || "";
     let html = "";
     let seen = false;
+    if (emptyLabel != null) {
+        html += '<option value=""' + (!sel ? " selected" : "") + ">" + escapeHtml(emptyLabel) + "</option>";
+    }
     crStagesList().forEach(function (s) {
         if (!s || !s.stage_id) return;
-        if (s.is_active === false && s.stage_id !== selected) return;
-        if (!withClosed && (s.kind === "closed" || s.stage_id === "closed") && s.stage_id !== selected) return;
-        if (s.stage_id === selected) seen = true;
-        html += '<option value="' + escapeAttribute(s.stage_id) + '"' + (s.stage_id === selected ? " selected" : "") + ">"
+        if (s.is_active === false && s.stage_id !== sel) return;
+        if (!withClosed && (s.kind === "closed" || s.stage_id === "closed") && s.stage_id !== sel) return;
+        if (s.stage_id === sel) seen = true;
+        html += '<option value="' + escapeAttribute(s.stage_id) + '"' + (s.stage_id === sel ? " selected" : "") + ">"
             + escapeHtml(s.name || s.stage_id) + (s.is_active === false ? " (неактивен)" : "") + "</option>";
     });
-    if (selected && !seen) {
-        html += '<option value="' + escapeAttribute(selected) + '" selected>' + escapeHtml(crStageName(selected) || selected) + " (архив)</option>";
+    if (sel && !seen) {
+        html += '<option value="' + escapeAttribute(sel) + '" selected>' + escapeHtml(crStageName(sel) || sel) + " (архив)</option>";
     }
     return html;
 }
@@ -28728,14 +28829,17 @@ function crReasonSendsToRecount(reasonId) {
 function crCreateStageForItem(it) {
     if (it && it.extra_on_register) {
         const extra = crReasonByCode("extra");
-        if (extra && extra.default_stage_id) return extra.default_stage_id;
+        if (extra && extra.default_stage_id) return crResolveStageId(extra.default_stage_id) || "extra";
         return "extra";
     }
     const reasonId = crItemReasonId(it);
     const r = crReasonById(reasonId);
-    if (r && r.default_stage_id) return r.default_stage_id;
+    if (r && r.default_stage_id) {
+        const st = crResolveStageId(r.default_stage_id);
+        if (st) return st;
+    }
     if (r && r.send_to_recount === false) return "hold";
-    return crDefaultStageForReason(reasonId);
+    return crResolveStageId(crDefaultStageForReason(reasonId)) || "recount";
 }
 
 function crDefaultStageForReason(reasonId) {
@@ -28789,8 +28893,81 @@ function crAdjIsLegacyReason(a) {
 }
 
 function crVehiclePlate(id) {
-    const v = (crStore().vehicles || []).find(function (x) { return x && x.vehicle_id === id; });
-    return v ? (v.plate || v.name || "") : "";
+    const v = crVehicleById(id);
+    if (v) return v.plate || v.name || "";
+    return id || "";
+}
+
+function crNormPlate(value) {
+    return String(value || "").replace(/\s+/g, "").toUpperCase();
+}
+
+function crVehicleById(id, store) {
+    if (!id) return null;
+    const list = ((store && store.vehicles) || (crStore().vehicles) || []);
+    return list.find(function (x) { return x && x.vehicle_id === id; }) || null;
+}
+
+function crVehicleLabel(v) {
+    if (!v) return "";
+    const plate = String(v.plate || "").trim();
+    const name = String(v.name || "").trim();
+    if (plate && name && name !== plate) return plate + " — " + name;
+    return plate || name || v.vehicle_id || "";
+}
+
+function crLinkLegacyVehicleId(it, store) {
+    if (!it || !it.vehicle_id) return;
+    const list = (store && store.vehicles) || [];
+    if (crVehicleById(it.vehicle_id, store)) return;
+    if (/^veh_\d+$/i.test(String(it.vehicle_id))) return;
+    const key = crNormPlate(it.vehicle_id);
+    if (!key) return;
+    const matches = list.filter(function (v) { return v && crNormPlate(v.plate) === key; });
+    if (matches.length === 1) it.vehicle_id = matches[0].vehicle_id;
+}
+
+function crItemHasVideoPass(it) {
+    if (!it) return false;
+    if (it.video_result_id || it.video_outcome_id) return true;
+    const hist = it.history || [];
+    if (hist.some(function (h) { return h && (h.action === "video_result" || h.video_result_id); })) return true;
+    const log = it.stage_log || [];
+    return log.some(function (h) { return h && h.action === "video_result"; });
+}
+
+function crFmtStamp(iso) {
+    const raw = String(iso || "");
+    if (!raw) return "";
+    const day = crFmtDate(raw.slice(0, 10));
+    const tm = raw.length >= 16 ? raw.slice(11, 16) : "";
+    return tm ? day + " " + tm : day;
+}
+
+function crLastVideoPassInfo(it) {
+    const info = { result: "", date: "", user: "" };
+    if (!it) return info;
+    const hist = (it.history || []).slice().reverse();
+    const hit = hist.find(function (h) { return h && (h.action === "video_result" || h.video_result_id); })
+        || ((it.stage_log || []).slice().reverse().find(function (h) { return h && h.action === "video_result"; }));
+    if (hit) {
+        info.result = crVideoResultName(hit.video_result_id) || hit.result || String(hit.detail || "").split(" → ")[0] || "";
+        info.date = crFmtStamp(hit.at);
+        info.user = accessUserDisplayName(hit.user_id) || crEmpName(hit.user_id) || hit.user_id || "";
+    }
+    if (!info.result && it.video_result_id) info.result = crVideoResultName(it.video_result_id) || "";
+    return info;
+}
+
+function crVideoFromBadge(it) {
+    if (!crItemHasVideoPass(it)) return "";
+    const info = crLastVideoPassInfo(it);
+    const tip = [
+        info.result ? "Последний результат видео: " + info.result : "",
+        info.date ? "Дата: " + info.date : "",
+        info.user ? "Сотрудник: " + info.user : ""
+    ].filter(Boolean).join("\n") || "Эта позиция уже проходила просмотр видео";
+    return ' <span class="cr-from-video" title="' + escapeAttribute(tip) + '">🎥 С видео</span>';
 }
 
 function crIsExtraAdj(it) {
@@ -28811,10 +28988,12 @@ function crIsRecountAdj(it) {
 }
 
 function crIsDriverCase(it) {
-    if (!it || crIsExtraAdj(it)) return false;
-    if (crIsDriverAdj(it)) return true;
-    if (it.recount_result === "driver") return true;
+    if (!it) return false;
+    if (crProcessStage(it) === "driver") return true;
     if (it.charged_to_driver || it.found_at_client) return true;
+    if (it.recount_result === "driver" && crProcessStage(it) !== "video") return true;
+    if (crIsExtraAdj(it)) return false;
+    if (crIsDriverAdj(it) && crProcessStage(it) !== "video" && crProcessStage(it) !== "recount" && crProcessStage(it) !== "give" && crProcessStage(it) !== "rebill") return true;
     return false;
 }
 
@@ -28950,9 +29129,58 @@ function crEmpOptions(selected, kind) {
 
 function crVehicleOptions(selected) {
     let html = '<option value="">—</option>';
-    (crStore().vehicles || []).filter(function (v) { return v && v.is_active !== false; }).forEach(function (v) {
+    const list = (crStore().vehicles || []).slice().sort(function (a, b) {
+        return String((a && a.plate) || "").localeCompare(String((b && b.plate) || ""), "ru");
+    });
+    let seen = false;
+    list.forEach(function (v) {
+        if (!v || !v.vehicle_id) return;
+        if (v.is_active === false && v.vehicle_id !== selected) return;
+        if (v.vehicle_id === selected) seen = true;
         html += '<option value="' + escapeAttribute(v.vehicle_id) + '"' + (v.vehicle_id === selected ? " selected" : "") + ">"
-            + escapeHtml(v.plate || v.name || v.vehicle_id) + "</option>";
+            + escapeHtml(crVehicleLabel(v) + (v.is_active === false ? " (неактивен)" : "")) + "</option>";
+    });
+    if (selected && !seen) {
+        html += '<option value="' + escapeAttribute(selected) + '" selected>' + escapeHtml(crVehiclePlate(selected) || selected) + "</option>";
+    }
+    return html;
+}
+
+function crClientFilterOptions(selected) {
+    const names = {};
+    (crStore().items || []).forEach(function (it) {
+        if (!it || it.is_deleted) return;
+        const n = String(it.client_name || "").trim();
+        if (n) names[n] = true;
+    });
+    const list = Object.keys(names).sort(function (a, b) { return a.localeCompare(b, "ru"); });
+    let html = '<option value="">Все</option>';
+    list.forEach(function (n) {
+        html += '<option value="' + escapeAttribute(n) + '"' + (n === selected ? " selected" : "") + ">" + escapeHtml(n) + "</option>";
+    });
+    if (selected && !names[selected]) {
+        html += '<option value="' + escapeAttribute(selected) + '" selected>' + escapeHtml(selected) + "</option>";
+    }
+    return html;
+}
+
+function crVehicleFilterOptions(selected) {
+    let html = '<option value="">Все</option>';
+    const seen = {};
+    const list = (crStore().vehicles || []).slice().sort(function (a, b) {
+        return String((a && a.plate) || "").localeCompare(String((b && b.plate) || ""), "ru");
+    });
+    list.forEach(function (v) {
+        if (!v || !v.vehicle_id) return;
+        seen[v.vehicle_id] = true;
+        html += '<option value="' + escapeAttribute(v.vehicle_id) + '"' + (v.vehicle_id === selected ? " selected" : "") + ">"
+            + escapeHtml(crVehicleLabel(v) + (v.is_active === false ? " (неактивен)" : "")) + "</option>";
+    });
+    (crStore().items || []).forEach(function (it) {
+        if (!it || !it.vehicle_id || seen[it.vehicle_id]) return;
+        seen[it.vehicle_id] = true;
+        html += '<option value="' + escapeAttribute(it.vehicle_id) + '"' + (it.vehicle_id === selected ? " selected" : "") + ">"
+            + escapeHtml(crVehiclePlate(it.vehicle_id) || it.vehicle_id) + "</option>";
     });
     return html;
 }
@@ -29055,6 +29283,8 @@ function crMatchFilters(it) {
     if (crUi.author && it.sales_author_employee_id !== crUi.author) return false;
     if (crUi.driver && it.driver_employee_id !== crUi.driver) return false;
     if (crUi.picker && it.picker_employee_id !== crUi.picker) return false;
+    if (crUi.client && String(it.client_name || "").trim() !== crUi.client) return false;
+    if (crUi.vehicle && String(it.vehicle_id || "") !== crUi.vehicle) return false;
     if (crUi.reason && crItemReasonId(it) !== crUi.reason) return false;
     if (crUi.result === "pending" && it.recount_result && it.recount_result !== "pending") return false;
     if (crUi.result && crUi.result !== "pending" && it.recount_result !== crUi.result) return false;
@@ -29099,7 +29329,9 @@ function crRebillJournal() {
 }
 
 function crDriverJournal() {
-    return crFiltered().filter(function (it) { return crIsDriverCase(it); });
+    return crFiltered().filter(function (it) {
+        return crProcessStage(it) === "driver" || crIsDriverCase(it);
+    });
 }
 
 function crViewFilter(list, view, doneFn) {
@@ -29117,17 +29349,47 @@ function crDriverJournalView() {
     return list;
 }
 
+function crExtraStatus(it) {
+    const s = String((it && it.extra_status) || "").trim();
+    if (s === "identified" || s === "given" || s === "free") return s;
+    if (it && it.given_to_client) return "given";
+    return "free";
+}
+
+function crExtraStatusPill(it) {
+    const s = crExtraStatus(it);
+    if (s === "given") return crPill("extra-given", "✓ Отдан клиенту");
+    if (s === "identified") return crPill("extra-id", "Определён клиент");
+    return crPill("extra-free", "Свободный");
+}
+
 function crExtraList() {
+    const view = crUi.extraView || "all";
     return (crStore().items || []).filter(function (it) {
         if (!it || it.is_deleted) return false;
         if (!crInPeriod(it)) return false;
         if (crProcessStage(it) !== "extra") return false;
         if (crUi.driver && it.driver_employee_id !== crUi.driver) return false;
+        if (view === "free") return crExtraStatus(it) === "free";
+        if (view === "identified") return crExtraStatus(it) === "identified";
+        if (view === "given") return crExtraStatus(it) === "given";
         return true;
     });
 }
 
 function crRenderExtraJournal(list) {
+    const can = crHasFullEdit() || crCanAct("extra");
+    const allExtra = (crStore().items || []).filter(function (it) {
+        return it && !it.is_deleted && crInPeriod(it) && crProcessStage(it) === "extra"
+            && (!crUi.driver || it.driver_employee_id === crUi.driver);
+    });
+    function extraCount(view) {
+        return allExtra.filter(function (it) { return view === "all" || crExtraStatus(it) === view; }).length;
+    }
+    function viewBtn(id, label) {
+        return '<button type="button" class="btn btn-small' + ((crUi.extraView || "all") === id ? " on" : "") + '" onclick="crSetExtraView(\'' + id + '\')">'
+            + label + " (" + extraCount(id) + ")</button>";
+    }
     const rows = list || [];
     const groups = {};
     rows.forEach(function (it) {
@@ -29139,23 +29401,126 @@ function crRenderExtraJournal(list) {
     let body = "";
     dates.forEach(function (d) {
         const dayRows = groups[d];
-        body += '<tr class="cr-extra-date"><td colspan="6">' + escapeHtml(crFmtDate(d) || "Без даты")
+        body += '<tr class="cr-extra-date"><td colspan="11">' + escapeHtml(crFmtDate(d) || "Без даты")
             + " · " + dayRows.length + "</td></tr>";
         dayRows.forEach(function (it) {
-            body += "<tr><td>" + escapeHtml(crFmtDate(it.date)) + "</td>"
+            const st = crExtraStatus(it);
+            let act = "—";
+            if (can && st === "free") {
+                act = '<button type="button" class="btn btn-small" onclick="crOpenExtraIdentify(\'' + it.return_id + '\')">Товар определён</button>';
+            } else if (can && st === "identified") {
+                act = '<button type="button" class="btn btn-small" onclick="crOpenExtraIdentify(\'' + it.return_id + '\')">Отдан клиенту</button>';
+            }
+            body += "<tr" + (st === "given" ? ' class="cr-hist"' : "") + "><td>" + escapeHtml(crFmtDate(it.date)) + "</td>"
                 + "<td>" + escapeHtml(crEmpName(it.driver_employee_id) || "—") + "</td>"
                 + "<td>" + escapeHtml(crVehiclePlate(it.vehicle_id) || "—") + "</td>"
                 + '<td class="cr-wrap-text">' + escapeHtml(it.product_name || "") + "</td>"
                 + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
-                + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td></tr>";
+                + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td>"
+                + '<td class="cr-wrap-text">' + escapeHtml(it.client_name || "—") + "</td>"
+                + '<td class="cr-wrap-text">' + escapeHtml(it.comment || "") + "</td>"
+                + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date || it.given_date) || "—") + "</td>"
+                + "<td>" + crExtraStatusPill(it) + "</td>"
+                + "<td>" + act + "</td></tr>";
         });
     });
-    if (!body) body = '<tr><td colspan="6"><div class="empty-row">Нет лишнего товара за период.</div></td></tr>';
-    return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
+    if (!body) body = '<tr><td colspan="11"><div class="empty-row">Нет лишнего товара за период.</div></td></tr>';
+    return '<div class="cr-extra-views">'
+        + viewBtn("all", "Все") + viewBtn("free", "Свободные")
+        + viewBtn("identified", "Определён клиент") + viewBtn("given", "Отданные")
+        + "</div>"
+        + '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>Дата</th><th>Водитель</th><th>№ автомобиля</th><th>Товар</th><th>Количество</th><th>Сумма</th>"
+        + "<th>Клиент</th><th>Комментарий</th><th>Дата передачи</th><th>Состояние</th><th></th>"
         + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr><td colspan=\"4\">Записей: " + rows.length
         + '</td><td class="cr-qty">' + crQty(rows) + '</td><td class="cr-num">' + crSignedHtml(crPeriodTotal(rows))
-        + "</td></tr></tfoot></table></div>";
+        + '</td><td colspan="5"></td></tr></tfoot></table></div>';
+}
+
+function crSetExtraView(view) {
+    crUi.extraView = view || "all";
+    renderTerritoryReturns();
+}
+
+function crOpenExtraIdentify(id) {
+    const it = crFind(id);
+    if (!it) return;
+    if (!crHasFullEdit() && !crCanAct("extra")) return;
+    const modal = document.getElementById("crModal");
+    const back = document.getElementById("crModalBack");
+    if (!modal || !back) return;
+    modal.classList.add("cr-modal-sm");
+    const names = {};
+    (crStore().items || []).forEach(function (row) {
+        const n = String((row && row.client_name) || "").trim();
+        if (n) names[n] = true;
+    });
+    const listId = "crExtraClientList";
+    let opts = "";
+    Object.keys(names).sort(function (a, b) { return a.localeCompare(b, "ru"); }).forEach(function (n) {
+        opts += '<option value="' + escapeAttribute(n) + '">';
+    });
+    modal.innerHTML = "<h3 style=\"margin:0 0 10px\">Товар определён</h3>"
+        + '<p class="note" style="margin:0 0 10px">' + escapeHtml(it.product_name || "Позиция") + "</p>"
+        + '<div class="cr-form" style="grid-template-columns:1fr">'
+        + '<label>Клиент<input id="crExtraClient" list="' + listId + '" value="' + escapeAttribute(it.client_name || "") + '" placeholder="Выбрать или ввести"></label>'
+        + '<datalist id="' + listId + '">' + opts + "</datalist>"
+        + '<label>Комментарий<textarea id="crExtraComment">' + escapeHtml(it.comment || "") + "</textarea></label>"
+        + '<label>Дата передачи клиенту<input id="crExtraGiveDate" type="date" value="'
+        + escapeAttribute(it.return_to_client_date || it.given_date || crTodayIso()) + '"></label>'
+        + "</div>"
+        + '<div class="toolbar" style="margin-top:12px;justify-content:flex-end;gap:8px">'
+        + '<button type="button" class="btn" onclick="closeCrModal()">Отмена</button>'
+        + '<button type="button" class="btn" onclick="crSaveExtraIdentify(\'' + it.return_id + '\',false)">Сохранить</button>'
+        + '<button type="button" class="btn btn-primary" onclick="crSaveExtraIdentify(\'' + it.return_id + '\',true)">Отдан клиенту</button>'
+        + "</div>";
+    back.classList.add("show");
+}
+
+function crSaveExtraIdentify(id, given) {
+    const it = crFind(id);
+    if (!it) return;
+    if (!crHasFullEdit() && !crCanAct("extra")) return;
+    const client = String((document.getElementById("crExtraClient") || {}).value || "").trim();
+    const comment = String((document.getElementById("crExtraComment") || {}).value || "").trim();
+    const date = String((document.getElementById("crExtraGiveDate") || {}).value || "").trim();
+    if (!client) {
+        toast("Укажите клиента.", "error");
+        return;
+    }
+    it.client_name = client;
+    it.comment = comment;
+    if (given) {
+        const stamp = crStampComplete(it);
+        it.extra_status = "given";
+        it.given_to_client = true;
+        it.given_at = stamp.now;
+        it.given_by_user_id = stamp.uid;
+        it.return_to_client_date = date || crTodayIso();
+        it.given_date = it.return_to_client_date;
+        crPushHistory(it, "extra_given", client, {
+            return_id: it.return_id,
+            extra_status: "given",
+            client_name: client,
+            give_date: it.return_to_client_date
+        });
+        toast("Отмечено: ✓ Отдан клиенту.");
+    } else {
+        it.extra_status = "identified";
+        if (date) {
+            it.return_to_client_date = date;
+            it.given_date = date;
+        }
+        crPushHistory(it, "extra_identified", client, {
+            return_id: it.return_id,
+            extra_status: "identified",
+            client_name: client
+        });
+        toast("Состояние: Определён клиент.");
+    }
+    saveApp();
+    closeCrModal();
+    renderTerritoryReturns();
 }
 window.crRenderExtraJournal = crRenderExtraJournal;
 
@@ -29193,7 +29558,13 @@ function crResetFilters() {
     crUi.reason = "";
     crUi.result = "";
     crUi.q = "";
+    crUi.client = "";
+    crUi.vehicle = "";
     crUi.videoView = "all";
+    crUi.giveView = "all";
+    crUi.rebillView = "all";
+    crUi.driverView = "all";
+    crUi.extraView = "all";
     crUi.anaRole = "";
     crUi.anaEmp = "";
     crUi.anaType = "";
@@ -29327,6 +29698,77 @@ function crFinanceLabelHtml(fin) {
     return '<span class="cr-fin-k">Сумма строк:</span> ' + crSignedHtml(fin.signed);
 }
 
+function crFilterOnCls(on) {
+    return on ? ' class="cr-filter-on"' : "";
+}
+
+function crPeriodIsCustom() {
+    const m = crUi.month || selectedMonth || currentMonthValue();
+    return String(crUi.dateFrom || "") !== crMonthFirstDay(m) || String(crUi.dateTo || "") !== crMonthLastDay(m);
+}
+
+function crRenderFiltersBar() {
+    if (crUi.tab === "settings") return "";
+    const work = crUi.tab !== "extra" && crUi.tab !== "analytics";
+    let html = '<div class="cr-filters-box"><div class="cr-filters-head"><b>Фильтры</b>'
+        + '<button type="button" class="btn btn-small cr-filters-reset" onclick="crResetFilters()">Сбросить фильтры</button></div>'
+        + '<div class="cr-filters">'
+        + '<label' + crFilterOnCls(crPeriodIsCustom()) + '>Дата с — дата по<span class="cr-period-row">'
+        + '<input type="date" value="' + escapeAttribute(crUi.dateFrom) + '" onchange="crOnFilter(\'dateFrom\',this)" title="Дата с" aria-label="Дата с">'
+        + "<span>—</span>"
+        + '<input type="date" value="' + escapeAttribute(crUi.dateTo) + '" onchange="crOnFilter(\'dateTo\',this)" title="Дата по" aria-label="Дата по">'
+        + "</span></label>";
+    if (work) {
+        html += '<label' + crFilterOnCls(!!crUi.reason) + '>Причина<select onchange="crOnFilter(\'reason\',this)">'
+            + '<option value="">Все</option>' + crReasonOptions(crUi.reason, false) + "</select></label>"
+            + '<label' + crFilterOnCls(!!crUi.client) + '>Клиент<select onchange="crOnFilter(\'client\',this)">'
+            + crClientFilterOptions(crUi.client) + "</select></label>"
+            + '<label' + crFilterOnCls(!!crUi.author) + '>Торговый<select onchange="crOnFilter(\'author\',this)">'
+            + crEmpOptions(crUi.author, "author") + "</select></label>";
+    }
+    html += '<label' + crFilterOnCls(!!crUi.driver) + '>Водитель<select onchange="crOnFilter(\'driver\',this)">'
+        + crEmpOptions(crUi.driver, "driver") + "</select></label>";
+    if (work) {
+        html += '<label' + crFilterOnCls(!!crUi.picker) + '>Товароразборщик<select onchange="crOnFilter(\'picker\',this)">'
+            + crEmpOptions(crUi.picker, "picker") + "</select></label>"
+            + '<label' + crFilterOnCls(!!crUi.vehicle) + '>Автомобиль<select onchange="crOnFilter(\'vehicle\',this)">'
+            + crVehicleFilterOptions(crUi.vehicle) + "</select></label>"
+            + '<label' + crFilterOnCls(!!String(crUi.q || "").trim()) + '>Поиск<input type="search" placeholder="Поиск по товару, клиенту, накладной..." value="'
+            + escapeAttribute(crUi.q) + '" oninput="crOnFilter(\'q\',this)"></label>';
+    }
+    if (crUi.tab === "video") {
+        html += '<label' + crFilterOnCls(crUi.videoView && crUi.videoView !== "all") + '>Показ<select onchange="crOnFilter(\'videoView\',this)">'
+            + '<option value="all"' + (crUi.videoView === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="open"' + (crUi.videoView === "open" ? " selected" : "") + ">В работе</option>"
+            + '<option value="done"' + (crUi.videoView === "done" ? " selected" : "") + ">Выполнено</option>"
+            + "</select></label>";
+    }
+    if (crUi.tab === "give") {
+        html += '<label' + crFilterOnCls(crUi.giveView && crUi.giveView !== "all") + '>Показ<select onchange="crOnFilter(\'giveView\',this)">'
+            + '<option value="all"' + (crUi.giveView === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="open"' + (crUi.giveView === "open" ? " selected" : "") + ">Не выполнено</option>"
+            + '<option value="done"' + (crUi.giveView === "done" ? " selected" : "") + ">Выполнено</option>"
+            + "</select></label>";
+    }
+    if (crUi.tab === "rebill") {
+        html += '<label' + crFilterOnCls(crUi.rebillView && crUi.rebillView !== "all") + '>Показ<select onchange="crOnFilter(\'rebillView\',this)">'
+            + '<option value="all"' + (crUi.rebillView === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="open"' + (crUi.rebillView === "open" ? " selected" : "") + ">Не выполнено</option>"
+            + '<option value="done"' + (crUi.rebillView === "done" ? " selected" : "") + ">Выполнено</option>"
+            + "</select></label>";
+    }
+    if (crUi.tab === "driver") {
+        html += '<label' + crFilterOnCls(crUi.driverView && crUi.driverView !== "all") + '>Показ<select onchange="crOnFilter(\'driverView\',this)">'
+            + '<option value="all"' + (crUi.driverView === "all" ? " selected" : "") + ">Все</option>"
+            + '<option value="open"' + (crUi.driverView === "open" ? " selected" : "") + ">Не обработано</option>"
+            + '<option value="charged"' + (crUi.driverView === "charged" ? " selected" : "") + ">Пробито</option>"
+            + '<option value="found"' + (crUi.driverView === "found" ? " selected" : "") + ">Нашли у клиента</option>"
+            + "</select></label>";
+    }
+    html += "</div></div>";
+    return html;
+}
+
 function renderTerritoryReturns() {
     const root = document.getElementById("territoryReturnsRoot");
     if (!root) return;
@@ -29385,51 +29827,7 @@ function renderTerritoryReturns() {
     if (crCanManageDicts()) html += tabBtn("settings", "Настройки");
     html += "</div>";
 
-    html += '<div class="cr-filters">'
-        + '<label>Период<span class="cr-period-row">'
-        + '<input type="date" value="' + escapeAttribute(crUi.dateFrom) + '" onchange="crOnFilter(\'dateFrom\',this)" title="Дата с" aria-label="Дата с">'
-        + "<span>—</span>"
-        + '<input type="date" value="' + escapeAttribute(crUi.dateTo) + '" onchange="crOnFilter(\'dateTo\',this)" title="Дата по" aria-label="Дата по">'
-        + "</span></label>"
-        + '<label>Водитель<select onchange="crOnFilter(\'driver\',this)">' + crEmpOptions(crUi.driver, "driver") + "</select></label>";
-    if (crUi.tab !== "extra" && crUi.tab !== "analytics" && crUi.tab !== "settings") {
-        html += '<label>Автор продаж<select onchange="crOnFilter(\'author\',this)">' + crEmpOptions(crUi.author, "author") + "</select></label>"
-            + '<label>Товароразборщик<select onchange="crOnFilter(\'picker\',this)">' + crEmpOptions(crUi.picker, "picker") + "</select></label>"
-        + '<label>Причина<select onchange="crOnFilter(\'reason\',this)">'
-            + '<option value="">Все</option>' + crReasonOptions(crUi.reason, false) + "</select></label>"
-            + '<label>Поиск<input type="search" placeholder="Поиск по товару, клиенту, накладной..." value="'
-            + escapeAttribute(crUi.q) + '" oninput="crOnFilter(\'q\',this)"></label>';
-    }
-    if (crUi.tab === "video") {
-        html += '<label>Показ<select onchange="crOnFilter(\'videoView\',this)">'
-            + '<option value="all"' + (crUi.videoView === "all" ? " selected" : "") + ">Все</option>"
-            + '<option value="open"' + (crUi.videoView === "open" ? " selected" : "") + ">В работе</option>"
-            + '<option value="done"' + (crUi.videoView === "done" ? " selected" : "") + ">Выполнено</option>"
-            + "</select></label>";
-    }
-    if (crUi.tab === "give") {
-        html += '<label>Показ<select onchange="crOnFilter(\'giveView\',this)">'
-            + '<option value="all"' + (crUi.giveView === "all" ? " selected" : "") + ">Все</option>"
-            + '<option value="open"' + (crUi.giveView === "open" ? " selected" : "") + ">Не выполнено</option>"
-            + '<option value="done"' + (crUi.giveView === "done" ? " selected" : "") + ">Выполнено</option>"
-            + "</select></label>";
-    }
-    if (crUi.tab === "rebill") {
-        html += '<label>Показ<select onchange="crOnFilter(\'rebillView\',this)">'
-            + '<option value="all"' + (crUi.rebillView === "all" ? " selected" : "") + ">Все</option>"
-            + '<option value="open"' + (crUi.rebillView === "open" ? " selected" : "") + ">Не выполнено</option>"
-            + '<option value="done"' + (crUi.rebillView === "done" ? " selected" : "") + ">Выполнено</option>"
-            + "</select></label>";
-    }
-    if (crUi.tab === "driver") {
-        html += '<label>Показ<select onchange="crOnFilter(\'driverView\',this)">'
-            + '<option value="all"' + (crUi.driverView === "all" ? " selected" : "") + ">Все</option>"
-            + '<option value="open"' + (crUi.driverView === "open" ? " selected" : "") + ">Не обработано</option>"
-            + '<option value="charged"' + (crUi.driverView === "charged" ? " selected" : "") + ">Пробито</option>"
-            + '<option value="found"' + (crUi.driverView === "found" ? " selected" : "") + ">Нашли у клиента</option>"
-            + "</select></label>";
-    }
-    html += '<button type="button" class="btn" onclick="crResetFilters()">Сбросить фильтры</button></div>';
+    html += crRenderFiltersBar();
 
     if (crUi.tab === "analytics") html += crRenderAnalytics(all, qRecount, jGive, jRebill, jDriver);
     else if (crUi.tab === "settings") html += crRenderDictsAdmin();
@@ -29723,33 +30121,32 @@ function crRenderAllTable(list) {
             + "<td>" + crPill("emp", crEmpShort(it.driver_employee_id) || "—") + "</td>"
             + "<td>" + (it.vehicle_id ? '<span style="color:#2563eb">' + escapeHtml(crVehiclePlate(it.vehicle_id)) + "</span>" : "—") + "</td>"
             + "<td>" + crCashierSelect(it, can) + "</td>"
-            + "<td>" + (it.extra_on_register ? "✓" : "") + "</td>"
-            + '<td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td>"
-            + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td>"
-            + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
             + '<td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td>"
-            + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
+            + '<td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td>"
+            + '<td class="cr-qty">' + crQtyHtml(it.qty) + "</td>"
+            + '<td class="cr-num">' + crSignedHtml(it.amount) + "</td>"
             + '<td class="' + (crItemReasonId(it) ? "" : "cr-need") + '">' + crReasonSelect(it, can)
             + (crItemReasonId(it) ? "" : '<span class="cr-need-hint">⚠ Укажите причину</span>') + "</td>"
             + "<td>" + escapeHtml(it.invoice_no) + "</td>"
             + "<td>" + crPickerSelect(it) + "</td>"
             + '<td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td>"
+            + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
             + "<td>" + (crIsDriverAdj(it) ? crDriverCheck(it, crCanAct("driver")) : crPill(st.cls, st.text)) + "</td>"
             + '<td class="cr-act">'
             + (can ? '<button type="button" class="btn btn-small" onclick="crOpenEditor(\'' + it.return_id + '\')">✎</button>' : "")
             + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
             + "</td></tr>";
     });
-    if (!body) body = '<tr><td colspan="19"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
+    if (!body) body = '<tr><td colspan="18"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
     const periodTotal = crPeriodTotal(rows);
     return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>№</th><th>Неделя</th><th>Дата</th><th>Автор продаж</th><th>Водитель</th><th>№ авто</th>"
-        + "<th>Кассир</th><th>Лишний товар</th><th>Товар</th><th>Сумма</th><th>Кол-во</th><th>Клиент</th>"
-        + "<th>Дата возврата клиенту</th><th>Причина</th>"
-        + "<th>№ заявки/накладной</th><th>Товароразборщик</th><th>Комментарий</th><th>Статус</th><th></th>"
+        + "<th>Кассир</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Причина</th>"
+        + "<th>№ заявки/накладной</th><th>Товароразборщик</th><th>Комментарий</th><th>Дата возврата</th>"
+        + "<th>Статус</th><th></th>"
         + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr class=\"cr-period-total\"><td colspan=\"9\">Записей: " + rows.length
-        + '</td><td class="cr-num">' + crSignedHtml(periodTotal) + "</td><td>" + crQty(rows)
-        + '</td><td colspan="8"><span class="cr-period-total-label">ИТОГО ЗА ПЕРИОД:</span> '
+        + '</td><td class="cr-qty">' + crQty(rows) + '</td><td class="cr-num">' + crSignedHtml(periodTotal)
+        + '</td><td colspan="7"><span class="cr-period-total-label">ИТОГО ЗА ПЕРИОД:</span> '
         + crSignedHtml(periodTotal) + "</td></tr></tfoot></table></div>";
 }
 
@@ -29779,7 +30176,7 @@ function crRenderQueueTable(tab, list) {
                 + "</td><td>" + escapeHtml(crEmpShort(it.driver_employee_id))
                 + "</td><td>" + escapeHtml(crEmpShort(it.picker_employee_id))
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
-                + "</td><td>" + crStageSelect(it, can)
+                + '</td><td class="cr-stage-cell">' + crStageSelect(it, can) + crVideoFromBadge(it)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td><td>"
                 + crResultSelect(it, can) + "</td></tr>";
         });
@@ -30068,15 +30465,6 @@ function crRenderAnalytics(all, a, b, c, d) {
     if (!crUi.anaRole || crUi.anaRole === "driver") html += crRenderAnaRoleBlock("Водители", "driver", groups);
     if (!crUi.anaRole || crUi.anaRole === "picker") html += crRenderAnaRoleBlock("Товаросборщики", "picker", groups);
     if (!crUi.anaRole || crUi.anaRole === "unknown") html += crRenderAnaRoleBlock("Не определён ответственный", "unknown", groups);
-    if (crCanManageDicts()) {
-        html += '<div class="card" style="padding:8px;margin-top:8px"><div class="card-title" style="font-size:13px">Автомобили</div>'
-            + '<div class="toolbar"><input id="crNewVehPlate" placeholder="Госномер" style="max-width:180px">'
-            + '<button type="button" class="btn btn-small" onclick="crAddVehicle()">Добавить авто</button></div></div>';
-    } else if (userHasPerm("settings", "edit") || crHasFullEdit()) {
-        html += '<div class="card" style="padding:8px;margin-top:8px"><div class="card-title" style="font-size:13px">Автомобили</div>'
-            + '<div class="toolbar"><input id="crNewVehPlate" placeholder="Госномер" style="max-width:180px">'
-            + '<button type="button" class="btn btn-small" onclick="crAddVehicle()">Добавить авто</button></div></div>';
-    }
     return html;
 }
 
@@ -30112,7 +30500,7 @@ function crRenderDictsAdmin() {
         + '<div class="note">Маршруты задаются через справочники. Название можно переименовать — маршрут держится за ID.</div>'
         + '<div class="toolbar" style="margin:8px 0">' + stBtn("reasons", "Причины") + stBtn("stages", "Этапы")
         + stBtn("outcomes", "Результаты обработки") + stBtn("videoResults", "Результаты видео")
-        + stBtn("archiveAdj", "Архив корректировок") + "</div>";
+        + stBtn("vehicles", "Автотранспорт") + stBtn("archiveAdj", "Архив корректировок") + "</div>";
     if (pane === "adjustments") pane = "archiveAdj";
     if (pane === "reasons") {
         const reasons = (crStore().reasons || []).slice().sort(function (a, b) {
@@ -30180,7 +30568,7 @@ function crRenderDictsAdmin() {
         crVideoResultsList().forEach(function (v) {
             if (!v || !v.video_result_id) return;
             body += "<tr><td><input value=\"" + escapeAttribute(v.name || "") + "\" onchange=\"crRenameVideoResult('" + v.video_result_id + "',this.value)\"></td>"
-                + '<td><select onchange="crSetVideoResultNext(\'' + v.video_result_id + '\',this.value)">' + crStageOptions(v.next_stage_id || "recount", true) + "</select></td>"
+                + '<td><select onchange="crSetVideoResultNext(\'' + v.video_result_id + '\',this.value)">' + crStageOptions(v.next_stage_id, true, "— не настроен —") + "</select></td>"
                 + '<td><label class="cr-check-lab"><input type="checkbox"' + (v.is_active !== false ? " checked" : "")
                 + ' onchange="crToggleVideoResultActive(\'' + v.video_result_id + '\',this.checked)"> Активен</label></td>'
                 + "<td><button type=\"button\" class=\"btn btn-small\" onclick=\"crDeleteVideoResult('" + v.video_result_id + "')\">Удалить</button></td></tr>";
@@ -30192,6 +30580,26 @@ function crRenderDictsAdmin() {
             + '<div class="toolbar"><input id="crNewVideoResultName" placeholder="Новый результат видео" style="max-width:260px">'
             + '<select id="crNewVideoResultNext">' + crStageOptions("recount", true) + "</select>"
             + '<button type="button" class="btn btn-small" onclick="crAddVideoResult()">+ Добавить результат видео</button></div>';
+    } else if (pane === "vehicles") {
+        const list = (crStore().vehicles || []).slice().sort(function (a, b) {
+            return (a.sort_order || 0) - (b.sort_order || 0) || String((a && a.plate) || "").localeCompare(String((b && b.plate) || ""), "ru");
+        });
+        let body = "";
+        list.forEach(function (v) {
+            if (!v || !v.vehicle_id) return;
+            body += "<tr><td><input value=\"" + escapeAttribute(v.plate || "") + "\" onchange=\"crSetVehiclePlate('" + v.vehicle_id + "',this.value)\"></td>"
+                + "<td><input value=\"" + escapeAttribute(v.name || "") + "\" onchange=\"crSetVehicleName('" + v.vehicle_id + "',this.value)\"></td>"
+                + '<td><label class="cr-check-lab"><input type="checkbox"' + (v.is_active !== false ? " checked" : "")
+                + ' onchange="crToggleVehicleActive(\'' + v.vehicle_id + '\',this.checked)"> Активен</label></td>'
+                + "<td><button type=\"button\" class=\"btn btn-small\" onclick=\"crDeleteVehicle('" + v.vehicle_id + "')\">Удалить</button></td></tr>";
+        });
+        if (!body) body = '<tr><td colspan="4">Нет автомобилей</td></tr>';
+        html += '<div class="note">vehicle_id стабилен. В возврате сохраняется ID автомобиля, а не текст госномера. Переименование и исправление номера не ломают историю.</div>'
+            + '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Гос. номер</th><th>Название / примечание</th><th>Активен</th><th></th></tr></thead><tbody>'
+            + body + "</tbody></table></div>"
+            + '<div class="toolbar"><input id="crNewVehPlate" placeholder="Гос. номер *" style="max-width:180px">'
+            + '<input id="crNewVehName" placeholder="Название / примечание" style="max-width:220px">'
+            + '<button type="button" class="btn btn-small" onclick="crAddVehicle()">+ Добавить автомобиль</button></div>';
     } else {
         const adjs = (crStore().adjustments || []).slice().sort(function (a, b) {
             return (a.sort_order || 0) - (b.sort_order || 0);
@@ -30220,7 +30628,7 @@ function crAddReason() {
         return;
     }
     const store = crStore();
-    const stage = String((document.getElementById("crNewReasonStage") || {}).value || "recount");
+    const stage = crResolveStageId((document.getElementById("crNewReasonStage") || {}).value) || "recount";
     store.reasons.push({
         reason_id: nextPrefixedId("rsn", store.reasons.map(function (a) { return a && a.reason_id; })),
         code: "custom",
@@ -30239,7 +30647,7 @@ function crSetReasonDefaultStage(id, stage) {
     if (!crCanManageDicts()) return;
     const r = crReasonById(id);
     if (!r) return;
-    r.default_stage_id = stage || "recount";
+    r.default_stage_id = crResolveStageId(stage) || "recount";
     r.send_to_recount = r.default_stage_id === "recount";
     saveApp();
 }
@@ -30266,7 +30674,7 @@ function crAddOutcome() {
         code: "custom",
         name: name,
         for_stage: "recount",
-        next_stage_id: String((document.getElementById("crNewOutcomeNext") || {}).value || "closed"),
+        next_stage_id: crResolveStageId((document.getElementById("crNewOutcomeNext") || {}).value) || "",
         sort_order: (store.outcomes.length + 1) * 10,
         is_active: true
     });
@@ -30309,7 +30717,7 @@ function crSetOutcomeNext(id, stage) {
     if (!crCanManageDicts()) return;
     const o = crOutcomeById(id);
     if (!o) return;
-    o.next_stage_id = stage || "closed";
+    o.next_stage_id = crResolveStageId(stage) || "";
     saveApp();
 }
 
@@ -30466,7 +30874,7 @@ function crAddVideoResult() {
     store.videoResults.push({
         video_result_id: nextPrefixedId("vrs", store.videoResults.map(function (a) { return a && a.video_result_id; })),
         name: name,
-        next_stage_id: String((document.getElementById("crNewVideoResultNext") || {}).value || "recount"),
+        next_stage_id: crResolveStageId((document.getElementById("crNewVideoResultNext") || {}).value) || "",
         sort_order: (store.videoResults.length + 1) * 10,
         is_active: true
     });
@@ -30501,7 +30909,11 @@ function crSetVideoResultNext(id, stage) {
     if (!crCanManageDicts()) return;
     const v = crVideoResultById(id);
     if (!v) return;
-    v.next_stage_id = stage || "recount";
+    v.next_stage_id = crResolveStageId(stage) || "";
+    if (v.source_outcome_id) {
+        const o = crOutcomeById(v.source_outcome_id);
+        if (o) o.next_stage_id = v.next_stage_id;
+    }
     saveApp();
 }
 
@@ -30536,6 +30948,15 @@ function crSetPicker(id, value) {
     renderTerritoryReturns();
 }
 
+function crMoveToStage(it, nextStageId) {
+    const next = crResolveStageId(nextStageId);
+    if (!it || !next) return false;
+    it.process_stage = next;
+    const kind = crStageKind(next);
+    it.stage_status = (next === "closed" || kind === "closed") ? "done" : "open";
+    return true;
+}
+
 function crApplyVideoResult(id, videoResultId) {
     const it = crFind(id);
     if (!it) return;
@@ -30548,24 +30969,32 @@ function crApplyVideoResult(id, videoResultId) {
         return;
     }
     const vr = crVideoResultById(videoResultId);
-    if (!vr) return;
-    const next = vr.next_stage_id || "";
-    if (next === "driver" && !it.driver_employee_id) {
-        toast("Выберите конкретного водителя.", "error");
+    if (!vr) {
+        toast("Не удалось найти настройку выбранного результата видео.", "error");
+        renderTerritoryReturns();
+        return;
+    }
+    let next = crResolveStageId(vr.next_stage_id);
+    if (!next && vr.source_outcome_id) {
+        const linked = crOutcomeById(vr.source_outcome_id);
+        next = crResolveStageId(linked && linked.next_stage_id);
+    }
+    if (!next) {
+        toast("Для выбранного результата видео не настроен следующий этап.", "error");
         renderTerritoryReturns();
         return;
     }
     const from = crProcessStage(it);
     it.video_result_id = vr.video_result_id;
     if (vr.source_outcome_id) it.video_outcome_id = vr.source_outcome_id;
-    if (next) {
-        it.process_stage = next;
-        it.stage_status = next === "closed" ? "done" : "open";
-    } else {
-        it.stage_status = "done";
+    if (!crMoveToStage(it, next)) {
+        toast("Для выбранного результата видео не настроен следующий этап.", "error");
+        renderTerritoryReturns();
+        return;
     }
     crRefreshCompleted(it);
-    crPushHistory(it, "video_result", vr.name + (next ? " → " + crStageName(next) : ""), {
+    crPushHistory(it, "video_result", vr.name + " → " + crStageName(next), {
+        return_id: it.return_id,
         video_result_id: vr.video_result_id,
         stage: from,
         next_stage: next
@@ -30573,6 +31002,7 @@ function crApplyVideoResult(id, videoResultId) {
     crLogStage(it, "video_result", { stage: from, result: vr.name, next_stage: next });
     saveApp();
     renderTerritoryReturns();
+    toast("Направлено: " + (crStageName(next) || next));
 }
 
 function crAddAdjustment() {
@@ -30626,29 +31056,93 @@ function crDeleteAdjustment(id) {
     renderTerritoryReturns();
 }
 
+function crVehicleInUse(id) {
+    if (!id) return false;
+    return (crStore().items || []).some(function (it) { return it && it.vehicle_id === id; });
+}
+
 function crAddVehicle() {
-    if (!crHasFullEdit() && !userHasPerm("settings", "edit")) return;
+    if (!crCanManageDicts() && !crHasFullEdit()) return;
     const el = document.getElementById("crNewVehPlate") || document.getElementById("crVehPlate");
     const plate = String((el && el.value) || "").trim();
-    if (!plate) return;
+    if (!plate) {
+        toast("Укажите гос. номер автомобиля.", "error");
+        return;
+    }
+    const nameEl = document.getElementById("crNewVehName");
+    const name = String((nameEl && nameEl.value) || "").trim();
     const store = crStore();
     const vehicle_id = nextPrefixedId("veh", store.vehicles.map(function (v) { return v && v.vehicle_id; }));
-    store.vehicles.push({ vehicle_id: vehicle_id, plate: plate, name: plate, ext_1c_id: "", is_active: true, sort_order: (store.vehicles.length + 1) * 10 });
+    store.vehicles.push({
+        vehicle_id: vehicle_id,
+        plate: plate,
+        name: name,
+        ext_1c_id: "",
+        is_active: true,
+        sort_order: (store.vehicles.length + 1) * 10
+    });
     saveApp();
-    if (document.getElementById("crVehicle")) {
+    toast("Автомобиль добавлен.");
+    if (document.getElementById("crVehicle") && document.getElementById("crModalBack") && document.getElementById("crModalBack").classList.contains("show")) {
         const sel = document.getElementById("crVehicle");
         sel.innerHTML = crVehicleOptions(vehicle_id);
         sel.value = vehicle_id;
         if (el) el.value = "";
-        toast("Автомобиль добавлен.");
+        if (nameEl) nameEl.value = "";
         return;
     }
     renderTerritoryReturns();
 }
 
+function crSetVehiclePlate(id, plate) {
+    if (!crCanManageDicts()) return;
+    const v = crVehicleById(id);
+    if (!v) return;
+    const n = String(plate || "").trim();
+    if (!n) {
+        renderTerritoryReturns();
+        return;
+    }
+    v.plate = n;
+    saveApp();
+}
+
+function crSetVehicleName(id, name) {
+    if (!crCanManageDicts()) return;
+    const v = crVehicleById(id);
+    if (!v) return;
+    v.name = String(name || "").trim();
+    saveApp();
+}
+
+function crToggleVehicleActive(id, on) {
+    if (!crCanManageDicts()) return;
+    const v = crVehicleById(id);
+    if (!v) return;
+    v.is_active = !!on;
+    saveApp();
+    renderTerritoryReturns();
+}
+
+function crDeleteVehicle(id) {
+    if (!crCanManageDicts()) return;
+    if (crVehicleInUse(id)) {
+        crToggleVehicleActive(id, false);
+        toast("Автомобиль уже есть в истории. Деактивирован, история сохранена.");
+        return;
+    }
+    const store = crStore();
+    store.vehicles = (store.vehicles || []).filter(function (v) { return !v || v.vehicle_id !== id; });
+    saveApp();
+    renderTerritoryReturns();
+    toast("Автомобиль удалён.");
+}
+
 function closeCrModal() {
     const back = document.getElementById("crModalBack");
+    const modal = document.getElementById("crModal");
     if (back) back.classList.remove("show");
+    if (modal) modal.classList.remove("cr-modal-sm");
 }
 
 function crNextGroupId() {
@@ -31022,9 +31516,8 @@ function crCreateEditorHtml(rec, can) {
         + '<label>Автор продаж<select id="crAuthor">' + crEmpOptions(rec.sales_author_employee_id, "author") + "</select></label>"
         + '<label>Водитель<select id="crDriver" onchange="crSyncEditorFields()">' + crEmpOptions(rec.driver_employee_id, "driver") + "</select></label>"
         + '<label>Кассир<select id="crCashier">' + crEmpOptions(rec.cashier_employee_id, "cashier") + "</select></label>"
-        + '<label class="cr-if-driver">№ автомобиля<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
+        + '<label>Автомобиль<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
         + '<label>№ заявки / реализации<input id="crInvoice" value="' + escapeAttribute(rec.invoice_no || "") + '"></label>'
-        + '<label class="cr-if-driver">Новый госномер<input id="crVehPlate" placeholder="если нет в списке"></label>'
         + '<label class="wide">Общий комментарий<textarea id="crComment">' + escapeHtml(rec.comment || "") + "</textarea></label>"
         + '<div id="crFinanceLive" class="cr-fin-live">Вставьте товары — здесь появится итог возврата и сумма возврата.</div>'
         + '<input type="hidden" id="crAmount" value="">'
@@ -31050,7 +31543,6 @@ function crCreateEditorHtml(rec, can) {
         + "</div>"
         + '<div id="crLinesHost"></div>'
         + '<div class="toolbar" style="margin-top:12px;justify-content:flex-end">'
-        + (can ? '<button type="button" class="btn" onclick="crAddVehicle()">+ Авто</button>' : "")
         + '<button type="button" class="btn" onclick="closeCrModal()">Отмена</button>'
         + (can ? '<button type="button" class="btn btn-primary" onclick="crSaveEditor(\'\')">Сохранить возврат</button>' : "")
         + "</div>";
@@ -31063,7 +31555,7 @@ function crSingleEditorHtml(id, rec, can) {
         + '<label>Автор продаж<select id="crAuthor">' + crEmpOptions(rec.sales_author_employee_id, "author") + "</select></label>"
         + '<label>Водитель<select id="crDriver" onchange="crSyncEditorFields()">' + crEmpOptions(rec.driver_employee_id, "driver") + "</select></label>"
         + '<label>Кассир<select id="crCashier">' + crEmpOptions(rec.cashier_employee_id, "cashier") + "</select></label>"
-        + '<label class="cr-if-driver">№ автомобиля<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
+        + '<label>Автомобиль<select id="crVehicle">' + crVehicleOptions(rec.vehicle_id) + "</select></label>"
         + '<label>№ заявки / накладной<input id="crInvoice" value="' + escapeAttribute(rec.invoice_no) + '"></label>'
         + '<label>Товароразборщик<select id="crPicker">' + crEmpOptions(rec.picker_employee_id, "picker") + "</select></label>"
         + '<label class="wide">Товар<input id="crProduct" value="' + escapeAttribute(rec.product_name) + '"></label>'
@@ -31082,7 +31574,6 @@ function crSingleEditorHtml(id, rec, can) {
         + '<option value="0"' + (!rec.extra_on_register ? " selected" : "") + ">нет</option>"
         + '<option value="1"' + (rec.extra_on_register ? " selected" : "") + ">да</option>"
         + "</select></label>"
-        + '<label class="cr-if-driver">Новый госномер<input id="crVehPlate" placeholder="если нет в списке"></label>'
         + '<label class="cr-if-give">Дата возврата клиенту<input id="crBackDate" type="date" value="' + escapeAttribute(rec.return_to_client_date) + '"></label>'
         + '<label class="wide">Комментарий<textarea id="crComment">' + escapeHtml(rec.comment) + "</textarea></label>"
         + "</div>"
@@ -31101,7 +31592,6 @@ function crSingleEditorHtml(id, rec, can) {
             }).join(" · ") + "</div>"
             : "")
         + '<div class="toolbar" style="margin-top:12px;justify-content:flex-end">'
-        + (can ? '<button type="button" class="btn" onclick="crAddVehicle()">+ Авто</button>' : "")
         + '<button type="button" class="btn" onclick="closeCrModal()">Отмена</button>'
         + (can ? '<button type="button" class="btn btn-primary" onclick="crSaveEditor(\'' + escapeAttribute(id || "") + '\')">Сохранить возврат</button>' : "")
         + "</div>";
@@ -31305,10 +31795,14 @@ function crApplyOutcome(id, outcomeId) {
         return;
     }
     const o = crOutcomeById(outcomeId);
-    if (!o) return;
-    const next = o.next_stage_id || "";
-    if ((o.code === "driver" || next === "driver") && !it.driver_employee_id) {
-        toast("Выберите конкретного водителя.", "error");
+    if (!o) {
+        toast("Не удалось найти настройку результата обработки.", "error");
+        renderTerritoryReturns();
+        return;
+    }
+    const next = crResolveStageId(o.next_stage_id);
+    if (!next) {
+        toast("Для выбранного результата обработки не настроен следующий этап.", "error");
         renderTerritoryReturns();
         return;
     }
@@ -31320,24 +31814,25 @@ function crApplyOutcome(id, outcomeId) {
         it.recount_result_at = new Date().toISOString();
         it.recount_result_by_user_id = currentAuthUserId() || "";
     }
-    if (next) {
-        it.process_stage = next;
-        it.stage_status = next === "closed" ? "done" : "open";
-    } else {
-        it.stage_status = "done";
-    }
+    crMoveToStage(it, next);
     crRefreshCompleted(it);
-    crPushHistory(it, "outcome", o.name + (next ? " → " + crStageName(next) : ""));
+    crPushHistory(it, "outcome", o.name + " → " + crStageName(next), {
+        return_id: it.return_id,
+        outcome_id: o.outcome_id,
+        stage: from,
+        next_stage: next
+    });
     crLogStage(it, "outcome", { stage: from, result: o.name, next_stage: next });
     saveApp();
     renderTerritoryReturns();
+    toast("Направлено: " + (crStageName(next) || next));
 }
 
 function crSetProcessStage(id, stage) {
     const it = crFind(id);
     if (!it || (!crHasFullEdit() && !crCanAct("recount"))) return;
     const prev = crProcessStage(it);
-    it.process_stage = stage || "recount";
+    it.process_stage = crResolveStageId(stage) || "recount";
     it.stage_status = it.process_stage === "closed" ? "done" : "open";
     if (stage === "give") it.recount_result = "give";
     if (stage === "rebill") it.recount_result = "rebill";
@@ -31662,6 +32157,42 @@ function verifyCrSignedFinance() {
     }
     if (crCreateStageForItem({ reason_id: "rsn_extra", extra_on_register: true }) !== "extra") {
         console.warn("Лишний товар должен идти в extra");
+    }
+    const routed = { return_id: "ret_route_test", process_stage: "video", charged_to_driver: false, found_at_client: false };
+    if (!crMoveToStage(routed, "driver") || routed.process_stage !== "driver") {
+        console.warn("Маршрут видео → На водителя должен менять process_stage на driver");
+    }
+    if (!crIsDriverCase(routed)) {
+        console.warn("Вкладка На водителя должна принимать запись с process_stage=driver");
+    }
+    if (crResolveStageId("На водителя") !== "driver") {
+        console.warn("Этап На водителя должен резолвиться в stage_id driver");
+    }
+    const toRecount = { return_id: "ret_route_test2", process_stage: "video" };
+    if (!crMoveToStage(toRecount, "recount") || toRecount.process_stage !== "recount") {
+        console.warn("Маршрут видео → На пересчёт должен менять process_stage на recount");
+    }
+    if (crResolveStageId("На пересчёт") !== "recount") {
+        console.warn("Этап На пересчёт должен резолвиться в stage_id recount");
+    }
+    const noRoute = { return_id: "ret_no_route", process_stage: "video" };
+    if (crMoveToStage(noRoute, "") || crMoveToStage(noRoute, null) || noRoute.process_stage !== "video") {
+        console.warn("Пустой next_stage_id не должен менять этап");
+    }
+    if (crResolveStageId("неизвестный этап xyz") !== "") {
+        console.warn("Неизвестный этап не должен подставляться как process_stage");
+    }
+    const lineA = { return_id: "ret_vid_a", process_stage: "recount" };
+    const lineB = { return_id: "ret_vid_b", process_stage: "recount", video_result_id: "vrs_video_loaded" };
+    const lineC = { return_id: "ret_vid_c", process_stage: "recount" };
+    if (crItemHasVideoPass(lineA) || !crItemHasVideoPass(lineB) || crItemHasVideoPass(lineC)) {
+        console.warn("Метка С видео должна ставиться только конкретной позиции");
+    }
+    if (String(crVideoFromBadge(lineB)).indexOf("С видео") < 0 || crVideoFromBadge(lineA) || crVideoFromBadge(lineC)) {
+        console.warn("Бейдж С видео должен быть только у позиции после видео");
+    }
+    if (crVehicleLabel({ plate: "А123ВС 123", name: "Газель белая", vehicle_id: "veh_x" }) !== "А123ВС 123 — Газель белая") {
+        console.warn("Подпись автомобиля: госномер — название");
     }
 }
 
