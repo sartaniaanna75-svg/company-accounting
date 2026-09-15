@@ -4017,6 +4017,7 @@
                 </div>
                 <div class="metrics-stats" id="metricsCards"></div>
                 <div class="card">
+                    <div id="metricsWrapRollup"></div>
                     <div class="table-wrapper" id="metricsWrap">
                         <table class="metrics-table" id="metricsTable">
                             <thead id="metricsHead"></thead>
@@ -4105,6 +4106,7 @@
                         </div>
                     </div>
                     <div class="toolbar" id="territoryMetricsCatalogBar" style="margin:0 0 10px;"></div>
+                    <div id="territoryMetricsWrapRollup"></div>
                     <div class="table-wrapper" id="territoryMetricsWrap">
                         <table class="metrics-table" id="territoryMetricsTable">
                             <thead id="territoryMetricsHead"></thead>
@@ -5666,42 +5668,51 @@ function metricTabLabel(dept, tabId) {
 let _pilotAssembledSpoMetricId = "";
 let metricRollupOpen = {};
 
+function metricNameKey(s) {
+    return String(s || "").toLowerCase().replace(/ё/g, "е").replace(/[^a-zа-я0-9]+/gi, "");
+}
+
+function metricIsWarehouseAssembledSpo(it) {
+    if (!it || !it.id) return false;
+    const dept = String(it.department_id || "");
+    const cat = typeof metricTerritoryCategory === "function" ? metricTerritoryCategory(it) : "";
+    if (dept === "shop" && cat !== "warehouse") return false;
+    if (dept !== "warehouse" && cat !== "warehouse") return false;
+    const n = metricNameKey(it.name);
+    if (n === "количествособранныхпозицийспо") return true;
+    if (n.indexOf("собранн") === -1 || n.indexOf("позиц") === -1) return false;
+    return n.indexOf("спо") !== -1 || n.indexOf("количествособранныхпозиций") === 0;
+}
+
 function findPilotAssembledSpoMetric() {
     const items = typeof shopMetricCatalogItems === "function" ? shopMetricCatalogItems() : [];
-    const norm = function (s) {
-        return String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
-    };
     if (_pilotAssembledSpoMetricId) {
         const cached = shopMetricCatalogById(_pilotAssembledSpoMetricId);
-        if (cached && metricDepartmentId(cached) === "warehouse") return cached;
+        if (cached && metricIsWarehouseAssembledSpo(cached)) return cached;
         _pilotAssembledSpoMetricId = "";
     }
-    let found = items.find(function (it) {
-        return it && it.id && metricDepartmentId(it) === "warehouse"
-            && norm(it.name) === "количество собранных позиций спо";
-    });
-    if (!found) {
-        found = items.find(function (it) {
-            if (!it || !it.id || metricDepartmentId(it) !== "warehouse") return false;
-            const n = norm(it.name);
-            return n.indexOf("собранн") !== -1 && n.indexOf("позиц") !== -1 && n.indexOf("спо") !== -1;
-        });
-    }
+    let found = items.find(function (it) { return metricIsWarehouseAssembledSpo(it); });
     if (found) _pilotAssembledSpoMetricId = found.id;
     return found || null;
 }
 
 function metricRollupEnabled(item) {
     const pilot = findPilotAssembledSpoMetric();
-    return !!(pilot && item && item.id === pilot.id && metricDepartmentId(item) !== "shop");
+    return !!(pilot && item && item.id === pilot.id);
+}
+
+function metricRollupDeptCode(item) {
+    const d = item ? metricDepartmentId(item) : "";
+    return d === "warehouse" ? "warehouse" : "warehouse";
 }
 
 function metricPrimaryFactParts(item) {
     if (!item) return [];
     if (metricStructureType(item) === "with_submetrics") {
-        return metricSubmetrics(item, true).map(function (sub) {
+        const subs = metricSubmetrics(item, true).map(function (sub) {
             return { metricId: item.id, submetricId: sub.id };
         });
+        if (subs.length) return subs;
     }
     return [{ metricId: item.id, submetricId: "" }];
 }
@@ -5714,14 +5725,34 @@ function metricRollupDaysForMonth(month) {
     return out;
 }
 
+function metricStoredNumber(deptCode, employeeId, day, metricId, month, submetricId) {
+    const key = metricFactStorageKey(metricId, submetricId);
+    const facts = deptMetricFactsMonth(deptCode, month);
+    const rec = facts[employeeId] && facts[employeeId][String(day)];
+    if (!rec || typeof rec !== "object") return 0;
+    if (Object.prototype.hasOwnProperty.call(rec, key) && rec[key] !== "" && rec[key] != null) {
+        return Number(rec[key] || 0);
+    }
+    if (rec[key + "Mark"] === "done") return 1;
+    if (rec[key + "Mark"] === "fail") return 0;
+    return 0;
+}
+
 function metricEmployeeFactSum(deptCode, employeeId, item, days) {
     let sum = 0;
     const parts = metricPrimaryFactParts(item);
     (days || []).forEach(function (d) {
         parts.forEach(function (part) {
-            sum += Number(getDeptMetricStored(deptCode, employeeId, d.day, part.metricId, d.month, part.submetricId) || 0);
+            sum += metricStoredNumber(deptCode, employeeId, d.day, part.metricId, d.month, part.submetricId);
         });
     });
+    if (metricStructureType(item) === "with_submetrics" && sum === 0) {
+        let parent = 0;
+        (days || []).forEach(function (d) {
+            parent += metricStoredNumber(deptCode, employeeId, d.day, item.id, d.month, "");
+        });
+        return parent;
+    }
     return sum;
 }
 
@@ -5734,25 +5765,84 @@ function metricWorkGroupInclude(item, tabId) {
     return map[tabId] !== false;
 }
 
+function metricEmployeeGroupId(employee, item) {
+    const dept = metricRollupDeptCode(item);
+    const tabs = metricWorkTabIds(item);
+    if (!employee || !tabs.length) return "";
+    const primary = employeePrimaryWorkTabId(employee, dept)
+        || employeeWorkTabId(employee, dept)
+        || inferWorkTabIdFromPosition(dept, employee && employee.position);
+    if (tabs.indexOf(primary) !== -1) return primary;
+    return "";
+}
+
+function metricRollupPeople(item) {
+    const dept = metricRollupDeptCode(item);
+    const w = findWorkspaceByCode(dept);
+    const seen = {};
+    const list = [];
+    const add = function (e) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        if (employeeHomeDeptCode(e.id) === "shop") return;
+        seen[e.id] = true;
+        list.push(e);
+    };
+    ((w && w.employees) || []).forEach(function (e) {
+        if (!e || !e.id) return;
+        if (typeof shopEmployeeHasWorkMetric === "function" && shopEmployeeHasWorkMetric(e.id, item.id)) add(e);
+    });
+    metricWorkTabIds(item).forEach(function (tab) {
+        workMetricPeopleForTab(dept, item.id, tab).forEach(add);
+    });
+    const month = selectedMonth;
+    const facts = deptMetricFactsMonth(dept, month);
+    Object.keys(facts || {}).forEach(function (empId) {
+        const e = getEmployee(empId);
+        if (!e) return;
+        const days = facts[empId];
+        const has = days && Object.keys(days).some(function (d) {
+            return recHasMetricFact(days[d], item.id);
+        });
+        if (has) add(e);
+    });
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function metricGroupPeople(item, workTabId) {
+    return metricRollupPeople(item).filter(function (e) {
+        return metricEmployeeGroupId(e, item) === workTabId;
+    });
+}
+
 function metricGroupRollupTotal(item, workTabId, days) {
     if (!item || !workTabId) return 0;
-    const dept = metricDepartmentId(item);
-    if (!isGenericMetricsDept(dept)) return 0;
-    const people = workMetricPeopleForTab(dept, item.id, workTabId);
+    const dept = metricRollupDeptCode(item);
     let sum = 0;
-    (people || []).forEach(function (e) {
-        if (!e || !e.id) return;
+    metricGroupPeople(item, workTabId).forEach(function (e) {
         sum += metricEmployeeFactSum(dept, e.id, item, days);
     });
     return sum;
 }
 
+function metricUngroupedPeople(item) {
+    const tabs = metricWorkTabIds(item);
+    return metricRollupPeople(item).filter(function (e) {
+        const g = metricEmployeeGroupId(e, item);
+        return !g || tabs.indexOf(g) === -1;
+    });
+}
+
 function metricDeptRollupTotal(item, days) {
     if (!item) return 0;
+    const dept = metricRollupDeptCode(item);
     let sum = 0;
     metricWorkTabIds(item).forEach(function (tabId) {
         if (!metricWorkGroupInclude(item, tabId)) return;
         sum += metricGroupRollupTotal(item, tabId, days);
+    });
+    metricUngroupedPeople(item).forEach(function (e) {
+        sum += metricEmployeeFactSum(dept, e.id, item, days);
     });
     return sum;
 }
@@ -5808,34 +5898,35 @@ function metricRollupPanelHtml(deptCode) {
     if (!item || !metricRollupEnabled(item)) return "";
     const days = metricRollupDaysForMonth(selectedMonth);
     const tabs = metricWorkTabIds(item);
+    const dept = metricRollupDeptCode(item);
     const deptTotal = metricDeptRollupTotal(item, days);
     let html = '<div class="metric-rollup"><h4>' + escapeHtml(item.name) + "</h4>"
         + '<div class="note">Период: ' + escapeHtml(monthLabel(selectedMonth))
-        + ". Итоги групп и склада считаются из фактов сотрудников. Отдельная сумма в базу не записывается.</div>";
+        + ". metric_id: " + escapeHtml(item.id)
+        + ". Итоги считаются из фактов сотрудников, сумма 3310 не записывается отдельной строкой.</div>";
     tabs.forEach(function (tabId) {
         const included = metricWorkGroupInclude(item, tabId);
         const groupTotal = metricGroupRollupTotal(item, tabId, days);
         const openKey = item.id + ":" + tabId;
         const open = !!metricRollupOpen[openKey];
-        const people = workMetricPeopleForTab("warehouse", item.id, tabId);
+        const people = metricGroupPeople(item, tabId);
         html += '<div class="metric-rollup-row">'
             + '<span><button type="button" class="metric-rollup-toggle" onclick="toggleMetricRollupGroup(\'' + item.id + "','" + tabId + '\')">'
-            + (open ? "▼" : "▶") + "</button> " + escapeHtml(metricTabLabel("warehouse", tabId))
+            + (open ? "▼" : "▶") + "</button> " + escapeHtml(metricTabLabel(dept, tabId))
             + ' <label class="check" style="display:inline-flex;margin-left:8px;font-weight:400;font-size:12px">'
             + '<input type="checkbox"' + (included ? " checked" : "")
             + " onchange=\"setMetricWorkGroupInclude('" + item.id + "','" + tabId + "',this.checked)\"> В общем итоге</label>"
             + "</span><b>" + metricRollupFormat(groupTotal) + "</b></div>";
         if (open) {
             html += '<div class="metric-rollup-people">';
-            if (!people.length) html += "<div>Нет сотрудников с назначенной метрикой</div>";
+            if (!people.length) html += "<div>Нет сотрудников этой группы</div>";
             people.forEach(function (e) {
-                const empSum = metricEmployeeFactSum("warehouse", e.id, item, days);
+                const empSum = metricEmployeeFactSum(dept, e.id, item, days);
                 html += "<div><span>" + escapeHtml(shopMetricEmployeeCaption(e)) + "</span><span>"
                     + metricRollupFormat(empSum) + "</span></div>";
                 if (metricStructureType(item) === "with_submetrics") {
                     metricSubmetrics(item, true).forEach(function (sub) {
-                        const subSum = metricEmployeeFactSumParts("warehouse", e.id, item.id, sub.id, days);
-                        if (!subSum) return;
+                        const subSum = metricEmployeeFactSumParts(dept, e.id, item.id, sub.id, days);
                         html += '<div style="padding-left:12px"><span>' + escapeHtml(sub.name) + "</span><span>"
                             + metricRollupFormat(subSum) + "</span></div>";
                     });
@@ -5844,44 +5935,73 @@ function metricRollupPanelHtml(deptCode) {
             html += "</div>";
         }
     });
+    const leftover = metricUngroupedPeople(item);
+    if (leftover.length) {
+        let leftSum = 0;
+        leftover.forEach(function (e) { leftSum += metricEmployeeFactSum(dept, e.id, item, days); });
+        html += '<div class="metric-rollup-row"><span>Без основной группы</span><b>'
+            + metricRollupFormat(leftSum) + "</b></div>";
+    }
     html += '<div class="metric-rollup-total"><span>ИТОГО СКЛАД</span><span>' + metricRollupFormat(deptTotal) + "</span></div>";
     const route = item.result_route || {};
+    const inds = metricRollupSpuIndicators(item);
+    html += '<div class="note" style="margin-top:8px"><b>Маршрутизация итога</b><br>Источник результата: Итого подразделения. Куда: СПУ.</div>'
+        + '<div style="margin-top:6px"><label style="font-size:12px">Показатель СПУ</label> '
+        + '<select onchange="setMetricRollupSpu(\'' + item.id + '\',this.value)">'
+        + '<option value="">— показатель СПУ не выбран —</option>';
+    inds.forEach(function (x) {
+        html += '<option value="' + escapeAttribute(x.indicator_id) + '"'
+            + (route.spu_indicator_id === x.indicator_id ? " selected" : "") + ">"
+            + escapeHtml(x.name || x.spu_code || x.indicator_id) + "</option>";
+    });
+    html += "</select></div>";
     if (route.spu_indicator_id) {
-        const ind = (appData.management && appData.management.indicators || []).find(function (x) {
-            return x && x.indicator_id === route.spu_indicator_id;
-        });
-        html += '<div class="note" style="margin-top:8px">Маршрутизация итога: СПУ'
-            + (ind ? " → " + escapeHtml(ind.name) : "")
-            + ". СПУ читает этот расчёт, отдельный факт не создаётся.</div>";
+        const ind = inds.find(function (x) { return x.indicator_id === route.spu_indicator_id; });
+        html += '<div class="note">СПУ читает рассчитанный итог за свой выбранный период (для совпадения с 3310 откройте в СПУ тот же месяц). Отдельный факт не создаётся.</div>';
+        if (ind) html += '<div class="note">Текущий показатель: ' + escapeHtml(ind.name) + " (" + escapeHtml(ind.indicator_id) + ")</div>";
+    } else {
+        html += '<div class="note">Показатель СПУ не выбран. Выберите существующий показатель выше — новый не создаётся.</div>';
     }
     html += "</div>";
     return html;
 }
 
+function setMetricRollupSpu(metricId, indicatorId) {
+    const item = shopMetricCatalogById(metricId);
+    if (!item || !metricRollupEnabled(item)) return;
+    item.result_route = {
+        source: "department_total",
+        target: "spu",
+        spu_indicator_id: String(indicatorId || "")
+    };
+    applyMetricResultRoute(item);
+    saveApp();
+    if (typeof refreshMetricsUi === "function") refreshMetricsUi();
+}
+
 function metricEmployeeFactSumParts(deptCode, employeeId, metricId, submetricId, days) {
     let sum = 0;
     (days || []).forEach(function (d) {
-        sum += Number(getDeptMetricStored(deptCode, employeeId, d.day, metricId, d.month, submetricId) || 0);
+        sum += metricStoredNumber(deptCode, employeeId, d.day, metricId, d.month, submetricId);
     });
     return sum;
 }
 
 function renderMetricRollupHost(wrapId, deptCode) {
     const wrap = document.getElementById(wrapId);
-    if (!wrap || !wrap.parentNode) return;
-    const hostId = wrapId + "Rollup";
-    let host = document.getElementById(hostId);
-    if (!host) {
+    const html = (function () {
+        try { return metricRollupPanelHtml(deptCode); } catch (err) {
+            console.error(err);
+            return '<div class="note">Не удалось посчитать итог метрики. См. Console.</div>';
+        }
+    })();
+    let host = document.getElementById(wrapId + "Rollup");
+    if (!host && wrap && wrap.parentNode) {
         host = document.createElement("div");
-        host.id = hostId;
-        wrap.parentNode.insertBefore(host, wrap.nextSibling);
+        host.id = wrapId + "Rollup";
+        wrap.parentNode.insertBefore(host, wrap);
     }
-    try {
-        host.innerHTML = metricRollupPanelHtml(deptCode);
-    } catch (err) {
-        console.error(err);
-        host.innerHTML = "";
-    }
+    if (host) host.innerHTML = html;
 }
 const WORK_TAB_POSITION_HINTS = {
     shop: {
@@ -10632,7 +10752,12 @@ function syncCommonMetricTabsFromAssignments(item) {
 }
 
 function metricDepartmentId(item) {
-    return (item && item.department_id) || "shop";
+    if (item && item.department_id) return item.department_id;
+    if (item && item.territory_category && typeof territoryMetricCategoryById === "function") {
+        const spec = territoryMetricCategoryById(item.territory_category);
+        if (spec && spec.departmentId) return spec.departmentId;
+    }
+    return "shop";
 }
 
 function normalizeMetricCatalogItemTabs(item) {
@@ -21488,8 +21613,9 @@ function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricI
     if (!it || it.active === false) return;
     const key = metricFactStorageKey(parsed.metricId, parsed.submetricId);
     const n = parseShopMetricNumber(raw);
+    const text = String(raw == null ? "" : raw).trim();
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
-    if (!n) {
+    if (text === "") {
         delete rec[key];
         clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
     } else {
@@ -25418,15 +25544,7 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
         const mid = canonicalMetricId(metricId);
         if (!mid) return 0;
         const catalogItem = shopMetricCatalogById(mid);
-        const useDeptTotal = catalogItem && metricRollupEnabled(catalogItem)
-            && metricDepartmentId(catalogItem) !== "shop"
-            && (
-                (indicator && indicator.source_result === "department_total")
-                || (catalogItem.result_route && catalogItem.result_route.spu_indicator_id
-                    && (!indicator || canonicalMetricId(indicator.source_metric_id) === mid)
-                    && catalogItem.result_route.source === "department_total")
-            );
-        if (useDeptTotal) {
+        if (catalogItem && metricRollupEnabled(catalogItem) && metricDepartmentId(catalogItem) !== "shop") {
             return metricDeptRollupTotal(catalogItem, days || []);
         }
         const codes = mgmtMetricFactDeptCodes(deptCode, mid);
