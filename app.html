@@ -2060,6 +2060,7 @@
         .employee-row > .form-group.emp-field-dept { width: 128px; }
         .employee-row > .form-group.emp-field-time { width: 86px; }
         .employee-row > .form-group.emp-field-status { width: 112px; }
+        .employee-row > .form-group.emp-field-spu { width: 210px; }
         .employee-row > * { order: 3; }
         .employee-row > .form-group.emp-field-name { order: 0; }
         .employee-row > .form-group.emp-field-pos { order: 1; }
@@ -2127,6 +2128,7 @@
         .summary-staff-row > .form-group.emp-field-dept { width: 150px; }
         .summary-staff-row > .form-group.emp-field-tab { width: 132px; }
         .summary-staff-row > .form-group.emp-field-status { width: 112px; }
+        .summary-staff-row > .form-group.emp-field-spu { width: 210px; }
         .summary-staff-row > .form-group.emp-field-rate,
         .summary-staff-row > .form-group.emp-field-taxi { width: 110px; }
         .summary-staff-row > .form-group.rep-accrual {
@@ -4927,6 +4929,16 @@
                             </div>
                         </div>
                     </div>
+                    <div class="toolbar" style="padding:8px 12px 0">
+                        <div class="form-group" style="margin:0">
+                            <label>Участие в СПУ</label>
+                            <select id="staffOrgSpuMeetFilter" onchange="setStaffOrgSpuMeetFilter(this.value)">
+                                <option value="">Все</option>
+                                <option value="yes">Да</option>
+                                <option value="no">Нет</option>
+                            </select>
+                        </div>
+                    </div>
                     <div class="table-wrapper">
                         <table class="users-table org-table">
                             <thead>
@@ -4935,7 +4947,7 @@
                                     <th>Должность</th>
                                     <th>Рабочий отдел</th>
                                     <th>Руководитель</th>
-                                    <th>Собрание</th>
+                                    <th>Участие в СПУ</th>
                                     <th>Департамент СПУ</th>
                                     <th>Активен</th>
                                     <th></th>
@@ -5278,6 +5290,7 @@ let metricControlDaysKey = "";
 let metricControlView = "people";
 let metricsFillViewByKey = {};
 let fioFilterByDept = {};
+let staffOrgSpuMeetFilter = "";
 let writeoffLossesOpenId = "";
 let revisionFocusGroupId = "";
 let revisionFocusFolderId = "";
@@ -7820,7 +7833,9 @@ function normalizeEmployee(e) {
     if (!Array.isArray(e.position_history)) e.position_history = [];
     if (e.position_from == null) e.position_from = "";
     if (e.is_manager == null) e.is_manager = undefined;
-    if (e.meeting_participant == null) e.meeting_participant = undefined;
+    if (e.participates_in_spu_meetings == null) e.participates_in_spu_meetings = false;
+    else e.participates_in_spu_meetings = e.participates_in_spu_meetings === true;
+    e.meeting_participant = e.participates_in_spu_meetings === true;
     if (e.spu_sort_order == null) e.spu_sort_order = "";
     if (!e.department) e.department = "";
     e.taxiDaily = parseHours(e.taxiDaily, 0);
@@ -8009,6 +8024,8 @@ function cloneEmployeeRecord(src) {
         rate: parseHours(src.rate, 0),
         taxiDaily: parseHours(src.taxiDaily, 0),
         jobStatus: src.jobStatus === "fired" ? "fired" : "working",
+        participates_in_spu_meetings: src.participates_in_spu_meetings === true,
+        meeting_participant: src.participates_in_spu_meetings === true,
         terms: src.terms && typeof src.terms === "object" ? Object.assign({}, src.terms) : {}
     };
 }
@@ -8906,6 +8923,11 @@ function commitEmployeeCard(employeeId) {
         }
     }
     if (!employee.employee_id) employee.employee_id = employee.id;
+    const meetBox = card && card.querySelector(".emp-spu-meet");
+    if (meetBox) {
+        employee.participates_in_spu_meetings = !!meetBox.checked;
+        employee.meeting_participant = employee.participates_in_spu_meetings;
+    }
     assignGroupAllMetricsToEmployee(employee);
     saveApp();
     justAddedEmployeeId = employee.id;
@@ -8923,6 +8945,19 @@ function employeeCardActionsHtml(employee) {
         + '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + '\')">Сохранить</button>'
         + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>'
         + "</div>";
+}
+
+function employeeSpuMeetingsFieldHtml(employee, disabled) {
+    if (!employee || !employee.id) return "";
+    const on = employee.participates_in_spu_meetings === true;
+    return fieldBlock(
+        "СПУ",
+        '<label class="check"><input type="checkbox" class="emp-spu-meet"'
+            + (on ? " checked" : "") + (disabled ? " disabled" : "")
+            + ' onchange="updateEmployee(\'' + employee.id + '\',\'participates_in_spu_meetings\',this.checked)">'
+            + " Участвует в собраниях СПУ</label>",
+        "emp-field-spu"
+    );
 }
 
 function updateEmployeeNamePart(employeeId, part, value) {
@@ -10424,7 +10459,7 @@ function showSection(id, button) {
         const tab = deptWorkTabFromSection(id);
         if (w && tab) {
             if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
-                fioFilterByDept[w.code] = { tab: "", position: "" };
+                fioFilterByDept[w.code] = { tab: "", position: "", spuMeet: "" };
             }
             fioFilterByDept[w.code].tab = tab;
         }
@@ -22055,7 +22090,7 @@ function addEmployeeFromWorkMetrics() {
     if (w && isDeptWorkSection(currentSection)) {
         const tab = deptWorkTabFromSection(currentSection);
         if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
-            fioFilterByDept[w.code] = { tab: "", position: "" };
+            fioFilterByDept[w.code] = { tab: "", position: "", spuMeet: "" };
         }
         if (tab) fioFilterByDept[w.code].tab = tab;
     }
@@ -22065,7 +22100,7 @@ function addEmployeeFromWorkMetrics() {
         const tabs = typeof territoryHubTabIds === "function" ? territoryHubTabIds(hub) : [];
         if (code && tabs[0]) {
             if (!fioFilterByDept[code] || typeof fioFilterByDept[code] !== "object") {
-                fioFilterByDept[code] = { tab: "", position: "" };
+                fioFilterByDept[code] = { tab: "", position: "", spuMeet: "" };
             }
             fioFilterByDept[code].tab = tabs[0];
         }
@@ -22567,7 +22602,7 @@ function renderFio() {
     const filterHost = document.getElementById("fioFilters");
     const tabs = timesheetGroupFilterTabs(code);
     if (!fioFilterByDept[code] || typeof fioFilterByDept[code] !== "object") {
-        fioFilterByDept[code] = { tab: "", position: "" };
+        fioFilterByDept[code] = { tab: "", position: "", spuMeet: "" };
     }
     const filters = fioFilterByDept[code];
     if (filters.tab && !tabs.some(function (t) { return t.id === filters.tab; })) filters.tab = "";
@@ -22608,6 +22643,11 @@ function renderFio() {
             });
             fh += "</select></div>";
         }
+        fh += '<div class="form-group"><label>Участие в СПУ</label><select onchange="setFioSpuMeetFilter(this.value)">'
+            + '<option value=""' + (!filters.spuMeet ? " selected" : "") + ">Все</option>"
+            + '<option value="yes"' + (filters.spuMeet === "yes" ? " selected" : "") + ">Да</option>"
+            + '<option value="no"' + (filters.spuMeet === "no" ? " selected" : "") + ">Нет</option>"
+            + "</select></div>";
         filterHost.innerHTML = fh;
     }
 
@@ -22627,6 +22667,12 @@ function renderFio() {
         }
         if (!filters.position) return true;
         return String(employee.position || "").replace(/\s+/g, " ").trim() === filters.position;
+    }).filter(function (employee) {
+        if (!filters.spuMeet) return true;
+        const on = employee.participates_in_spu_meetings === true;
+        if (filters.spuMeet === "yes") return on;
+        if (filters.spuMeet === "no") return !on;
+        return true;
     });
 
     const html = shown.map(function (employee) {
@@ -22642,6 +22688,7 @@ function renderFio() {
             + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value)">', "emp-field-time")
             + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value)">', "emp-field-time")
             + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff()), "emp-field-status")
+            + employeeSpuMeetingsFieldHtml(employee, !canEditStaff())
             + employeeCardActionsHtml(employee)
             + "</div>";
     }).join("");
@@ -22657,7 +22704,7 @@ function setFioTabFilter(tabId) {
     const w = workspace();
     if (!w) return;
     if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
-        fioFilterByDept[w.code] = { tab: "", position: "" };
+        fioFilterByDept[w.code] = { tab: "", position: "", spuMeet: "" };
     }
     fioFilterByDept[w.code].tab = tabId || "";
     renderFio();
@@ -22667,9 +22714,19 @@ function setFioPositionFilter(position) {
     const w = workspace();
     if (!w) return;
     if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
-        fioFilterByDept[w.code] = { tab: "", position: "" };
+        fioFilterByDept[w.code] = { tab: "", position: "", spuMeet: "" };
     }
     fioFilterByDept[w.code].position = position || "";
+    renderFio();
+}
+
+function setFioSpuMeetFilter(value) {
+    const w = workspace();
+    if (!w) return;
+    if (!fioFilterByDept[w.code] || typeof fioFilterByDept[w.code] !== "object") {
+        fioFilterByDept[w.code] = { tab: "", position: "", spuMeet: "" };
+    }
+    fioFilterByDept[w.code].spuMeet = value || "";
     renderFio();
 }
 
@@ -22992,6 +23049,7 @@ function openEmployeeCreateForm() {
         + '<div class="form-group"><label>Активность</label><select id="empFormStatus">'
         + '<option value="working" selected>Работает</option>'
         + '<option value="fired">Уволен</option></select></div>'
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="empFormSpuMeet"> Участвует в собраниях СПУ</label></div>'
         + "</div>"
         + "</div>"
         + '<div class="rev-modal-actions">'
@@ -23053,6 +23111,8 @@ function saveEmployeeCreateForm() {
         rate: 0,
         taxiDaily: 0,
         jobStatus: (statusEl && statusEl.value === "fired") ? "fired" : "working",
+        participates_in_spu_meetings: !!(document.getElementById("empFormSpuMeet") && document.getElementById("empFormSpuMeet").checked),
+        meeting_participant: !!(document.getElementById("empFormSpuMeet") && document.getElementById("empFormSpuMeet").checked),
         terms: {}
     };
     applyEmployeeFullName(employee, fullName);
@@ -23116,6 +23176,9 @@ function updateEmployee(employeeId, field, value) {
             if (inferred) setEmployeePrimaryWorkTab(employeeId, inferred);
         }
         assignGroupAllMetricsToEmployee(employee);
+    } else if (field === "participates_in_spu_meetings") {
+        employee.participates_in_spu_meetings = value === true || value === "true";
+        employee.meeting_participant = employee.participates_in_spu_meetings;
     } else {
         employee[field] = value;
     }
@@ -23260,6 +23323,7 @@ function renderSummaryStaff() {
                 + fieldBlock("Рабочий отдел", place, "emp-field-dept")
                 + (tabSel ? fieldBlock("Рабочая группа", tabSel, "emp-field-tab") : "")
                 + fieldBlock("Статус", statusSel, "emp-field-status")
+                + employeeSpuMeetingsFieldHtml(employee, locked)
                 + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">", "emp-field-rate")
                 + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">", "emp-field-taxi")
                 + (isDrivers && isRep ? percentBlock : "")
@@ -23580,7 +23644,15 @@ function renderStaffOrgAdmin() {
     ensureManagement();
     const body = document.getElementById("staffOrgBody");
     if (!body) return;
-    const people = mgmtAllEmployees().slice().sort(function (a, b) {
+    const meetSel = document.getElementById("staffOrgSpuMeetFilter");
+    if (meetSel) meetSel.value = staffOrgSpuMeetFilter || "";
+    const people = mgmtAllEmployees().slice().filter(function (e) {
+        if (!staffOrgSpuMeetFilter) return true;
+        const on = !!(e && e.participates_in_spu_meetings === true);
+        if (staffOrgSpuMeetFilter === "yes") return on;
+        if (staffOrgSpuMeetFilter === "no") return !on;
+        return true;
+    }).sort(function (a, b) {
         return String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
     if (!people.length) {
@@ -23594,7 +23666,7 @@ function renderStaffOrgAdmin() {
                 return d ? d.name : id;
             }).join(", ");
             const mgr = e.is_manager === true || (e.is_manager == null && mgmtIsLeaderEmployee(e));
-            const meet = mgr && e.meeting_participant !== false;
+            const meet = e.participates_in_spu_meetings === true;
             return "<tr>"
                 + "<td><strong>" + escapeHtml(e.name || "—") + "</strong>"
                 + '<div class="note">' + escapeHtml(e.id) + "</div></td>"
@@ -23656,7 +23728,7 @@ function openStaffOrgEditor(employeeId) {
         if (mgmtDeptHeadId(d.spu_department_id) === e.id) primaryId = d.spu_department_id;
     });
     const mgr = e.is_manager === true || (e.is_manager == null && mgmtIsLeaderEmployee(e));
-    const meet = e.meeting_participant === true || (mgr && e.meeting_participant !== false);
+    const meet = e.participates_in_spu_meetings === true;
     let deptHtml = "";
     DEPT_DEFAULTS.forEach(function (d) {
         deptHtml += '<option value="' + d.code + '"' + (homeCode === d.code ? " selected" : "") + ">"
@@ -23682,7 +23754,7 @@ function openStaffOrgEditor(employeeId) {
         + '<div class="form-group"><label>Должность</label><select id="orgEmpPos">' + orgPositionOptions(e.position || "") + "</select></div>"
         + '<div class="form-group"><label>Рабочий отдел</label><select id="orgEmpDept">' + deptHtml + "</select></div>"
         + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMgr"' + (mgr ? " checked" : "") + "> Руководитель</label></div>"
-        + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMeet"' + (meet ? " checked" : "") + "> Участник собрания компании</label></div>"
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMeet"' + (meet ? " checked" : "") + "> Участвует в собраниях СПУ</label></div>"
         + '<div class="form-group"><label>Департамент(ы) СПУ</label>' + spuHtml + "</div>"
         + '<div class="form-group"><label>Порядок отображения</label>'
         + '<input id="orgEmpSort" type="number" value="' + escapeAttribute(String(e.spu_sort_order || 0)) + '"></div>'
@@ -23710,8 +23782,8 @@ function saveStaffOrgEditor(employeeId) {
     const fromMonth = fromIso.slice(0, 7);
     setEmployeePosition(e, pos, fromMonth);
     e.is_manager = !!(document.getElementById("orgEmpMgr") && document.getElementById("orgEmpMgr").checked);
-    e.meeting_participant = !!(document.getElementById("orgEmpMeet") && document.getElementById("orgEmpMeet").checked);
-    if (e.meeting_participant && !e.is_manager) e.is_manager = true;
+    e.participates_in_spu_meetings = !!(document.getElementById("orgEmpMeet") && document.getElementById("orgEmpMeet").checked);
+    e.meeting_participant = e.participates_in_spu_meetings === true;
     e.spu_sort_order = Number((document.getElementById("orgEmpSort") || {}).value || 0);
     e.jobStatus = (document.getElementById("orgEmpActive") && document.getElementById("orgEmpActive").checked) ? "working" : "fired";
     const home = employeeHome(e.id);
@@ -23743,6 +23815,11 @@ function saveStaffOrgEditor(employeeId) {
     closeStaffOrgEditor();
     renderStaffOrgAdmin();
     toast("Сотрудник сохранён.");
+}
+
+function setStaffOrgSpuMeetFilter(value) {
+    staffOrgSpuMeetFilter = value || "";
+    renderStaffOrgAdmin();
 }
 
 function closeAccessUserEditor() {
@@ -26472,10 +26549,6 @@ function ensureSpuOrgHistory() {
             });
         }
     });
-    mgmtAllEmployees().forEach(function (e) {
-        if (!e) return;
-        if (e.is_manager === true && e.meeting_participant == null) e.meeting_participant = true;
-    });
 }
 
 function mgmtSpuResponsibilities() {
@@ -26937,9 +27010,9 @@ function mgmtIsLeaderEmployee(emp) {
 }
 
 function mgmtIsMeetingParticipant(emp) {
-    if (!mgmtIsLeaderEmployee(emp)) return false;
-    if (emp.meeting_participant === false) return false;
-    return emp.meeting_participant === true || emp.meeting_participant == null;
+    if (!emp || !emp.id) return false;
+    if (!isWorking(emp)) return false;
+    return emp.participates_in_spu_meetings === true;
 }
 
 function mgmtLeaderPeople() {
@@ -26977,10 +27050,59 @@ function mgmtLeaderPeople() {
 }
 
 function mgmtMeetingPeople() {
-    return mgmtLeaderPeople().filter(function (p) {
-        const e = getEmployee(p.id);
-        return e && mgmtIsMeetingParticipant(e);
+    const out = [];
+    const seen = {};
+    mgmtAllEmployees().forEach(function (e) {
+        if (!e || !e.id || seen[e.id] || !mgmtIsMeetingParticipant(e)) return;
+        seen[e.id] = true;
+        const home = employeeHome(e.id);
+        out.push({
+            id: e.id,
+            name: e.name || e.id,
+            dept: home ? officialName(home) : "",
+            sort: Number(e.spu_sort_order || 0)
+        });
     });
+    out.sort(function (a, b) {
+        if (a.sort !== b.sort) return a.sort - b.sort;
+        return String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+    return out;
+}
+
+function mgmtMeetingAttendeePeople(extraIds) {
+    const out = [];
+    const seen = {};
+    mgmtMeetingPeople().forEach(function (p) {
+        if (!p || !p.id || seen[p.id]) return;
+        seen[p.id] = true;
+        out.push(p);
+    });
+    (extraIds || []).forEach(function (id) {
+        if (!id || seen[id]) return;
+        const e = getEmployee(id);
+        if (!e) return;
+        seen[id] = true;
+        out.push({ id: e.id, name: e.name || e.id });
+    });
+    return out;
+}
+
+function mgmtMeetingAttendeeCheckboxesHtml(selectedIds, className) {
+    const selected = {};
+    (selectedIds || []).forEach(function (id) { if (id) selected[id] = true; });
+    const people = mgmtMeetingAttendeePeople(selectedIds);
+    if (!people.length) {
+        return '<div class="note">Нет сотрудников с признаком «Участвует в собраниях СПУ». Отметьте его в карточке сотрудника.</div>';
+    }
+    let html = '<div class="wt-people">';
+    people.forEach(function (p) {
+        html += '<label class="check"><input type="checkbox" class="' + (className || "mm-part") + '" value="'
+            + escapeAttribute(p.id) + '"' + (selected[p.id] ? " checked" : "") + "> "
+            + escapeHtml(p.name) + "</label>";
+    });
+    html += "</div>";
+    return html;
 }
 
 function mgmtLeaderOptions(selected) {
@@ -28835,33 +28957,17 @@ function renderMgmtMeetingsHtml() {
                     questions.forEach(function (m) {
                         (m.participant_employee_ids || []).forEach(function (id) { if (id) seed[id] = true; });
                     });
-                    const seeded = Object.keys(seed);
-                    meta.participant_employee_ids = seeded.length
-                        ? seeded
-                        : mgmtMeetingPeople().map(function (p) { return p.id; });
+                    meta.participant_employee_ids = Object.keys(seed);
                 }
                 meta.participants_set = true;
                 saveApp();
             }
             html += '<div class="wt-week-body">';
-            html += '<div class="wt-week-title">Участники собрания</div><div class="wt-people">';
+            html += '<div class="wt-week-title">Кто присутствует</div><div class="wt-people">';
             const selected = {};
             (meta.participant_employee_ids || []).forEach(function (id) { selected[id] = true; });
-            const shown = [];
-            const seenP = {};
-            mgmtLeaderPeople().forEach(function (p) {
-                if (seenP[p.id]) return;
-                seenP[p.id] = true;
-                shown.push(p);
-            });
-            Object.keys(selected).forEach(function (id) {
-                if (seenP[id]) return;
-                const e = getEmployee(id);
-                if (!e) return;
-                seenP[id] = true;
-                shown.push({ id: e.id, name: e.name || e.id });
-            });
-            if (!shown.length) html += '<span class="mgmt-src">Нет руководителей. Отметьте признак в Администраторе.</span>';
+            const shown = mgmtMeetingAttendeePeople(meta.participant_employee_ids || []);
+            if (!shown.length) html += '<span class="mgmt-src">Нет сотрудников с признаком «Участвует в собраниях СПУ». Отметьте его в карточке сотрудника.</span>';
             shown.forEach(function (p) {
                 html += '<label class="check"><input type="checkbox"' + (canM ? "" : " disabled")
                     + (selected[p.id] ? " checked" : "")
@@ -28928,7 +29034,11 @@ function toggleMgmtWeekLeader(weekKey, empId, on) {
     const meta = mgmtWeekMeta(weekKey);
     const list = meta.participant_employee_ids || [];
     const idx = list.indexOf(empId);
-    if (on && idx === -1) list.push(empId);
+    if (on && idx === -1) {
+        const emp = getEmployee(empId);
+        if (!emp || !mgmtIsMeetingParticipant(emp)) return;
+        list.push(empId);
+    }
     if (!on && idx !== -1) list.splice(idx, 1);
     meta.participant_employee_ids = list;
     meta.participants_set = true;
@@ -30218,6 +30328,18 @@ function openMgmtMeetingForm(id, defaultDate) {
         participant_employee_ids: [],
         department_id: mgmtDeptFilter || ""
     };
+    let partIds = Array.isArray(m.participant_employee_ids) ? m.participant_employee_ids.slice() : [];
+    if ((!partIds || !partIds.length) && m.date) {
+        try {
+            const week = mgmtThuWeek(m.date);
+            const meta = week && appData.management && appData.management.meetingWeeks
+                ? appData.management.meetingWeeks[week.key]
+                : null;
+            if (meta && Array.isArray(meta.participant_employee_ids) && meta.participant_employee_ids.length) {
+                partIds = meta.participant_employee_ids.slice();
+            }
+        } catch (err) {}
+    }
     const html = "<h3>" + (id ? "Вопрос протокола" : "Новый вопрос протокола") + "</h3>"
         + '<div class="form-group"><label>Дата встречи</label><input id="mmDate" type="date" value="' + escapeAttribute(m.date || "") + '"></div>'
         + '<div class="form-group"><label>Департамент</label><select id="mmDept">' + mgmtDeptOptions(m.department_id) + "</select></div>"
@@ -30225,6 +30347,7 @@ function openMgmtMeetingForm(id, defaultDate) {
         + '<div class="form-group"><label>Описание проблемы / ситуации</label><textarea id="mmDisc" rows="2">' + escapeHtml(m.discussion || "") + "</textarea></div>"
         + '<div class="form-group"><label>Решение</label><textarea id="mmDec" rows="2">' + escapeHtml(m.decisions || m.notes || "") + "</textarea></div>"
         + '<div class="form-group"><label>Ответственный</label><select id="mmOwner">' + mgmtLeaderOptions(m.owner_employee_id) + "</select></div>"
+        + '<div class="form-group"><label>Кто присутствует</label>' + mgmtMeetingAttendeeCheckboxesHtml(partIds, "mm-part") + "</div>"
         + '<div class="form-group"><label>Комментарий / результат</label><input id="mmResult" maxlength="240" value="' + escapeAttribute(m.result || "") + '"></div>'
         + '<div class="rev-modal-actions" style="margin-top:10px">'
         + '<button type="button" class="btn btn-primary" onclick="saveMgmtMeeting(\'' + (m.meeting_id || "") + '\')">Сохранить</button> '
