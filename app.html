@@ -2331,6 +2331,19 @@
         }
         .mc-kpi .note { margin: 0; }
         .mc-kpi strong { display: block; font-size: 16px; margin-top: 2px; }
+        .mc-dept-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+        .mc-dept-tabs button {
+            border: 1px solid var(--border);
+            background: #fff;
+            border-radius: 8px;
+            padding: 5px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .mc-dept-tabs button.on { background: #0f172a; color: #fff; border-color: #0f172a; }
+        .mc-cat-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; margin-top: 8px; }
+        .mc-cat-filters .form-group { margin: 0; min-width: 150px; }
+        .mc-cat-filters label { font-size: 11px; }
         .mc-top5, .mc-rank {
             display: grid;
             grid-template-columns: repeat(4, minmax(140px, 1fr));
@@ -2372,6 +2385,25 @@
         .mc-filters .form-group { margin: 0; min-width: 120px; }
         .mc-filters label { font-size: 11px; }
         .mc-view-tabs { margin: 0 0 10px; }
+        .mc-dept-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin: 10px 0 0;
+        }
+        .mc-dept-tabs .metrics-tab {
+            border: 1px solid #d1d5db;
+            background: #fff;
+            border-radius: 8px;
+            padding: 5px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .mc-dept-tabs .metrics-tab.active {
+            background: #0f172a;
+            color: #fff;
+            border-color: #0f172a;
+        }
         .fio-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; }
         .fio-filters .form-group { margin: 0; min-width: 160px; }
 
@@ -4012,7 +4044,7 @@
         <button type="button" class="nav-btn" data-for="summary" data-section="summaryStaff" onclick="showSection('summaryStaff', this)">
             👤 Сотрудники
         </button>
-        <button type="button" class="nav-btn" data-for="both" data-section="metricCatalog" onclick="showSection('metricCatalog', this)">
+        <button type="button" class="nav-btn" data-for="both" data-section="metricCatalog" data-default-label="📚 Метрики" onclick="showSection('metricCatalog', this)">
             📚 Метрики
         </button>
         <button type="button" class="nav-btn" data-for="both" data-section="users" onclick="showSection('users', this)">
@@ -4907,9 +4939,11 @@
             ================================================== -->
             <section id="metricCatalog" class="section">
                 <div class="card">
-                    <div class="card-title">Метрики</div>
-                    <div class="note" style="margin-top:6px">Единственное место создания метрик. Отдел → должность / рабочая группа → сотрудники. Рабочие разделы только показывают назначенные метрики. KPI выбирает уже существующий metric_id.</div>
+                    <div class="card-title">Справочник метрик</div>
+                    <div class="note" style="margin-top:6px" id="metricCatalogNote">Единый справочник метрик Work Time. Создание и назначения — здесь. Рабочие разделы только показывают назначенные метрики.</div>
                     <div class="toolbar" style="margin-top:10px" id="metricCatalogToolbar"></div>
+                    <div id="metricCatalogDeptTabs" class="mc-dept-tabs" style="display:none"></div>
+                    <div class="mc-filters" id="metricCatalogFilters" style="display:none"></div>
                     <div class="table-wrapper" style="margin-top:10px;max-height:none">
                         <table class="metric-cat-table">
                             <thead>
@@ -4917,7 +4951,7 @@
                                     <th></th>
                                     <th>Метрика</th>
                                     <th>Подразделение</th>
-                                    <th>Рабочие вкладки</th>
+                                    <th>Назначения</th>
                                     <th>Подметрики</th>
                                     <th>Тип</th>
                                     <th>Активна</th>
@@ -5389,7 +5423,7 @@ let shopMetricCategory = "pickers";
 let deptMetricTab = "";
 let territoryMetricsHubId = "";
 let metricCatalogExpanded = {};
-let metricCatalogFilter = { tab: "", active: "active", structure: "", dept: "" };
+let metricCatalogFilter = { tab: "", active: "active", structure: "", dept: "", position_id: "", employee_id: "", search: "" };
 let timesheetWorkTabFilterByDept = {};
 let revisionPanel = "schedule";
 let disciplinePanel = "late";
@@ -10411,6 +10445,11 @@ function applyModeUI() {
         if (el.classList.contains("nav-btn")) {
             const sec = el.getAttribute("data-section");
             const code = workspace() && workspace().code;
+            if (isAdminEntry() && sec === "metricCatalog" && mode === "both") {
+                el.textContent = "📚 Справочник метрик";
+            } else if (sec === "metricCatalog" && mode === "both") {
+                el.textContent = el.getAttribute("data-default-label") || "📚 Метрики";
+            }
             if (sec && allowed.indexOf(sec) === -1) show = false;
             if (sec === "metricCatalog" && mode === "both"
                 && (code === "warehouse" || code === "drivers" || code === "office")) {
@@ -10432,6 +10471,7 @@ function applyModeUI() {
             } else if (isAdminEntry()) {
                 show = (sec === "users" || sec === "settings" || sec === "metricCatalog" || sec === "summaryStaff")
                     && allowed.indexOf(sec) !== -1;
+                if (sec === "metricCatalog") show = show && mode === "both";
             } else if (isTerritoryMetricsMode()) {
                 show = mode === "territoryMetricsHub" && (!sec || allowed.indexOf(sec) !== -1);
             } else if (summary) {
@@ -10441,6 +10481,11 @@ function applyModeUI() {
                 if (el.getAttribute("data-spu") === "1") show = false;
                 if (el.getAttribute("data-org") === "1") show = false;
             }
+        }
+        if (isAdminEntry() && el.classList.contains("nav-btn")
+            && el.getAttribute("data-section") === "metricCatalog"
+            && el.getAttribute("data-for") !== "both") {
+            show = false;
         }
         if (el.getAttribute("data-spu") === "1" && !el.classList.contains("nav-btn")) {
             show = isSpuMode();
@@ -10499,7 +10544,31 @@ function applyModeUI() {
     }
     const editBtn = document.getElementById("navLayoutEditBtn");
     if (editBtn) editBtn.style.display = canConfigureNavLayout() ? "" : "none";
+    try { sanitizeAdminNavLayoutMetricCatalog(); } catch (sanErr) { console.error(sanErr); }
     try { applyNavLayout(); } catch (navErr) { console.error(navErr); }
+}
+
+function sanitizeAdminNavLayoutMetricCatalog() {
+    if (!isAdminEntry()) return;
+    const layouts = ensureNavLayouts();
+    const layout = layouts.admin;
+    if (!layout || !Array.isArray(layout.groups)) return;
+    let changed = false;
+    layout.groups.forEach(function (g) {
+        if (!g || !Array.isArray(g.item_ids)) return;
+        const next = g.item_ids.filter(function (id) {
+            const btn = navBtnById(id);
+            if (!btn) return true;
+            if (btn.getAttribute("data-section") === "metricCatalog"
+                && btn.getAttribute("data-for") !== "both") {
+                changed = true;
+                return false;
+            }
+            return true;
+        });
+        if (next.length !== g.item_ids.length) g.item_ids = next;
+    });
+    if (changed) saveApp();
 }
 
 function ensureNavLayouts() {
@@ -10549,6 +10618,8 @@ function visibleNavItemIds() {
     const ids = [];
     host.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         if (btn.style.display === "none") return;
+        if (isAdminEntry() && btn.getAttribute("data-section") === "metricCatalog"
+            && btn.getAttribute("data-for") !== "both") return;
         ids.push(navItemStableId(btn));
     });
     return ids;
@@ -10617,7 +10688,10 @@ function applyNavLayout() {
     layout.groups.forEach(function (g) {
         const shown = (g.item_ids || []).filter(function (id) {
             const btn = navBtnById(id);
-            return btn && btn.style.display !== "none";
+            if (!btn || btn.style.display === "none") return false;
+            if (isAdminEntry() && btn.getAttribute("data-section") === "metricCatalog"
+                && btn.getAttribute("data-for") !== "both") return false;
+            return true;
         });
         if (g.title && shown.length) {
             const title = document.createElement("div");
@@ -10628,6 +10702,8 @@ function applyNavLayout() {
         (g.item_ids || []).forEach(function (id) {
             const btn = navBtnById(id);
             if (!btn || used[id]) return;
+            if (isAdminEntry() && btn.getAttribute("data-section") === "metricCatalog"
+                && btn.getAttribute("data-for") !== "both") return;
             used[id] = true;
             host.appendChild(btn);
         });
@@ -10979,7 +11055,7 @@ function sectionTitle(id) {
         employees: "В табель",
         users: "Сотрудники, должности и доступы",
         settings: "Настройки",
-        metricCatalog: isTerritoryMetricsMode() ? "Справочник метрик" : "Метрики",
+        metricCatalog: (isTerritoryMetricsMode() || isCompanyWideCatalogMode()) ? "Справочник метрик" : "Метрики",
         territoryMetrics: "Метрики территории",
         territoryReturns: "Возвраты по покупателям",
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
@@ -11897,23 +11973,158 @@ function catalogViewShowsAllDepts() {
 function catalogItemsForView() {
     if (currentSection === "deptMetrics") return catalogItemsForDept(catalogDeptContext());
     if (currentSection === "metricCatalog" && isTerritoryMetricsMode()) {
-        if (metricCatalogFilter.dept) return catalogItemsForDept(metricCatalogFilter.dept);
         return shopMetricCatalogItems().filter(function (it) {
             return it && metricDepartmentId(it) !== "shop";
         });
     }
-    if (catalogViewShowsAllDepts()) {
-        if (metricCatalogFilter.dept) return catalogItemsForDept(metricCatalogFilter.dept);
+    if (currentSection === "metricCatalog" && isCompanyWideCatalogMode()) {
         return shopMetricCatalogItems();
     }
+    if (catalogViewShowsAllDepts()) return shopMetricCatalogItems();
     return catalogItemsForDept(catalogDeptContext());
 }
 
-function catalogItemsForDept(dept) {
-    const code = dept || catalogDeptContext();
-    return shopMetricCatalogItems().filter(function (it) {
-        return metricDepartmentId(it) === code;
+function metricAssignmentFilterRows(item) {
+    if (!item) return [];
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        return item.assignments.filter(function (row) { return row && row.department_id; });
+    }
+    const dept = metricDepartmentId(item);
+    return metricWorkTabIds(item).map(function (tab) {
+        return {
+            department_id: dept,
+            work_tab_id: tab,
+            position_id: "",
+            assign_mode: item.assign_mode === "specific" ? "specific" : "group_all",
+            employee_ids: []
+        };
     });
+}
+
+function metricCatalogParsedTab() {
+    const raw = String(metricCatalogFilter.tab || "");
+    if (!raw) return { dept: "", tab: "" };
+    const cut = raw.indexOf("::");
+    if (cut >= 0) return { dept: raw.slice(0, cut), tab: raw.slice(cut + 2) };
+    return { dept: String(metricCatalogFilter.dept || ""), tab: raw };
+}
+
+function metricRowMatchesCatalogScope(row, dept, tab) {
+    if (!row) return false;
+    if (dept && row.department_id !== dept) return false;
+    if (tab && row.work_tab_id !== tab) return false;
+    return true;
+}
+
+function metricMatchesCatalogAssignmentFilters(item, opts) {
+    opts = opts || {};
+    const dept = opts.dept != null ? opts.dept : metricCatalogFilter.dept;
+    const parsed = metricCatalogParsedTab();
+    const tab = opts.tab != null ? opts.tab : parsed.tab;
+    const tabDept = opts.tabDept != null ? opts.tabDept : (parsed.dept || dept);
+    const pos = opts.position_id != null ? opts.position_id : metricCatalogFilter.position_id;
+    const emp = opts.employee_id != null ? opts.employee_id : metricCatalogFilter.employee_id;
+    const rows = metricAssignmentFilterRows(item);
+    if (!rows.length) {
+        if (dept && metricDepartmentId(item) !== dept) return false;
+        if (tab && !metricShowsOnTab(item, tab)) return false;
+        return !pos && !emp;
+    }
+    return rows.some(function (row) {
+        if (!metricRowMatchesCatalogScope(row, tabDept || dept, tab)) return false;
+        if (pos) {
+            if (row.position_id && row.position_id !== pos) return false;
+            if (!row.position_id) {
+                const people = employeesForMetricAssignmentRow(row);
+                if (people.length && !people.some(function (e) { return employeeHasPositionId(e, pos); })) return false;
+            }
+        }
+        if (emp) {
+            if (row.assign_mode === "specific") {
+                return (row.employee_ids || []).indexOf(emp) !== -1;
+            }
+            const employee = getEmployee(emp);
+            if (!employee) return false;
+            if (typeof employeeMatchesMetricAssignments === "function" && (item.assignments || []).length) {
+                return employeeMatchesMetricAssignments(item, employee, row.work_tab_id);
+            }
+            return employeesForMetricAssignmentRow(row).some(function (e) { return e.id === emp; });
+        }
+        return true;
+    });
+}
+
+function catalogFilterWorkGroupOptions(items) {
+    const dept = metricCatalogFilter.dept;
+    const seen = {};
+    const out = [];
+    items.forEach(function (it) {
+        metricAssignmentFilterRows(it).forEach(function (row) {
+            if (dept && row.department_id !== dept) return;
+            if (!row.work_tab_id) return;
+            const value = dept ? row.work_tab_id : (row.department_id + "::" + row.work_tab_id);
+            if (seen[value]) return;
+            seen[value] = true;
+            const label = dept
+                ? metricTabLabel(row.department_id, row.work_tab_id)
+                : (officialName(findWorkspaceByCode(row.department_id)) || row.department_id) + " · " + metricTabLabel(row.department_id, row.work_tab_id);
+            out.push({ value: value, label: label });
+        });
+    });
+    return out.sort(function (a, b) { return String(a.label).localeCompare(String(b.label), "ru"); });
+}
+
+function catalogFilterPositionOptions(items) {
+    const seen = {};
+    const out = [];
+    items.forEach(function (it) {
+        metricAssignmentFilterRows(it).forEach(function (row) {
+            const parsed = metricCatalogParsedTab();
+            if (!metricRowMatchesCatalogScope(row, parsed.dept || metricCatalogFilter.dept, parsed.tab)) return;
+            if (row.position_id) {
+                if (seen[row.position_id]) return;
+                seen[row.position_id] = true;
+                const pos = positionCatalogById(row.position_id);
+                out.push({ value: row.position_id, label: (pos && pos.name) || row.position_id });
+                return;
+            }
+            positionsForMetricAssignment(row.department_id, row.work_tab_id).forEach(function (p) {
+                if (!p || seen[p.position_id]) return;
+                seen[p.position_id] = true;
+                out.push({ value: p.position_id, label: p.name });
+            });
+        });
+    });
+    return out.sort(function (a, b) { return String(a.label).localeCompare(String(b.label), "ru"); });
+}
+
+function catalogFilterEmployeeOptions(items) {
+    const seen = {};
+    const out = [];
+    items.forEach(function (it) {
+        metricAssignmentFilterRows(it).forEach(function (row) {
+            const parsed = metricCatalogParsedTab();
+            if (!metricRowMatchesCatalogScope(row, parsed.dept || metricCatalogFilter.dept, parsed.tab)) return;
+            if (metricCatalogFilter.position_id) {
+                if (row.position_id && row.position_id !== metricCatalogFilter.position_id) return;
+            }
+            let people = employeesForMetricAssignmentRow(row);
+            if (metricCatalogFilter.position_id) {
+                people = people.filter(function (e) { return employeeHasPositionId(e, metricCatalogFilter.position_id); });
+            }
+            if (row.assign_mode === "specific") {
+                const allow = {};
+                (row.employee_ids || []).forEach(function (id) { allow[id] = true; });
+                people = people.filter(function (e) { return allow[e.id]; });
+            }
+            people.forEach(function (e) {
+                if (!e || !e.id || seen[e.id]) return;
+                seen[e.id] = true;
+                out.push({ value: e.id, label: shopMetricEmployeeCaption ? shopMetricEmployeeCaption(e) : (e.name || e.id) });
+            });
+        });
+    });
+    return out.sort(function (a, b) { return String(a.label).localeCompare(String(b.label), "ru"); });
 }
 
 function employeeHomeDeptCode(employeeId) {
@@ -21710,20 +21921,27 @@ function renderMetricCatalog() {
     if (!body) return;
     const can = canMutateMetricCatalogUi();
     const allDepts = catalogViewShowsAllDepts();
+    const companyWide = currentSection === "metricCatalog" && isCompanyWideCatalogMode();
     if (isTerritoryMetricsMode() && metricCatalogFilter.dept === "shop") metricCatalogFilter.dept = "";
     const catTitle = document.querySelector("#metricCatalog .card-title");
     if (catTitle && currentSection === "metricCatalog") {
-        catTitle.textContent = isTerritoryMetricsMode() ? "Справочник метрик" : "Метрики";
+        catTitle.textContent = (isTerritoryMetricsMode() || companyWide) ? "Справочник метрик" : "Метрики";
     }
-    const dept = currentSection === "deptMetrics"
-        ? catalogDeptContext()
-        : (allDepts ? (metricCatalogFilter.dept || "") : catalogDeptContext());
-    const tabs = dept ? metricTabsForDept(dept) : [];
+    const noteEl = document.getElementById("metricCatalogNote");
+    if (noteEl && currentSection === "metricCatalog") {
+        noteEl.textContent = companyWide
+            ? "Единый справочник всех метрик Work Time. Одна запись = один metric_id. Фильтры учитывают множественные назначения."
+            : (isTerritoryMetricsMode()
+                ? "Справочник метрик территории. Создание и назначения — здесь."
+                : "Единственное место создания метрик отдела. Рабочие разделы только показывают назначенные метрики.");
+    }
+    const deptTabs = document.getElementById("metricCatalogDeptTabs");
+    const filtersBox = document.getElementById("metricCatalogFilters");
     if (bar) {
         let html = can
-            ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Добавить метрику</button>'
+            ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Создать метрику</button>'
             : '<div class="note">Просмотр. Изменять справочник может администратор.</div>';
-        if (allDepts) {
+        if (!companyWide && allDepts) {
             html += '<select onchange="setMetricCatalogFilter(\'dept\',this.value)" style="margin-left:8px">';
             html += '<option value="">Все отделы</option>';
             DEPT_DEFAULTS.forEach(function (d) {
@@ -21733,13 +21951,17 @@ function renderMetricCatalog() {
             });
             html += "</select>";
         }
-        html += '<select onchange="setMetricCatalogFilter(\'tab\',this.value)" style="margin-left:8px">';
-        html += '<option value="">Все вкладки</option>';
-        tabs.forEach(function (t) {
-            html += '<option value="' + t.id + '"' + (metricCatalogFilter.tab === t.id ? " selected" : "") + ">" + escapeHtml(t.label) + "</option>";
-        });
-        html += "</select>";
-        html += '<select onchange="setMetricCatalogFilter(\'active\',this.value)">';
+        if (!companyWide) {
+            const tabs = metricCatalogFilter.dept ? metricTabsForDept(metricCatalogFilter.dept) : [];
+            html += '<select onchange="setMetricCatalogFilter(\'tab\',this.value)" style="margin-left:8px">';
+            html += '<option value="">Все вкладки</option>';
+            tabs.forEach(function (t) {
+                html += '<option value="' + t.id + '"' + (metricCatalogFilter.tab === t.id ? " selected" : "") + ">"
+                    + escapeHtml(t.label) + "</option>";
+            });
+            html += "</select>";
+        }
+        html += '<select onchange="setMetricCatalogFilter(\'active\',this.value)" style="margin-left:8px">';
         html += '<option value="active"' + (metricCatalogFilter.active === "active" ? " selected" : "") + ">Активные</option>";
         html += '<option value="inactive"' + (metricCatalogFilter.active === "inactive" ? " selected" : "") + ">Неактивные</option>";
         html += '<option value="all"' + (metricCatalogFilter.active === "all" ? " selected" : "") + ">Все</option>";
@@ -21751,19 +21973,114 @@ function renderMetricCatalog() {
         html += "</select>";
         bar.innerHTML = html;
     }
-    let items = catalogItemsForView().slice().sort(function (a, b) {
-        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
-    });
-    items = items.filter(function (it) {
-        if (metricCatalogFilter.tab && !metricShowsOnTab(it, metricCatalogFilter.tab)) return false;
+    if (deptTabs) {
+        if (companyWide) {
+            deptTabs.style.display = "";
+            let th = '<button type="button" class="metrics-tab' + (!metricCatalogFilter.dept ? " active" : "")
+                + '" onclick="setMetricCatalogFilter(\'dept\',\'\')">Все</button>';
+            DEPT_DEFAULTS.forEach(function (d) {
+                th += '<button type="button" class="metrics-tab' + (metricCatalogFilter.dept === d.code ? " active" : "")
+                    + '" onclick="setMetricCatalogFilter(\'dept\',\'' + escapeAttribute(d.code) + '\')">'
+                    + escapeHtml(d.name) + "</button>";
+            });
+            deptTabs.innerHTML = th;
+        } else {
+            deptTabs.style.display = "none";
+            deptTabs.innerHTML = "";
+        }
+    }
+    function passActiveStructure(it) {
         if (metricCatalogFilter.active === "active" && it.active === false) return false;
         if (metricCatalogFilter.active === "inactive" && it.active !== false) return false;
         if (metricCatalogFilter.structure && metricStructureType(it) !== metricCatalogFilter.structure) return false;
         return true;
+    }
+    const scopeItems = catalogItemsForView().filter(passActiveStructure);
+    if (companyWide && filtersBox) {
+        filtersBox.style.display = "";
+        const forGroups = scopeItems.filter(function (it) {
+            return metricMatchesCatalogAssignmentFilters(it, {
+                dept: metricCatalogFilter.dept,
+                tab: "",
+                tabDept: metricCatalogFilter.dept,
+                position_id: "",
+                employee_id: ""
+            });
+        });
+        const groups = catalogFilterWorkGroupOptions(forGroups);
+        const groupVals = {};
+        groups.forEach(function (g) { groupVals[g.value] = true; });
+        if (metricCatalogFilter.tab && !groupVals[metricCatalogFilter.tab]) metricCatalogFilter.tab = "";
+        const forPos = scopeItems.filter(function (it) {
+            return metricMatchesCatalogAssignmentFilters(it, { position_id: "", employee_id: "" });
+        });
+        const positions = catalogFilterPositionOptions(forPos);
+        const posVals = {};
+        positions.forEach(function (p) { posVals[p.value] = true; });
+        if (metricCatalogFilter.position_id && !posVals[metricCatalogFilter.position_id]) {
+            metricCatalogFilter.position_id = "";
+        }
+        const forEmp = scopeItems.filter(function (it) {
+            return metricMatchesCatalogAssignmentFilters(it, { employee_id: "" });
+        });
+        const employees = catalogFilterEmployeeOptions(forEmp);
+        const empVals = {};
+        employees.forEach(function (e) { empVals[e.value] = true; });
+        if (metricCatalogFilter.employee_id && !empVals[metricCatalogFilter.employee_id]) {
+            metricCatalogFilter.employee_id = "";
+        }
+        let fh = '<div class="form-group"><label>Рабочая группа</label><select onchange="setMetricCatalogFilter(\'tab\',this.value)">'
+            + '<option value="">Все</option>';
+        groups.forEach(function (g) {
+            fh += '<option value="' + escapeAttribute(g.value) + '"'
+                + (metricCatalogFilter.tab === g.value ? " selected" : "") + ">"
+                + escapeHtml(g.label) + "</option>";
+        });
+        fh += '</select></div><div class="form-group"><label>Должность</label>'
+            + '<select onchange="setMetricCatalogFilter(\'position_id\',this.value)">'
+            + '<option value="">Все</option>';
+        positions.forEach(function (p) {
+            fh += '<option value="' + escapeAttribute(p.value) + '"'
+                + (metricCatalogFilter.position_id === p.value ? " selected" : "") + ">"
+                + escapeHtml(p.label) + "</option>";
+        });
+        fh += '</select></div><div class="form-group"><label>Сотрудник</label>'
+            + '<select onchange="setMetricCatalogFilter(\'employee_id\',this.value)">'
+            + '<option value="">Все</option>';
+        employees.forEach(function (e) {
+            fh += '<option value="' + escapeAttribute(e.value) + '"'
+                + (metricCatalogFilter.employee_id === e.value ? " selected" : "") + ">"
+                + escapeHtml(e.label) + "</option>";
+        });
+        fh += '</select></div><div class="form-group"><label>Поиск метрики</label>'
+            + '<input id="metricCatalogSearch" type="search" maxlength="80" value="'
+            + escapeAttribute(metricCatalogFilter.search || "") + '" placeholder="Название…" '
+            + 'oninput="onMetricCatalogSearchInput(this.value)"></div>';
+        filtersBox.innerHTML = fh;
+    } else if (filtersBox) {
+        filtersBox.style.display = "none";
+        filtersBox.innerHTML = "";
+    }
+    let items = scopeItems.filter(function (it) {
+        if (companyWide || metricCatalogFilter.dept || metricCatalogFilter.tab
+            || metricCatalogFilter.position_id || metricCatalogFilter.employee_id) {
+            if (!metricMatchesCatalogAssignmentFilters(it)) return false;
+        } else if (metricCatalogFilter.tab && !metricShowsOnTab(it, metricCatalogFilter.tab)) {
+            return false;
+        }
+        if (metricCatalogFilter.search) {
+            const q = String(metricCatalogFilter.search).toLowerCase().replace(/\s+/g, " ").trim();
+            if (q && String(it.name || "").toLowerCase().indexOf(q) === -1
+                && String(it.id || "").toLowerCase().indexOf(q) === -1) return false;
+        }
+        return true;
+    }).sort(function (a, b) {
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
     });
     const colSpan = 8;
     if (!items.length) {
-        body.innerHTML = '<tr><td colspan="' + colSpan + '"><div class="note">Справочник пуст. Нажмите «+ Добавить метрику».</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="' + colSpan + '"><div class="note">Нет метрик по выбранным фильтрам.'
+            + (can ? " Нажмите «+ Создать метрику»." : "") + "</div></td></tr>";
         return;
     }
     const deptNames = {};
@@ -21773,18 +22090,30 @@ function renderMetricCatalog() {
         const on = it.active !== false;
         const subs = metricSubmetrics(it, false);
         const expanded = !!metricCatalogExpanded[it.id];
-        const tabNames = metricWorkTabIds(it).map(function (id) { return metricTabLabel(metricDepartmentId(it), id); }).join(" + ");
+        const asg = metricAssignmentFilterRows(it);
+        const tabNames = asg.length
+            ? asg.map(function (row) {
+                const deptLabel = deptNames[row.department_id] || row.department_id;
+                const tabLabel = metricTabLabel(row.department_id, row.work_tab_id);
+                const pos = row.position_id ? positionCatalogById(row.position_id) : null;
+                return deptLabel + " · " + tabLabel + (pos ? " · " + pos.name : "");
+            }).filter(function (x, i, arr) { return arr.indexOf(x) === i; }).join("; ")
+            : metricWorkTabIds(it).map(function (id) {
+                return metricTabLabel(metricDepartmentId(it), id);
+            }).join(" + ");
         let actions = "";
         if (can) {
             actions = '<details class="mc-more"><summary title="Действия">⋯</summary><div class="mc-more-menu">'
                 + '<button type="button" onclick="openMetricCatalogForm(\'' + it.id + '\')">Редактировать</button>'
+                + '<button type="button" onclick="openMetricCatalogForm(\'' + it.id + '\')">Изменить назначения</button>'
                 + '<button type="button" onclick="setShopMetricCatalogActive(\'' + it.id + "'," + (!on) + ')">'
                 + (on ? "Отключить" : "Включить") + "</button>"
                 + (it.builtin || linked ? "" : '<button type="button" onclick="deleteShopMetricCatalogItem(\'' + it.id + '\')">Удалить</button>')
                 + "</div></details>";
         }
         const arrow = metricStructureType(it) === "with_submetrics"
-            ? '<button type="button" class="mc-expand-btn" onclick="toggleMetricCatalogExpand(\'' + it.id + '\')">' + (expanded ? "▼" : "▶") + "</button>"
+            ? '<button type="button" class="mc-expand-btn" onclick="toggleMetricCatalogExpand(\'' + it.id + '\')">'
+                + (expanded ? "▼" : "▶") + "</button>"
             : "";
         let row = '<tr class="' + (on ? "" : "is-inactive") + '"'
             + (can ? ' draggable="true" ondragstart="onMetricCatalogDrag(event,\'' + it.id + '\')" ondragover="onMetricCatalogDragOver(event)" ondrop="onMetricCatalogDrop(event,\'' + it.id + '\')"' : "")
@@ -21818,8 +22147,33 @@ function renderMetricCatalog() {
     }).join("");
 }
 
+function onMetricCatalogSearchInput(value) {
+    metricCatalogFilter.search = value;
+    const input = document.getElementById("metricCatalogSearch");
+    const start = input ? input.selectionStart : null;
+    const end = input ? input.selectionEnd : null;
+    renderMetricCatalog();
+    const again = document.getElementById("metricCatalogSearch");
+    if (again) {
+        again.focus();
+        if (start != null && typeof again.setSelectionRange === "function") {
+            try { again.setSelectionRange(start, end); } catch (err) {}
+        }
+    }
+}
+
 function setMetricCatalogFilter(key, value) {
     metricCatalogFilter[key] = value;
+    if (key === "dept") {
+        metricCatalogFilter.tab = "";
+        metricCatalogFilter.position_id = "";
+        metricCatalogFilter.employee_id = "";
+    } else if (key === "tab") {
+        metricCatalogFilter.position_id = "";
+        metricCatalogFilter.employee_id = "";
+    } else if (key === "position_id") {
+        metricCatalogFilter.employee_id = "";
+    }
     renderMetricCatalog();
 }
 
