@@ -315,6 +315,50 @@
             background: #1f2937;
             color: white;
         }
+        .nav-btn.nav-layout-edit {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #93c5fd;
+            border: 1px dashed #374151;
+        }
+        .nav-btn.nav-layout-edit:hover { color: #fff; }
+        .rev-modal.nav-layout-modal {
+            width: min(420px, calc(100vw - 24px));
+            max-height: 82vh;
+            padding: 14px 16px;
+        }
+        .nav-ed-list { display: flex; flex-direction: column; gap: 8px; max-height: 58vh; overflow: auto; }
+        .nav-ed-group {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            background: #f8fafc;
+            padding: 8px;
+        }
+        .nav-ed-group.is-over { outline: 2px solid #93c5fd; }
+        .nav-ed-ghead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+        .nav-ed-ghead input { flex: 1; min-width: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+        .nav-ed-handle {
+            cursor: grab;
+            color: #64748b;
+            font-size: 14px;
+            user-select: none;
+            padding: 2px 4px;
+        }
+        .nav-ed-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 5px 6px;
+            margin: 4px 0;
+            font-size: 13px;
+            cursor: grab;
+        }
+        .nav-ed-item.is-over { background: #eff6ff; }
+        .nav-ed-item span { flex: 1; min-width: 0; }
+        .nav-ed-tools { display: flex; gap: 6px; margin: 8px 0; }
 
         .mgmt-tabs { display: none; }
         .mgmt-chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
@@ -3789,6 +3833,7 @@
 
         <div class="dept-now" id="deptNow"></div>
 
+        <div id="navCustomArea">
         <div class="menu-title" data-for="territoryMetricsHub">Метрики территории</div>
         <button type="button" class="nav-btn" data-for="territoryMetricsHub" data-section="territoryReturns" data-hub="returns" onclick="setTerritoryMetricsHub('returns')">
             Возвраты от покупателей
@@ -3976,8 +4021,12 @@
         <button type="button" class="nav-btn" data-for="both" data-section="settings" onclick="showSection('settings', this)">
             ⚙️ Настройки
         </button>
+        </div>
+        <button type="button" class="nav-btn nav-layout-edit" id="navLayoutEditBtn" onclick="openNavLayoutEditor()" style="display:none;">
+            ☰ Настроить меню раздела
+        </button>
 
-        <div class="menu-title">Вход</div>
+        <div class="menu-title" id="navLoginTitle">Вход</div>
         <button type="button" class="nav-btn" id="backToTerritoryBtn" onclick="backToTerritory()" style="display:none;">
             ← Назад в Территорию
         </button>
@@ -5440,6 +5489,9 @@ const SALES_PLAN_VIEWS = {
 };
 let justAddedEmployeeId = null;
 let mcAssignDraft = [];
+let navLayoutDraft = null;
+let navSourceNodes = null;
+let navDragPayload = null;
 let metricFormReturnSection = "";
 let editingSummaryUserRole = null;
 let summaryUserPinVisible = {};
@@ -8673,6 +8725,7 @@ function migrateAppData(data) {
         }
     }
     if (!Array.isArray(data.workspaces)) data.workspaces = [];
+    if (!data.navLayouts || typeof data.navLayouts !== "object") data.navLayouts = {};
 
     data.workspaces.forEach(function (w) {
         normalizeWorkspace(w);
@@ -10444,6 +10497,314 @@ function applyModeUI() {
             salaryNote.textContent = "Начислено = часы / 8 × ставка, без KPI. KPI — отдельно. Продукты и налог удерживаются, отпускные прибавляются. У торговых «Начислено» — из «Зарплата ТП».";
         }
     }
+    const editBtn = document.getElementById("navLayoutEditBtn");
+    if (editBtn) editBtn.style.display = canConfigureNavLayout() ? "" : "none";
+    try { applyNavLayout(); } catch (navErr) { console.error(navErr); }
+}
+
+function ensureNavLayouts() {
+    if (!appData.navLayouts || typeof appData.navLayouts !== "object") appData.navLayouts = {};
+    return appData.navLayouts;
+}
+
+function canConfigureNavLayout() {
+    if (typeof isAppAdmin === "function" && isAppAdmin()) return true;
+    if (typeof isTableAdmin === "function" && isTableAdmin()) return true;
+    if (typeof isAdminEntry === "function" && isAdminEntry() && typeof userHasPerm === "function") {
+        return userHasPerm("settings", "edit");
+    }
+    return false;
+}
+
+function navItemStableId(btn) {
+    if (!btn) return "";
+    let id = btn.getAttribute("data-nav-id");
+    if (id) return id;
+    const mode = btn.getAttribute("data-for") || "";
+    const sec = btn.getAttribute("data-section") || "";
+    const hub = btn.getAttribute("data-hub") || "";
+    id = mode + "::" + sec + (hub ? "::" + hub : "");
+    btn.setAttribute("data-nav-id", id);
+    return id;
+}
+
+function snapshotNavSourceNodes() {
+    const host = document.getElementById("navCustomArea");
+    if (!host || navSourceNodes) return;
+    navSourceNodes = Array.prototype.slice.call(host.children);
+    navSourceNodes.forEach(function (n) {
+        if (n && n.classList && n.classList.contains("nav-btn")) navItemStableId(n);
+    });
+}
+
+function navBtnById(id) {
+    const host = document.getElementById("navCustomArea");
+    if (!host) return null;
+    return host.querySelector('.nav-btn[data-nav-id="' + id + '"]');
+}
+
+function visibleNavItemIds() {
+    const host = document.getElementById("navCustomArea");
+    if (!host) return [];
+    const ids = [];
+    host.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
+        if (btn.style.display === "none") return;
+        ids.push(navItemStableId(btn));
+    });
+    return ids;
+}
+
+function navItemLabel(id) {
+    const btn = navBtnById(id);
+    return btn ? String(btn.textContent || "").replace(/\s+/g, " ").trim() : id;
+}
+
+function defaultNavLayoutGroups() {
+    return [{ group_id: "ng_default", title: "", item_ids: visibleNavItemIds() }];
+}
+
+function cloneNavLayout(layout) {
+    const used = [];
+    const groups = ((layout && layout.groups) || []).map(function (g) {
+        let gid = String(g.group_id || "");
+        if (!gid || used.indexOf(gid) !== -1) gid = nextPrefixedId("ng", used);
+        used.push(gid);
+        return {
+            group_id: gid,
+            title: String(g.title || ""),
+            item_ids: (g.item_ids || []).slice()
+        };
+    });
+    return { saved: !!(layout && layout.saved), groups: groups.length ? groups : defaultNavLayoutGroups() };
+}
+
+function mergeVisibleIntoNavLayout(layout) {
+    const next = cloneNavLayout(layout);
+    const seen = {};
+    next.groups.forEach(function (g) {
+        g.item_ids = (g.item_ids || []).filter(function (id) {
+            if (!id || seen[id] || !navBtnById(id)) return false;
+            seen[id] = true;
+            return true;
+        });
+    });
+    const missing = visibleNavItemIds().filter(function (id) { return !seen[id]; });
+    if (missing.length) {
+        if (!next.groups.length) next.groups = defaultNavLayoutGroups();
+        next.groups[next.groups.length - 1].item_ids = next.groups[next.groups.length - 1].item_ids.concat(missing);
+    }
+    return next;
+}
+
+function applyNavLayout() {
+    snapshotNavSourceNodes();
+    const host = document.getElementById("navCustomArea");
+    if (!host || !navSourceNodes) return;
+    host.querySelectorAll(".nav-layout-group").forEach(function (el) { el.remove(); });
+    const key = currentNavCode();
+    const stored = ensureNavLayouts()[key];
+    if (!stored || !stored.saved) {
+        navSourceNodes.forEach(function (n) {
+            if (n && n.parentNode === host) host.appendChild(n);
+        });
+        return;
+    }
+    const layout = mergeVisibleIntoNavLayout(stored);
+    navSourceNodes.forEach(function (n) {
+        if (n && n.classList && n.classList.contains("menu-title")) n.style.display = "none";
+    });
+    const used = {};
+    layout.groups.forEach(function (g) {
+        const shown = (g.item_ids || []).filter(function (id) {
+            const btn = navBtnById(id);
+            return btn && btn.style.display !== "none";
+        });
+        if (g.title && shown.length) {
+            const title = document.createElement("div");
+            title.className = "menu-title nav-layout-group";
+            title.textContent = g.title;
+            host.appendChild(title);
+        }
+        (g.item_ids || []).forEach(function (id) {
+            const btn = navBtnById(id);
+            if (!btn || used[id]) return;
+            used[id] = true;
+            host.appendChild(btn);
+        });
+    });
+    navSourceNodes.forEach(function (n) {
+        if (!n || !n.classList || !n.classList.contains("nav-btn")) return;
+        const id = navItemStableId(n);
+        if (!used[id]) host.appendChild(n);
+    });
+}
+
+function openNavLayoutEditor() {
+    if (!canConfigureNavLayout()) {
+        toast("Настраивать меню может администратор.", "error");
+        return;
+    }
+    snapshotNavSourceNodes();
+    const key = currentNavCode();
+    const stored = ensureNavLayouts()[key];
+    navLayoutDraft = mergeVisibleIntoNavLayout(stored && stored.saved ? stored : { saved: false, groups: defaultNavLayoutGroups() });
+    navLayoutDraft.groups.forEach(function (g) {
+        g.item_ids = (g.item_ids || []).filter(function (id) {
+            const btn = navBtnById(id);
+            return btn && btn.style.display !== "none";
+        });
+    });
+    renderNavLayoutEditor();
+}
+
+function renderNavLayoutEditor() {
+    if (!navLayoutDraft) return;
+    const key = currentNavCode();
+    let html = "<h3>Меню раздела</h3>"
+        + '<div class="note">' + escapeHtml(entryLabel(key) || key)
+        + ". Перетащите пункты и группы. Права доступа не меняются.</div>"
+        + '<div class="nav-ed-tools">'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="addNavLayoutGroup()">+ Группа</button>'
+        + "</div><div class=\"nav-ed-list\">";
+    navLayoutDraft.groups.forEach(function (g, gi) {
+        html += '<div class="nav-ed-group" ondragover="onNavLayoutDragOver(event)" ondrop="onNavLayoutDropGroup(event,' + gi + ')">'
+            + '<div class="nav-ed-ghead">'
+            + '<span class="nav-ed-handle" draggable="true" ondragstart="onNavLayoutDragStart(event,\'group\',' + gi + ',-1)" title="Перетащить группу">☰</span>'
+            + '<input value="' + escapeAttribute(g.title) + '" placeholder="Заголовок группы" '
+            + 'oninput="navLayoutDraft.groups[' + gi + '].title=this.value">'
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="removeNavLayoutGroup(' + gi + ')">×</button>'
+            + "</div>";
+        (g.item_ids || []).forEach(function (id, ii) {
+            html += '<div class="nav-ed-item" draggable="true" ondragstart="onNavLayoutDragStart(event,\'item\',' + gi + ',' + ii + ')" '
+                + 'ondragover="onNavLayoutDragOver(event)" ondrop="onNavLayoutDropItem(event,' + gi + ',' + ii + ')">'
+                + '<span class="nav-ed-handle">☰</span><span>' + escapeHtml(navItemLabel(id)) + "</span></div>";
+        });
+        if (!(g.item_ids || []).length) {
+            html += '<div class="note">Пустая группа. Перетащите сюда пункт или удалите.</div>';
+        }
+        html += "</div>";
+    });
+    html += "</div><div class=\"rev-modal-actions\">"
+        + '<button type="button" class="btn btn-primary" onclick="saveNavLayoutEditor()">Сохранить</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    if (typeof openMgmtModal === "function") openMgmtModal(html, "nav-layout-modal");
+}
+
+function addNavLayoutGroup() {
+    if (!navLayoutDraft) return;
+    const used = navLayoutDraft.groups.map(function (g) { return g.group_id; });
+    navLayoutDraft.groups.push({
+        group_id: nextPrefixedId("ng", used),
+        title: "Новая группа",
+        item_ids: []
+    });
+    renderNavLayoutEditor();
+}
+
+function removeNavLayoutGroup(idx) {
+    if (!navLayoutDraft || !navLayoutDraft.groups[idx]) return;
+    if ((navLayoutDraft.groups[idx].item_ids || []).length) {
+        toast("Сначала перенесите пункты в другую группу.", "error");
+        return;
+    }
+    if (navLayoutDraft.groups.length < 2) {
+        toast("Нужна хотя бы одна группа.", "error");
+        return;
+    }
+    navLayoutDraft.groups.splice(idx, 1);
+    renderNavLayoutEditor();
+}
+
+function onNavLayoutDragStart(ev, kind, gIdx, iIdx) {
+    navDragPayload = { kind: kind, gIdx: gIdx, iIdx: iIdx };
+    if (ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = "move";
+        ev.dataTransfer.setData("text/plain", kind);
+    }
+}
+
+function onNavLayoutDragOver(ev) {
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+}
+
+function onNavLayoutDropGroup(ev, targetG) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!navDragPayload || !navLayoutDraft) return;
+    if (navDragPayload.kind === "group") {
+        const from = navDragPayload.gIdx;
+        if (from === targetG) return;
+        const rows = navLayoutDraft.groups;
+        const moved = rows.splice(from, 1)[0];
+        rows.splice(targetG, 0, moved);
+    } else if (navDragPayload.kind === "item") {
+        const fromG = navLayoutDraft.groups[navDragPayload.gIdx];
+        const toG = navLayoutDraft.groups[targetG];
+        if (!fromG || !toG) return;
+        const moved = fromG.item_ids.splice(navDragPayload.iIdx, 1)[0];
+        if (moved) toG.item_ids.push(moved);
+    }
+    navDragPayload = null;
+    renderNavLayoutEditor();
+}
+
+function onNavLayoutDropItem(ev, targetG, targetI) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (!navDragPayload || navDragPayload.kind !== "item" || !navLayoutDraft) return;
+    const fromG = navLayoutDraft.groups[navDragPayload.gIdx];
+    const toG = navLayoutDraft.groups[targetG];
+    if (!fromG || !toG) return;
+    const moved = fromG.item_ids.splice(navDragPayload.iIdx, 1)[0];
+    if (!moved) return;
+    let insertAt = targetI;
+    if (navDragPayload.gIdx === targetG && navDragPayload.iIdx < targetI) insertAt -= 1;
+    toG.item_ids.splice(insertAt, 0, moved);
+    navDragPayload = null;
+    renderNavLayoutEditor();
+}
+
+function saveNavLayoutEditor() {
+    if (!canConfigureNavLayout() || !navLayoutDraft) return;
+    const key = currentNavCode();
+    if (!key) return;
+    const used = {};
+    navLayoutDraft.groups.forEach(function (g) {
+        g.title = String(g.title || "").replace(/\s+/g, " ").trim();
+        g.item_ids = (g.item_ids || []).filter(function (id) {
+            if (!id || used[id] || !navBtnById(id)) return false;
+            used[id] = true;
+            return true;
+        });
+    });
+    const prev = ensureNavLayouts()[key];
+    const hiddenKeep = [];
+    ((prev && prev.groups) || []).forEach(function (g) {
+        (g.item_ids || []).forEach(function (id) {
+            const btn = navBtnById(id);
+            if (!btn || used[id]) return;
+            if (btn.style.display === "none") {
+                used[id] = true;
+                hiddenKeep.push(id);
+            }
+        });
+    });
+    if (hiddenKeep.length) {
+        if (!navLayoutDraft.groups.length) navLayoutDraft.groups = defaultNavLayoutGroups();
+        const last = navLayoutDraft.groups[navLayoutDraft.groups.length - 1];
+        last.item_ids = last.item_ids.concat(hiddenKeep);
+    }
+    ensureNavLayouts()[key] = {
+        saved: true,
+        groups: navLayoutDraft.groups.map(function (g) {
+            return { group_id: g.group_id, title: g.title, item_ids: g.item_ids.slice() };
+        })
+    };
+    saveApp();
+    if (typeof closeMgmtModal === "function") closeMgmtModal();
+    applyModeUI();
+    toast("Порядок меню сохранён.");
 }
 
 function toggleSidebar() {
