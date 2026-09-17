@@ -2404,6 +2404,50 @@
             color: #fff;
             border-color: #0f172a;
         }
+        .drv-stmt { margin-top: 4px; }
+        .drv-stmt-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 12px;
+            align-items: end;
+            margin-bottom: 10px;
+        }
+        .drv-stmt-toolbar .form-group { margin: 0; min-width: 140px; }
+        .drv-stmt-card {
+            border: 1px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 10px 12px;
+            margin-bottom: 10px;
+            background: #f8fafc;
+        }
+        .drv-stmt-head {
+            display: grid;
+            grid-template-columns: 110px minmax(140px, 1.2fr) minmax(140px, 1fr) auto;
+            gap: 8px;
+            align-items: end;
+            margin-bottom: 8px;
+        }
+        .drv-stmt-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 8px;
+        }
+        .drv-stmt-metrics .form-group { margin: 0; }
+        .drv-stmt-day-total {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #475569;
+        }
+        .drv-veh-admin {
+            border: 1px dashed #cbd5e1;
+            border-radius: 8px;
+            padding: 8px;
+            margin-top: 10px;
+            background: #fff;
+        }
+        @media (max-width: 720px) {
+            .drv-stmt-head { grid-template-columns: 1fr 1fr; }
+        }
         .fio-filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: end; }
         .fio-filters .form-group { margin: 0; min-width: 160px; }
 
@@ -4306,6 +4350,7 @@
                     </div>
                     <div class="toolbar" id="territoryMetricsCatalogBar" style="margin:0 0 10px;"></div>
                     <div id="territoryMetricsWrapRollup"></div>
+                    <div id="driverStatementHost" style="display:none"></div>
                     <div class="table-wrapper" id="territoryMetricsWrap">
                         <table class="metrics-table" id="territoryMetricsTable">
                             <thead id="territoryMetricsHead"></thead>
@@ -8909,8 +8954,16 @@ function migrateAppData(data) {
     restoreCanonicalPins(data);
     migrateAppUsers(data);
     try { ensureCustomerReturns(data); } catch (crErr) { console.error(crErr); }
+    try { ensureFleetVehicles(data); } catch (fvErr) { console.error(fvErr); }
     try { ensureOrgStructure(data); } catch (orgErr) { console.error(orgErr); }
     try { ensurePositionCatalog(data); } catch (posErr) { console.error(posErr); }
+    if (!data.deptMetrics || typeof data.deptMetrics !== "object") data.deptMetrics = {};
+    Object.keys(data.deptMetrics).forEach(function (code) {
+        const root = data.deptMetrics[code];
+        if (!root || typeof root !== "object") return;
+        if (!root.facts || typeof root.facts !== "object") root.facts = {};
+        if (!root.entries || typeof root.entries !== "object") root.entries = {};
+    });
     return data;
 }
 
@@ -12017,6 +12070,9 @@ function normalizeMetricCatalogItemTabs(item) {
             item.structure_type = item.submetrics.length ? "with_submetrics" : "plain";
         }
         if (item.use_in_spu !== true) item.use_in_spu = false;
+        if (item.period_agg !== "avg" && item.period_agg !== "last" && item.period_agg !== "count") {
+            item.period_agg = "sum";
+        }
         return;
     }
     const dept = metricDepartmentId(item);
@@ -12047,6 +12103,9 @@ function normalizeMetricCatalogItemTabs(item) {
         item.structure_type = item.submetrics.length ? "with_submetrics" : "plain";
     }
     if (item.use_in_spu !== true) item.use_in_spu = false;
+    if (item.period_agg !== "avg" && item.period_agg !== "last" && item.period_agg !== "count") {
+        item.period_agg = "sum";
+    }
 }
 
 function catalogDeptContext() {
@@ -12247,11 +12306,12 @@ function ensureDeptMetrics(deptCode) {
     if (!isGenericMetricsDept(deptCode)) return ensureShopMetrics();
     if (!appData.deptMetrics || typeof appData.deptMetrics !== "object") appData.deptMetrics = {};
     if (!appData.deptMetrics[deptCode] || typeof appData.deptMetrics[deptCode] !== "object") {
-        appData.deptMetrics[deptCode] = { facts: {}, workAccess: {} };
+        appData.deptMetrics[deptCode] = { facts: {}, workAccess: {}, entries: {} };
     }
     const root = appData.deptMetrics[deptCode];
     if (!root.facts || typeof root.facts !== "object") root.facts = {};
     if (!root.workAccess || typeof root.workAccess !== "object") root.workAccess = {};
+    if (!root.entries || typeof root.entries !== "object") root.entries = {};
     if (wtBusy.deptMetrics[deptCode]) return root;
     wtBusy.deptMetrics[deptCode] = true;
     try {
@@ -12279,6 +12339,495 @@ function deptMetricFactsMonth(deptCode, month) {
     const key = month || selectedMonth;
     if (!root.facts[key] || typeof root.facts[key] !== "object") root.facts[key] = {};
     return root.facts[key];
+}
+
+/* ============================================================
+   АВТОПАРК + ЗАПИСИ ВОДИТЕЛЕЙ (факты с vehicle_id / entry_id)
+============================================================ */
+function ensureFleetVehicles(data) {
+    const root = data || appData;
+    if (!root.fleetVehicles || typeof root.fleetVehicles !== "object") {
+        root.fleetVehicles = { items: [] };
+    }
+    if (!Array.isArray(root.fleetVehicles.items)) root.fleetVehicles.items = [];
+    try {
+        if (typeof ensureCustomerReturns === "function") {
+            const cr = ensureCustomerReturns(root);
+            if (cr) {
+                if (!root.fleetVehicles.items.length && Array.isArray(cr.vehicles) && cr.vehicles.length) {
+                    root.fleetVehicles.items = cr.vehicles;
+                }
+                cr.vehicles = root.fleetVehicles.items;
+            }
+        }
+    } catch (err) { console.error(err); }
+    root.fleetVehicles.items.forEach(function (v, i) {
+        if (!v || typeof v !== "object") return;
+        if (!v.vehicle_id) {
+            v.vehicle_id = nextPrefixedId("veh", root.fleetVehicles.items.map(function (x) {
+                return x && x.vehicle_id;
+            }));
+        }
+        if (v.plate == null) v.plate = "";
+        if (v.name == null) v.name = "";
+        if (v.is_active == null) v.is_active = true;
+        if (v.sort_order == null) v.sort_order = (i + 1) * 10;
+    });
+    return root.fleetVehicles;
+}
+
+function fleetVehicleItems(includeInactive) {
+    const list = (ensureFleetVehicles().items || []).filter(function (v) {
+        if (!v || !v.vehicle_id) return false;
+        if (!includeInactive && v.is_active === false) return false;
+        return true;
+    });
+    return list.sort(function (a, b) {
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0)
+            || String(a.plate || a.name || "").localeCompare(String(b.plate || b.name || ""), "ru");
+    });
+}
+
+function fleetVehicleById(id) {
+    if (!id) return null;
+    return (ensureFleetVehicles().items || []).find(function (v) { return v && v.vehicle_id === id; }) || null;
+}
+
+function fleetVehicleLabel(vOrId) {
+    const v = typeof vOrId === "object" ? vOrId : fleetVehicleById(vOrId);
+    if (!v) return String(vOrId || "");
+    const plate = String(v.plate || "").trim();
+    const name = String(v.name || "").trim();
+    if (plate && name && name !== plate) return plate + " — " + name;
+    return plate || name || v.vehicle_id || "";
+}
+
+function fleetVehicleOptionsHtml(selected, includeInactive) {
+    let html = '<option value="">— без автомобиля —</option>';
+    fleetVehicleItems(!!includeInactive).forEach(function (v) {
+        if (v.is_active === false && v.vehicle_id !== selected) return;
+        html += '<option value="' + escapeAttribute(v.vehicle_id) + '"'
+            + (v.vehicle_id === selected ? " selected" : "") + ">"
+            + escapeHtml(fleetVehicleLabel(v))
+            + (v.is_active === false ? " (неактивен)" : "") + "</option>";
+    });
+    if (selected && !fleetVehicleById(selected)) {
+        html += '<option value="' + escapeAttribute(selected) + '" selected>'
+            + escapeHtml(selected) + "</option>";
+    }
+    return html;
+}
+
+function addFleetVehicle(plate, name) {
+    const store = ensureFleetVehicles();
+    const p = String(plate || "").replace(/\s+/g, " ").trim();
+    if (!p) {
+        toast("Укажите гос. номер автомобиля.", "error");
+        return null;
+    }
+    const id = nextPrefixedId("veh", store.items.map(function (v) { return v && v.vehicle_id; }));
+    const item = {
+        vehicle_id: id,
+        plate: p,
+        name: String(name || "").replace(/\s+/g, " ").trim(),
+        is_active: true,
+        sort_order: (store.items.length + 1) * 10
+    };
+    store.items.push(item);
+    saveApp();
+    return item;
+}
+
+function metricPeriodAgg(itemOrId) {
+    const item = itemOrId && itemOrId.id ? itemOrId : shopMetricCatalogById(itemOrId);
+    const a = item && item.period_agg;
+    if (a === "avg" || a === "last" || a === "count") return a;
+    return "sum";
+}
+
+function aggregateMetricNumbers(values, agg) {
+    const nums = (values || []).map(function (v) { return Number(v); }).filter(function (n) {
+        return Number.isFinite(n);
+    });
+    if (agg === "count") return nums.length;
+    if (!nums.length) return 0;
+    if (agg === "avg") return nums.reduce(function (s, n) { return s + n; }, 0) / nums.length;
+    if (agg === "last") return nums[nums.length - 1];
+    return nums.reduce(function (s, n) { return s + n; }, 0);
+}
+
+function driverMetricEntriesMonth(month) {
+    const root = ensureDeptMetrics("drivers");
+    const key = month || selectedMonth;
+    if (!Array.isArray(root.entries[key])) root.entries[key] = [];
+    return root.entries[key];
+}
+
+function nextDriverEntryId(month) {
+    const used = driverMetricEntriesMonth(month).map(function (e) { return e && e.entry_id; });
+    return nextPrefixedId("dtrip", used);
+}
+
+function driverStatementMetrics() {
+    return shopMetricCatalogItems().filter(function (it) {
+        if (!it || !shopCatalogItemShownInUi(it)) return false;
+        if (it.fill_type === "auto_sum" || it.fill_type === "auto_calc") return false;
+        const cat = metricTerritoryCategory(it);
+        if (cat === "drivers") return metricShowsOnTab(it, "drivers") || metricWorkTabIds(it).indexOf("drivers") !== -1;
+        if (cat === "common") {
+            return metricAssignmentFilterRows(it).some(function (row) {
+                return row.department_id === "drivers" && row.work_tab_id === "drivers";
+            });
+        }
+        return metricDepartmentId(it) === "drivers" && metricShowsOnTab(it, "drivers");
+    }).sort(function (a, b) {
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
+    });
+}
+
+function driverStatementPeople() {
+    const seen = {};
+    const list = [];
+    driverStatementMetrics().forEach(function (it) {
+        workMetricPeopleForTab("drivers", it.id, "drivers").forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+    });
+    if (!list.length) {
+        employeesForWorkGroup("drivers", "drivers").forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+    }
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function rebuildDriverDayFactsFromEntries(employeeId, day, month) {
+    const m = month || selectedMonth;
+    const dayNum = Number(day);
+    const entries = driverMetricEntriesMonth(m).filter(function (e) {
+        return e && e.employee_id === employeeId && Number(e.day) === dayNum;
+    });
+    const byMetric = {};
+    entries.forEach(function (entry) {
+        const vals = entry.values || {};
+        Object.keys(vals).forEach(function (mid) {
+            const id = canonicalMetricId(mid);
+            if (!id) return;
+            if (!byMetric[id]) byMetric[id] = [];
+            byMetric[id].push(Number(vals[mid] || 0));
+        });
+    });
+    const facts = deptMetricFactsMonth("drivers", m);
+    if (!facts[employeeId] || typeof facts[employeeId] !== "object") facts[employeeId] = {};
+    const dayKey = String(dayNum);
+    if (!facts[employeeId][dayKey] || typeof facts[employeeId][dayKey] !== "object") {
+        facts[employeeId][dayKey] = {};
+    }
+    const rec = facts[employeeId][dayKey];
+    rec.employee_id = employeeId;
+    rec.source = entries.length ? "driver_statement" : (rec.source || "manual");
+    driverStatementMetrics().forEach(function (it) {
+        const key = metricFactStorageKey(it.id);
+        const series = byMetric[it.id];
+        if (!series || !series.length) {
+            if (rec.source === "driver_statement") {
+                delete rec[key];
+                delete rec[key + "Mark"];
+            }
+            return;
+        }
+        const agg = metricPeriodAgg(it);
+        let n = aggregateMetricNumbers(series, agg);
+        if (it.fill_type === "money") n = Math.round(n);
+        rec[key] = n;
+    });
+    stampAuthOnRecord(rec);
+    const leftover = Object.keys(rec).filter(function (k) {
+        return k !== "employee_id" && k !== "source" && k !== "updated_at" && k !== "updated_by"
+            && k.indexOf("Mark") === -1;
+    });
+    if (!leftover.length && !entries.length) {
+        delete facts[employeeId][dayKey];
+        if (!Object.keys(facts[employeeId]).length) delete facts[employeeId];
+    }
+}
+
+function saveDriverMetricEntry(entry, month) {
+    const m = month || selectedMonth;
+    const list = driverMetricEntriesMonth(m);
+    if (!entry.entry_id) entry.entry_id = nextDriverEntryId(m);
+    entry.work_tab_id = "drivers";
+    entry.department_id = "drivers";
+    if (!entry.values || typeof entry.values !== "object") entry.values = {};
+    const idx = list.findIndex(function (e) { return e && e.entry_id === entry.entry_id; });
+    if (idx >= 0) list[idx] = entry;
+    else list.push(entry);
+    rebuildDriverDayFactsFromEntries(entry.employee_id, entry.day, m);
+    saveApp();
+    return entry;
+}
+
+function deleteDriverMetricEntry(entryId, month) {
+    const m = month || selectedMonth;
+    const list = driverMetricEntriesMonth(m);
+    const found = list.find(function (e) { return e && e.entry_id === entryId; });
+    if (!found) return;
+    const emp = found.employee_id;
+    const day = found.day;
+    const next = list.filter(function (e) { return !e || e.entry_id !== entryId; });
+    ensureDeptMetrics("drivers").entries[m] = next;
+    rebuildDriverDayFactsFromEntries(emp, day, m);
+    saveApp();
+}
+
+let driverStmtFilter = { day: "", employeeId: "" };
+let driverStmtShowVehicles = false;
+
+function renderDriverStatement() {
+    const host = document.getElementById("driverStatementHost");
+    const wrap = document.getElementById("territoryMetricsWrap");
+    const rollup = document.getElementById("territoryMetricsWrapRollup");
+    if (!host) return;
+    if (wrap) wrap.style.display = "none";
+    if (rollup) rollup.style.display = "none";
+    host.style.display = "";
+    ensureFleetVehicles();
+    ensureDeptMetrics("drivers");
+    const metrics = driverStatementMetrics();
+    const people = driverStatementPeople();
+    const days = daysInMonthValue(selectedMonth);
+    if (!driverStmtFilter.day) driverStmtFilter.day = String(Math.min(new Date().getDate(), days));
+    const day = Number(driverStmtFilter.day) || 1;
+    const monthNote = document.getElementById("territoryMetricsMonthNote");
+    if (monthNote) {
+        monthNote.textContent = monthLabel(selectedMonth)
+            + ". Ведомость водителя: дата → водитель → автомобиль → метрики. Итоги дня пишутся в обычные факты metric_id.";
+    }
+    let html = '<div class="drv-stmt"><div class="drv-stmt-toolbar">'
+        + '<div class="form-group"><label>Дата</label><select onchange="setDriverStmtDay(this.value)">';
+    for (let d = 1; d <= days; d++) {
+        html += '<option value="' + d + '"' + (d === day ? " selected" : "") + ">" + d + "</option>";
+    }
+    html += '</select></div><div class="form-group"><label>Водитель</label><select onchange="setDriverStmtEmployee(this.value)">'
+        + '<option value="">Все водители</option>';
+    people.forEach(function (e) {
+        html += '<option value="' + escapeAttribute(e.id) + '"'
+            + (driverStmtFilter.employeeId === e.id ? " selected" : "") + ">"
+            + escapeHtml(e.name || e.id) + "</option>";
+    });
+    html += '</select></div>'
+        + '<button type="button" class="btn btn-primary btn-small" onclick="addDriverStatementEntry()">+ Запись</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="toggleDriverVehicleAdmin()">'
+        + (driverStmtShowVehicles ? "Скрыть автопарк" : "Автопарк") + "</button>"
+        + "</div>";
+    if (!metrics.length) {
+        html += '<div class="note">Нет метрик, назначенных на Водителей. Добавьте их в Справочнике метрик (категория «Водители» или назначение на группу Водители).</div></div>';
+        host.innerHTML = html;
+        return;
+    }
+    if (!people.length) {
+        html += '<div class="note">Нет сотрудников в рабочей группе «Водители» с назначенными метриками.</div></div>';
+        host.innerHTML = html;
+        return;
+    }
+    if (driverStmtShowVehicles) {
+        html += '<div class="drv-veh-admin"><div class="note" style="margin-bottom:6px">Единый справочник автомобилей (vehicle_id). Не является метрикой.</div>';
+        fleetVehicleItems(true).forEach(function (v) {
+            html += '<div style="display:flex;gap:6px;align-items:center;margin:4px 0;flex-wrap:wrap">'
+                + '<input style="width:120px" value="' + escapeAttribute(v.plate || "") + '" '
+                + 'onchange="updateFleetVehicleField(\'' + v.vehicle_id + '\',\'plate\',this.value)" placeholder="Госномер">'
+                + '<input style="width:160px" value="' + escapeAttribute(v.name || "") + '" '
+                + 'onchange="updateFleetVehicleField(\'' + v.vehicle_id + '\',\'name\',this.value)" placeholder="Название">'
+                + '<label class="check"><input type="checkbox"' + (v.is_active === false ? "" : " checked")
+                + ' onchange="updateFleetVehicleField(\'' + v.vehicle_id + '\',\'is_active\',this.checked)"> Активен</label>'
+                + "</div>";
+        });
+        html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+            + '<input id="drvNewPlate" style="width:120px" placeholder="Госномер">'
+            + '<input id="drvNewName" style="width:160px" placeholder="Название">'
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="addFleetVehicleFromUi()">+ Автомобиль</button>'
+            + "</div></div>";
+    }
+    const entries = driverMetricEntriesMonth(selectedMonth).filter(function (e) {
+        if (!e || Number(e.day) !== day) return false;
+        if (driverStmtFilter.employeeId && e.employee_id !== driverStmtFilter.employeeId) return false;
+        return true;
+    }).sort(function (a, b) {
+        return String(a.employee_id).localeCompare(String(b.employee_id))
+            || String(a.entry_id).localeCompare(String(b.entry_id));
+    });
+    const shownPeople = driverStmtFilter.employeeId
+        ? people.filter(function (e) { return e.id === driverStmtFilter.employeeId; })
+        : people;
+    shownPeople.forEach(function (emp) {
+        const mine = entries.filter(function (e) { return e.employee_id === emp.id; });
+        html += '<div class="note" style="margin:12px 0 6px;font-weight:700">' + escapeHtml(emp.name || emp.id) + "</div>";
+        if (!mine.length) {
+            html += '<div class="note">Нет записей за этот день. Нажмите «+ Запись».</div>';
+        }
+        mine.forEach(function (entry) {
+            html += renderDriverStatementEntryCard(entry, metrics, people, day);
+        });
+        const totals = {};
+        metrics.forEach(function (it) {
+            totals[it.id] = getDeptMetricStored("drivers", emp.id, day, it.id, selectedMonth);
+        });
+        const parts = metrics.map(function (it) {
+            const n = totals[it.id];
+            if (!n) return "";
+            return escapeHtml(it.name) + ": " + (it.fill_type === "money" ? formatShopMetricMoney(n) : blankZero(n));
+        }).filter(Boolean);
+        if (parts.length) {
+            html += '<div class="drv-stmt-day-total">Итого за день: ' + parts.join(" · ") + "</div>";
+        }
+    });
+    html += "</div>";
+    host.innerHTML = html;
+}
+
+function renderDriverStatementEntryCard(entry, metrics, people, day) {
+    let html = '<div class="drv-stmt-card" data-entry="' + escapeAttribute(entry.entry_id) + '">'
+        + '<div class="drv-stmt-head">'
+        + '<div class="form-group"><label>Дата</label><input type="number" min="1" max="31" value="'
+        + escapeAttribute(String(entry.day || day)) + '" '
+        + 'onchange="updateDriverEntryField(\'' + entry.entry_id + '\',\'day\',this.value)"></div>'
+        + '<div class="form-group"><label>Водитель</label><select onchange="updateDriverEntryField(\''
+        + entry.entry_id + '\',\'employee_id\',this.value)">';
+    people.forEach(function (e) {
+        html += '<option value="' + escapeAttribute(e.id) + '"'
+            + (entry.employee_id === e.id ? " selected" : "") + ">"
+            + escapeHtml(e.name || e.id) + "</option>";
+    });
+    html += '</select></div><div class="form-group"><label>Автомобиль</label><select onchange="updateDriverEntryField(\''
+        + entry.entry_id + '\',\'vehicle_id\',this.value)">'
+        + fleetVehicleOptionsHtml(entry.vehicle_id || "", true)
+        + '</select></div><div class="form-group"><label>&nbsp;</label>'
+        + '<button type="button" class="btn btn-danger btn-small" onclick="removeDriverStatementEntry(\''
+        + entry.entry_id + '\')">Удалить</button></div></div>'
+        + '<div class="drv-stmt-metrics">';
+    metrics.forEach(function (it) {
+        const val = entry.values && entry.values[it.id] != null ? entry.values[it.id] : "";
+        const display = val === "" || val == null
+            ? ""
+            : (it.fill_type === "money" ? formatShopMetricMoney(val) : blankZero(val));
+        html += '<div class="form-group"><label>' + escapeHtml(it.name) + "</label>"
+            + '<input class="metrics-input no-spin" type="' + (it.fill_type === "money" ? "text" : "number") + '" '
+            + 'min="0" step="1" inputmode="decimal" value="' + escapeAttribute(String(display)) + '" '
+            + 'onchange="updateDriverEntryMetric(\'' + entry.entry_id + '\',\'' + it.id + '\',this.value)">'
+            + "</div>";
+    });
+    html += "</div></div>";
+    return html;
+}
+
+function setDriverStmtDay(value) {
+    driverStmtFilter.day = String(value || "");
+    renderDriverStatement();
+}
+
+function setDriverStmtEmployee(value) {
+    driverStmtFilter.employeeId = value || "";
+    renderDriverStatement();
+}
+
+function toggleDriverVehicleAdmin() {
+    driverStmtShowVehicles = !driverStmtShowVehicles;
+    renderDriverStatement();
+}
+
+function addFleetVehicleFromUi() {
+    const plate = (document.getElementById("drvNewPlate") || {}).value;
+    const name = (document.getElementById("drvNewName") || {}).value;
+    if (!addFleetVehicle(plate, name)) return;
+    toast("Автомобиль добавлен.");
+    renderDriverStatement();
+}
+
+function updateFleetVehicleField(id, field, value) {
+    const v = fleetVehicleById(id);
+    if (!v) return;
+    if (field === "is_active") v.is_active = !!value;
+    else v[field] = String(value || "").replace(/\s+/g, " ").trim();
+    saveApp();
+    renderDriverStatement();
+}
+
+function addDriverStatementEntry() {
+    const people = driverStatementPeople();
+    if (!people.length) {
+        toast("Нет водителей для записи.", "error");
+        return;
+    }
+    const day = Number(driverStmtFilter.day) || 1;
+    const empId = driverStmtFilter.employeeId || people[0].id;
+    saveDriverMetricEntry({
+        entry_id: nextDriverEntryId(selectedMonth),
+        day: day,
+        employee_id: empId,
+        vehicle_id: "",
+        work_tab_id: "drivers",
+        department_id: "drivers",
+        values: {}
+    });
+    renderDriverStatement();
+}
+
+function removeDriverStatementEntry(entryId) {
+    if (!confirm("Удалить запись ведомости? Итоги дня пересчитаются.")) return;
+    deleteDriverMetricEntry(entryId);
+    renderDriverStatement();
+}
+
+function findDriverEntry(entryId, month) {
+    return driverMetricEntriesMonth(month).find(function (e) { return e && e.entry_id === entryId; }) || null;
+}
+
+function updateDriverEntryField(entryId, field, value) {
+    const entry = findDriverEntry(entryId);
+    if (!entry) return;
+    const prevEmp = entry.employee_id;
+    const prevDay = entry.day;
+    if (field === "day") entry.day = Number(value) || entry.day;
+    else if (field === "employee_id") entry.employee_id = value;
+    else if (field === "vehicle_id") entry.vehicle_id = value || "";
+    saveDriverMetricEntry(entry);
+    if (prevEmp !== entry.employee_id || Number(prevDay) !== Number(entry.day)) {
+        rebuildDriverDayFactsFromEntries(prevEmp, prevDay);
+    }
+    renderDriverStatement();
+}
+
+function updateDriverEntryMetric(entryId, metricId, raw) {
+    const entry = findDriverEntry(entryId);
+    if (!entry) return;
+    const it = shopMetricCatalogById(metricId);
+    if (!it) return;
+    if (!entry.values) entry.values = {};
+    const text = String(raw == null ? "" : raw).trim();
+    if (text === "") delete entry.values[metricId];
+    else {
+        const n = parseShopMetricNumber(raw);
+        entry.values[metricId] = it.fill_type === "money" ? Math.round(n) : n;
+    }
+    saveDriverMetricEntry(entry);
+    renderDriverStatement();
+}
+
+function hideDriverStatementHost() {
+    const host = document.getElementById("driverStatementHost");
+    const wrap = document.getElementById("territoryMetricsWrap");
+    const rollup = document.getElementById("territoryMetricsWrapRollup");
+    if (host) {
+        host.style.display = "none";
+        host.innerHTML = "";
+    }
+    if (wrap) wrap.style.display = "";
+    if (rollup) rollup.style.display = "";
 }
 
 function deptTimesheetStatus(deptCode, employeeId, day, month) {
@@ -22881,6 +23430,12 @@ function openMetricCatalogForm(id, dupIgnore) {
     });
     html += "</select></div>"
         + '<div class="form-group"><label>Порядок</label><input id="mcOrder" type="number" step="10" value="' + escapeAttribute(String(it.sort_order || 10)) + '"></div>'
+        + '<div class="form-group"><label>Агрегация за период</label><select id="mcPeriodAgg">'
+        + [["sum", "Сумма"], ["avg", "Среднее"], ["last", "Последнее значение"], ["count", "Количество записей"]].map(function (p) {
+            const cur = metricPeriodAgg(it);
+            return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("")
+        + "</select></div>"
         + '<div class="form-group"><label>Активна</label><label class="check"><input id="mcActive" type="checkbox"'
         + (it.active === false ? "" : " checked") + "> Да</label></div>"
         + '<div class="form-group full" id="mcSubBox" style="display:' + (metricStructureType(it) === "with_submetrics" ? "" : "none") + '">'
@@ -23135,6 +23690,10 @@ function saveMetricCatalogForm(id, dupIgnore) {
     const structure = (document.getElementById("mcStructure") || {}).value === "with_submetrics" ? "with_submetrics" : "plain";
     const fill = (document.getElementById("mcFill") || {}).value || "number";
     const order = Number((document.getElementById("mcOrder") || {}).value || 10);
+    const periodAggRaw = String((document.getElementById("mcPeriodAgg") || {}).value || "sum");
+    const periodAgg = periodAggRaw === "avg" || periodAggRaw === "last" || periodAggRaw === "count"
+        ? periodAggRaw
+        : "sum";
     const active = !!(document.getElementById("mcActive") && document.getElementById("mcActive").checked);
     const positionTitles = [];
     let formula = null;
@@ -23217,6 +23776,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
         normalizeMetricCatalogItemTabs(item);
     }
     item.structure_type = structure;
+    item.period_agg = periodAgg;
     if (structure === "with_submetrics") {
         const nextSubs = collectMetricCatalogSubmetrics(item.submetrics);
         if (!nextSubs.length) {
@@ -23285,10 +23845,35 @@ function getDeptMetricStored(deptCode, employeeId, day, metricId, month, submetr
 
 function deptMetricPersonalMonthTotal(deptCode, employeeId, metricId, month, submetricId) {
     const m = month || selectedMonth;
+    const mid = canonicalMetricId(metricId);
+    const it = shopMetricCatalogById(mid);
+    const agg = metricPeriodAgg(it);
     const days = daysInMonthValue(m);
-    let sum = 0;
-    for (let day = 1; day <= days; day++) sum += getDeptMetricStored(deptCode, employeeId, day, metricId, m, submetricId);
-    return sum;
+    if (deptCode === "drivers" && !submetricId) {
+        const tripVals = [];
+        driverMetricEntriesMonth(m).forEach(function (entry) {
+            if (!entry || entry.employee_id !== employeeId) return;
+            if (entry.values && entry.values[mid] != null && entry.values[mid] !== "") {
+                tripVals.push(Number(entry.values[mid] || 0));
+            }
+        });
+        if (tripVals.length) return aggregateMetricNumbers(tripVals, agg);
+    }
+    const dayVals = [];
+    for (let day = 1; day <= days; day++) {
+        const key = metricFactStorageKey(mid, submetricId);
+        const facts = deptMetricFactsMonth(deptCode, m);
+        const rec = facts[employeeId] && facts[employeeId][String(day)];
+        if (!rec) continue;
+        if (rec[key] == null && rec[key + "Mark"] == null) continue;
+        dayVals.push(getDeptMetricStored(deptCode, employeeId, day, mid, m, submetricId));
+    }
+    if (agg === "sum" && !dayVals.length) {
+        let sum = 0;
+        for (let day = 1; day <= days; day++) sum += getDeptMetricStored(deptCode, employeeId, day, mid, m, submetricId);
+        return sum;
+    }
+    return aggregateMetricNumbers(dayVals.length ? dayVals : [0], agg === "count" && !dayVals.length ? "sum" : agg);
 }
 
 function deptMetricCheckState(deptCode, employeeId, day, metricId, month, submetricId) {
@@ -23807,10 +24392,21 @@ function renderTerritoryMetrics() {
         if (canEditStaff()) {
             html += '<button type="button" class="btn btn-primary" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>';
         }
-        html += '<span class="note" style="margin-left:8px">Категория «' + escapeHtml(spec.label)
-            + "». Метрики назначаются в Справочнике метрик. Значения те же, что в рабочих разделах.</span>";
+        if (spec.id === "drivers") {
+            html += '<span class="note" style="margin-left:8px">Ведомость водителя. Метрики — из Справочника по назначениям на Водителей. Каждая метрика хранит свой metric_id.</span>';
+        } else {
+            html += '<span class="note" style="margin-left:8px">Категория «' + escapeHtml(spec.label)
+                + "». Метрики назначаются в Справочнике метрик. Значения те же, что в рабочих разделах.</span>";
+        }
         bar.innerHTML = html;
     }
+    if (spec.id === "drivers") {
+        const fillTabs = document.getElementById("territoryMetricsFillTabs");
+        if (fillTabs) fillTabs.innerHTML = "";
+        renderDriverStatement();
+        return;
+    }
+    hideDriverStatementHost();
     fillDeptWorkTable(spec.departmentId || "office", territoryHubTabIds(spec)[0] || "main", {
         wrap: "territoryMetricsWrap",
         table: "territoryMetricsTable",
