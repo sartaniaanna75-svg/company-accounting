@@ -3284,6 +3284,12 @@
         .mc-tabs-checks label.check { font-size: 12px; font-weight: 400; margin: 0; }
         .mc-assign { display: flex; flex-direction: column; gap: 6px; }
         .mc-assign label.check { font-size: 12px; font-weight: 400; margin: 0; }
+        .mc-asg-list { display: flex; flex-direction: column; gap: 8px; }
+        .mc-asg-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; background: #f8fafc; }
+        .mc-asg-card h4 { margin: 0 0 8px; font-size: 13px; }
+        .mc-asg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .mc-asg-people { max-height: 160px; overflow: auto; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 6px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }
+        .mc-asg-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
         .mc-tab-head, .mc-tab-row {
             display: grid;
             grid-template-columns: minmax(0, 1fr) 158px;
@@ -5382,6 +5388,7 @@ const SALES_PLAN_VIEWS = {
     }
 };
 let justAddedEmployeeId = null;
+let mcAssignDraft = [];
 let metricFormReturnSection = "";
 let editingSummaryUserRole = null;
 let summaryUserPinVisible = {};
@@ -5624,13 +5631,21 @@ function metricTabId(item) {
 }
 function metricWorkTabIds(item) {
     if (!item) return [];
-    const dept = metricDepartmentId(item);
-    const allowed = metricTabsForDept(dept).map(function (t) { return t.id; });
     const ids = [];
-    const push = function (id) {
+    const pushForDept = function (id, dept) {
+        const allowed = metricTabsForDept(dept).map(function (t) { return t.id; });
         if (!id || allowed.indexOf(id) === -1 || ids.indexOf(id) !== -1) return;
         ids.push(id);
     };
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        item.assignments.forEach(function (row) {
+            if (!row) return;
+            pushForDept(row.work_tab_id, row.department_id || metricDepartmentId(item));
+        });
+        if (ids.length) return ids;
+    }
+    const dept = metricDepartmentId(item);
+    const push = function (id) { pushForDept(id, dept); };
     if (Array.isArray(item.work_tab_ids)) item.work_tab_ids.forEach(push);
     if (!ids.length) push(item.metric_tab_id || item.section_id);
     if (!ids.length) push(defaultMetricTabId(dept));
@@ -11010,6 +11025,12 @@ function repairTerritoryMetricHubAssignment(it) {
         normalizeMetricCatalogItemTabs(it);
         return;
     }
+    if (Array.isArray(it.assignments) && it.assignments.length) {
+        const spec = territoryMetricCategoryById(it.territory_category);
+        if (spec && spec.departmentId) it.department_id = spec.departmentId;
+        normalizeMetricCatalogItemTabs(it);
+        return;
+    }
     const cat = it.territory_category;
     if (cat === "warehouse") {
         const tabs = metricWorkTabIds(it).filter(function (t) { return t !== "cashiers"; });
@@ -11077,12 +11098,7 @@ function applyTerritoryCategoryToMetric(item, catId) {
         if (!item.department_id || item.department_id === "shop") item.department_id = "office";
         return;
     }
-    if (spec.departmentId) {
-        item.department_id = spec.departmentId;
-        item.work_tab_ids = (spec.workTabIds || []).slice();
-        item.section_id = item.work_tab_ids[0] || defaultMetricTabId(spec.departmentId);
-        item.metric_tab_id = item.section_id;
-    }
+    if (spec.departmentId) item.department_id = spec.departmentId;
 }
 
 function territoryCategoryEmployeePool(catId) {
@@ -11153,6 +11169,10 @@ function metricCatalogGroupEmployees(item) {
 
 function applyMetricCatalogGroupAssignment(item) {
     if (!item || !item.id || item.assignable === false) return;
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        applyMetricCatalogAssignments(item);
+        return;
+    }
     metricCatalogGroupEmployees(item).forEach(function (e) {
         try { applyShopEmployeeWorkMetric(e.id, item.id, true); } catch (err) { console.error(err); }
     });
@@ -11188,6 +11208,172 @@ function applyMetricCatalogSpecificAssignment(item, employeeIds) {
     if (cat === "common") syncCommonMetricTabsFromAssignments(item);
 }
 
+function employeeHasPositionId(employee, positionId) {
+    if (!positionId) return true;
+    if (!employee) return false;
+    if (employee.position_id && employee.position_id === positionId) return true;
+    const pos = positionCatalogById(positionId);
+    if (!pos) return false;
+    return positionNameKey(employee.position) === positionNameKey(pos.name);
+}
+
+function positionsForMetricAssignment(dept, workTabId) {
+    const all = positionCatalogItems(dept, false);
+    if (!workTabId) return all;
+    const used = {};
+    employeesForWorkGroup(dept, workTabId).forEach(function (e) {
+        if (e && e.position_id) used[e.position_id] = true;
+        const hit = e ? positionCatalogByName(dept, e.position) : null;
+        if (hit) used[hit.position_id] = true;
+    });
+    const filtered = all.filter(function (p) {
+        if (used[p.position_id]) return true;
+        return inferWorkTabIdFromPosition(dept, p.name) === workTabId;
+    });
+    return filtered.length ? filtered : all;
+}
+
+function employeesForMetricAssignmentRow(row) {
+    if (!row || !row.department_id || !row.work_tab_id) return [];
+    return employeesForWorkGroup(row.department_id, row.work_tab_id).filter(function (e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
+        if (employeeHomeDeptCode(e.id) === "shop") return false;
+        if (!employeeHasPositionId(e, row.position_id)) return false;
+        return true;
+    });
+}
+
+function employeeMatchesMetricAssignments(item, employee, workTabId) {
+    if (!item || !Array.isArray(item.assignments) || !item.assignments.length) return true;
+    if (!employee) return false;
+    const tab = String(workTabId || "");
+    return item.assignments.some(function (row) {
+        if (!row || !row.department_id || !row.work_tab_id) return false;
+        if (tab && row.work_tab_id !== tab) return false;
+        if (employeeHomeDeptCode(employee.id) !== row.department_id) return false;
+        if (!employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)) return false;
+        if (!employeeHasPositionId(employee, row.position_id)) return false;
+        if (row.assign_mode === "specific") {
+            return (row.employee_ids || []).indexOf(employee.id) !== -1;
+        }
+        return true;
+    });
+}
+
+function syncWorkTabIdsFromMetricAssignments(item) {
+    if (!item || !Array.isArray(item.assignments) || !item.assignments.length) return;
+    const ids = metricWorkTabIds(item);
+    if (!ids.length) return;
+    item.work_tab_ids = ids.slice();
+    item.section_id = ids[0];
+    item.metric_tab_id = ids[0];
+}
+
+function nextMetricAssignmentId(existing) {
+    const used = [];
+    (existing || []).forEach(function (row) {
+        if (row && row.assignment_id) used.push(row.assignment_id);
+    });
+    shopMetricCatalogItems().forEach(function (it) {
+        ((it && it.assignments) || []).forEach(function (row) {
+            if (row && row.assignment_id) used.push(row.assignment_id);
+        });
+    });
+    return nextPrefixedId("mas", used);
+}
+
+function normalizeMetricAssignmentRow(row, siblings) {
+    if (!row || typeof row !== "object") return null;
+    const dept = String(row.department_id || "");
+    if (!isTerritoryCode(dept)) return null;
+    const tab = String(row.work_tab_id || "");
+    if (tab && !metricTabsForDept(dept).some(function (t) { return t.id === tab; })) return null;
+    const ids = [];
+    (row.employee_ids || []).forEach(function (id) {
+        if (id && ids.indexOf(id) === -1) ids.push(id);
+    });
+    return {
+        assignment_id: row.assignment_id || nextMetricAssignmentId(siblings),
+        department_id: dept,
+        work_tab_id: tab,
+        position_id: String(row.position_id || ""),
+        assign_mode: row.assign_mode === "specific" ? "specific" : "group_all",
+        employee_ids: ids
+    };
+}
+
+function ensureMetricAssignments(item) {
+    if (!item || !item.id) return;
+    if (typeof METRIC_RETURNS_COUNT_ID !== "undefined" && canonicalMetricId(item.id) === METRIC_RETURNS_COUNT_ID) {
+        if (!Array.isArray(item.assignments)) item.assignments = [];
+        return;
+    }
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        const next = [];
+        item.assignments.forEach(function (row) {
+            const norm = normalizeMetricAssignmentRow(row, next);
+            if (norm) next.push(norm);
+        });
+        item.assignments = next;
+        syncWorkTabIdsFromMetricAssignments(item);
+        return;
+    }
+    if (metricDepartmentId(item) === "shop") {
+        item.assignments = Array.isArray(item.assignments) ? item.assignments : [];
+        return;
+    }
+    const tabs = metricWorkTabIds(item);
+    const dept = metricDepartmentId(item);
+    const mode = item.assign_mode === "specific" ? "specific" : "group_all";
+    const next = [];
+    tabs.forEach(function (tab) {
+        const row = normalizeMetricAssignmentRow({
+            department_id: dept,
+            work_tab_id: tab,
+            position_id: "",
+            assign_mode: mode,
+            employee_ids: []
+        }, next);
+        if (!row) return;
+        if (mode === "specific") {
+            row.employee_ids = employeesForMetricAssignmentRow(row).filter(function (e) {
+                return shopEmployeeHasWorkMetric(e.id, item.id);
+            }).map(function (e) { return e.id; });
+        }
+        next.push(row);
+    });
+    item.assignments = next;
+    syncWorkTabIdsFromMetricAssignments(item);
+}
+
+function applyMetricCatalogAssignments(item) {
+    if (!item || !item.id || item.assignable === false) return;
+    const want = {};
+    (item.assignments || []).forEach(function (row) {
+        const people = employeesForMetricAssignmentRow(row);
+        people.forEach(function (e) {
+            if (row.assign_mode === "specific" && (row.employee_ids || []).indexOf(e.id) === -1) return;
+            want[e.id] = true;
+        });
+    });
+    const handled = {};
+    TERRITORY_DEPT_CODES.forEach(function (code) {
+        const w = findWorkspaceByCode(code);
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
+            handled[e.id] = true;
+            const on = !!want[e.id];
+            if (on || shopEmployeeHasWorkMetric(e.id, item.id)) {
+                applyShopEmployeeWorkMetric(e.id, item.id, on);
+            }
+        });
+    });
+    Object.keys(want).forEach(function (id) {
+        if (!handled[id]) applyShopEmployeeWorkMetric(id, item.id, true);
+    });
+    if (metricTerritoryCategory(item) === "common") syncCommonMetricTabsFromAssignments(item);
+}
+
 function syncCommonMetricTabsFromAssignments(item) {
     if (!item || metricTerritoryCategory(item) !== "common") return;
     const tabs = [];
@@ -11221,6 +11407,24 @@ function metricDepartmentId(item) {
 
 function normalizeMetricCatalogItemTabs(item) {
     if (!item || !item.id) return;
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        syncWorkTabIdsFromMetricAssignments(item);
+        if (!item.work_tab_scopes || typeof item.work_tab_scopes !== "object") item.work_tab_scopes = {};
+        const scopes = {};
+        metricWorkTabIds(item).forEach(function (tab) {
+            const prev = item.work_tab_scopes[tab];
+            scopes[tab] = prev === "all_assigned" || prev === "same_work_tab"
+                ? prev
+                : defaultMetricTabEmployeeScope(item, tab);
+        });
+        item.work_tab_scopes = scopes;
+        if (!Array.isArray(item.submetrics)) item.submetrics = [];
+        if (item.structure_type !== "with_submetrics" && item.structure_type !== "plain") {
+            item.structure_type = item.submetrics.length ? "with_submetrics" : "plain";
+        }
+        if (item.use_in_spu !== true) item.use_in_spu = false;
+        return;
+    }
     const dept = metricDepartmentId(item);
     const allowed = metricTabsForDept(dept).map(function (t) { return t.id; });
     if (!Array.isArray(item.work_tab_ids)) item.work_tab_ids = [];
@@ -21474,6 +21678,174 @@ function collectMetricCatalogPersonIds() {
     return ids;
 }
 
+function metricCatalogAssignmentFormActive() {
+    return !!document.getElementById("mcAssignList");
+}
+
+function defaultMetricCatalogAssignmentRow() {
+    const cat = String((document.getElementById("mcCategory") || {}).value || "");
+    const spec = territoryMetricCategoryById(cat);
+    const deptEl = document.getElementById("mcDept");
+    const dept = (spec && spec.departmentId)
+        || ((deptEl && deptEl.value) && deptEl.value !== "shop" ? deptEl.value : "")
+        || "warehouse";
+    return {
+        assignment_id: nextMetricAssignmentId(mcAssignDraft),
+        department_id: dept,
+        work_tab_id: "",
+        position_id: "",
+        assign_mode: "group_all",
+        employee_ids: []
+    };
+}
+
+function metricAssignmentsFromItem(item) {
+    if (item && Array.isArray(item.assignments) && item.assignments.length) {
+        return item.assignments.map(function (row) {
+            return {
+                assignment_id: row.assignment_id,
+                department_id: row.department_id,
+                work_tab_id: row.work_tab_id,
+                position_id: row.position_id || "",
+                assign_mode: row.assign_mode === "specific" ? "specific" : "group_all",
+                employee_ids: (row.employee_ids || []).slice()
+            };
+        });
+    }
+    const tabs = item ? metricWorkTabIds(item) : [];
+    const dept = item ? metricDepartmentId(item) : "";
+    const mode = item && item.assign_mode === "specific" ? "specific" : "group_all";
+    const next = [];
+    tabs.forEach(function (tab) {
+        const row = {
+            assignment_id: nextMetricAssignmentId(next),
+            department_id: dept,
+            work_tab_id: tab,
+            position_id: "",
+            assign_mode: mode,
+            employee_ids: []
+        };
+        if (mode === "specific" && item && item.id) {
+            row.employee_ids = employeesForMetricAssignmentRow(row).filter(function (e) {
+                return shopEmployeeHasWorkMetric(e.id, item.id);
+            }).map(function (e) { return e.id; });
+        }
+        next.push(row);
+    });
+    return next;
+}
+
+function addMetricCatalogAssignment() {
+    if (!Array.isArray(mcAssignDraft)) mcAssignDraft = [];
+    mcAssignDraft.push(defaultMetricCatalogAssignmentRow());
+    renderMetricCatalogAssignments();
+}
+
+function removeMetricCatalogAssignment(idx) {
+    if (!Array.isArray(mcAssignDraft)) return;
+    mcAssignDraft.splice(idx, 1);
+    renderMetricCatalogAssignments();
+}
+
+function onMetricCatalogAssignmentField(idx, field, value) {
+    const row = mcAssignDraft[idx];
+    if (!row) return;
+    row[field] = value;
+    if (field === "department_id") {
+        row.work_tab_id = "";
+        row.position_id = "";
+        row.employee_ids = [];
+    } else if (field === "work_tab_id") {
+        row.position_id = "";
+        row.employee_ids = [];
+    } else if (field === "position_id") {
+        const allowed = {};
+        employeesForMetricAssignmentRow(row).forEach(function (e) { allowed[e.id] = true; });
+        row.employee_ids = (row.employee_ids || []).filter(function (id) { return allowed[id]; });
+    }
+    renderMetricCatalogAssignments();
+}
+
+function onMetricCatalogAssignmentEmployee(idx, employeeId, checked) {
+    const row = mcAssignDraft[idx];
+    if (!row) return;
+    if (!Array.isArray(row.employee_ids)) row.employee_ids = [];
+    const i = row.employee_ids.indexOf(employeeId);
+    if (checked && i === -1) row.employee_ids.push(employeeId);
+    if (!checked && i !== -1) row.employee_ids.splice(i, 1);
+}
+
+function collectMetricCatalogAssignments() {
+    if (!metricCatalogAssignmentFormActive()) return null;
+    return (mcAssignDraft || []).map(function (row, idx) {
+        const norm = normalizeMetricAssignmentRow(row, mcAssignDraft.slice(0, idx));
+        return norm;
+    }).filter(Boolean);
+}
+
+function renderMetricCatalogAssignments() {
+    const box = document.getElementById("mcAssignList");
+    if (!box) return;
+    if (!Array.isArray(mcAssignDraft)) mcAssignDraft = [];
+    const depts = DEPT_DEFAULTS.filter(function (d) {
+        return d && TERRITORY_DEPT_CODES.indexOf(d.code) !== -1;
+    });
+    if (!mcAssignDraft.length) {
+        box.innerHTML = '<div class="note">Назначений нет. Добавьте хотя бы одно — это не создаёт копию метрики.</div>';
+        return;
+    }
+    box.innerHTML = mcAssignDraft.map(function (row, idx) {
+        const tabs = metricTabsForDept(row.department_id);
+        const positions = positionsForMetricAssignment(row.department_id, row.work_tab_id);
+        const people = employeesForMetricAssignmentRow(row);
+        const specific = row.assign_mode === "specific";
+        let html = '<div class="mc-asg-card">'
+            + '<div class="mc-asg-head"><h4>Назначение №' + (idx + 1) + "</h4>"
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="removeMetricCatalogAssignment(' + idx + ')">Удалить назначение</button></div>'
+            + '<div class="mc-asg-grid">'
+            + '<div class="form-group"><label>Раздел</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'department_id\',this.value)">';
+        depts.forEach(function (d) {
+            html += '<option value="' + escapeAttribute(d.code) + '"' + (row.department_id === d.code ? " selected" : "") + ">"
+                + escapeHtml(d.name) + "</option>";
+        });
+        html += "</select></div>"
+            + '<div class="form-group"><label>Рабочая группа</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'work_tab_id\',this.value)">'
+            + '<option value="">— выбрать —</option>';
+        tabs.forEach(function (t) {
+            html += '<option value="' + escapeAttribute(t.id) + '"' + (row.work_tab_id === t.id ? " selected" : "") + ">"
+                + escapeHtml(t.label) + "</option>";
+        });
+        html += "</select></div>"
+            + '<div class="form-group"><label>Должность</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'position_id\',this.value)">'
+            + '<option value="">— выбрать —</option>';
+        positions.forEach(function (p) {
+            html += '<option value="' + escapeAttribute(p.position_id) + '"' + (row.position_id === p.position_id ? " selected" : "") + ">"
+                + escapeHtml(p.name) + "</option>";
+        });
+        html += "</select></div>"
+            + '<div class="form-group"><label>Сотрудники</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'assign_mode\',this.value)">'
+            + '<option value="group_all"' + (specific ? "" : " selected") + ">Все подходящие</option>"
+            + '<option value="specific"' + (specific ? " selected" : "") + ">Выбрать сотрудников</option>"
+            + "</select></div></div>";
+        if (specific) {
+            html += '<div class="mc-asg-people">';
+            if (!people.length) html += '<div class="note">Нет сотрудников в выбранном разделе, группе и должности.</div>';
+            people.forEach(function (e) {
+                const on = (row.employee_ids || []).indexOf(e.id) !== -1;
+                html += '<label class="check"><input type="checkbox"' + (on ? " checked" : "")
+                    + ' onchange="onMetricCatalogAssignmentEmployee(' + idx + ', this.value, this.checked)" value="'
+                    + escapeAttribute(e.id) + '"><span>' + escapeHtml(shopMetricEmployeeCaption(e)) + "</span></label>";
+            });
+            html += "</div>";
+        } else {
+            html += '<div class="note" style="margin-top:6px">Метрика будет доступна всем сотрудникам этой группы и должности. Сейчас подходящих: '
+                + people.length + ".</div>";
+        }
+        html += "</div>";
+        return html;
+    }).join("");
+}
+
 function onMetricCatalogStructureChange(type) {
     const struct = document.getElementById("mcStructure");
     if (struct) struct.value = type;
@@ -21538,6 +21910,10 @@ function onMetricCatalogCategoryChange() {
     const deptEl = document.getElementById("mcDept");
     if (deptEl && spec && spec.departmentId) deptEl.value = spec.departmentId;
     if (deptEl && spec && spec.allTerritory) deptEl.value = deptEl.value === "shop" ? "office" : (deptEl.value || "office");
+    if (metricCatalogAssignmentFormActive()) {
+        refreshMetricCatalogFormulaBox();
+        return;
+    }
     refreshMetricCatalogTabOptions(spec && spec.workTabIds ? spec.workTabIds : []);
     refreshMetricCatalogPeopleBox((document.getElementById("mcMetricId") || {}).value || "");
 }
@@ -21592,12 +21968,15 @@ function openMetricCatalogForm(id, dupIgnore) {
     };
     const depts = catalogFormDeptList();
     const deptLocked = !catalogFormCanPickDept() || !!(it.builtin);
+    const useAssignForm = (territoryForm || isCentralMetricCatalogScreen()) && dept !== "shop"
+        && metricDepartmentId(it) !== "shop";
     let html = "<h3 style=\"margin:0 0 8px\">" + (id ? "Изменить метрику" : "Создать метрику") + "</h3>"
         + '<div class="metric-cat-form">'
         + '<div class="form-group full"><label>Название метрики *</label>'
         + '<input id="mcName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
         + '<input type="hidden" id="mcMetricId" value="' + escapeAttribute(it.id || "") + '">'
-        + '<div class="form-group full"><label>Категория / отдел *</label><select id="mcCategory" onchange="onMetricCatalogCategoryChange()">';
+        + '<div class="form-group full"><label>' + (useAssignForm ? "Категория в Метриках *" : "Категория / отдел *") + "</label>"
+        + '<select id="mcCategory" onchange="onMetricCatalogCategoryChange()">';
     metricCatalogCategoriesForForm(territoryForm || isCentralMetricCatalogScreen()).forEach(function (c) {
         html += '<option value="' + c.id + '"' + (category === c.id ? " selected" : "") + ">" + escapeHtml(c.label) + "</option>";
     });
@@ -21605,7 +21984,10 @@ function openMetricCatalogForm(id, dupIgnore) {
         html += '<option value=""' + (!category ? " selected" : "") + ">Магазин Володарского / без категории территории</option>";
     }
     html += "</select></div>"
-        + '<div class="form-group"><label>Отдел *</label><select id="mcDept" onchange="onMetricCatalogDeptChange()"'
+        + (useAssignForm
+            ? '<div class="note full">Категория задаёт только место метрики в разделе «Метрики». Кому она назначена — в блоке ниже, отдельно.</div>'
+            : "")
+        + '<div class="form-group"' + (useAssignForm ? ' style="display:none"' : "") + '><label>Отдел *</label><select id="mcDept" onchange="onMetricCatalogDeptChange()"'
         + (deptLocked ? " disabled" : "") + ">";
     depts.forEach(function (d) {
         html += '<option value="' + d.code + '"' + (dept === d.code ? " selected" : "") + ">" + escapeHtml(d.name) + "</option>";
@@ -21617,7 +21999,9 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<button type="button" data-struct="plain" class="' + (metricStructureType(it) === "plain" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'plain\')">Обычная</button>'
         + '<button type="button" data-struct="with_submetrics" class="' + (metricStructureType(it) === "with_submetrics" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'with_submetrics\')">С подметриками</button>'
         + "</div></div>"
-        + '<div class="form-group full"><label>Должность / рабочая группа</label><div class="mc-tabs-checks" id="mcTabsBox"></div></div>'
+        + (useAssignForm
+            ? ""
+            : '<div class="form-group full"><label>Должность / рабочая группа</label><div class="mc-tabs-checks" id="mcTabsBox"></div></div>')
         + '<div class="form-group"><label>Тип метрики *</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()"'
         + (it.builtin && it.core_column ? " disabled" : "") + ">";
     SHOP_METRIC_FILL_TYPES.forEach(function (s) {
@@ -21634,29 +22018,40 @@ function openMetricCatalogForm(id, dupIgnore) {
         }).join("")
         + '</div><button type="button" class="btn btn-secondary btn-small" style="margin-top:6px" onclick="addMetricCatalogFormSubrow()">+ Добавить</button></div>'
         + '<div class="form-group full" id="mcFormulaBox"></div>'
-        + '<div class="form-group full"><label>Назначение</label><div class="mc-assign">'
-        + '<label class="check"><input type="radio" name="mcAssignMode" value="group_all"'
-        + (it.assign_mode === "specific" ? "" : " checked") + ' onchange="onMetricCatalogAssignModeChange()"> Всем сотрудникам категории</label>'
-        + '<label class="check"><input type="radio" name="mcAssignMode" value="specific"'
-        + (it.assign_mode === "specific" || (!existing && defaultSpecific) ? " checked" : "") + ' onchange="onMetricCatalogAssignModeChange()"> Выбрать конкретных сотрудников</label>'
-        + "</div></div>"
-        + '<div class="form-group full" id="mcPeopleWrap"><div class="mc-people" id="mcPeopleBox"></div></div>'
+        + (useAssignForm
+            ? ('<div class="form-group full"><label>Кому назначить метрику</label>'
+                + '<div class="note">Одна метрика — один metric_id. Несколько назначений не создают копии.</div>'
+                + '<div id="mcAssignList" class="mc-asg-list"></div>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="addMetricCatalogAssignment()">+ Добавить назначение</button></div>')
+            : ('<div class="form-group full"><label>Назначение</label><div class="mc-assign">'
+                + '<label class="check"><input type="radio" name="mcAssignMode" value="group_all"'
+                + (it.assign_mode === "specific" ? "" : " checked") + ' onchange="onMetricCatalogAssignModeChange()"> Всем сотрудникам категории</label>'
+                + '<label class="check"><input type="radio" name="mcAssignMode" value="specific"'
+                + (it.assign_mode === "specific" || (!existing && defaultSpecific) ? " checked" : "") + ' onchange="onMetricCatalogAssignModeChange()"> Выбрать конкретных сотрудников</label>'
+                + "</div></div>"
+                + '<div class="form-group full" id="mcPeopleWrap"><div class="mc-people" id="mcPeopleBox"></div></div>'))
         + '<div class="form-group full" id="mcRouteBox"></div>'
         + '<div class="note full" id="mcDupHint"></div></div>'
         + '<div class="rev-modal-actions" style="margin-top:10px">'
         + '<button type="button" class="btn btn-primary" onclick="saveMetricCatalogForm(\'' + (it.id || "") + '\',' + (dupIgnore ? "true" : "false") + ')">Сохранить</button>'
         + '<button type="button" class="btn btn-secondary" onclick="closeMetricCatalogModal()">Отмена</button></div>';
     openMetricCatalogModal(html);
-    const initSpec = territoryMetricCategoryById(category);
-    refreshMetricCatalogTabOptions(
-        existing
-            ? metricWorkTabIds(it)
-            : ((initSpec && initSpec.workTabIds) ? initSpec.workTabIds : defaultWorkTabsForDept(dept)),
-        it.work_tab_scopes
-    );
+    if (useAssignForm) {
+        mcAssignDraft = existing ? metricAssignmentsFromItem(it) : [defaultMetricCatalogAssignmentRow()];
+        if (!mcAssignDraft.length) mcAssignDraft = [defaultMetricCatalogAssignmentRow()];
+        renderMetricCatalogAssignments();
+    } else {
+        const initSpec = territoryMetricCategoryById(category);
+        refreshMetricCatalogTabOptions(
+            existing
+                ? metricWorkTabIds(it)
+                : ((initSpec && initSpec.workTabIds) ? initSpec.workTabIds : defaultWorkTabsForDept(dept)),
+            it.work_tab_scopes
+        );
+        onMetricCatalogAssignModeChange();
+        refreshMetricCatalogPeopleBox(it.id);
+    }
     refreshMetricCatalogFormulaBox(it.formula);
-    onMetricCatalogAssignModeChange();
-    refreshMetricCatalogPeopleBox(it.id);
     renderMetricCatalogRouteBox(it);
 }
 
@@ -21783,10 +22178,44 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     const deptEl = document.getElementById("mcDept");
     let dept = (deptEl && deptEl.value) || catalogDeptContext();
-    let tabIds = collectMetricCatalogTabIds();
+    const assignmentRows = collectMetricCatalogAssignments();
+    let tabIds = assignmentRows
+        ? assignmentRows.map(function (row) { return row.work_tab_id; }).filter(Boolean)
+        : collectMetricCatalogTabIds();
     const cat = String((document.getElementById("mcCategory") || {}).value || "");
     const spec = cat ? territoryMetricCategoryById(cat) : null;
-    if (spec && spec.departmentId) {
+    if (assignmentRows) {
+        if (!cat) {
+            toast("Выберите категорию в Метриках.", "error");
+            return;
+        }
+        if (!assignmentRows.length) {
+            toast("Добавьте хотя бы одно назначение.", "error");
+            return;
+        }
+        let asgErr = "";
+        assignmentRows.forEach(function (row, idx) {
+            if (asgErr) return;
+            if (!row.department_id || !row.work_tab_id) {
+                asgErr = "В назначении №" + (idx + 1) + " выберите раздел и рабочую группу.";
+                return;
+            }
+            if (!row.position_id) {
+                asgErr = "В назначении №" + (idx + 1) + " выберите должность.";
+                return;
+            }
+            if (row.assign_mode === "specific" && !(row.employee_ids || []).length) {
+                asgErr = "В назначении №" + (idx + 1) + " отметьте сотрудников или выберите «Все подходящие».";
+            }
+        });
+        if (asgErr) {
+            toast(asgErr, "error");
+            return;
+        }
+        if (spec && spec.departmentId) dept = spec.departmentId;
+        else if (spec && spec.allTerritory && (!dept || dept === "shop")) dept = "office";
+        else if (assignmentRows[0] && assignmentRows[0].department_id) dept = assignmentRows[0].department_id;
+    } else if (spec && spec.departmentId) {
         dept = spec.departmentId;
         const allowed = workTabsAllowedForTerritoryCategory(cat, dept);
         if (tabIds.length) {
@@ -21798,7 +22227,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     let sectionId = tabIds[0] || defaultMetricTabId(dept);
     if (!metricTabsForDept(dept).some(function (t) { return t.id === sectionId; })) {
-        sectionId = defaultMetricTabId(dept);
+        sectionId = tabIds[0] || defaultMetricTabId(dept);
     }
     if (!tabIds.length) tabIds.push(sectionId);
     if (!dupIgnore) {
@@ -21823,9 +22252,11 @@ function saveMetricCatalogForm(id, dupIgnore) {
             return;
         }
     }
-    const assignModeEarly = collectMetricCatalogAssignMode();
-    const personIdsEarly = collectMetricCatalogPersonIds();
-    if (assignModeEarly === "specific" && !personIdsEarly.length) {
+    const assignModeEarly = assignmentRows
+        ? (assignmentRows.some(function (row) { return row.assign_mode === "specific"; }) ? "specific" : "group_all")
+        : collectMetricCatalogAssignMode();
+    const personIdsEarly = assignmentRows ? [] : collectMetricCatalogPersonIds();
+    if (!assignmentRows && assignModeEarly === "specific" && !personIdsEarly.length) {
         toast("Отметьте сотрудников или выберите «Всем сотрудникам категории».", "error");
         return;
     }
@@ -21887,7 +22318,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (!item.department_id) item.department_id = dept;
     item.metric_tab_id = item.section_id || item.metric_tab_id;
     item.work_tab_ids = tabIds.slice();
-    item.work_tab_scopes = collectMetricCatalogTabScopes();
+    item.work_tab_scopes = assignmentRows ? {} : collectMetricCatalogTabScopes();
     if (cat) {
         item.territory_category = cat;
         if (spec && spec.departmentId) item.department_id = spec.departmentId;
@@ -21896,9 +22327,18 @@ function saveMetricCatalogForm(id, dupIgnore) {
     } else {
         item.territory_category = inferTerritoryMetricCategory(item);
     }
+    if (assignmentRows) {
+        item.assignments = assignmentRows;
+        syncWorkTabIdsFromMetricAssignments(item);
+        tabIds = metricWorkTabIds(item);
+        sectionId = tabIds[0] || sectionId;
+        item.section_id = sectionId;
+        item.metric_tab_id = sectionId;
+        item.work_tab_ids = tabIds.slice();
+    }
     item.work_tab_ids = tabIds.slice();
     normalizeMetricCatalogItemTabs(item);
-    if (item.territory_category && item.territory_category !== "common" && item.territory_category !== "returns") {
+    if (!assignmentRows && item.territory_category && item.territory_category !== "common" && item.territory_category !== "returns") {
         const allowTabs = workTabsAllowedForTerritoryCategory(item.territory_category, metricDepartmentId(item));
         item.work_tab_ids = metricWorkTabIds(item).filter(function (t) { return allowTabs.indexOf(t) !== -1; });
         if (!item.work_tab_ids.length) item.work_tab_ids = allowTabs.slice();
@@ -21922,6 +22362,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
         if (shopWriteoffNameLooksLikeLimitTitle(item.name)) item.name = WRITEOFF_METRIC_NAME;
     }
     item.assign_mode = assignModeEarly;
+    if (assignmentRows) item.assignments = assignmentRows;
     if (metricRollupEnabled(item)) {
         const nodes = document.querySelectorAll(".mc-tab-include");
         if (nodes.length) {
@@ -21942,7 +22383,8 @@ function saveMetricCatalogForm(id, dupIgnore) {
             applyMetricResultRoute(item);
         }
     }
-    if (item.assign_mode === "specific") applyMetricCatalogSpecificAssignment(item, personIdsEarly);
+    if (assignmentRows) applyMetricCatalogAssignments(item);
+    else if (item.assign_mode === "specific") applyMetricCatalogSpecificAssignment(item, personIdsEarly);
     else applyMetricCatalogGroupAssignment(item);
     if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
     saveApp();
@@ -22012,6 +22454,8 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
         if (isGenericMetricsDept(code) && !isTerritoryEmployee(e)) return;
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
         if (tab && !employeeBelongsToWorkGroup(e, code, tab)) return;
+        const metricItem = shopMetricCatalogById(mid);
+        if (metricItem && !employeeMatchesMetricAssignments(metricItem, e, tab)) return;
         if (!isWorking(e)) {
             if (isGenericMetricsDept(code)) {
                 if (!deptMetricEmployeeHasData(code, e.id, mid)) return;
@@ -22403,11 +22847,13 @@ function territoryHubPeople(spec, metricId) {
     const pool = (spec && spec.allTerritory)
         ? territoryCategoryEmployeePool("common")
         : territoryDeptEmployeePool(dept);
+    const metricItem = shopMetricCatalogById(metricId);
     const list = pool.filter(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
         if (!isWorking(e) || !isTerritoryEmployee(e)) return false;
         if (employeeHomeDeptCode(e.id) === "shop") return false;
         if (!shopEmployeeHasWorkMetric(e.id, metricId)) return false;
+        if (metricItem && !employeeMatchesMetricAssignments(metricItem, e, "")) return false;
         if (!tabs.length) return true;
         const home = employeeHomeDeptCode(e.id) || dept;
         return tabs.some(function (tab) { return employeeBelongsToWorkGroup(e, home, tab); });
