@@ -5087,6 +5087,22 @@
                 <div class="card">
                     <div class="card-header">
                         <div>
+                            <div class="card-title">Сотрудники, должности и доступы</div>
+                            <div class="note">
+                                Сотрудники и должности — отдельно от учётных записей (PIN / user_id). Данные не дублируются.
+                            </div>
+                        </div>
+                    </div>
+                    <div class="metrics-tabs" id="usersAdminTabs" style="padding:8px 12px 0;display:flex;flex-wrap:wrap;gap:6px">
+                        <button type="button" class="metrics-tab active" data-users-tab="staff" onclick="setUsersAdminTab('staff')">Сотрудники и должности</button>
+                        <button type="button" class="metrics-tab" data-users-tab="access" onclick="setUsersAdminTab('access')">Пользователи и доступы</button>
+                        <button type="button" class="metrics-tab" data-users-tab="spu" onclick="setUsersAdminTab('spu')">Настройки СПУ</button>
+                    </div>
+                </div>
+
+                <div class="card" id="usersAdminPanelStaff" style="margin-top:12px">
+                    <div class="card-header">
+                        <div>
                             <div class="card-title">Сотрудники и должности</div>
                             <div class="note">
                                 Здесь меняются должность и признаки СПУ у уже существующего сотрудника (employee_id не меняется).
@@ -5094,7 +5110,23 @@
                             </div>
                         </div>
                     </div>
-                    <div class="toolbar" style="padding:8px 12px 0">
+                    <div class="toolbar fio-filters" id="staffOrgFilters" style="padding:8px 12px 0;align-items:end">
+                        <div class="form-group" style="margin:0">
+                            <label>Раздел</label>
+                            <select id="staffOrgDeptFilter" onchange="setStaffOrgDeptFilter(this.value)">
+                                <option value="">Все разделы</option>
+                                <option value="shop">Магазин Володарского</option>
+                                <option value="office">Офис</option>
+                                <option value="warehouse">Склад</option>
+                                <option value="drivers">Логистика + Торговые</option>
+                            </select>
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label>Рабочая группа</label>
+                            <select id="staffOrgWorkGroupFilter" onchange="setStaffOrgWorkGroupFilter(this.value)">
+                                <option value="">Все рабочие группы</option>
+                            </select>
+                        </div>
                         <div class="form-group" style="margin:0">
                             <label>Участие в СПУ</label>
                             <select id="staffOrgSpuMeetFilter" onchange="setStaffOrgSpuMeetFilter(this.value)">
@@ -5102,6 +5134,11 @@
                                 <option value="yes">Да</option>
                                 <option value="no">Нет</option>
                             </select>
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label>Сотрудник / поиск</label>
+                            <input id="staffOrgSearch" type="search" maxlength="80" placeholder="ФИО…"
+                                oninput="setStaffOrgSearch(this.value)">
                         </div>
                     </div>
                     <div class="table-wrapper">
@@ -5121,9 +5158,9 @@
                             <tbody id="staffOrgBody"></tbody>
                         </table>
                     </div>
-                    <div id="spuDeptOrderBox" style="padding:10px 12px;"></div>
                 </div>
-                <div class="card" style="margin-top:12px">
+
+                <div class="card" id="usersAdminPanelAccess" style="margin-top:12px;display:none">
                     <div class="card-header">
                         <div>
                             <div class="card-title">Пользователи и доступы</div>
@@ -5149,6 +5186,16 @@
                             <tbody id="accessUsersBody"></tbody>
                         </table>
                     </div>
+                </div>
+
+                <div class="card" id="usersAdminPanelSpu" style="margin-top:12px;display:none">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Настройки СПУ</div>
+                            <div class="note">Порядок департаментов СПУ. Магазин и Финансовый департамент закреплены в конце.</div>
+                        </div>
+                    </div>
+                    <div id="spuDeptOrderBox" style="padding:10px 12px;"></div>
                 </div>
             </section>
 
@@ -5458,6 +5505,10 @@ let metricControlView = "people";
 let metricsFillViewByKey = {};
 let fioFilterByDept = {};
 let staffOrgSpuMeetFilter = "";
+let staffOrgDeptFilter = "";
+let staffOrgWorkGroupFilter = "";
+let staffOrgSearch = "";
+let usersAdminTab = "staff";
 let writeoffLossesOpenId = "";
 let revisionFocusGroupId = "";
 let revisionFocusFolderId = "";
@@ -11239,8 +11290,7 @@ function showSection(id, button) {
     if (id === "summaryStaff") runSection(renderSummaryStaff);
     if (id === "discipline") runSection(renderDiscipline);
     if (id === "users") {
-        runSection(renderAccessUsers);
-        runSection(renderStaffOrgAdmin);
+        runSection(function () { setUsersAdminTab(usersAdminTab || "staff"); });
     }
     if (id === "analysis") runSection(renderAnalysis);
     if (id === "fio") runSection(renderFio);
@@ -25314,47 +25364,147 @@ function orgPositionOptions(selected, deptCode) {
     return htmlInner;
 }
 
+function setUsersAdminTab(tab) {
+    const next = tab === "access" || tab === "spu" ? tab : "staff";
+    usersAdminTab = next;
+    const map = {
+        staff: "usersAdminPanelStaff",
+        access: "usersAdminPanelAccess",
+        spu: "usersAdminPanelSpu"
+    };
+    Object.keys(map).forEach(function (key) {
+        const el = document.getElementById(map[key]);
+        if (el) el.style.display = key === next ? "" : "none";
+    });
+    document.querySelectorAll("#usersAdminTabs .metrics-tab").forEach(function (btn) {
+        btn.classList.toggle("active", btn.getAttribute("data-users-tab") === next);
+    });
+    if (next === "staff" || next === "spu") {
+        try { renderStaffOrgAdmin(); } catch (err) { console.error(err); }
+    }
+    if (next === "access") {
+        try { renderAccessUsers(); } catch (err2) { console.error(err2); }
+    }
+}
+
+function syncStaffOrgWorkGroupOptions() {
+    const sel = document.getElementById("staffOrgWorkGroupFilter");
+    if (!sel) return;
+    const dept = staffOrgDeptFilter;
+    let html = '<option value="">Все рабочие группы</option>';
+    if (dept) {
+        metricTabsForDept(dept).forEach(function (t) {
+            html += '<option value="' + escapeAttribute(t.id) + '"'
+                + (staffOrgWorkGroupFilter === t.id ? " selected" : "") + ">"
+                + escapeHtml(t.label) + "</option>";
+        });
+    }
+    sel.innerHTML = html;
+    sel.disabled = !dept;
+    if (!dept) staffOrgWorkGroupFilter = "";
+    else if (staffOrgWorkGroupFilter && !metricTabsForDept(dept).some(function (t) {
+        return t.id === staffOrgWorkGroupFilter;
+    })) {
+        staffOrgWorkGroupFilter = "";
+    }
+    sel.value = staffOrgWorkGroupFilter || "";
+}
+
+function setStaffOrgDeptFilter(value) {
+    staffOrgDeptFilter = value || "";
+    staffOrgWorkGroupFilter = "";
+    renderStaffOrgAdmin();
+}
+
+function setStaffOrgWorkGroupFilter(value) {
+    staffOrgWorkGroupFilter = value || "";
+    renderStaffOrgAdmin();
+}
+
+function setStaffOrgSearch(value) {
+    staffOrgSearch = String(value || "");
+    renderStaffOrgAdmin();
+}
+
 function renderStaffOrgAdmin() {
     if (!canEditOrgStructure()) return;
     ensureManagement();
-    const body = document.getElementById("staffOrgBody");
-    if (!body) return;
+    syncStaffOrgWorkGroupOptions();
+    const deptSel = document.getElementById("staffOrgDeptFilter");
+    if (deptSel) deptSel.value = staffOrgDeptFilter || "";
     const meetSel = document.getElementById("staffOrgSpuMeetFilter");
     if (meetSel) meetSel.value = staffOrgSpuMeetFilter || "";
-    const people = mgmtAllEmployees().slice().filter(function (e) {
-        if (!staffOrgSpuMeetFilter) return true;
-        const on = !!(e && e.participates_in_spu_meetings === true);
-        if (staffOrgSpuMeetFilter === "yes") return on;
-        if (staffOrgSpuMeetFilter === "no") return !on;
-        return true;
-    }).sort(function (a, b) {
-        return String(a.name || "").localeCompare(String(b.name || ""), "ru");
-    });
-    if (!people.length) {
-        body.innerHTML = '<tr><td colspan="8"><div class="empty-row">Нет сотрудников. Создайте ФИО в разделе «Сотрудники».</div></td></tr>';
-    } else {
-        body.innerHTML = people.map(function (e) {
-            const home = employeeHome(e.id);
-            const ids = mgmtEmployeeSpuIdsAt(e.id, todayIsoDate());
-            const names = ids.map(function (id) {
-                const d = mgmtSpuDepartments().find(function (x) { return x.spu_department_id === id; });
-                return d ? d.name : id;
-            }).join(", ");
-            const mgr = e.is_manager === true || (e.is_manager == null && mgmtIsLeaderEmployee(e));
-            const meet = e.participates_in_spu_meetings === true;
-            return "<tr>"
-                + "<td><strong>" + escapeHtml(e.name || "—") + "</strong>"
-                + '<div class="note">' + escapeHtml(e.id) + "</div></td>"
-                + "<td>" + escapeHtml(e.position || "—") + "</td>"
-                + "<td>" + escapeHtml(home ? officialName(home) : "—") + "</td>"
-                + "<td>" + (mgr ? "✓" : "") + "</td>"
-                + "<td>" + (meet ? "✓" : "") + "</td>"
-                + "<td>" + escapeHtml(names || "—") + "</td>"
-                + "<td>" + (isWorking(e) ? "✓" : "") + "</td>"
-                + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openStaffOrgEditor(\''
-                + e.id + "')\">Изменить</button></td></tr>";
-        }).join("");
+    const searchEl = document.getElementById("staffOrgSearch");
+    const keepFocus = searchEl && document.activeElement === searchEl;
+    const selStart = keepFocus ? searchEl.selectionStart : null;
+    const selEnd = keepFocus ? searchEl.selectionEnd : null;
+    if (searchEl && !keepFocus) searchEl.value = staffOrgSearch || "";
+
+    const body = document.getElementById("staffOrgBody");
+    if (body) {
+        const q = String(staffOrgSearch || "").toLowerCase().replace(/\s+/g, " ").trim();
+        const people = mgmtAllEmployees().slice().filter(function (e) {
+            if (!e || !e.id) return false;
+            const homeCode = employeeHomeDeptCode(e.id);
+            if (staffOrgDeptFilter && homeCode !== staffOrgDeptFilter) return false;
+            if (staffOrgWorkGroupFilter) {
+                if (!employeeBelongsToWorkGroup(e, homeCode || staffOrgDeptFilter, staffOrgWorkGroupFilter)) {
+                    return false;
+                }
+            }
+            if (staffOrgSpuMeetFilter) {
+                const on = !!(e.participates_in_spu_meetings === true);
+                if (staffOrgSpuMeetFilter === "yes" && !on) return false;
+                if (staffOrgSpuMeetFilter === "no" && on) return false;
+            }
+            if (q) {
+                const name = String(e.name || "").toLowerCase();
+                if (name.indexOf(q) === -1 && String(e.id || "").toLowerCase().indexOf(q) === -1) return false;
+            }
+            return true;
+        }).sort(function (a, b) {
+            return String(a.name || "").localeCompare(String(b.name || ""), "ru");
+        });
+        if (!people.length) {
+            body.innerHTML = '<tr><td colspan="8"><div class="empty-row">'
+                + (staffOrgDeptFilter || staffOrgWorkGroupFilter || staffOrgSpuMeetFilter || staffOrgSearch
+                    ? "Нет сотрудников по выбранным фильтрам."
+                    : "Нет сотрудников. Создайте ФИО в разделе «Сотрудники».")
+                + "</div></td></tr>";
+        } else {
+            body.innerHTML = people.map(function (e) {
+                const home = employeeHome(e.id);
+                const ids = mgmtEmployeeSpuIdsAt(e.id, todayIsoDate());
+                const names = ids.map(function (id) {
+                    const d = mgmtSpuDepartments().find(function (x) { return x.spu_department_id === id; });
+                    return d ? d.name : id;
+                }).join(", ");
+                const mgr = e.is_manager === true || (e.is_manager == null && mgmtIsLeaderEmployee(e));
+                const meet = e.participates_in_spu_meetings === true;
+                return "<tr>"
+                    + "<td><strong>" + escapeHtml(e.name || "—") + "</strong>"
+                    + '<div class="note">' + escapeHtml(e.id) + "</div></td>"
+                    + "<td>" + escapeHtml(e.position || "—") + "</td>"
+                    + "<td>" + escapeHtml(home ? officialName(home) : "—") + "</td>"
+                    + "<td>" + (mgr ? "✓" : "") + "</td>"
+                    + "<td>" + (meet ? "✓" : "") + "</td>"
+                    + "<td>" + escapeHtml(names || "—") + "</td>"
+                    + "<td>" + (isWorking(e) ? "✓" : "") + "</td>"
+                    + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openStaffOrgEditor(\''
+                    + e.id + "')\">Изменить</button></td></tr>";
+            }).join("");
+        }
+        if (keepFocus) {
+            const again = document.getElementById("staffOrgSearch");
+            if (again) {
+                again.focus();
+                if (selStart != null && typeof again.setSelectionRange === "function") {
+                    try { again.setSelectionRange(selStart, selEnd); } catch (err) {}
+                }
+            }
+        }
     }
+
     const orderBox = document.getElementById("spuDeptOrderBox");
     if (orderBox) {
         let oh = '<div class="note" style="margin-bottom:6px">Порядок департаментов СПУ (Магазин и Финансовый департамент закреплены в конце)</div>';
