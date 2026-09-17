@@ -4756,7 +4756,7 @@
                 <div class="card">
                     <div class="card-title">Должности этого отдела</div>
                     <div class="note" style="margin-top:8px;">
-                        Если появилась новая должность, внесите её — потом её можно выбрать в карточке сотрудника.
+                        Единый справочник: создать, переименовать или удалить. Связи идут по position_id, не по названию.
                     </div>
                     <div class="toolbar" style="margin-top:12px;align-items:end;">
                         <div class="form-group">
@@ -4857,7 +4857,7 @@
                 <div class="card" id="positionsSettingsCard" style="display:none;">
                     <div class="card-title">Должности</div>
                     <div class="note" style="margin-top:8px;">
-                        Базовый список плюс должности, которые добавили в этом отделе.
+                        Справочник должностей отдела: создать, редактировать, удалить. Неактивные не предлагаются новым сотрудникам.
                     </div>
                     <div class="toolbar" style="margin-top:12px;align-items:end;">
                         <div class="form-group">
@@ -5132,11 +5132,10 @@ function employeesForOrgUnit(unitId) {
     const people = ((w && w.employees) || []).filter(function (e) {
         return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID && isWorking(e);
     });
-    if (u.salesRep) return people.filter(function (e) { return isSalesRep(e); });
+    if (u.salesRep) return people.filter(function (e) { return employeeBelongsToWorkGroup(e, u.dept, "sales"); });
     if (u.dept !== "shop" && u.tabs && u.tabs.length) {
         return people.filter(function (e) {
-            const tab = employeePrimaryWorkTabId(e, u.dept) || inferWorkTabIdFromPosition(u.dept, e.position);
-            return u.tabs.indexOf(tab) !== -1;
+            return u.tabs.some(function (tab) { return employeeBelongsToWorkGroup(e, u.dept, tab); });
         });
     }
     return people;
@@ -5668,8 +5667,6 @@ function employeePrimaryWorkTabId(employee, dept, month) {
         if (!employee.work_tab_from || m >= employee.work_tab_from) return String(employee.work_tab_id);
     }
     if (employee.primary_work_tab_id) return String(employee.primary_work_tab_id);
-    const roleId = String(employee.role_id || "");
-    if (roleId && metricTabsForDept(code).some(function (t) { return t.id === roleId; })) return roleId;
     return "";
 }
 function employeeMatchesWorkTab(employee, dept, workTabId) {
@@ -6292,6 +6289,7 @@ function setEmployeePosition(employee, nextTitle, fromMonth) {
     }
     employee.position = next;
     employee.position_from = from || selectedMonth;
+    bindEmployeePositionId(employee, next, employeeHomeDeptCode(employee.id));
 }
 
 function canEditOrgStructure() {
@@ -6304,21 +6302,8 @@ function employeeWorkTabHistory(employee) {
     return employee.work_tab_history;
 }
 function employeeWorkTabId(employee, dept, month) {
-    if (!employee) return "";
-    const code = dept || (workspace() && workspace().code) || "";
-    const m = month || selectedMonth;
-    const hist = employeeWorkTabHistory(employee);
-    for (let i = hist.length - 1; i >= 0; i--) {
-        const rec = hist[i];
-        if (!rec || !rec.metric_tab_id) continue;
-        if (rec.valid_from && m < rec.valid_from) continue;
-        if (rec.valid_to && m > rec.valid_to) continue;
-        return rec.metric_tab_id;
-    }
-    if (employee.work_tab_id) {
-        if (!employee.work_tab_from || m >= employee.work_tab_from) return employee.work_tab_id;
-    }
-    return inferWorkTabIdFromPosition(code, employee.position);
+    const ids = employeeWorkGroupIds(employee, dept, month);
+    return ids[0] || "";
 }
 function allowedWorkTabIdsForDept(dept) {
     return metricTabsForDept(dept).map(function (t) { return t.id; });
@@ -6337,49 +6322,64 @@ function employeeWorkGroupIds(employee, dept, month) {
     if (Array.isArray(employee.work_group_ids)) employee.work_group_ids.forEach(add);
     if (Array.isArray(employee.work_tab_ids)) employee.work_tab_ids.forEach(add);
     add(employee.work_group_id);
+    add(employee.primary_work_tab_id);
     const m = month || selectedMonth;
+    const currentTab = String(employee.work_tab_id || "");
+    if (currentTab) {
+        if (!employee.work_tab_from || m >= employee.work_tab_from) add(currentTab);
+    }
     employeeWorkTabHistory(employee).forEach(function (rec) {
         if (!rec || !rec.metric_tab_id) return;
         if (rec.valid_from && m < rec.valid_from) return;
         if (rec.valid_to && m > rec.valid_to) return;
+        if (!rec.valid_to && currentTab && String(rec.metric_tab_id) !== currentTab && (!employee.work_tab_from || m >= employee.work_tab_from)) {
+            return;
+        }
         add(rec.metric_tab_id);
     });
-    if (employee.work_tab_id) {
-        if (!employee.work_tab_from || m >= employee.work_tab_from) add(employee.work_tab_id);
-    }
-    add(employee.primary_work_tab_id);
-    add(employee.role_id);
     return ids;
 }
 function employeeBelongsToWorkGroup(employee, dept, workTabId, month) {
     const tab = String(workTabId || "");
     if (!tab) return true;
+    if (!employee) return false;
     return employeeWorkGroupIds(employee, dept, month).indexOf(tab) !== -1;
 }
-function territoryDeptEmployeePool(deptCode) {
+function departmentEmployeePool(deptCode) {
     const code = String(deptCode || "");
-    if (!code || code === "shop") return [];
+    if (!code) return [];
     const w = findWorkspaceByCode(code);
     const out = [];
     const seen = {};
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (employeeHomeDeptCode(e.id) !== code) return;
-        if (employeeHomeDeptCode(e.id) === "shop") return;
+        if (code !== "shop" && employeeHomeDeptCode(e.id) === "shop") return;
         if (isTerritoryCode(code) && !isTerritoryEmployee(e)) return;
         seen[e.id] = true;
         out.push(e);
     });
     return out;
 }
+function territoryDeptEmployeePool(deptCode) {
+    const code = String(deptCode || "");
+    if (!code || code === "shop") return [];
+    return departmentEmployeePool(code);
+}
 function employeesForWorkGroup(deptCode, workTabId, options) {
     options = options || {};
     const tab = String(workTabId || "");
-    return territoryDeptEmployeePool(deptCode).filter(function (e) {
+    const month = options.month || selectedMonth;
+    return departmentEmployeePool(deptCode).filter(function (e) {
         if (!options.includeInactive && !isWorking(e)) return false;
-        if (tab && !employeeBelongsToWorkGroup(e, deptCode, tab, options.month || selectedMonth)) return false;
+        if (tab && !employeeBelongsToWorkGroup(e, deptCode, tab, month)) return false;
         return true;
     }).sort(compareEmployeesByStatusThenName);
+}
+function keepEmployeeIfInDepartment(employeeId, deptCode) {
+    if (!employeeId) return "";
+    if (!deptCode) return employeeId;
+    return employeeHomeDeptCode(employeeId) === deptCode ? employeeId : "";
 }
 function setEmployeePrimaryWorkTab(employeeId, tabId) {
     const employee = getEmployee(employeeId);
@@ -6399,7 +6399,12 @@ function setEmployeePrimaryWorkTab(employeeId, tabId) {
         }
     }
     employee.work_tab_id = next;
+    employee.work_group_id = next;
     employee.work_tab_from = next ? selectedMonth : "";
+    if (next) {
+        if (!Array.isArray(employee.work_group_ids)) employee.work_group_ids = [];
+        if (employee.work_group_ids.indexOf(next) === -1) employee.work_group_ids.push(next);
+    }
 }
 function currentTimesheetWorkTabFilter() {
     const w = workspace();
@@ -7796,6 +7801,184 @@ function loginWorkspaces() {
 /* ============================================================
    ХРАНИЛИЩЕ И МИГРАЦИЯ СО СТАРОЙ ВЕРСИИ
 ============================================================ */
+function positionNameKey(name) {
+    return String(name || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function positionSeedId(dept, name) {
+    const slug = positionNameKey(name).replace(/ё/g, "е").replace(/[^a-z0-9а-я]+/gi, "_").replace(/^_|_$/g, "");
+    return "pos_" + String(dept || "x") + "_" + (slug || "job");
+}
+
+function ensurePositionCatalog(data) {
+    const root = data || appData;
+    if (!root || typeof root !== "object") return { items: [], suppressed: [] };
+    if (!root.positionCatalog || typeof root.positionCatalog !== "object") {
+        root.positionCatalog = { items: [], suppressed: [] };
+    }
+    if (!Array.isArray(root.positionCatalog.items)) root.positionCatalog.items = [];
+    if (!Array.isArray(root.positionCatalog.suppressed)) root.positionCatalog.suppressed = [];
+    const cat = root.positionCatalog;
+    function findById(id) {
+        return cat.items.find(function (it) { return it && it.position_id === id; }) || null;
+    }
+    function findByDeptName(dept, name) {
+        const key = positionNameKey(name);
+        if (!key) return null;
+        return cat.items.find(function (it) {
+            return it && it.department_id === dept && positionNameKey(it.name) === key;
+        }) || null;
+    }
+    function addItem(row) {
+        if (!row || !row.position_id) return null;
+        const byId = findById(row.position_id);
+        if (byId) return byId;
+        const dup = findByDeptName(row.department_id, row.name);
+        if (dup) return dup;
+        cat.items.push({
+            position_id: row.position_id,
+            department_id: row.department_id || "",
+            name: String(row.name || "").replace(/\s+/g, " ").trim(),
+            active: row.active !== false,
+            builtin: !!row.builtin
+        });
+        return findById(row.position_id);
+    }
+    Object.keys(DEPT_POSITIONS).forEach(function (dept) {
+        (DEPT_POSITIONS[dept] || []).forEach(function (name) {
+            const id = positionSeedId(dept, name);
+            if (cat.suppressed.indexOf(id) !== -1) return;
+            addItem({ position_id: id, department_id: dept, name: name, active: true, builtin: true });
+        });
+    });
+    (root.workspaces || []).forEach(function (w) {
+        if (!w || !w.code || w.code === "summary") return;
+        (Array.isArray(w.customPositions) ? w.customPositions : []).forEach(function (title) {
+            const name = String(title || "").replace(/\s+/g, " ").trim();
+            if (!name || findByDeptName(w.code, name)) return;
+            addItem({
+                position_id: nextPrefixedId("pos", cat.items.map(function (it) { return it && it.position_id; })),
+                department_id: w.code,
+                name: name,
+                active: true,
+                builtin: false
+            });
+        });
+        (w.employees || []).forEach(function (e) {
+            if (!e) return;
+            if (e.position_id && findById(e.position_id)) {
+                if (!e.position) e.position = findById(e.position_id).name;
+                return;
+            }
+            const name = String(e.position || "").replace(/\s+/g, " ").trim();
+            if (!name) return;
+            let hit = findByDeptName(w.code, name);
+            if (!hit) {
+                hit = addItem({
+                    position_id: nextPrefixedId("pos", cat.items.map(function (it) { return it && it.position_id; })),
+                    department_id: w.code,
+                    name: name,
+                    active: true,
+                    builtin: false
+                });
+            }
+            if (hit) e.position_id = hit.position_id;
+        });
+    });
+    return cat;
+}
+
+function positionCatalogItems(dept, includeInactive) {
+    const cat = ensurePositionCatalog();
+    return (cat.items || []).filter(function (it) {
+        if (!it || !it.position_id) return false;
+        if (dept && it.department_id && it.department_id !== dept) return false;
+        if (!includeInactive && it.active === false) return false;
+        return true;
+    }).sort(function (a, b) {
+        return String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+}
+
+function positionCatalogById(id) {
+    if (!id) return null;
+    const cat = ensurePositionCatalog();
+    return (cat.items || []).find(function (it) { return it && it.position_id === id; }) || null;
+}
+
+function positionCatalogByName(dept, name) {
+    const key = positionNameKey(name);
+    if (!key) return null;
+    return positionCatalogItems(dept, true).find(function (it) {
+        return positionNameKey(it.name) === key;
+    }) || null;
+}
+
+function syncWorkspaceCustomPositions() {
+    if (!appData || !Array.isArray(appData.workspaces)) return;
+    ensurePositionCatalog();
+    appData.workspaces.forEach(function (w) {
+        if (!w || !w.code || w.code === "summary") return;
+        w.customPositions = positionCatalogItems(w.code, true).filter(function (it) {
+            return !it.builtin;
+        }).map(function (it) { return it.name; });
+    });
+}
+
+function bindEmployeePositionId(employee, title, dept) {
+    if (!employee) return;
+    const code = dept || employeeHomeDeptCode(employee.id) || "";
+    const name = String(title || employee.position || "").replace(/\s+/g, " ").trim();
+    const aliases = {
+        "товаросбощик": "Товаросборщик",
+        "товароразборщик": "Товаросборщик",
+        "товароразборщики": "Товаросборщик"
+    };
+    const mapped = aliases[positionNameKey(name)] || name;
+    const hit = positionCatalogByName(code, mapped) || (employee.position_id ? positionCatalogById(employee.position_id) : null);
+    employee.position_id = hit ? hit.position_id : (employee.position_id || "");
+    if (hit && !employee.position) employee.position = hit.name;
+}
+
+function positionUsage(positionId) {
+    const item = positionCatalogById(positionId);
+    const out = { employees: [], history: 0, metrics: [], total: 0 };
+    if (!item) return out;
+    const nameKey = positionNameKey(item.name);
+    const dept = item.department_id;
+    (appData.workspaces || []).forEach(function (w) {
+        (w.employees || []).forEach(function (e) {
+            if (!e) return;
+            if (e.position_id === positionId) out.employees.push(e);
+            else if (!e.position_id && employeeHomeDeptCode(e.id) === dept && positionNameKey(e.position) === nameKey) {
+                out.employees.push(e);
+            }
+            employeePositionHistory(e).forEach(function (h) {
+                if (h && positionNameKey(h.position) === nameKey) out.history += 1;
+            });
+        });
+    });
+    if (typeof shopMetricCatalogItems === "function") {
+        shopMetricCatalogItems().forEach(function (m) {
+            if (!m || !Array.isArray(m.position_titles)) return;
+            if (m.position_titles.some(function (t) { return positionNameKey(t) === nameKey; })) out.metrics.push(m);
+        });
+    }
+    out.total = out.employees.length + out.history + out.metrics.length;
+    return out;
+}
+
+function refreshPositionDependentUi() {
+    try { renderPositionList(); } catch (err) {}
+    if (currentSection === "fio") {
+        try { renderFio(); } catch (err2) {}
+        try { renderEmployees(); } catch (err3) {}
+    }
+    if (currentSection === "summaryStaff") {
+        try { renderSummaryStaff(); } catch (err5) {}
+    }
+}
+
 function createWorkspace(name, pin, type, code) {
     return {
         id: generateId(),
@@ -7828,7 +8011,8 @@ function createDefaultData() {
         customerReturns: { items: [], vehicles: [], adjustments: [] },
         workspaces: DEPT_DEFAULTS.map(function (d) {
             return createWorkspace(d.name, d.pin, "dept", d.code);
-        }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)])
+        }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)]),
+        positionCatalog: { items: [], suppressed: [] }
     };
 }
 
@@ -7842,7 +8026,11 @@ function normalizeEmployee(e) {
     if (!e.start) e.start = "08:00";
     if (!e.end) e.end = "17:00";
     if (!e.position) e.position = "";
+    if (e.position_id == null) e.position_id = "";
     if (e.work_tab_id == null) e.work_tab_id = "";
+    if (e.work_group_id == null) e.work_group_id = e.work_tab_id || "";
+    if (!Array.isArray(e.work_group_ids)) e.work_group_ids = [];
+    if (!Array.isArray(e.work_tab_ids)) e.work_tab_ids = [];
     if (e.work_tab_from == null) e.work_tab_from = "";
     if (!Array.isArray(e.work_tab_history)) e.work_tab_history = [];
     if (!Array.isArray(e.position_history)) e.position_history = [];
@@ -8462,6 +8650,7 @@ function migrateAppData(data) {
     migrateAppUsers(data);
     try { ensureCustomerReturns(data); } catch (crErr) { console.error(crErr); }
     try { ensureOrgStructure(data); } catch (orgErr) { console.error(orgErr); }
+    try { ensurePositionCatalog(data); } catch (posErr) { console.error(posErr); }
     return data;
 }
 
@@ -8792,8 +8981,11 @@ function departmentBadges(employeeId) {
 function isSalesRep(employee) {
     if (!employee) return false;
     const home = employeeHome(employee.id);
+    if (!home || home.code !== "drivers") return false;
+    const ids = employeeWorkGroupIds(employee, "drivers");
+    if (ids.length) return ids.indexOf("sales") !== -1;
     const pos = String(employee.position || "").replace(/\s+/g, " ").trim().toLowerCase();
-    return !!(home && home.code === "drivers" && pos === SALES_REP_POSITION.toLowerCase());
+    return pos === SALES_REP_POSITION.toLowerCase();
 }
 
 function emptyRepSales() {
@@ -9129,11 +9321,9 @@ function calculateSalesRep(employee, monthOverride) {
 }
 
 function listSalesReps() {
-    const w = findWorkspaceByCode("drivers");
-    if (!w) return [];
-    return (w.employees || []).filter(function (e) {
-        return isSalesRep(e) && includeInMonthPayroll(e);
-    }).sort(compareEmployeesByStatusThenName);
+    return employeesForWorkGroup("drivers", "sales").filter(function (e) {
+        return includeInMonthPayroll(e);
+    });
 }
 
 
@@ -11008,7 +11198,7 @@ function syncCommonMetricTabsFromAssignments(item) {
             if (!e || !shopEmployeeHasWorkMetric(e.id, item.id)) return;
             if (!homeDept) homeDept = code;
             else if (homeDept !== code) homeDept = "*";
-            const tab = employeePrimaryWorkTabId(e, code) || inferWorkTabIdFromPosition(code, e.position) || defaultMetricTabId(code);
+            const tab = employeeWorkTabId(e, code);
             if (tab && tabs.indexOf(tab) === -1) tabs.push(tab);
         });
     });
@@ -11662,10 +11852,12 @@ function employeeMatchesMetricCategory(employee, category) {
 
 function shopEmployeeHomeCategoryId(employee) {
     if (!employee) return "";
-    if (employeeMatchesMetricCategory(employee, shopMetricCategoryById("pickers"))) return "pickers";
-    if (employeeMatchesMetricCategory(employee, shopMetricCategoryById("cashiers"))) return "cashiers";
-    if (employeeMatchesMetricCategory(employee, shopMetricCategoryById("managers"))) return "managers";
-    return "";
+    const ids = employeeWorkGroupIds(employee, "shop");
+    const order = ["pickers", "cashiers", "managers"];
+    for (let i = 0; i < order.length; i++) {
+        if (ids.indexOf(order[i]) !== -1) return order[i];
+    }
+    return ids[0] || "";
 }
 
 function shopEmployeeIsShopManagersGroup(employee) {
@@ -11857,7 +12049,7 @@ function assignGroupAllMetricsToEmployee(employee) {
     const home = employeeHome(employee.id);
     if (!home) return;
     const dept = home.code;
-    const tab = employeePrimaryWorkTabId(employee, dept) || inferWorkTabIdFromPosition(dept, employee.position);
+    const tab = employeeWorkTabId(employee, dept);
     if (!tab) return;
     catalogItemsForDept(dept).forEach(function (it) {
         if (!it || it.active === false || it.assignable === false) return;
@@ -13039,7 +13231,8 @@ function shopMetricEmployeeHasMonthData(categoryId, employeeId) {
 }
 
 function shopMetricEmployees(category) {
-    const w = findWorkspaceByCode("shop");
+    if (!category || !category.id) return [];
+    const tab = category.id;
     const seen = {};
     const list = [];
     function add(e) {
@@ -13047,19 +13240,16 @@ function shopMetricEmployees(category) {
         seen[e.id] = true;
         list.push(e);
     }
-    ((w && w.employees) || []).forEach(function (e) {
-        if (!e || e.id === SHOP_SELF_CHECKOUT_ID) return;
-        if (shopEmployeeHomeCategoryId(e) !== category.id) return;
-        if (!employeeMatchesMetricCategory(e, category)) return;
-        const hasData = shopMetricEmployeeHasMonthData(category.id, e.id);
+    employeesForWorkGroup("shop", tab, { includeInactive: true }).forEach(function (e) {
+        const hasData = shopMetricEmployeeHasMonthData(tab, e.id);
         if (isWorking(e) || hasData) add(e);
     });
-    Object.keys(shopMetricMonthStore(category.id, selectedMonth)).forEach(function (id) {
+    Object.keys(shopMetricMonthStore(tab, selectedMonth)).forEach(function (id) {
         if (id === SHOP_SELF_CHECKOUT_ID) return;
-        if (seen[id] || !shopMetricEmployeeHasMonthData(category.id, id)) return;
+        if (seen[id] || !shopMetricEmployeeHasMonthData(tab, id)) return;
         const found = getEmployee(id);
-        if (found && shopEmployeeHomeCategoryId(found) !== category.id) return;
-        add(found || { id: id, name: "Сотрудник удалён", jobStatus: "fired", position: "" });
+        if (!found || !employeeBelongsToWorkGroup(found, "shop", tab)) return;
+        add(found);
     });
     list.sort(compareEmployeesByStatusThenName);
     return list;
@@ -16584,7 +16774,7 @@ function employeePicker(selectedId) {
         if (!e || !e.id) return;
         if (employeeHomeDeptCode(e.id) === "shop" && code !== "shop") return;
         if (code && employeeHomeDeptCode(e.id) !== code) return;
-        if (tab && !employeeBelongsToWorkGroup(e, code, tab, selectedMonth) && e.id !== selectedId) return;
+        if (tab && !employeeBelongsToWorkGroup(e, code, tab, selectedMonth)) return;
         if (!isWorking(e) && e.id !== selectedId) return;
         const taken = used.indexOf(e.id) !== -1 && e.id !== selectedId;
         html += '<option value="' + e.id + '"'
@@ -22778,39 +22968,71 @@ function fieldBlock(label, control, extraClass) {
     return '<div class="form-group' + (extraClass ? " " + extraClass : "") + '"><label>' + label + "</label>" + control + "</div>";
 }
 
-function positionsForWorkspace(w) {
+function positionsForWorkspace(w, includeInactive) {
     w = w || workspace() || {};
     const code = w.code;
-    const base = DEPT_POSITIONS[code] ? DEPT_POSITIONS[code].slice() : [];
-    const extra = Array.isArray(w.customPositions) ? w.customPositions : [];
-    extra.forEach(function (title) {
-        const t = String(title || "").replace(/\s+/g, " ").trim();
-        if (!t) return;
-        const exists = base.some(function (x) { return x.toLowerCase() === t.toLowerCase(); });
-        if (!exists) base.push(t);
+    if (!code || code === "summary") return [];
+    ensurePositionCatalog();
+    return positionCatalogItems(code, !!includeInactive).map(function (it) { return it.name; });
+}
+
+function positionCatalogOptionsHtml(deptCode, selectedIdOrName, includeInactive) {
+    const list = positionCatalogItems(deptCode, !!includeInactive);
+    const selected = String(selectedIdOrName || "");
+    const selectedKey = positionNameKey(selected);
+    let html = '<option value="">Выберите должность</option>';
+    const seen = {};
+    list.forEach(function (it) {
+        seen[it.position_id] = true;
+        const sel = selected === it.position_id || selectedKey === positionNameKey(it.name);
+        html += '<option value="' + escapeAttribute(it.position_id) + '"' + (sel ? " selected" : "") + ">"
+            + escapeHtml(it.name) + (it.active === false ? " (неактивна)" : "") + "</option>";
     });
-    return base;
+    if (selected && !list.some(function (it) {
+        return it.position_id === selected || positionNameKey(it.name) === selectedKey;
+    })) {
+        const cur = positionCatalogById(selected);
+        html += '<option value="' + escapeAttribute((cur && cur.position_id) || selected) + '" selected>'
+            + escapeHtml((cur && cur.name) || selected) + "</option>";
+    }
+    return html;
 }
 
 function renderPositionList() {
     const boxes = ["positionList", "positionSettingsList"];
     const w = workspace();
-    if (!w || isSummary()) {
+    if (!w || w.code === "summary" || w.type === "summary") {
         boxes.forEach(function (id) {
             const el = document.getElementById(id);
             if (el) el.innerHTML = "";
         });
         return;
     }
-    const custom = Array.isArray(w.customPositions) ? w.customPositions : [];
-    const html = custom.length
-        ? '<div class="note" style="margin-bottom:6px;">Добавленные должности:</div>' + custom.map(function (title, i) {
-            return '<div class="pick-row" style="margin-bottom:6px;">'
-                + "<div><strong>" + escapeHtml(title) + "</strong></div>"
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="removeCustomPosition(' + i + ')">Убрать</button>'
-                + "</div>";
-        }).join("")
-        : '<div class="note">Пока добавленных должностей нет — используются стандартные.</div>';
+    ensurePositionCatalog();
+    const can = typeof canEditStaff === "function" ? canEditStaff() : true;
+    const items = positionCatalogItems(w.code, true);
+    let html = items.length
+        ? '<div class="note" style="margin-bottom:6px;">Справочник должностей отдела. ID не меняется при переименовании.</div>'
+        : '<div class="note">Пока нет должностей — добавьте первую.</div>';
+    items.forEach(function (it) {
+        const usage = positionUsage(it.position_id);
+        html += '<div class="pick-row" style="margin-bottom:8px;align-items:center;gap:8px;flex-wrap:wrap">'
+            + "<div><strong>" + escapeHtml(it.name) + "</strong>"
+            + (it.active === false ? ' <span class="note">неактивна</span>' : "")
+            + '<div class="note">position_id: ' + escapeHtml(it.position_id)
+            + (usage.employees.length ? " · сотрудников: " + usage.employees.length : "")
+            + "</div></div>";
+        if (can) {
+            html += '<button type="button" class="btn btn-secondary btn-small" onclick="openPositionRename(\''
+                + escapeAttribute(it.position_id) + '\')">Редактировать</button> '
+                + (it.active === false
+                    ? '<button type="button" class="btn btn-secondary btn-small" onclick="activatePosition(\'' + escapeAttribute(it.position_id) + '\')">Сделать активной</button> '
+                    : "")
+                + '<button type="button" class="btn btn-danger btn-small" onclick="deletePosition(\''
+                + escapeAttribute(it.position_id) + '\')">Удалить</button>';
+        }
+        html += "</div>";
+    });
     boxes.forEach(function (id) {
         const el = document.getElementById(id);
         if (el) el.innerHTML = html;
@@ -22820,67 +23042,173 @@ function renderPositionList() {
 function addCustomPosition(inputId) {
     if (isSummary()) return;
     const w = workspace();
-    if (!w) return;
+    if (!w || w.code === "summary") return;
+    ensurePositionCatalog();
     const input = document.getElementById(inputId || "newPositionInput");
     const title = String((input && input.value) || "").replace(/\s+/g, " ").trim();
     if (!title) {
         toast("Введите название должности.", "error");
         return;
     }
-    const list = positionsForWorkspace(w);
-    const exists = list.some(function (x) { return x.toLowerCase() === title.toLowerCase(); });
-    if (exists) {
+    if (positionCatalogByName(w.code, title)) {
         toast("Такая должность уже есть в списке.", "error");
         return;
     }
-    if (!Array.isArray(w.customPositions)) w.customPositions = [];
-    w.customPositions.push(title);
+    const cat = ensurePositionCatalog();
+    const id = nextPrefixedId("pos", cat.items.map(function (it) { return it && it.position_id; }));
+    cat.items.push({
+        position_id: id,
+        department_id: w.code,
+        name: title,
+        active: true,
+        builtin: false
+    });
+    syncWorkspaceCustomPositions();
     if (input) input.value = "";
     saveApp();
-    renderFio();
-    renderPositionList();
-    toast("Должность «" + title + "» добавлена. Её можно выбрать в карточке.");
+    refreshPositionDependentUi();
+    toast("Должность «" + title + "» добавлена.");
+}
+
+function openPositionRename(positionId) {
+    const item = positionCatalogById(positionId);
+    if (!item) return;
+    const next = String(window.prompt("Новое название должности:", item.name) || "").replace(/\s+/g, " ").trim();
+    if (!next || next === item.name) return;
+    const dup = positionCatalogByName(item.department_id, next);
+    if (dup && dup.position_id !== item.position_id) {
+        toast("Такая должность уже есть.", "error");
+        return;
+    }
+    renamePosition(item.position_id, next);
+}
+
+function renamePosition(positionId, nextName) {
+    const item = positionCatalogById(positionId);
+    if (!item) return;
+    const next = String(nextName || "").replace(/\s+/g, " ").trim();
+    if (!next) return;
+    const prev = item.name;
+    item.name = next;
+    (appData.workspaces || []).forEach(function (w) {
+        (w.employees || []).forEach(function (e) {
+            if (!e) return;
+            if (e.position_id === positionId) e.position = next;
+        });
+    });
+    syncWorkspaceCustomPositions();
+    saveApp();
+    refreshPositionDependentUi();
+    toast("Должность переименована. Связи сохранены (было: «" + prev + "»).");
+}
+
+function activatePosition(positionId) {
+    const item = positionCatalogById(positionId);
+    if (!item) return;
+    item.active = true;
+    syncWorkspaceCustomPositions();
+    saveApp();
+    refreshPositionDependentUi();
+}
+
+function deactivatePosition(positionId) {
+    const item = positionCatalogById(positionId);
+    if (!item) return;
+    item.active = false;
+    syncWorkspaceCustomPositions();
+    saveApp();
+    if (typeof closeMgmtModal === "function") closeMgmtModal();
+    refreshPositionDependentUi();
+    toast("Должность сделана неактивной. История сохранена.");
+}
+
+function deletePosition(positionId) {
+    const item = positionCatalogById(positionId);
+    if (!item) return;
+    const usage = positionUsage(positionId);
+    if (!usage.total) {
+        if (!confirm("Удалить должность «" + item.name + "»? Это действие нельзя отменить.")) return;
+        physicallyDeletePosition(positionId);
+        return;
+    }
+    const other = positionCatalogItems(item.department_id, false).filter(function (it) {
+        return it.position_id !== positionId;
+    });
+    let html = "<h3>Должность используется в системе</h3>"
+        + '<div class="note">«' + escapeHtml(item.name) + "» связана с данными. Автоматически ничего не удаляется.</div>"
+        + "<ul>"
+        + "<li>Сотрудников: " + usage.employees.length + "</li>"
+        + "<li>Записей в истории должностей: " + usage.history + "</li>"
+        + "<li>Метрик с этой должностью: " + usage.metrics.length + "</li>"
+        + "</ul>";
+    if (other.length && usage.employees.length) {
+        html += '<div class="form-group"><label>Переназначить сотрудников на</label><select id="posReassignTo">'
+            + other.map(function (it) {
+                return '<option value="' + escapeAttribute(it.position_id) + '">' + escapeHtml(it.name) + "</option>";
+            }).join("") + "</select></div>";
+    }
+    html += '<div class="toolbar" style="margin-top:12px">';
+    if (other.length && usage.employees.length) {
+        html += '<button type="button" class="btn btn-primary" onclick="reassignPositionEmployees(\''
+            + escapeAttribute(positionId) + '\')">Переназначить сотрудников</button> ';
+    }
+    html += '<button type="button" class="btn btn-secondary" onclick="deactivatePosition(\''
+        + escapeAttribute(positionId) + '\')">Сделать неактивной</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    if (typeof openMgmtModal === "function") openMgmtModal(html);
+    else toast("Должность используется в системе.", "error");
+}
+
+function physicallyDeletePosition(positionId) {
+    const cat = ensurePositionCatalog();
+    const item = positionCatalogById(positionId);
+    if (!item) return;
+    if (item.builtin && cat.suppressed.indexOf(positionId) === -1) cat.suppressed.push(positionId);
+    cat.items = cat.items.filter(function (it) { return !it || it.position_id !== positionId; });
+    syncWorkspaceCustomPositions();
+    saveApp();
+    if (typeof closeMgmtModal === "function") closeMgmtModal();
+    refreshPositionDependentUi();
+    toast("Должность удалена.");
+}
+
+function reassignPositionEmployees(fromId) {
+    const from = positionCatalogById(fromId);
+    const toId = ((document.getElementById("posReassignTo") || {}).value || "");
+    const to = positionCatalogById(toId);
+    if (!from || !to) {
+        toast("Выберите должность для переназначения.", "error");
+        return;
+    }
+    const usage = positionUsage(fromId);
+    usage.employees.forEach(function (e) {
+        setEmployeePosition(e, to.name, selectedMonth);
+        e.position_id = to.position_id;
+    });
+    syncWorkspaceCustomPositions();
+    saveApp();
+    if (typeof closeMgmtModal === "function") closeMgmtModal();
+    refreshPositionDependentUi();
+    toast("Сотрудники переназначены. История прежней должности сохранена.");
 }
 
 function removeCustomPosition(index) {
     if (isSummary()) return;
     const w = workspace();
-    if (!w || !Array.isArray(w.customPositions)) return;
-    w.customPositions.splice(index, 1);
-    saveApp();
-    renderFio();
-    renderPositionList();
+    if (!w) return;
+    const list = positionCatalogItems(w.code, true).filter(function (it) { return !it.builtin; });
+    const item = list[index];
+    if (item) deletePosition(item.position_id);
 }
 
 function positionSelect(employee, dept) {
-    const list = positionsForWorkspace(dept || workspace());
-    const raw = String(employee.position || "").replace(/\s+/g, " ").trim();
-    const aliases = {
-        "товаросбощик": "Товаросборщик",
-        "товароразборщик": "Товаросборщик",
-        "товароразборщики": "Товаросборщик"
-    };
-    let current = raw;
-    const lower = raw.toLowerCase();
-    if (aliases[lower]) current = aliases[lower];
-    else {
-        const hit = list.find(function (title) { return title.toLowerCase() === lower; });
-        if (hit) current = hit;
-    }
-    const seen = {};
-    let options = '<option value="">Выберите должность</option>';
-    list.forEach(function (title) {
-        seen[title] = true;
-        options += '<option value="' + escapeAttribute(title) + '"'
-            + (current === title ? " selected" : "") + ">"
-            + escapeHtml(title) + "</option>";
-    });
-    if (current && !seen[current]) {
-        options += '<option value="' + escapeAttribute(current) + '" selected>'
-            + escapeHtml(current) + "</option>";
-    }
-    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'position\',this.value)">'
-        + options + "</select>";
+    const ws = dept || workspace();
+    const code = (ws && ws.code) || employeeHomeDeptCode(employee && employee.id) || "";
+    const currentId = (employee && employee.position_id) || "";
+    const currentName = String((employee && employee.position) || "").replace(/\s+/g, " ").trim();
+    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'position_id\',this.value)">'
+        + positionCatalogOptionsHtml(code, currentId || currentName, false)
+        + "</select>";
 }
 
 function toggleAssign(employeeId, checked) {
@@ -22986,15 +23314,7 @@ function employeeCreateTabOptionsHtml(deptCode, selectedTab) {
 }
 
 function employeeCreatePositionOptionsHtml(deptCode, selected) {
-    const w = findWorkspaceByCode(deptCode);
-    const list = positionsForWorkspace(w);
-    let html = '<select id="empFormPosition"><option value="">Выберите должность</option>';
-    list.forEach(function (title) {
-        html += '<option value="' + escapeAttribute(title) + '"' + (selected === title ? " selected" : "") + ">"
-            + escapeHtml(title) + "</option>";
-    });
-    html += "</select>";
-    return html;
+    return '<select id="empFormPosition">' + positionCatalogOptionsHtml(deptCode, selected, false) + "</select>";
 }
 
 function onEmployeeCreateDeptChange() {
@@ -23107,6 +23427,9 @@ function saveEmployeeCreateForm() {
         tab = defaultMetricTabId(w.code);
     }
     const posEl = document.getElementById("empFormPosition");
+    const posRaw = posEl ? String(posEl.value || "") : "";
+    const posItem = positionCatalogById(posRaw) || positionCatalogByName(w.code, posRaw);
+    const posName = posItem ? posItem.name : posRaw;
     const statusEl = document.getElementById("empFormStatus");
     const employee = {
         id: generateEmployeeId(),
@@ -23116,7 +23439,8 @@ function saveEmployeeCreateForm() {
         last_name: "",
         first_name: "",
         middle_name: "",
-        position: posEl ? String(posEl.value || "") : "",
+        position: posName,
+        position_id: posItem ? posItem.position_id : "",
         work_tab_id: tab || "",
         work_tab_from: tab ? selectedMonth : "",
         work_tab_history: [],
@@ -23185,11 +23509,11 @@ function updateEmployee(employeeId, field, value) {
         return;
     } else if (field === "position") {
         setEmployeePosition(employee, value, selectedMonth);
-        if (!employee.work_tab_id) {
-            const home = employeeHome(employeeId);
-            const inferred = inferWorkTabIdFromPosition(home && home.code, value);
-            if (inferred) setEmployeePrimaryWorkTab(employeeId, inferred);
-        }
+        assignGroupAllMetricsToEmployee(employee);
+    } else if (field === "position_id") {
+        const item = positionCatalogById(value);
+        setEmployeePosition(employee, item ? item.name : "", selectedMonth);
+        if (item) employee.position_id = item.position_id;
         assignGroupAllMetricsToEmployee(employee);
     } else if (field === "participates_in_spu_meetings") {
         employee.participates_in_spu_meetings = value === true || value === "true";
@@ -23621,37 +23945,24 @@ function renderAccessUsers() {
 }
 
 function allOrgPositions() {
+    ensurePositionCatalog();
     const seen = {};
     const out = [];
-    function add(title) {
-        const t = String(title || "").replace(/\s+/g, " ").trim();
-        if (!t) return;
+    positionCatalogItems("", true).forEach(function (it) {
+        const t = String(it.name || "").replace(/\s+/g, " ").trim();
         const k = t.toLowerCase();
-        if (seen[k]) return;
+        if (!t || seen[k]) return;
         seen[k] = true;
         out.push(t);
-    }
-    Object.keys(DEPT_POSITIONS).forEach(function (code) {
-        (DEPT_POSITIONS[code] || []).forEach(add);
     });
-    DEPT_DEFAULTS.forEach(function (d) {
-        const w = findWorkspaceByCode(d.code);
-        (w && w.customPositions || []).forEach(add);
-    });
-    mgmtAllEmployees().forEach(function (e) { if (e) add(e.position); });
     return out;
 }
 
-function orgPositionOptions(selected) {
-    let html = '<option value="">Выберите должность</option>';
-    allOrgPositions().forEach(function (title) {
-        html += '<option value="' + escapeAttribute(title) + '"' + (title === selected ? " selected" : "") + ">"
-            + escapeHtml(title) + "</option>";
-    });
-    if (selected && allOrgPositions().indexOf(selected) === -1) {
-        html += '<option value="' + escapeAttribute(selected) + '" selected>' + escapeHtml(selected) + "</option>";
-    }
-    return html;
+function orgPositionOptions(selected, deptCode) {
+    ensurePositionCatalog();
+    const selId = selected && positionCatalogById(selected) ? selected : "";
+    const htmlInner = positionCatalogOptionsHtml(deptCode || "", selId || selected, false);
+    return htmlInner;
 }
 
 function renderStaffOrgAdmin() {
@@ -23766,8 +24077,9 @@ function openStaffOrgEditor(employeeId) {
     modal.innerHTML = "<h3>Сотрудник</h3>"
         + '<div class="note">employee_id не меняется: ' + escapeHtml(e.id) + "</div>"
         + '<div class="form-group"><label>ФИО сотрудника *</label><input id="orgEmpName" maxlength="120" placeholder="Иванов Иван Иванович" value="' + escapeAttribute(e.name || composeEmployeeName(e) || "") + '"></div>'
-        + '<div class="form-group"><label>Должность</label><select id="orgEmpPos">' + orgPositionOptions(e.position || "") + "</select></div>"
-        + '<div class="form-group"><label>Рабочий отдел</label><select id="orgEmpDept">' + deptHtml + "</select></div>"
+        + '<div class="form-group"><label>Должность</label><select id="orgEmpPos">'
+        + orgPositionOptions(e.position_id || e.position || "", homeCode) + "</select></div>"
+        + '<div class="form-group"><label>Рабочий отдел</label><select id="orgEmpDept" onchange="var p=document.getElementById(\'orgEmpPos\');if(p)p.innerHTML=orgPositionOptions(\'\',this.value)">' + deptHtml + "</select></div>"
         + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMgr"' + (mgr ? " checked" : "") + "> Руководитель</label></div>"
         + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMeet"' + (meet ? " checked" : "") + "> Участвует в собраниях СПУ</label></div>"
         + '<div class="form-group"><label>Департамент(ы) СПУ</label>' + spuHtml + "</div>"
@@ -23792,27 +24104,24 @@ function saveStaffOrgEditor(employeeId) {
     const name = String((document.getElementById("orgEmpName") || {}).value || "").replace(/\s+/g, " ").trim();
     if (!name) { toast("Укажите ФИО сотрудника.", "error"); return; }
     applyEmployeeFullName(e, name);
-    const pos = String((document.getElementById("orgEmpPos") || {}).value || "").trim();
+    const home = employeeHome(e.id);
+    const nextDept = (document.getElementById("orgEmpDept") || {}).value || "";
+    const posRaw = String((document.getElementById("orgEmpPos") || {}).value || "").trim();
+    const posItem = positionCatalogById(posRaw) || positionCatalogByName(nextDept || (home && home.code) || "", posRaw);
+    const pos = posItem ? posItem.name : posRaw;
     const fromIso = String((document.getElementById("orgEmpFrom") || {}).value || todayIsoDate());
     const fromMonth = fromIso.slice(0, 7);
     setEmployeePosition(e, pos, fromMonth);
+    if (posItem) e.position_id = posItem.position_id;
     e.is_manager = !!(document.getElementById("orgEmpMgr") && document.getElementById("orgEmpMgr").checked);
     e.participates_in_spu_meetings = !!(document.getElementById("orgEmpMeet") && document.getElementById("orgEmpMeet").checked);
     e.meeting_participant = e.participates_in_spu_meetings === true;
     e.spu_sort_order = Number((document.getElementById("orgEmpSort") || {}).value || 0);
     e.jobStatus = (document.getElementById("orgEmpActive") && document.getElementById("orgEmpActive").checked) ? "working" : "fired";
-    const home = employeeHome(e.id);
-    const nextDept = (document.getElementById("orgEmpDept") || {}).value || "";
     if (nextDept && home && home.code !== nextDept) moveEmployeeToDepartment(e.id, nextDept);
     const homeAfter = employeeHome(e.id);
-    if (homeAfter && pos) {
-        const have = positionsForWorkspace(homeAfter).some(function (t) {
-            return String(t).toLowerCase() === pos.toLowerCase();
-        });
-        if (!have) {
-            if (!Array.isArray(homeAfter.customPositions)) homeAfter.customPositions = [];
-            homeAfter.customPositions.push(pos);
-        }
+    if (homeAfter && posItem && posItem.department_id !== homeAfter.code) {
+        bindEmployeePositionId(e, pos, homeAfter.code);
     }
     const selected = [];
     const boxes = document.querySelectorAll(".org-spu-on");
@@ -29133,15 +29442,6 @@ function renderMgmtDashboardHtml() {
                 + '<div class="spu-chart-body">' + drawn.svg + "</div>"
                 + '<div class="spu-leg">' + drawn.legend + "</div></div>";
         });
-        html += '<div style="margin-top:16px"><h4 style="margin:0 0 6px">Структура СПУ</h4>'
-            + '<div class="note">Значения маршрутов за выбранный месяц метрик, без сложения итогов разных уровней.</div>';
-        try {
-            html += renderSpuOrgTreeHtml("view");
-        } catch (treeErr) {
-            console.error(treeErr);
-            html += '<div class="note">Не удалось показать структуру СПУ</div>';
-        }
-        html += "</div>";
         html += "</div>";
         return html;
     } catch (err) {
@@ -29775,7 +30075,7 @@ function renderMgmtTasksHtml() {
         + "</div>";
     html += '<div class="mgmt-chips" style="align-items:center">'
         + '<label class="mgmt-src">Дата <input type="date" value="' + escapeAttribute(mgmtTaskDate) + '" onchange="mgmtTaskDate=this.value;renderManagement()"></label>'
-        + '<label class="mgmt-src">Департамент <select onchange="mgmtTaskDept=this.value;renderManagement()"><option value="">Все</option>';
+        + '<label class="mgmt-src">Департамент <select onchange="mgmtTaskDept=this.value;mgmtTaskEmp=keepEmployeeIfInDepartment(mgmtTaskEmp,this.value);renderManagement()"><option value="">Все</option>';
     DEPT_DEFAULTS.forEach(function (d) {
         html += '<option value="' + d.code + '"' + (mgmtTaskDept === d.code ? " selected" : "") + ">" + escapeHtml(d.name) + "</option>";
     });
@@ -29902,7 +30202,7 @@ function renderMgmtMeetingsHtml() {
         + [["new", "Новая"], ["in_progress", "В работе"], ["done", "Выполнена"], ["overdue", "Просрочена"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (mgmtMeetTaskSt === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></label>"
-        + '<label class="mgmt-src">Подразделение <select onchange="mgmtMeetTaskDept=this.value;renderManagement()">'
+        + '<label class="mgmt-src">Подразделение <select onchange="mgmtMeetTaskDept=this.value;mgmtMeetTaskEmp=keepEmployeeIfInDepartment(mgmtMeetTaskEmp,this.value);renderManagement()">'
         + mgmtEventDeptOptions(mgmtMeetTaskDept, true) + "</select></label>"
         + '<label class="mgmt-src">Срок <input type="date" value="' + escapeAttribute(mgmtMeetTaskDue) + '" onchange="mgmtMeetTaskDue=this.value;renderManagement()"></label>'
         + "</div>";
@@ -31582,7 +31882,7 @@ function renderMgmtEventsHtml() {
         + '<button type="button" class="btn btn-secondary" onclick="setMgmtEventPreset(\'9m\')">9 мес</button>'
         + '<button type="button" class="btn btn-secondary" onclick="setMgmtEventPreset(\'year\')">Год</button>'
         + "</div>"
-        + '<label>Подразделение <select onchange="mgmtEventDept=this.value;renderManagement()">'
+        + '<label>Подразделение <select onchange="mgmtEventDept=this.value;mgmtEventEmp=keepEmployeeIfInDepartment(mgmtEventEmp,this.value);renderManagement()">'
         + mgmtEventDeptOptions(mgmtEventDept, true) + "</select></label>"
         + '<label>Ответственный <select onchange="mgmtEventEmp=this.value;renderManagement()">'
         + mgmtEmployeeFilterOptions(mgmtEventEmp) + "</select></label>"
