@@ -531,6 +531,8 @@
         .pf-ind-row .pf-sticky-0,
         .pf-ind-row .pf-sticky-1,
         .pf-ind-row .pf-sticky-2 { background: #fff; font-weight: 400; }
+        .pf-break-row td { background: #f8fafc; font-size: 12px; color: #475569; }
+        .pf-break-row .pf-break-name { padding-left: 28px; }
         .pf-name-pad { display: inline-block; }
         .pf-pct { text-align: center; min-width: 72px; width: 72px; }
         .pf-n { text-align: right; min-width: 78px; width: 78px; font-variant-numeric: tabular-nums; }
@@ -24169,10 +24171,14 @@ let mgmtDashPanel = "opt";
 let mgmtDashWeek = "";
 let mgmtSettingsHub = "";
 let spuStructureTab = "departments";
+let spuSourcesInnerTab = "metrics";
 let spuMetricsInnerTab = "all";
 let spuMetricsFilter = { q: "", section: "", group: "", inSpu: "" };
 let spuIndFormSources = [];
-let spuIndFormKind = "worktime_metric";
+let spuIndFormKind = "automatic";
+let spuIndFormCalc = "sum";
+let spuIndFormFormula = [];
+let spuPfBreakOpen = {};
 
 let orgChartScale = 1;
 let orgCollapsed = {};
@@ -25071,7 +25077,13 @@ function spuOrgShowInPlanFact(it) {
 }
 
 function setSpuStructureTab(tab) {
-    spuStructureTab = tab === "metrics" ? "metrics" : "departments";
+    if (tab === "metrics") tab = "sources";
+    spuStructureTab = (tab === "sources" || tab === "indicators") ? tab : "departments";
+    renderManagement();
+}
+
+function setSpuSourcesInnerTab(tab) {
+    spuSourcesInnerTab = (tab === "timesheet" || tab === "finance") ? tab : "metrics";
     renderManagement();
 }
 
@@ -25107,25 +25119,61 @@ function spuNewSourceRow(preset) {
         source_submetric_id: s.source_submetric_id || "",
         source_sales_plan_view: s.source_sales_plan_view || "",
         source_timesheet_agg: s.source_timesheet_agg || "",
-        source_kpi_mode: s.source_kpi_mode || ""
+        source_department_id: s.source_department_id || s.source_dept_code || "",
+        source_indicator_id: s.source_indicator_id || "",
+        source_kpi_mode: s.source_kpi_mode || "",
+        label: s.label || ""
     };
+}
+
+function spuTimesheetAggOptions() {
+    return [
+        ["headcount", "Количество сотрудников"],
+        ["days", "Отработано дней"],
+        ["hours", "Отработано часов"],
+        ["late", "Опоздания"],
+        ["skip", "Прогулы"],
+        ["sick", "Больничные"],
+        ["vacation", "Отпуска"],
+        ["weekend", "Выходные"],
+        ["personal", "Личные"]
+    ];
+}
+
+function spuTimesheetAggLabel(agg) {
+    const hit = spuTimesheetAggOptions().find(function (p) { return p[0] === agg; });
+    return hit ? hit[1] : (agg || "—");
+}
+
+function spuSourceTypeLabel(type) {
+    if (type === "timesheet") return "Work Time / Табель";
+    if (type === "finance") return "Финансовый показатель";
+    if (type === "spu_indicator") return "Показатель СПУ";
+    if (type === "manual") return "Ручной ввод";
+    if (type === "calculated") return "Расчётный";
+    return "Метрика Work Time";
+}
+
+function spuIndicatorKind(it) {
+    if (!it) return "automatic";
+    if (it.indicator_kind === "manual" || it.indicator_kind === "calculated" || it.indicator_kind === "automatic") return it.indicator_kind;
+    if (it.source_type === "manual") return "manual";
+    if (it.source_type === "calculated" || it.aggregation_type === "formula" || (Array.isArray(it.sources) && it.sources.length > 1)) return "calculated";
+    return "automatic";
+}
+
+function spuFinanceIndicators() {
+    return ((appData && appData.management && appData.management.indicators) || []).filter(function (it) {
+        if (!it || it.is_active === false) return false;
+        return it.group === "finance" || it.source_future === "one_c" || it.source_type === "one_c_future";
+    });
 }
 
 function spuNormalizeSources(it) {
     if (!it) return [];
     if (Array.isArray(it.sources) && it.sources.length) {
         return it.sources.filter(function (s) { return s && typeof s === "object"; }).map(function (s, i) {
-            return spuNewSourceRow({
-                source_id: s.source_id || ("ssrc_m_" + i),
-                source_type: s.source_type || it.source_type || "worktime_metric",
-                source_metric_id: s.source_metric_id || "",
-                source_result: s.source_result || "department_total",
-                source_work_tab_id: s.source_work_tab_id || "",
-                source_submetric_id: s.source_submetric_id || "",
-                source_sales_plan_view: s.source_sales_plan_view || "",
-                source_timesheet_agg: s.source_timesheet_agg || "",
-                source_kpi_mode: s.source_kpi_mode || ""
-            });
+            return spuNewSourceRow(Object.assign({}, s, { source_id: s.source_id || ("ssrc_m_" + i) }));
         });
     }
     if (it.source_type === "calculated" || it.source_type === "aggregate_children") return [];
@@ -25140,6 +25188,8 @@ function spuNormalizeSources(it) {
         source_submetric_id: it.source_submetric_id || "",
         source_sales_plan_view: it.source_sales_plan_view || "",
         source_timesheet_agg: it.source_timesheet_agg || "",
+        source_department_id: it.department_id || "",
+        source_indicator_id: it.calc_left_id || it.source_indicator_id || "",
         source_kpi_mode: it.source_kpi_mode || ""
     })];
 }
@@ -25147,19 +25197,212 @@ function spuNormalizeSources(it) {
 function ensureSpuIndicatorSources(it) {
     if (!it || typeof it !== "object") return it;
     if (!Array.isArray(it.sources) || !it.sources.length) {
-        if (it.source_type === "worktime_metric" && it.source_metric_id) {
-            it.sources = spuNormalizeSources(it);
-        }
+        const migrated = spuNormalizeSources(it);
+        if (migrated.length) it.sources = migrated;
     }
     if (!Array.isArray(it.sources)) it.sources = [];
     if (!it.plan_mode) it.plan_mode = "spu";
+    if (it.show_breakdown == null) it.show_breakdown = true;
+    if (!it.indicator_kind) it.indicator_kind = spuIndicatorKind(it);
+    if (!Array.isArray(it.formula_expr)) it.formula_expr = it.formula_expr || [];
+    if (!Array.isArray(it.source_versions)) it.source_versions = it.source_versions || [];
     return it;
 }
 
 function spuSourceFingerprint(it) {
     return spuNormalizeSources(it).map(function (s) {
-        return [s.source_type, s.source_metric_id, s.source_result, s.source_work_tab_id, s.source_submetric_id, s.source_sales_plan_view, s.source_timesheet_agg].join("|");
+        return [s.source_type, s.source_metric_id, s.source_result, s.source_work_tab_id, s.source_submetric_id, s.source_sales_plan_view, s.source_timesheet_agg, s.source_department_id, s.source_indicator_id].join("|");
     }).sort().join(";;");
+}
+
+function spuVersionAt(it, iso) {
+    const vers = (it && Array.isArray(it.source_versions)) ? it.source_versions : [];
+    if (!vers.length) return null;
+    const day = iso || todayIsoDate();
+    let hit = null;
+    vers.forEach(function (v) {
+        if (!v) return;
+        if (v.effective_from && String(v.effective_from) > day) return;
+        if (v.effective_to && String(v.effective_to) < day) return;
+        hit = v;
+    });
+    return hit;
+}
+
+function spuActiveConfig(it) {
+    const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+    const iso = r.to || r.from || todayIsoDate();
+    const v = spuVersionAt(it, iso);
+    if (v) {
+        return {
+            sources: (v.sources || []).map(function (s) { return spuNewSourceRow(s); }),
+            aggregation_type: v.aggregation_type || it.aggregation_type || "sum",
+            formula_expr: Array.isArray(v.formula_expr) ? v.formula_expr : (it.formula_expr || []),
+            calc_mode: v.calc_mode || it.calc_mode || it.aggregation_type || "sum"
+        };
+    }
+    return {
+        sources: spuNormalizeSources(it),
+        aggregation_type: it.aggregation_type || "sum",
+        formula_expr: it.formula_expr || [],
+        calc_mode: it.calc_mode || it.aggregation_type || "sum"
+    };
+}
+
+function spuCommitSourceVersion(it, nextSources, nextAgg, nextFormula, nextCalc) {
+    if (!it) return;
+    const today = todayIsoDate();
+    const payload = {
+        sources: (nextSources || []).map(function (s) { return spuNewSourceRow(s); }),
+        aggregation_type: nextAgg || "sum",
+        formula_expr: nextFormula || [],
+        calc_mode: nextCalc || nextAgg || "sum"
+    };
+    const fp = function (cfg) {
+        return JSON.stringify({
+            s: (cfg.sources || []).map(function (s) {
+                return [s.source_type, s.source_metric_id, s.source_result, s.source_work_tab_id, s.source_submetric_id, s.source_timesheet_agg, s.source_department_id, s.source_indicator_id];
+            }),
+            a: cfg.aggregation_type, c: cfg.calc_mode, f: cfg.formula_expr
+        });
+    };
+    if (!Array.isArray(it.source_versions)) it.source_versions = [];
+    if (!it.source_versions.length) {
+        it.source_versions.push({
+            version_id: nextPrefixedId("sver", []),
+            effective_from: "2000-01-01",
+            effective_to: "",
+            sources: payload.sources,
+            aggregation_type: payload.aggregation_type,
+            formula_expr: payload.formula_expr,
+            calc_mode: payload.calc_mode
+        });
+        return;
+    }
+    const open = it.source_versions.filter(function (v) { return v && !v.effective_to; });
+    const cur = open.length ? open[open.length - 1] : it.source_versions[it.source_versions.length - 1];
+    if (cur && fp(cur) === fp(payload)) return;
+    if (cur && String(cur.effective_from || "") >= today) {
+        cur.sources = payload.sources;
+        cur.aggregation_type = payload.aggregation_type;
+        cur.formula_expr = payload.formula_expr;
+        cur.calc_mode = payload.calc_mode;
+        return;
+    }
+    if (cur) cur.effective_to = isoAddDays(today, -1);
+    it.source_versions.push({
+        version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
+        effective_from: today,
+        effective_to: "",
+        sources: payload.sources,
+        aggregation_type: payload.aggregation_type,
+        formula_expr: payload.formula_expr,
+        calc_mode: payload.calc_mode
+    });
+}
+
+function spuSafeDiv(a, b) {
+    const x = Number(a);
+    const y = Number(b);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || y === 0) return null;
+    const out = x / y;
+    if (!Number.isFinite(out)) return null;
+    return out;
+}
+
+function spuEvalFormula(it, tokens, stack, asPlan) {
+    const values = [];
+    const ops = [];
+    const prec = { "+": 1, "-": 1, "*": 2, "/": 2, "×": 2, "÷": 2 };
+    function applyOp(op) {
+        const b = values.pop();
+        const a = values.pop();
+        if (a == null || b == null) { values.push(null); return; }
+        if (op === "+") values.push(a + b);
+        else if (op === "-") values.push(a - b);
+        else if (op === "*" || op === "×") values.push(a * b);
+        else values.push(spuSafeDiv(a, b));
+    }
+    function readTok(tok) {
+        if (!tok) return null;
+        if (tok.t === "num") return Number(tok.v);
+        if (tok.t === "src") {
+            const src = (spuActiveConfig(it).sources || []).find(function (s) { return s.source_id === tok.id; });
+            if (!src) return null;
+            if (asPlan) return mgmtReadSourcePlan(src, it);
+            const read = mgmtReadSourceFact(src, it, stack);
+            return read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+        }
+        if (tok.t === "ind") {
+            if (tok.id === (it && it.indicator_id)) return null;
+            const other = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === tok.id; });
+            if (!other) return null;
+            if (asPlan) return mgmtIndicatorPlan(other);
+            const read = mgmtReadIndicator(other, (stack || []).concat([it.indicator_id]));
+            return read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+        }
+        return null;
+    }
+    (tokens || []).forEach(function (tok) {
+        if (!tok) return;
+        if (tok.t === "lp" || tok.v === "(") { ops.push("("); return; }
+        if (tok.t === "rp" || tok.v === ")") {
+            while (ops.length && ops[ops.length - 1] !== "(") applyOp(ops.pop());
+            ops.pop();
+            return;
+        }
+        if (tok.t === "op") {
+            const p = prec[tok.v] || 1;
+            while (ops.length && prec[ops[ops.length - 1]] >= p) applyOp(ops.pop());
+            ops.push(tok.v);
+            return;
+        }
+        const n = readTok(tok);
+        values.push(n == null || !Number.isFinite(Number(n)) ? null : Number(n));
+    });
+    while (ops.length) applyOp(ops.pop());
+    const out = values.length ? values[0] : null;
+    if (out == null || !Number.isFinite(Number(out))) return null;
+    return Number(out);
+}
+
+function spuIndicatorDepIds(it, cfg) {
+    const ids = [];
+    const add = function (id) { if (id && ids.indexOf(id) === -1) ids.push(id); };
+    ((cfg && cfg.sources) || []).forEach(function (s) {
+        if (!s) return;
+        if (s.source_type === "spu_indicator" || s.source_type === "finance") add(s.source_indicator_id);
+    });
+    ((cfg && cfg.formula_expr) || it.formula_expr || []).forEach(function (tok) {
+        if (tok && tok.t === "ind") add(tok.id);
+    });
+    if (it.calc_left_id) add(it.calc_left_id);
+    if (it.calc_right_id) add(it.calc_right_id);
+    return ids;
+}
+
+function spuWouldCycle(indicatorId, nextCfg) {
+    if (!indicatorId) return false;
+    const list = (appData.management && appData.management.indicators) || [];
+    const map = {};
+    list.forEach(function (x) {
+        if (!x || !x.indicator_id) return;
+        map[x.indicator_id] = spuIndicatorDepIds(x, x.indicator_id === indicatorId ? nextCfg : spuActiveConfig(x));
+    });
+    map[indicatorId] = spuIndicatorDepIds({ indicator_id: indicatorId, calc_left_id: nextCfg.calc_left_id, calc_right_id: nextCfg.calc_right_id, formula_expr: nextCfg.formula_expr }, nextCfg);
+    const seen = {};
+    function walk(id, trail) {
+        if (!id) return false;
+        if (trail.indexOf(id) !== -1) return true;
+        if (seen[id]) return false;
+        seen[id] = true;
+        const next = map[id] || [];
+        for (let i = 0; i < next.length; i++) {
+            if (walk(next[i], trail.concat([id]))) return true;
+        }
+        return false;
+    }
+    return walk(indicatorId, []);
 }
 
 function mgmtAggregateNumbers(values, type) {
@@ -25232,8 +25475,8 @@ function mgmtKpiPlanForMetric(metricId, subId, month) {
 
 function mgmtSourceAsIndicator(src, parent) {
     return {
-        indicator_id: (parent && parent.indicator_id) + ":" + (src.source_id || src.source_metric_id || "src"),
-        department_id: parent && parent.department_id,
+        indicator_id: (parent && parent.indicator_id) + ":" + (src.source_id || src.source_metric_id || src.source_indicator_id || "src"),
+        department_id: src.source_department_id || (parent && parent.department_id),
         source_type: src.source_type || "worktime_metric",
         source_metric_id: src.source_metric_id || "",
         source_result: src.source_result || "department_total",
@@ -25242,6 +25485,7 @@ function mgmtSourceAsIndicator(src, parent) {
         source_sales_plan_view: src.source_sales_plan_view || "",
         source_sales_plan_field: src.source_sales_plan_field || "fact",
         source_timesheet_agg: src.source_timesheet_agg || "",
+        source_indicator_id: src.source_indicator_id || "",
         source_kpi_mode: src.source_kpi_mode || "",
         aggregation_type: "none",
         _skipSources: true
@@ -25249,11 +25493,32 @@ function mgmtSourceAsIndicator(src, parent) {
 }
 
 function mgmtReadSourceFact(src, parent, stack) {
+    if (!src) return { value: null, status: "missing" };
+    if (src.source_type === "timesheet") {
+        const days = mgmtDaysInPeriod();
+        return { value: mgmtTimesheetFact(src.source_department_id || (parent && parent.department_id), src.source_timesheet_agg, days), status: "auto" };
+    }
+    if (src.source_type === "finance" || src.source_type === "spu_indicator") {
+        const oid = src.source_indicator_id;
+        if (!oid || (parent && oid === parent.indicator_id)) return { value: null, status: "missing" };
+        const other = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === oid; });
+        if (!other) return { value: null, status: "missing" };
+        const seen = stack || [];
+        if (seen.indexOf(oid) !== -1) return { value: null, status: "error" };
+        return mgmtReadIndicator(other, seen.concat([parent && parent.indicator_id]));
+    }
     return mgmtReadIndicator(mgmtSourceAsIndicator(src, parent), stack);
 }
 
 function mgmtReadSourcePlan(src, parent) {
     if (!src) return null;
+    if (src.source_type === "timesheet") return null;
+    if (src.source_type === "finance" || src.source_type === "spu_indicator") {
+        const oid = src.source_indicator_id;
+        if (!oid || (parent && oid === parent.indicator_id)) return null;
+        const other = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === oid; });
+        return other ? mgmtIndicatorPlan(other) : null;
+    }
     if (src.source_type === "sales_plan") {
         const fake = {
             source_type: "sales_plan",
@@ -25285,30 +25550,41 @@ function mgmtReadSourcePlan(src, parent) {
 }
 
 function mgmtReadFromSources(it, stack) {
-    const sources = spuNormalizeSources(it);
-    const use = String(it.aggregation_type || "sum") === "none" ? sources.slice(0, 1) : sources;
+    const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: spuNormalizeSources(it), aggregation_type: it.aggregation_type || "sum", formula_expr: it.formula_expr, calc_mode: it.aggregation_type };
+    const sources = cfg.sources || [];
+    if ((cfg.calc_mode === "formula" || cfg.aggregation_type === "formula") && (cfg.formula_expr || []).length) {
+        const value = spuEvalFormula(it, cfg.formula_expr, stack, false);
+        return { value: value, status: value == null ? "missing" : "auto" };
+    }
+    const use = (cfg.aggregation_type === "none" || cfg.calc_mode === "one") ? sources.slice(0, 1) : sources;
     const facts = use.map(function (s) {
         const read = mgmtReadSourceFact(s, it, stack);
-        return read && read.value != null && read.value !== "" ? Number(read.value) : null;
+        return read && read.value != null && read.value !== "" && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
     });
-    const value = mgmtAggregateNumbers(facts, it.aggregation_type || "sum");
+    const value = mgmtAggregateNumbers(facts, cfg.aggregation_type || "sum");
     return { value: value, status: value == null ? "missing" : "auto" };
 }
 
 function mgmtIndicatorPlan(it) {
     if (!it) return null;
     const own = mgmtPlanStoredValue(it.indicator_id);
-    if (own != null) return own;
-    if (it.source_type === "manual") return null;
     const mode = it.plan_mode || "spu";
-    if (mode === "sources" || (Array.isArray(it.sources) && it.sources.length && mode !== "spu")) {
+    if ((mode === "spu" || mode === "manual") && own != null) return own;
+    if (it.source_type === "manual" && mode !== "sources") return own;
+    const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: spuNormalizeSources(it), aggregation_type: it.aggregation_type, formula_expr: it.formula_expr, calc_mode: it.aggregation_type };
+    const wantSources = mode === "sources" || mode === "calculated" || own == null;
+    if (wantSources && (cfg.calc_mode === "formula" || cfg.aggregation_type === "formula") && (cfg.formula_expr || []).length) {
+        const fv = spuEvalFormula(it, cfg.formula_expr, [], true);
+        if (fv != null) return fv;
+    }
+    if (wantSources && (cfg.sources || []).length) {
         const fromSrc = mgmtAggregateNumbers(
-            spuNormalizeSources(it).map(function (s) { return mgmtReadSourcePlan(s, it); }),
-            it.plan_aggregation_type || it.aggregation_type || "sum"
+            cfg.sources.map(function (s) { return mgmtReadSourcePlan(s, it); }),
+            it.plan_aggregation_type || cfg.aggregation_type || "sum"
         );
         if (fromSrc != null) return fromSrc;
     }
-    return null;
+    return own;
 }
 
 function mgmtSpuOrgOptionsHtml(selected, includeInactive, excludeId) {
@@ -25810,61 +26086,71 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId) {
     if (it) ensureSpuIndicatorSources(it);
     const presetMetric = metricId ? shopMetricCatalogById(metricId) : null;
     const sources = it ? spuNormalizeSources(it) : (presetMetric ? [spuNewSourceRow({ source_metric_id: presetMetric.id })] : []);
-    const isManual = !!(it && it.source_type === "manual" && !(sources || []).some(function (s) { return s && s.source_metric_id; }));
-    spuIndFormKind = isManual ? "manual" : "worktime_metric";
-    spuIndFormSources = sources.length ? sources : (spuIndFormKind === "worktime_metric" ? [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })] : []);
+    const kind = it ? spuIndicatorKind(it) : (presetMetric ? "automatic" : "automatic");
+    spuIndFormKind = kind;
+    spuIndFormCalc = (it && (it.calc_mode || it.aggregation_type)) || "sum";
+    spuIndFormFormula = (it && Array.isArray(it.formula_expr)) ? it.formula_expr.slice() : [];
+    spuIndFormSources = sources.length ? sources : (kind === "manual" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
     const pfOn = !it || it.show_in_planfact === true;
-    const planMode = (it && it.plan_mode) || (isManual ? "spu" : "spu");
+    const brOn = !it || it.show_breakdown !== false;
+    const planMode = (it && it.plan_mode) || "spu";
     const planVal = it ? mgmtPlanStoredValue(it.indicator_id) : null;
-    const factVal = it && isManual ? mgmtManualFact(it.indicator_id) : null;
+    const factVal = it && kind === "manual" ? mgmtManualFact(it.indicator_id) : null;
+    const activeOn = !it || it.is_active !== false;
     let html = "<h3>" + (it ? "Показатель СПУ" : "Добавить показатель СПУ") + "</h3>"
-        + '<div class="note">Показатель СПУ создаётся здесь. Метрика Work Time не копируется: используется существующий metric_id. Для ручного ввода metric_id не создаётся.</div>'
+        + '<div class="note">Конструктор показателя. Метрики и табель не копируются — используются существующие ID. Ручной ввод не создаёт metric_id.</div>'
         + '<input type="hidden" id="spuIndNode" value="' + escapeAttribute(nodeId || "") + '">'
         + '<input type="hidden" id="spuIndId" value="' + escapeAttribute((it && it.indicator_id) || "") + '">'
-        + '<div class="form-group"><label>Название показателя *</label><input id="spuIndName" value="'
+        + '<div class="form-group"><label>Название *</label><input id="spuIndName" value="'
         + escapeAttribute(it ? it.name : (presetMetric ? presetMetric.name : "")) + '"></div>'
         + '<div class="form-group"><label>Департамент СПУ *</label><select id="spuIndTarget">'
         + mgmtSpuOrgOptionsHtml(nodeId || (it && it.target_org_node_id) || "", false) + "</select></div>"
+        + '<div class="form-group"><label>Тип показателя *</label><select id="spuIndKind" onchange="onSpuIndKindChange()">'
+        + [["automatic", "Автоматический"], ["calculated", "Расчётный"], ["manual", "Ручной"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + (kind === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
         + '<div class="form-group"><label>Тип значения</label><select id="spuIndUnit">'
-        + [["number", "Число"], ["count", "Количество"], ["money", "Деньги"], ["percent", "Процент"]].map(function (p) {
+        + [["number", "Число"], ["count", "Количество"], ["money", "Деньги"], ["percent", "Процент"], ["days", "Дни"], ["hours", "Часы"]].map(function (p) {
             const cur = (it && it.unit) || ((presetMetric && presetMetric.fill_type === "money") ? "money" : "number");
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
-        + '<div class="form-group"><label>Тип источника</label>'
-        + '<label class="check"><input type="radio" name="spuIndKind" value="worktime_metric"'
-        + (spuIndFormKind !== "manual" ? " checked" : "") + ' onchange="onSpuIndKindChange()"> Метрика Work Time</label>'
-        + '<label class="check"><input type="radio" name="spuIndKind" value="manual"'
-        + (spuIndFormKind === "manual" ? " checked" : "") + ' onchange="onSpuIndKindChange()"> Ручной ввод</label></div>'
         + '<div id="spuIndMetricWrap">'
-        + '<div class="form-group"><label>Как объединять источники</label><select id="spuIndAgg">'
-        + [["sum", "Сумма"], ["average", "Среднее"], ["last", "Последнее значение"], ["none", "Без агрегации / один источник"]].map(function (p) {
-            return '<option value="' + p[0] + '"' + (((it && it.aggregation_type) || "sum") === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        + '<div class="form-group"><label>Способ расчёта</label><select id="spuIndAgg" onchange="onSpuIndCalcChange()">'
+        + [["sum", "Сумма"], ["average", "Среднее"], ["none", "Один источник"], ["formula", "Формула"]].map(function (p) {
+            return '<option value="' + p[0] + '"' + (spuIndFormCalc === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
         + '<div id="spuIndSourceBox"></div>'
         + '<div class="toolbar"><button type="button" class="btn btn-secondary" onclick="spuIndAddSource()">+ Добавить источник</button></div>'
+        + '<div id="spuIndFormulaBox"></div>'
         + "</div>"
         + '<div id="spuIndManualWrap">'
-        + '<div class="note">Источник: Ручной ввод. План и факт хранятся у показателя СПУ за выбранный период, без metric_id.</div>'
+        + '<div class="note">Ручной показатель: План и Факт вводятся в СПУ за выбранный период. Источники не нужны, metric_id не создаётся.</div>'
         + "</div>"
-        + "<div class=\"form-group\"><label>План текущего периода</label>"
-        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="sources"' + (planMode === "sources" ? " checked" : "") + "> Получать план из источников</label>"
-        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="spu"' + (planMode !== "sources" ? " checked" : "") + "> Вводить план непосредственно в СПУ</label>"
+        + "<div class=\"form-group\"><label>Источник плана</label>"
+        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="spu"' + (planMode !== "sources" && planMode !== "calculated" ? " checked" : "") + "> Вводить вручную в СПУ</label>"
+        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="sources"' + (planMode === "sources" ? " checked" : "") + "> Получать из источника</label>"
+        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="calculated"' + (planMode === "calculated" ? " checked" : "") + "> Рассчитывать из источников</label>"
         + '<input id="spuIndPlan" placeholder="План" value="'
         + escapeAttribute(planVal == null ? "" : String(planVal)) + '"></div>'
         + '<div class="form-group" id="spuIndFactWrap"><label>Факт текущего периода</label><input id="spuIndFact" placeholder="Факт" value="'
         + escapeAttribute(factVal == null ? "" : String(factVal)) + '"></div>'
         + '<label class="check"><input id="spuIndPf" type="checkbox"' + (pfOn ? " checked" : "") + "> Показывать в План–факте</label>"
+        + '<label class="check"><input id="spuIndBreak" type="checkbox"' + (brOn ? " checked" : "") + "> Показывать расшифровку</label>"
+        + '<div class="form-group"><label>Статус</label><select id="spuIndActive">'
+        + '<option value="1"' + (activeOn ? " selected" : "") + ">Активен</option>"
+        + '<option value="0"' + (!activeOn ? " selected" : "") + ">Неактивен</option></select></div>"
         + '<div class="form-group"><label>Порядок</label><input id="spuIndOrder" type="number" value="' + escapeAttribute(String((it && it.sort_order) || 10)) + '"></div>'
         + '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="saveSpuOrgIndicator()">Сохранить</button> '
-        + (it ? '<button type="button" class="btn btn-secondary" onclick="unlinkSpuIndicator(\'' + it.indicator_id + '\')">Удалить связь</button> ' : "")
+        + (it ? '<button type="button" class="btn btn-secondary" onclick="unlinkSpuIndicator(\'' + it.indicator_id + '\')">Удалить</button> ' : "")
         + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal();renderManagement()">Закрыть</button></div>';
     openMgmtModal(html);
     onSpuIndKindChange();
 }
 
 function onSpuIndKindChange() {
-    const el = document.querySelector('input[name="spuIndKind"]:checked');
-    spuIndFormKind = (el && el.value === "manual") ? "manual" : "worktime_metric";
+    const el = document.getElementById("spuIndKind") || document.querySelector('input[name="spuIndKind"]:checked');
+    const v = el ? (el.value || el.getAttribute("value")) : spuIndFormKind;
+    spuIndFormKind = (v === "manual" || v === "calculated") ? v : "automatic";
     const metricWrap = document.getElementById("spuIndMetricWrap");
     const manualWrap = document.getElementById("spuIndManualWrap");
     const factWrap = document.getElementById("spuIndFactWrap");
@@ -25874,7 +26160,14 @@ function onSpuIndKindChange() {
     if (spuIndFormKind !== "manual") {
         if (!(spuIndFormSources || []).length) spuIndFormSources = [spuNewSourceRow({})];
         renderSpuIndSourcesBox();
+        renderSpuIndFormulaBox();
     }
+}
+
+function onSpuIndCalcChange() {
+    const el = document.getElementById("spuIndAgg");
+    spuIndFormCalc = el ? el.value : "sum";
+    renderSpuIndFormulaBox();
 }
 
 function spuIndSyncDraftFromDom() {
@@ -25882,6 +26175,7 @@ function spuIndSyncDraftFromDom() {
     if (!rows.length) return;
     const next = [];
     rows.forEach(function (row, i) {
+        const type = String((row.querySelector(".spu-src-type") || {}).value || "worktime_metric");
         const resultRaw = String((row.querySelector(".spu-src-result") || {}).value || "department_total");
         let sourceResult = "department_total";
         let workTab = "";
@@ -25889,34 +26183,57 @@ function spuIndSyncDraftFromDom() {
             sourceResult = "group_total";
             workTab = resultRaw.slice(6);
         } else if (resultRaw === "fact") sourceResult = "fact";
+        else if (resultRaw === "metric_total") sourceResult = "metric_total";
         next.push(spuNewSourceRow({
             source_id: row.getAttribute("data-source-id") || ("ssrc_" + i),
-            source_type: ((row.querySelector(".spu-src-type") || {}).value || "worktime_metric"),
+            source_type: type,
             source_metric_id: ((row.querySelector(".spu-src-metric") || {}).value || ""),
             source_result: sourceResult,
             source_work_tab_id: workTab,
-            source_submetric_id: ((row.querySelector(".spu-src-sub") || {}).value || "")
+            source_submetric_id: ((row.querySelector(".spu-src-sub") || {}).value || ""),
+            source_timesheet_agg: ((row.querySelector(".spu-src-tsagg") || {}).value || ""),
+            source_department_id: ((row.querySelector(".spu-src-dept") || {}).value || ""),
+            source_indicator_id: ((row.querySelector(".spu-src-ind") || {}).value || "")
         }));
     });
     spuIndFormSources = next;
+}
+
+function spuIndReplaceSource(sourceId) {
+    spuIndSyncDraftFromDom();
+    spuIndFormSources = (spuIndFormSources || []).map(function (s) {
+        if (!s || s.source_id !== sourceId) return s;
+        return spuNewSourceRow({ source_id: sourceId });
+    });
+    renderSpuIndSourcesBox();
+    renderSpuIndFormulaBox();
+}
+
+function spuIndOnTypeChange() {
+    spuIndSyncDraftFromDom();
+    renderSpuIndSourcesBox();
+    renderSpuIndFormulaBox();
 }
 
 function spuIndAddSource() {
     spuIndSyncDraftFromDom();
     spuIndFormSources.push(spuNewSourceRow({}));
     renderSpuIndSourcesBox();
+    renderSpuIndFormulaBox();
 }
 
 function spuIndRemoveSource(sourceId) {
     spuIndSyncDraftFromDom();
     spuIndFormSources = (spuIndFormSources || []).filter(function (s) { return s && s.source_id !== sourceId; });
-    if (!spuIndFormSources.length) spuIndFormSources.push(spuNewSourceRow({}));
+    if (!spuIndFormSources.length && spuIndFormKind !== "manual") spuIndFormSources.push(spuNewSourceRow({}));
     renderSpuIndSourcesBox();
+    renderSpuIndFormulaBox();
 }
 
 function spuIndOnMetricChange() {
     spuIndSyncDraftFromDom();
     renderSpuIndSourcesBox();
+    renderSpuIndFormulaBox();
 }
 
 function renderSpuIndSourcesBox() {
@@ -25924,47 +26241,128 @@ function renderSpuIndSourcesBox() {
     if (!box) return;
     const keep = (spuIndFormSources || []).map(function (s) { return s && s.source_metric_id; });
     const metrics = spuParticipatingWorkMetrics(keep);
-    let html = "<h4>Источники — только метрики с признаком «Участвует в СПУ»</h4>";
-    if (!metrics.length) {
-        html += '<div class="note">Нет метрик, отмеченных «Участвует в СПУ». Отметьте их во вкладке «Все метрики».</div>';
-    }
+    const otherInds = ((appData.management && appData.management.indicators) || []).filter(function (x) {
+        const skip = ((document.getElementById("spuIndId") || {}).value || "");
+        return x && x.is_active !== false && x.indicator_id !== skip;
+    });
+    const finance = spuFinanceIndicators().filter(function (x) {
+        const skip = ((document.getElementById("spuIndId") || {}).value || "");
+        return x.indicator_id !== skip;
+    });
+    let html = "<h4>Источники</h4>";
     (spuIndFormSources || []).forEach(function (s, idx) {
-        const item = shopMetricCatalogById(s.source_metric_id);
+        const type = s.source_type || "worktime_metric";
         html += '<div class="spu-src-row" data-source-id="' + escapeAttribute(s.source_id) + '" style="border:1px solid var(--border);border-radius:8px;padding:8px;margin:8px 0">'
-            + "<div class=\"note\">Источник №" + (idx + 1) + " · metric_id: " + escapeHtml((item && item.id) || (s.source_metric_id || "—")) + "</div>"
-            + '<input type="hidden" class="spu-src-type" value="worktime_metric">'
-            + '<div class="form-group"><label>Метрика Work Time</label><select class="spu-src-metric" onchange="spuIndOnMetricChange()">'
-            + '<option value="">Выберите метрику</option>';
-        metrics.forEach(function (m) {
-            html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
-                + escapeHtml(m.name) + "</option>";
-        });
-        html += "</select></div>";
-        html += '<div class="form-group"><label>Источник результата</label><select class="spu-src-result">';
-        html += '<option value="fact"' + (s.source_result === "fact" ? " selected" : "") + ">Факт</option>";
-        html += '<option value="department_total"' + (!s.source_result || s.source_result === "department_total" || s.source_result === "metric_total" ? " selected" : "") + ">Итого подразделения / Итого метрики</option>";
-        if (item) {
-            metricWorkTabIds(item).forEach(function (tabId) {
-                html += '<option value="group:' + escapeAttribute(tabId) + '"'
-                    + (s.source_result === "group_total" && s.source_work_tab_id === tabId ? " selected" : "") + ">Итого группы: "
-                    + escapeHtml(metricTabLabel(metricRollupDeptCode(item) || metricDepartmentId(item), tabId)) + "</option>";
+            + "<div class=\"note\">Источник №" + (idx + 1) + "</div>"
+            + '<div class="form-group"><label>Тип источника</label><select class="spu-src-type" onchange="spuIndOnTypeChange()">'
+            + [["worktime_metric", "Метрика Work Time"], ["timesheet", "Work Time / Табель"], ["finance", "Финансовый показатель"], ["spu_indicator", "Другой показатель СПУ"]].map(function (p) {
+                return '<option value="' + p[0] + '"' + (type === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+            }).join("") + "</select></div>";
+        if (type === "timesheet") {
+            html += '<div class="form-group"><label>Подразделение</label><select class="spu-src-dept"><option value="">Все</option>';
+            DEPT_DEFAULTS.forEach(function (d) {
+                html += '<option value="' + escapeAttribute(d.code) + '"' + (s.source_department_id === d.code ? " selected" : "") + ">"
+                    + escapeHtml(d.name) + "</option>";
             });
-        }
-        html += "</select></div>";
-        if (item) {
-            const subs = metricSubmetrics(item, true);
-            if (subs.length) {
-                html += '<div class="form-group"><label>Подметрика</label><select class="spu-src-sub"><option value="">Все / родитель</option>';
-                subs.forEach(function (sub) {
-                    html += '<option value="' + escapeAttribute(sub.id) + '"' + (s.source_submetric_id === sub.id ? " selected" : "") + ">"
-                        + escapeHtml(sub.name) + "</option>";
+            html += "</select></div>";
+            html += '<div class="form-group"><label>Показатель табеля</label><select class="spu-src-tsagg">';
+            spuTimesheetAggOptions().forEach(function (p) {
+                html += '<option value="' + p[0] + '"' + (s.source_timesheet_agg === p[0] ? " selected" : "") + ">" + escapeHtml(p[1]) + "</option>";
+            });
+            html += "</select></div>";
+        } else if (type === "finance" || type === "spu_indicator") {
+            const list = type === "finance" ? finance : otherInds;
+            html += '<div class="form-group"><label>Показатель</label><select class="spu-src-ind"><option value="">Выберите</option>';
+            list.forEach(function (x) {
+                html += '<option value="' + escapeAttribute(x.indicator_id) + '"' + (s.source_indicator_id === x.indicator_id ? " selected" : "") + ">"
+                    + escapeHtml(x.name) + "</option>";
+            });
+            html += "</select></div>";
+        } else {
+            const item = shopMetricCatalogById(s.source_metric_id);
+            html += '<div class="form-group"><label>Метрика Work Time</label><select class="spu-src-metric" onchange="spuIndOnMetricChange()">'
+                + '<option value="">Выберите метрику («Участвует в СПУ»)</option>';
+            metrics.forEach(function (m) {
+                html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
+                    + escapeHtml(m.name) + "</option>";
+            });
+            html += "</select></div>";
+            html += '<div class="form-group"><label>Результат</label><select class="spu-src-result">';
+            html += '<option value="fact"' + (s.source_result === "fact" ? " selected" : "") + ">Факт</option>";
+            html += '<option value="department_total"' + (!s.source_result || s.source_result === "department_total" || s.source_result === "metric_total" ? " selected" : "") + ">Итого подразделения / Итого метрики</option>";
+            if (item) {
+                metricWorkTabIds(item).forEach(function (tabId) {
+                    html += '<option value="group:' + escapeAttribute(tabId) + '"'
+                        + (s.source_result === "group_total" && s.source_work_tab_id === tabId ? " selected" : "") + ">Итого группы: "
+                        + escapeHtml(metricTabLabel(metricRollupDeptCode(item) || metricDepartmentId(item), tabId)) + "</option>";
                 });
-                html += "</select></div>";
+            }
+            html += "</select></div>";
+            if (item) {
+                const subs = metricSubmetrics(item, true);
+                if (subs.length) {
+                    html += '<div class="form-group"><label>Подметрика</label><select class="spu-src-sub"><option value="">Все / родитель</option>';
+                    subs.forEach(function (sub) {
+                        html += '<option value="' + escapeAttribute(sub.id) + '"' + (s.source_submetric_id === sub.id ? " selected" : "") + ">"
+                            + escapeHtml(sub.name) + "</option>";
+                    });
+                    html += "</select></div>";
+                }
             }
         }
-        html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndRemoveSource(\'' + s.source_id + '\')">Убрать источник</button></div>';
+        html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndReplaceSource(\'' + s.source_id + '\')">Заменить</button> '
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndRemoveSource(\'' + s.source_id + '\')">Удалить</button></div>';
     });
     box.innerHTML = html;
+}
+
+function renderSpuIndFormulaBox() {
+    const box = document.getElementById("spuIndFormulaBox");
+    if (!box) return;
+    const aggEl = document.getElementById("spuIndAgg");
+    const calc = aggEl ? aggEl.value : spuIndFormCalc;
+    if (calc !== "formula") { box.innerHTML = ""; return; }
+    let html = "<h4>Формула</h4><div class=\"note\">В формуле хранятся ID, не названия. Деление на ноль даёт «нет данных».</div>";
+    html += '<div class="wt-people" style="margin:6px 0">';
+    (spuIndFormFormula || []).forEach(function (tok, i) {
+        let lab = "";
+        if (tok.t === "op") lab = tok.v;
+        else if (tok.t === "lp") lab = "(";
+        else if (tok.t === "rp") lab = ")";
+        else if (tok.t === "src") {
+            const s = (spuIndFormSources || []).find(function (x) { return x.source_id === tok.id; });
+            lab = s ? spuSourceShortLabel(s) : tok.id;
+        } else if (tok.t === "ind") {
+            const o = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === tok.id; });
+            lab = o ? o.name : tok.id;
+        }
+        html += '<span class="mgmt-src" style="border:1px solid var(--border);padding:2px 6px;border-radius:6px">'
+            + escapeHtml(lab)
+            + ' <button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaRemove(' + i + ')">×</button></span>';
+    });
+    html += "</div>";
+    html += '<div class="toolbar" style="flex-wrap:wrap">';
+    (spuIndFormSources || []).forEach(function (s, idx) {
+        html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'src\',id:\'' + s.source_id + '\'})">Ист. ' + (idx + 1) + "</button> ";
+    });
+    [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].forEach(function (p) {
+        html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'op\',v:\'' + p[0] + '\'})">' + p[1] + "</button> ";
+    });
+    html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'lp\',v:\'(\'})">(</button> '
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'rp\',v:\')\'})">)</button></div>';
+    box.innerHTML = html;
+}
+
+function spuIndFormulaPush(tok) {
+    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
+    spuIndFormFormula.push(tok);
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaRemove(i) {
+    if (!Array.isArray(spuIndFormFormula)) return;
+    spuIndFormFormula.splice(i, 1);
+    renderSpuIndFormulaBox();
 }
 
 function spuOrgFillExistingIndicator() {
@@ -25996,101 +26394,95 @@ function saveSpuOrgIndicator() {
         toast("Выберите департамент СПУ", "error");
         return;
     }
-    const kindEl = document.querySelector('input[name="spuIndKind"]:checked');
-    const kind = (kindEl && kindEl.value === "manual") ? "manual" : "worktime_metric";
+    const kindEl = document.getElementById("spuIndKind") || document.querySelector('input[name="spuIndKind"]:checked');
+    const kind = kindEl && (kindEl.value === "manual" || kindEl.value === "calculated") ? kindEl.value : "automatic";
+    const calc = ((document.getElementById("spuIndAgg") || {}).value || "sum");
     let sources = [];
     if (kind !== "manual") {
         sources = (spuIndFormSources || []).filter(function (s) {
-            const m = shopMetricCatalogById(s && s.source_metric_id);
-            return s && s.source_metric_id && m && (metricUseInSpu(m) || (editId && canonicalMetricId(s.source_metric_id)));
+            if (!s) return false;
+            if (s.source_type === "timesheet") return !!s.source_timesheet_agg;
+            if (s.source_type === "finance" || s.source_type === "spu_indicator") return !!s.source_indicator_id && s.source_indicator_id !== editId;
+            const m = shopMetricCatalogById(s.source_metric_id);
+            return !!(s.source_metric_id && m && (metricUseInSpu(m) || editId));
         });
         if (!sources.length) {
-            toast("Добавьте метрику, отмеченную «Участвует в СПУ».", "error");
+            toast("Добавьте хотя бы один источник.", "error");
             return;
         }
-        const notAllowed = sources.find(function (s) {
+        const badMetric = sources.find(function (s) {
+            if (s.source_type && s.source_type !== "worktime_metric") return false;
             const m = shopMetricCatalogById(s.source_metric_id);
             return m && !metricUseInSpu(m);
         });
-        if (notAllowed && !editId) {
-            toast("Источник должен быть предварительно отмечен «Участвует в СПУ».", "error");
+        if (badMetric && !editId) {
+            toast("Метрика-источник должна быть отмечена «Участвует в СПУ».", "error");
+            return;
+        }
+        if (spuWouldCycle(editId || "mind_new", { sources: sources, formula_expr: spuIndFormFormula, aggregation_type: calc, calc_mode: calc })) {
+            toast("Циклическая формула запрещена.", "error");
+            return;
+        }
+        if (sources.some(function (s) { return s.source_indicator_id && s.source_indicator_id === editId; })) {
+            toast("Показатель не может ссылаться сам на себя.", "error");
             return;
         }
     }
     let it = editId ? ((appData.management.indicators || []).find(function (x) { return x && x.indicator_id === editId; }) || null) : null;
-    const fp = kind === "manual" ? ("manual|" + target + "|" + name) : sources.map(function (s) {
-        return [s.source_type, s.source_metric_id, s.source_result, s.source_work_tab_id, s.source_submetric_id].join("|");
-    }).sort().join(";;");
-    const dup = ((appData.management && appData.management.indicators) || []).find(function (x) {
-        if (!x || x.indicator_id === editId || x.is_active === false) return false;
-        if (mgmtIndicatorTargetNodeId(x) !== target) return false;
-        if (String(x.name || "") !== name) return false;
-        if (kind === "manual") return x.source_type === "manual";
-        return spuSourceFingerprint(x) === fp;
-    });
-    if (dup) {
-        toast("Такая связь уже есть: " + (dup.name || dup.indicator_id), "error");
-        return;
-    }
     if (!it) {
         it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
         appData.management.indicators.push(it);
     }
+    const keepId = it.indicator_id;
     it.name = name;
     it.target_org_node_id = target;
     const dest = spuOrgGetNode(target);
     if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
     it.show_in_planfact = !!(document.getElementById("spuIndPf") && document.getElementById("spuIndPf").checked);
+    it.show_breakdown = !!(document.getElementById("spuIndBreak") && document.getElementById("spuIndBreak").checked);
     it.sort_order = Number((document.getElementById("spuIndOrder") || {}).value || 10);
-    it.is_active = true;
+    it.is_active = ((document.getElementById("spuIndActive") || {}).value !== "0");
     it.unit = ((document.getElementById("spuIndUnit") || {}).value || it.unit || "number");
     if (it.unit === "count") it.unit = "number";
     const planModeEl = document.querySelector("input[name=\"spuIndPlanMode\"]:checked");
     it.plan_mode = planModeEl ? planModeEl.value : "spu";
     const planVal = ((document.getElementById("spuIndPlan") || {}).value || "");
-    if (planVal !== "") {
-        setMgmtPlanValue(it.indicator_id, planVal);
-        it.plan_mode = "spu";
-    }
+    if (it.plan_mode === "spu" && planVal !== "") setMgmtPlanValue(it.indicator_id, planVal);
+    it.indicator_kind = kind;
     if (kind === "manual") {
         it.source_type = "manual";
         it.source_metric_id = "";
-        it.source_result = "";
-        it.source_work_tab_id = "";
-        it.source_submetric_id = "";
         it.sources = [];
         it.aggregation_type = "none";
-        it.plan_aggregation_type = "none";
+        it.calc_mode = "none";
+        it.formula_expr = [];
         it.plan_mode = "spu";
         const factVal = ((document.getElementById("spuIndFact") || {}).value || "");
         if (document.getElementById("spuIndFact")) setMgmtManualFact(it.indicator_id, factVal);
+        it.indicator_id = keepId;
         saveApp();
         closeMgmtModal();
-        if (mgmtTab === "structure") spuStructureTab = "metrics";
+        if (mgmtTab === "structure") spuStructureTab = "indicators";
         renderManagement();
+        toast("Показатель сохранён.", "success");
         return;
     }
     const first = sources[0];
-    it.source_type = "worktime_metric";
-    it.source_metric_id = first.source_metric_id;
+    it.source_type = (kind === "calculated" || sources.length > 1 || calc === "formula") ? "calculated" : (first.source_type || "worktime_metric");
+    it.source_metric_id = first.source_metric_id || "";
     it.source_result = first.source_result || "department_total";
     it.source_work_tab_id = first.source_work_tab_id || "";
     it.source_submetric_id = first.source_submetric_id || "";
-    it.sources = sources.map(function (s, i) {
-        return {
-            source_id: s.source_id || ("ssrc_" + i),
-            source_type: "worktime_metric",
-            source_metric_id: s.source_metric_id,
-            source_result: s.source_result || "department_total",
-            source_work_tab_id: s.source_work_tab_id || "",
-            source_submetric_id: s.source_submetric_id || ""
-        };
-    });
-    it.aggregation_type = ((document.getElementById("spuIndAgg") || {}).value || "sum");
-    it.plan_aggregation_type = it.aggregation_type;
+    it.source_timesheet_agg = first.source_timesheet_agg || "";
+    it.department_id = first.source_department_id || it.department_id || "";
+    it.sources = sources.map(function (s, i) { return spuNewSourceRow(Object.assign({}, s, { source_id: s.source_id || ("ssrc_" + i) })); });
+    it.aggregation_type = calc === "formula" ? "formula" : calc;
+    it.calc_mode = calc;
+    it.plan_aggregation_type = calc === "formula" ? "sum" : calc;
+    it.formula_expr = calc === "formula" ? (spuIndFormFormula || []).slice() : [];
+    spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode);
     const m0 = shopMetricCatalogById(first.source_metric_id);
-    if (m0) it.department_id = metricDepartmentId(m0) || it.department_id || "";
-    if (!it.unit || it.unit === "number") it.unit = (m0 && m0.fill_type === "money") ? "money" : (it.unit || "number");
+    if (m0 && !it.department_id) it.department_id = metricDepartmentId(m0) || it.department_id || "";
     sources.forEach(function (s) {
         const m = shopMetricCatalogById(s.source_metric_id);
         if (!m) return;
@@ -26114,14 +26506,12 @@ function saveSpuOrgIndicator() {
         }
         if (typeof applyMetricResultRoute === "function") applyMetricResultRoute(m);
     });
-    if (it.plan_mode === "spu") {
-        const planVal = ((document.getElementById("spuIndPlan") || {}).value || "");
-        if (planVal !== "") setMgmtPlanValue(it.indicator_id, planVal);
-    }
+    it.indicator_id = keepId;
     saveApp();
     closeMgmtModal();
-    if (mgmtTab === "structure") spuStructureTab = "metrics";
+    if (mgmtTab === "structure") spuStructureTab = "indicators";
     renderManagement();
+    toast("Показатель сохранён.", "success");
 }
 
 function unlinkSpuIndicator(indicatorId) {
@@ -26139,7 +26529,7 @@ function unlinkSpuIndicator(indicatorId) {
     });
     saveApp();
     closeMgmtModal();
-    if (mgmtTab === "structure") spuStructureTab = "metrics";
+    if (mgmtTab === "structure") spuStructureTab = "indicators";
     renderManagement();
     toast("Связь СПУ удалена. Исходные Метрики сохранены.", "success");
 }
@@ -26282,10 +26672,10 @@ function renderSpuMetricSettingsHtml() {
             + "</select></div>";
     }
     html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Метрика</th><th>Раздел / источник</th><th>Рабочая группа</th><th>Тип</th><th>Участвует в СПУ</th><th>Действия</th>"
+        + "<th>Метрика</th><th>Раздел</th><th>Подразделение</th><th>Рабочая группа</th><th>Тип</th><th>Участвует в СПУ</th><th>Действия</th>"
         + "</tr></thead><tbody>";
     if (!rows.length) {
-        html += '<tr><td colspan="6"><div class="empty-row">'
+        html += '<tr><td colspan="7"><div class="empty-row">'
             + (inner === "in_spu" ? "Пока нет метрик с отметкой «Участвует в СПУ»." : "Метрики не найдены.")
             + "</div></td></tr>";
     }
@@ -26295,6 +26685,7 @@ function renderSpuMetricSettingsHtml() {
         html += "<tr><td class=\"wrap\">" + escapeHtml(m.name)
             + '<div class="mgmt-src">metric_id: ' + escapeHtml(m.id) + "</div></td>"
             + "<td class=\"wrap\">" + escapeHtml(spuMetricSectionLabel(m)) + "</td>"
+            + "<td class=\"wrap\">" + escapeHtml(mgmtDeptName(metricDepartmentId(m))) + "</td>"
             + "<td class=\"wrap\">" + escapeHtml(spuMetricGroupsLabel(m)) + "</td>"
             + "<td>" + escapeHtml(shopMetricFillLabel(m.fill_type)) + "</td>"
             + "<td>";
@@ -26314,16 +26705,111 @@ function renderSpuMetricSettingsHtml() {
     return html;
 }
 
+function renderSpuSourcesCatalogHtml() {
+    const inner = spuSourcesInnerTab === "timesheet" || spuSourcesInnerTab === "finance" ? spuSourcesInnerTab : "metrics";
+    let html = '<p class="spu-ind-note">Каталог существующих данных. Источники не копируются: СПУ читает те же ID. Для Метрик сначала отметьте «Участвует в СПУ».</p>';
+    html += '<div class="metrics-tabs" style="margin:0 0 12px">'
+        + '<button type="button" class="metrics-tab' + (inner === "metrics" ? " active" : "") + '" onclick="setSpuSourcesInnerTab(\'metrics\')">Метрики Work Time</button>'
+        + '<button type="button" class="metrics-tab' + (inner === "timesheet" ? " active" : "") + '" onclick="setSpuSourcesInnerTab(\'timesheet\')">Work Time / Табель</button>'
+        + '<button type="button" class="metrics-tab' + (inner === "finance" ? " active" : "") + '" onclick="setSpuSourcesInnerTab(\'finance\')">Финансовые показатели</button>'
+        + "</div>";
+    if (inner === "timesheet") return html + renderSpuTimesheetSourcesHtml();
+    if (inner === "finance") return html + renderSpuFinanceSourcesHtml();
+    return html + renderSpuMetricSettingsHtml();
+}
+
+function renderSpuTimesheetSourcesHtml() {
+    let html = '<p class="note">Табель читается по коду подразделения (shop / office / warehouse / drivers). Новые Метрики не создаются.</p>';
+    html += '<div class="table-wrapper"><table class="mgmt-table"><thead><tr>'
+        + "<th>Подразделение</th><th>ID</th><th>Доступные показатели Табеля</th></tr></thead><tbody>";
+    DEPT_DEFAULTS.forEach(function (d) {
+        html += "<tr><td>" + escapeHtml(d.name) + "</td><td class=\"mgmt-src\">" + escapeHtml(d.code) + "</td><td class=\"wrap\">"
+            + spuTimesheetAggOptions().map(function (p) { return escapeHtml(p[1]); }).join(", ")
+            + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    html += '<div class="note">Чтобы использовать эти данные, откройте «Показатели СПУ» и добавьте источник типа «Work Time / Табель».</div>';
+    return html;
+}
+
+function renderSpuFinanceSourcesHtml() {
+    const rows = spuFinanceIndicators();
+    let html = '<p class="note">Существующие финансовые показатели СПУ. Копии не создаются — в конструкторе выбирается indicator_id.</p>';
+    html += '<div class="table-wrapper"><table class="mgmt-table"><thead><tr>'
+        + "<th>Показатель</th><th>ID</th><th>Тип</th><th>Департамент СПУ</th></tr></thead><tbody>";
+    if (!rows.length) html += '<tr><td colspan="4"><div class="empty-row">Финансовых показателей пока нет. Они создаются в «Финансовые показатели» или как ручной показатель группы «финансы».</div></td></tr>';
+    rows.forEach(function (it) {
+        const node = spuOrgGetNode(mgmtIndicatorTargetNodeId(it));
+        html += "<tr><td>" + escapeHtml(it.name) + "</td>"
+            + '<td class="mgmt-src">' + escapeHtml(it.indicator_id) + "</td>"
+            + "<td>" + escapeHtml(spuSourceTypeLabel(it.source_type)) + "</td>"
+            + "<td>" + escapeHtml(node ? node.name : "—") + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function renderSpuIndicatorsConstructorHtml() {
+    const canEdit = canEditSpuStructure() || canEditMgmtIndicators();
+    const list = ((appData.management && appData.management.indicators) || []).filter(function (x) { return x && x.is_active !== false; });
+    let html = "";
+    if (canEdit) {
+        html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgIndicatorForm(\'\')">+ Добавить показатель СПУ</button></div>';
+    }
+    html += '<div class="table-wrapper"><table class="mgmt-table"><thead><tr>'
+        + "<th>Показатель</th><th>Департамент</th><th>Тип</th><th>Источники</th><th>Расчёт</th><th>План</th><th>План–факт</th><th>Статус</th><th></th></tr></thead><tbody>";
+    if (!list.length) html += '<tr><td colspan="9"><div class="empty-row">Показатели ещё не созданы.</div></td></tr>';
+    list.sort(function (a, b) { return Number(a.sort_order || 0) - Number(b.sort_order || 0); }).forEach(function (it) {
+        ensureSpuIndicatorSources(it);
+        const node = spuOrgGetNode(mgmtIndicatorTargetNodeId(it));
+        const kind = spuIndicatorKind(it);
+        const cfg = spuActiveConfig(it);
+        const srcTxt = kind === "manual" ? "—" : (cfg.sources || []).map(function (s) { return spuSourceShortLabel(s); }).join("; ") || "—";
+        const calc = kind === "manual" ? "—" : (cfg.calc_mode === "formula" || it.aggregation_type === "formula" ? "Формула" : (cfg.aggregation_type === "average" || cfg.aggregation_type === "avg" ? "Среднее" : (cfg.aggregation_type === "none" ? "Один источник" : "Сумма")));
+        const planMode = it.plan_mode === "sources" ? "Из источников" : (it.plan_mode === "calculated" ? "Расчётный" : "Вручную в СПУ");
+        html += "<tr><td class=\"wrap\"><strong>" + escapeHtml(it.name) + "</strong></td>"
+            + "<td>" + escapeHtml(node ? node.name : "—") + "</td>"
+            + "<td>" + (kind === "manual" ? "Ручной" : (kind === "calculated" ? "Расчётный" : "Автоматический")) + "</td>"
+            + '<td class="wrap">' + escapeHtml(srcTxt) + "</td>"
+            + "<td>" + escapeHtml(calc) + "</td>"
+            + "<td>" + escapeHtml(planMode) + "</td>"
+            + "<td>" + (it.show_in_planfact === true ? "Да" : "Нет") + "</td>"
+            + "<td>" + (it.is_active === false ? "Неактивен" : "Активен") + "</td>"
+            + "<td>" + (canEdit ? '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\')">Изменить</button>' : "") + "</td></tr>";
+    });
+    html += "</tbody></table></div>";
+    return html;
+}
+
+function spuSourceShortLabel(s) {
+    if (!s) return "";
+    if (s.source_type === "timesheet") {
+        return "Табель · " + mgmtDeptName(s.source_department_id) + " · " + spuTimesheetAggLabel(s.source_timesheet_agg);
+    }
+    if (s.source_type === "finance" || s.source_type === "spu_indicator") {
+        const other = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === s.source_indicator_id; });
+        return (s.source_type === "finance" ? "Финансы · " : "СПУ · ") + ((other && other.name) || s.source_indicator_id || "—");
+    }
+    const m = shopMetricCatalogById(s.source_metric_id);
+    let t = m ? m.name : (s.source_metric_id || "Метрика");
+    if (s.source_result === "group_total" && s.source_work_tab_id && m) {
+        t += " · " + metricTabLabel(metricRollupDeptCode(m) || metricDepartmentId(m), s.source_work_tab_id);
+    }
+    return t;
+}
+
 function renderSpuStructureHtml() {
     try { ensureManagement(); } catch (err) { console.error(err); }
     const canEdit = canEditSpuStructure();
-    const tab = spuStructureTab === "metrics" ? "metrics" : "departments";
-    let html = '<p class="spu-ind-note">Это управленческая структура СПУ и «План–факта компании». Она не копирует Офис/Склад/Логистику Work Time. Показатели назначаются вручную. Оргструктура (схема) не изменяется.</p>';
+    const tab = spuStructureTab === "metrics" ? "sources" : (spuStructureTab || "departments");
+    let html = '<p class="spu-ind-note">Конструктор СПУ: департаменты, источники данных и показатели. Связи задаются в интерфейсе по стабильным ID, без копий Метрик и без правок кода.</p>';
     html += '<div class="metrics-tabs" style="margin:8px 0 14px">'
         + '<button type="button" class="metrics-tab' + (tab === "departments" ? " active" : "") + '" onclick="setSpuStructureTab(\'departments\')">Департаменты</button>'
-        + '<button type="button" class="metrics-tab' + (tab === "metrics" ? " active" : "") + '" onclick="setSpuStructureTab(\'metrics\')">Настройка метрик</button>'
+        + '<button type="button" class="metrics-tab' + (tab === "sources" ? " active" : "") + '" onclick="setSpuStructureTab(\'sources\')">Источники</button>'
+        + '<button type="button" class="metrics-tab' + (tab === "indicators" ? " active" : "") + '" onclick="setSpuStructureTab(\'indicators\')">Показатели СПУ</button>'
         + "</div>";
-    if (tab === "metrics") return html + renderSpuMetricSettingsHtml();
+    if (tab === "sources") return html + renderSpuSourcesCatalogHtml();
+    if (tab === "indicators") return html + renderSpuIndicatorsConstructorHtml();
     if (canEdit) {
         html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgNodeForm()">+ Добавить департамент</button></div>';
     } else {
@@ -27270,6 +27756,8 @@ function mgmtTimesheetFact(deptCode, agg, days) {
     let skip = 0;
     let sick = 0;
     let vacation = 0;
+    let weekend = 0;
+    let personal = 0;
     codes.forEach(function (code) {
         const w = findWorkspaceByCode(code);
         if (!w) return;
@@ -27290,6 +27778,8 @@ function mgmtTimesheetFact(deptCode, agg, days) {
                 if (st === "П") skip += 1;
                 if (st === "Б") sick += 1;
                 if (st === "ОТ") vacation += 1;
+                if (st === "В") weekend += 1;
+                if (st === "Л") personal += 1;
             });
             if (isWorking(e) || worked) headcount += 1;
         });
@@ -27302,6 +27792,8 @@ function mgmtTimesheetFact(deptCode, agg, days) {
     if (agg === "skip") return skip;
     if (agg === "sick") return sick;
     if (agg === "vacation") return vacation;
+    if (agg === "weekend") return weekend;
+    if (agg === "personal") return personal;
     return ya;
 }
 
@@ -27492,10 +27984,13 @@ function setMgmtPlanValue(indicatorId, value) {
 
 function mgmtReadIndicator(it, stack) {
     if (!it) return { value: null, status: "missing" };
-    if (!it._skipSources && it.source_type !== "calculated" && it.source_type !== "aggregate_children" && it.source_type !== "manual") {
-        if (Array.isArray(it.sources) && it.sources.length) return mgmtReadFromSources(it, stack);
+    if (!it._skipSources && it.source_type !== "aggregate_children") {
+        if (it.source_type !== "manual" && Array.isArray(it.sources) && it.sources.length) return mgmtReadFromSources(it, stack);
+        if (it.source_type === "calculated" && ((it.formula_expr && it.formula_expr.length) || (it.aggregation_type === "formula"))) {
+            return mgmtReadFromSources(it, stack);
+        }
         const migrated = spuNormalizeSources(it);
-        if (migrated.length > 1) return mgmtReadFromSources(it, stack);
+        if (it.source_type !== "manual" && migrated.length > 1) return mgmtReadFromSources(it, stack);
     }
     const days = mgmtDaysInPeriod();
     const type = it.source_type;
@@ -27546,8 +28041,9 @@ function mgmtReadIndicator(it, stack) {
         if (op === "sum") return { value: a + b, status: "auto" };
         if (op === "difference") return { value: a - b, status: "auto" };
         if (op === "average") return { value: (a + b) / 2, status: "auto" };
-        if (op === "percent") return { value: b ? (a / b) * 100 : null, status: "auto" };
-        return { value: b ? a / b : null, status: "auto" };
+        if (op === "percent") return { value: spuSafeDiv(a, b) == null ? null : spuSafeDiv(a, b) * 100, status: "auto" };
+        const ratio = spuSafeDiv(a, b);
+        return { value: ratio, status: "auto" };
     }
     return { value: null, status: "missing" };
 }
@@ -27556,10 +28052,7 @@ function mgmtSourcePath(it) {
     if (!it) return "";
     const sources = typeof spuNormalizeSources === "function" ? spuNormalizeSources(it) : [];
     if (sources.length > 1) {
-        return sources.map(function (s) {
-            const m = shopMetricCatalogById(s.source_metric_id);
-            return m ? m.name : (s.source_metric_id || s.source_type);
-        }).join(" + ");
+        return sources.map(function (s) { return typeof spuSourceShortLabel === "function" ? spuSourceShortLabel(s) : (s.source_metric_id || s.source_type); }).join(" + ");
     }
     if (it.source_type === "worktime_metric") {
         const m = shopMetricCatalogById(it.source_metric_id);
@@ -28282,6 +28775,11 @@ function toggleMgmtPfDept(id) {
     renderManagement();
 }
 
+function toggleMgmtPfBreak(id) {
+    spuPfBreakOpen[id] = !spuPfBreakOpen[id];
+    renderManagement();
+}
+
 function mgmtPfRead(it, fromIso) {
     return mgmtRunInThuWeek(fromIso, function () {
         const read = mgmtReadIndicator(it);
@@ -28413,13 +28911,17 @@ function renderMgmtPlanFactHtml() {
         const dCls = good == null ? "pf-na" : (good === 0 ? "" : (good > 0 ? "mgmt-ok" : "mgmt-bad"));
         const owner = it.owner_employee_id ? getEmployee(it.owner_employee_id) : headEmp;
         const pad = 10 + Number(depth || 0) * 14;
+        const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: [] };
+        const canBreak = it.show_breakdown !== false && cfg.sources && cfg.sources.length > 1 && it.source_type !== "aggregate_children";
+        const brOpen = !!(canBreak && spuPfBreakOpen[it.indicator_id]);
         html += '<tr class="pf-ind-row">'
             + '<td class="pf-left pf-sticky-0">' + n + "</td>"
             + '<td class="pf-left pf-sticky-1">' + escapeHtml(owner ? owner.name : (headEmp ? headEmp.name : "—")) + "</td>"
-            + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad" style="padding-left:' + pad + 'px">· '
+            + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad" style="padding-left:' + pad + 'px">'
+            + (canBreak ? '<button type="button" class="pf-toggle" onclick="toggleMgmtPfBreak(\'' + it.indicator_id + "')\">" + (brOpen ? "▼" : "▶") + "</button> " : "· ")
             + escapeHtml(it.name) + "</span>"
             + '<div class="mgmt-src" style="padding-left:' + pad + 'px">'
-            + escapeHtml(it.source_type === "manual" ? "Источник: Ручной ввод" : (it.source_type === "worktime_metric" ? "Источник: Метрики Work Time" : mgmtSourcePath(it)))
+            + escapeHtml(it.source_type === "manual" ? "Источник: Ручной ввод" : mgmtSourcePath(it))
             + "</div></td>"
             + mgmtPfNumCell(it, w1.from, "plan", a, editOk)
             + mgmtPfNumCell(it, w1.from, "fact", a, editOk)
@@ -28431,6 +28933,18 @@ function renderMgmtPlanFactHtml() {
             + '<td class="pf-pct ' + dCls + '">' + dyn + "</td>"
             + '<td class="pf-pct ' + dCls + '">' + escapeHtml(st) + "</td>"
             + "</tr>";
+        if (brOpen) {
+            cfg.sources.forEach(function (s) {
+                const fa = mgmtRunInThuWeek(w1.from, function () { return mgmtReadSourceFact(s, it); });
+                const fb = mgmtRunInThuWeek(w2.from, function () { return mgmtReadSourceFact(s, it); });
+                html += '<tr class="pf-break-row">'
+                    + '<td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
+                    + '<td class="pf-left pf-sticky-2 wrap pf-break-name">' + escapeHtml(spuSourceShortLabel(s)) + "</td>"
+                    + "<td></td><td class=\"pf-n\">" + escapeHtml(mgmtFormatValue(it, fa && fa.value, fa && fa.status)) + "</td><td></td>"
+                    + "<td></td><td class=\"pf-n\">" + escapeHtml(mgmtFormatValue(it, fb && fb.value, fb && fb.status)) + "</td><td></td>"
+                    + "<td></td><td></td><td></td></tr>";
+            });
+        }
     }
     function renderPfNode(node, depth) {
         if (!node || node.is_active === false) return;
