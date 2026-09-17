@@ -3602,6 +3602,10 @@
         .cr-bulk-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 8px 0; }
         .cr-form label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
         .cr-form input, .cr-form select, .cr-form textarea { font-size: 13px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; width: 100%; box-sizing: border-box; }
+        .cr-dict-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 10px 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: #f8fafc; }
+        .cr-dict-form label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+        .cr-dict-form input, .cr-dict-form select { font-size: 13px; padding: 6px 8px; min-width: 160px; border: 1px solid var(--border); border-radius: 6px; }
+        .cr-dict-form .cr-sm { min-width: 72px; max-width: 88px; }
         .cr-form textarea { min-height: 72px; resize: vertical; }
         .cr-check {
             display: inline-flex; align-items: center; justify-content: center;
@@ -31279,7 +31283,8 @@ function renderMgmtUsersHtml() {
 
 /* ============================================================
    ТЕРРИТОРИЯ → МЕТРИКИ → ВОЗВРАТЫ ПО ПОКУПАТЕЛЯМ
-   Одна запись = один return_id. Очереди — представления.
+   Одна запись = один return_id. Рабочая вкладка = очередь (queue_id).
+   Этап (stage_id) показывается во вкладке через display_queue_id. Маршрут — отдельно.
 ============================================================ */
 const CR_REASON_CODES = {
     not_order: 1, refuse: 1, driver_not_gave: 1, not_put_wh: 1, not_fixed: 1, mismatch: 1,
@@ -31332,14 +31337,22 @@ CR_REASON_DEFAULTS.push({
     send_to_recount: true
 });
 const CR_STAGE_DEFAULTS = [
-    { stage_id: "video", name: "На видео", sort_order: 10, kind: "queue", show_tab: true },
-    { stage_id: "recount", name: "На пересчёт", sort_order: 20, kind: "queue", show_tab: true },
-    { stage_id: "give", name: "Отдать", sort_order: 30, kind: "queue", show_tab: true },
-    { stage_id: "rebill", name: "Перебить", sort_order: 40, kind: "queue", show_tab: true },
-    { stage_id: "driver", name: "На водителя", sort_order: 50, kind: "queue", show_tab: true },
-    { stage_id: "extra", name: "Лишний товар", sort_order: 60, kind: "journal", show_tab: true },
-    { stage_id: "hold", name: "Журнал (без очереди)", sort_order: 70, kind: "hold", show_tab: false },
-    { stage_id: "closed", name: "Завершить обработку", sort_order: 80, kind: "closed", show_tab: false }
+    { stage_id: "video", name: "На видео", sort_order: 10, kind: "queue", show_tab: true, display_queue_id: "video" },
+    { stage_id: "recount", name: "На пересчёт", sort_order: 20, kind: "queue", show_tab: true, display_queue_id: "recount" },
+    { stage_id: "give", name: "Отдать", sort_order: 30, kind: "queue", show_tab: true, display_queue_id: "give" },
+    { stage_id: "rebill", name: "Перебить", sort_order: 40, kind: "queue", show_tab: true, display_queue_id: "rebill" },
+    { stage_id: "driver", name: "На водителя", sort_order: 50, kind: "queue", show_tab: true, display_queue_id: "driver" },
+    { stage_id: "extra", name: "Лишний товар", sort_order: 60, kind: "journal", show_tab: true, display_queue_id: "extra" },
+    { stage_id: "hold", name: "Журнал (без очереди)", sort_order: 70, kind: "hold", show_tab: false, display_queue_id: "" },
+    { stage_id: "closed", name: "Завершить обработку", sort_order: 80, kind: "closed", show_tab: false, display_queue_id: "" }
+];
+const CR_QUEUE_DEFAULTS = [
+    { queue_id: "video", name: "На видео", sort_order: 10, kind: "queue", system: true },
+    { queue_id: "recount", name: "На пересчёт", sort_order: 20, kind: "queue", system: true },
+    { queue_id: "give", name: "Отдать", sort_order: 30, kind: "queue", system: true },
+    { queue_id: "rebill", name: "Перебить", sort_order: 40, kind: "queue", system: true },
+    { queue_id: "driver", name: "На водителя", sort_order: 50, kind: "queue", system: true },
+    { queue_id: "extra", name: "Лишний товар", sort_order: 60, kind: "journal", system: true }
 ];
 const CR_STAGES = CR_STAGE_DEFAULTS.map(function (s) { return { id: s.stage_id, name: s.name }; });
 const CR_VIDEO_RESULT_DEFAULTS = [
@@ -31363,7 +31376,9 @@ let crUi = {
     tab: "all", author: "", driver: "", picker: "", adj: "", reason: "", result: "", q: "", month: "",
     dateFrom: "", dateTo: "", client: "", vehicle: "",
     driverView: "all", giveView: "all", rebillView: "all", videoView: "all", extraView: "all",
-    anaRole: "", anaEmp: "", anaType: "", anaOpen: "", settingsTab: "reasons"
+    queueStage: "",
+    anaRole: "", anaEmp: "", anaType: "", anaOpen: "", settingsTab: "reasons",
+    stageEditId: "", queueEditId: ""
 };
 let crDraftLines = [];
 let crDraftSeq = 1;
@@ -31381,6 +31396,7 @@ function ensureCustomerReturns(data) {
     if (!Array.isArray(store.reasons)) store.reasons = [];
     if (!Array.isArray(store.outcomes)) store.outcomes = [];
     if (!Array.isArray(store.stages)) store.stages = [];
+    if (!Array.isArray(store.queues)) store.queues = [];
     if (!Array.isArray(store.videoResults)) store.videoResults = [];
     if (customerReturnsReady && root === appData && !wtBusy.customerReturns) return store;
     if (wtBusy.customerReturns) return store;
@@ -31429,16 +31445,55 @@ function ensureCustomerReturns(data) {
             if (found.is_active == null) found.is_active = true;
         }
     });
+    CR_QUEUE_DEFAULTS.forEach(function (def) {
+        const found = store.queues.find(function (a) { return a && a.queue_id === def.queue_id; });
+        if (!found) store.queues.push(Object.assign({ is_active: true }, def));
+        else {
+            if (!found.name) found.name = def.name;
+            if (found.is_active == null) found.is_active = true;
+            if (!found.kind) found.kind = def.kind || "queue";
+            if (found.sort_order == null) found.sort_order = def.sort_order;
+            if (found.system == null) found.system = !!def.system;
+        }
+    });
     CR_STAGE_DEFAULTS.forEach(function (def) {
         const found = store.stages.find(function (a) { return a && a.stage_id === def.stage_id; });
-        if (!found) store.stages.push(Object.assign({ is_active: true }, def));
+        if (!found) store.stages.push(Object.assign({ is_active: true, allowed_next_stage_ids: [] }, def));
         else {
             if (!found.name) found.name = def.name;
             if (found.is_active == null) found.is_active = true;
             if (!found.kind) found.kind = def.kind || "queue";
             if (found.show_tab == null) found.show_tab = def.show_tab !== false;
             if (found.sort_order == null) found.sort_order = def.sort_order;
+            if (found.display_queue_id == null) found.display_queue_id = def.display_queue_id || "";
+            if (!Array.isArray(found.allowed_next_stage_ids)) found.allowed_next_stage_ids = [];
         }
+    });
+    store.stages.forEach(function (s) {
+        if (!s) return;
+        if (!Array.isArray(s.allowed_next_stage_ids)) s.allowed_next_stage_ids = [];
+        if (s.display_queue_id == null) {
+            const def = CR_STAGE_DEFAULTS.find(function (d) { return d && d.stage_id === s.stage_id; });
+            if (def && def.display_queue_id != null) s.display_queue_id = def.display_queue_id;
+            else if (s.show_tab && s.kind !== "hold" && s.kind !== "closed" && s.kind !== "journal" && s.stage_id) {
+                const qid = s.stage_id;
+                const hasQ = store.queues.some(function (q) { return q && q.queue_id === qid; });
+                if (!hasQ) {
+                    store.queues.push({
+                        queue_id: qid,
+                        name: s.name || qid,
+                        sort_order: s.sort_order || ((store.queues.length + 1) * 10),
+                        kind: "queue",
+                        is_active: s.is_active !== false,
+                        system: false
+                    });
+                }
+                s.display_queue_id = qid;
+            } else {
+                s.display_queue_id = "";
+            }
+        }
+        s.show_tab = !!s.display_queue_id;
     });
     CR_VIDEO_RESULT_DEFAULTS.forEach(function (def) {
         const found = store.videoResults.find(function (a) { return a && a.video_result_id === def.video_result_id; })
@@ -31515,7 +31570,7 @@ function crStore() {
     }
     const store = ensureCustomerReturns(appData);
     if (store) return store;
-    return { items: [], vehicles: [], adjustments: [], reasons: [], outcomes: [], stages: [], videoResults: [] };
+    return { items: [], vehicles: [], adjustments: [], reasons: [], outcomes: [], stages: [], queues: [], videoResults: [] };
 }
 
 function crNormalizeItem(it, store) {
@@ -31735,6 +31790,168 @@ function crStageName(id) {
     if (s && s.name) return s.name;
     const legacy = CR_STAGES.find(function (x) { return x.id === id; });
     return legacy ? legacy.name : (id || "");
+}
+
+function crQueuesList() {
+    const list = ((crStore().queues) || []).slice();
+    if (list.length) return list.sort(function (a, b) { return (a.sort_order || 0) - (b.sort_order || 0); });
+    return CR_QUEUE_DEFAULTS.slice();
+}
+
+function crQueueById(id) {
+    if (!id) return null;
+    return crQueuesList().find(function (q) { return q && q.queue_id === id; })
+        || CR_QUEUE_DEFAULTS.find(function (q) { return q.queue_id === id; })
+        || null;
+}
+
+function crWorkQueues() {
+    return crQueuesList().filter(function (q) { return q && q.queue_id && q.is_active !== false; });
+}
+
+function crQueueName(id) {
+    const q = crQueueById(id);
+    return q && q.name ? q.name : "";
+}
+
+function crQueueKind(id) {
+    const q = crQueueById(id);
+    if (q && q.kind) return q.kind;
+    if (id === "extra") return "journal";
+    return "queue";
+}
+
+function crQueueOptions(selected, emptyLabel) {
+    const sel = String(selected || "");
+    let html = '<option value="">' + escapeHtml(emptyLabel == null ? "Выберите вкладку" : emptyLabel) + "</option>";
+    let seen = false;
+    crQueuesList().forEach(function (q) {
+        if (!q || !q.queue_id) return;
+        if (q.is_active === false && q.queue_id !== sel) return;
+        if (q.queue_id === sel) seen = true;
+        html += '<option value="' + escapeAttribute(q.queue_id) + '"' + (q.queue_id === sel ? " selected" : "") + ">"
+            + escapeHtml(q.name || q.queue_id) + (q.is_active === false ? " (неактивна)" : "") + "</option>";
+    });
+    if (sel && !seen) {
+        html += '<option value="' + escapeAttribute(sel) + '" selected>' + escapeHtml(crQueueName(sel) || sel) + " (архив)</option>";
+    }
+    return html;
+}
+
+function crStageDisplayQueueId(stageId) {
+    const s = crStageById(stageId);
+    if (s && s.display_queue_id) return s.display_queue_id;
+    if (stageId === "video" || stageId === "recount" || stageId === "give" || stageId === "rebill" || stageId === "driver" || stageId === "extra") {
+        return stageId;
+    }
+    return "";
+}
+
+function crItemDisplayQueueId(it) {
+    if (!it || it.is_deleted) return "";
+    const st = crProcessStage(it);
+    if (crIsExtraAdj(it) || st === "extra") return "extra";
+    const kind = crStageKind(st);
+    if (kind === "closed" || kind === "hold") return "";
+    const qid = crStageDisplayQueueId(st);
+    if (qid) return qid;
+    return "";
+}
+
+function crMergeByReturnId(a, b) {
+    const seen = {};
+    const out = [];
+    function add(it) {
+        if (!it || it.is_deleted) return;
+        const id = it.return_id;
+        if (!id || seen[id]) return;
+        seen[id] = true;
+        out.push(it);
+    }
+    (a || []).forEach(add);
+    (b || []).forEach(add);
+    return out;
+}
+
+function crItemsInQueue(queueId) {
+    if (!queueId) return [];
+    if (queueId === "extra" || crQueueKind(queueId) === "journal") {
+        const extra = crExtraList();
+        const bound = crFiltered().filter(function (it) {
+            return crItemDisplayQueueId(it) === queueId && crProcessStage(it) !== "extra";
+        });
+        return crMergeByReturnId(extra, bound);
+    }
+    const byDisplay = crFiltered().filter(function (it) {
+        return crItemDisplayQueueId(it) === queueId;
+    });
+    if (queueId === "give") return crMergeByReturnId(byDisplay, crGiveJournal());
+    if (queueId === "rebill") return crMergeByReturnId(byDisplay, crRebillJournal());
+    if (queueId === "driver") return crMergeByReturnId(byDisplay, crDriverJournal());
+    if (queueId === "video") {
+        const legacy = crFiltered().filter(function (it) { return crProcessStage(it) === "video"; });
+        return crMergeByReturnId(byDisplay, legacy);
+    }
+    return byDisplay;
+}
+
+function crStagesBoundToQueue(queueId) {
+    return crStagesList().filter(function (s) {
+        return s && s.stage_id && crStageDisplayQueueId(s.stage_id) === queueId;
+    });
+}
+
+function crQueueStageOptions(queueId, selected) {
+    const sel = String(selected || "");
+    let html = '<option value="">Все</option>';
+    crStagesBoundToQueue(queueId).forEach(function (s) {
+        if (!s || !s.stage_id) return;
+        if (s.is_active === false && s.stage_id !== sel) return;
+        html += '<option value="' + escapeAttribute(s.stage_id) + '"' + (s.stage_id === sel ? " selected" : "") + ">"
+            + escapeHtml(s.name || s.stage_id) + "</option>";
+    });
+    return html;
+}
+
+function crApplyQueueStageFilter(list) {
+    const sid = String(crUi.queueStage || "");
+    if (!sid) return list || [];
+    return (list || []).filter(function (it) { return crProcessStage(it) === sid; });
+}
+
+function crAllowedNextStageIds(stageId) {
+    const s = crStageById(stageId);
+    const ids = (s && Array.isArray(s.allowed_next_stage_ids)) ? s.allowed_next_stage_ids.slice() : [];
+    const out = [];
+    ids.forEach(function (id) {
+        const next = crResolveStageId(id);
+        if (next && out.indexOf(next) === -1) out.push(next);
+    });
+    if (out.length) return out;
+    ((crStore().outcomes) || []).forEach(function (o) {
+        if (!o || o.is_active === false) return;
+        if (o.for_stage && o.for_stage !== stageId) return;
+        const next = crResolveStageId(o.next_stage_id);
+        if (next && out.indexOf(next) === -1) out.push(next);
+    });
+    return out;
+}
+
+function crForwardSelect(it, can) {
+    const st = crProcessStage(it);
+    const nexts = crAllowedNextStageIds(st).filter(function (id) { return id && id !== st; });
+    if (!nexts.length) return "—";
+    if (!can) return crPill("recount", "Передать дальше");
+    let html = '<select onchange="crForwardItem(\'' + it.return_id + '\',this.value)">'
+        + '<option value="">Передать дальше</option>';
+    nexts.forEach(function (id) {
+        html += '<option value="' + escapeAttribute(id) + '">' + escapeHtml(crStageName(id) || id) + "</option>";
+    });
+    return html + "</select>";
+}
+
+function crStageLabel(it) {
+    return crPill("recount", crStageName(crProcessStage(it)) || "—");
 }
 
 function crStageOptions(selected, withClosed, emptyLabel) {
@@ -31986,18 +32203,15 @@ function crIsDriverCase(it) {
 
 function crActiveQueue(it) {
     if (!it || it.is_deleted) return "";
+    const qid = crItemDisplayQueueId(it);
+    if (!qid || qid === "extra") return "";
     const st = crProcessStage(it);
+    if (qid === "give" && it.given_to_client) return "";
+    if (qid === "rebill" && it.rebilled) return "";
+    if (qid === "driver" && st === "driver" && (it.charged_to_driver || it.found_at_client)) return "";
     const kind = crStageKind(st);
-    if (kind === "closed" || kind === "hold" || kind === "journal" || st === "extra") return "";
-    if (st === "video" && crStageOpen(it)) return "video";
-    if (st === "driver" && !it.charged_to_driver && !it.found_at_client) return "driver";
-    if ((st === "give" || it.recount_result === "give") && !it.given_to_client) return "give";
-    if ((st === "rebill" || it.recount_result === "rebill") && !it.rebilled) return "rebill";
-    if (st === "recount" && crStageOpen(it)) return "recount";
-    if (crIsDriverCase(it) && !it.charged_to_driver && !it.found_at_client) return "driver";
-    if (crIsRecountAdj(it) && (!it.recount_result || it.recount_result === "pending") && !it.outcome_id && st !== "video") return "recount";
-    if (kind === "queue" && crStageOpen(it)) return st;
-    return "";
+    if (kind === "closed" || kind === "hold") return "";
+    return qid;
 }
 
 function crStatusText(it) {
@@ -32045,7 +32259,7 @@ function crCanSeeTab(tab) {
     if (tab === "give") return crHasFullView() || userHasPerm("customerReturnsGive", "view");
     if (tab === "rebill") return crHasFullView() || userHasPerm("customerReturnsRebill", "view");
     if (tab === "driver") return crHasFullView() || userHasPerm("customerReturnsDriver", "view");
-    if (crStageById(tab)) return crHasFullView() || userHasPerm("customerReturnsRecount", "view");
+    if (crQueueById(tab) || crStageById(tab)) return crHasFullView() || userHasPerm("customerReturnsRecount", "view");
     return false;
 }
 
@@ -32055,7 +32269,7 @@ function crCanAct(tab) {
     if (tab === "give") return userHasPerm("customerReturnsGive", "edit");
     if (tab === "rebill") return userHasPerm("customerReturnsRebill", "edit");
     if (tab === "driver") return userHasPerm("customerReturnsDriver", "edit");
-    if (crStageById(tab)) return userHasPerm("customerReturnsRecount", "edit");
+    if (crQueueById(tab) || crStageById(tab)) return userHasPerm("customerReturnsRecount", "edit");
     return false;
 }
 
@@ -32295,11 +32509,20 @@ function crFiltered() {
 }
 
 function crQueueList(queue) {
-    if (queue === "give") return crGiveJournal().filter(function (it) { return !it.given_to_client; });
-    if (queue === "rebill") return crRebillJournal().filter(function (it) { return !it.rebilled; });
-    if (queue === "driver") return crDriverJournal().filter(function (it) { return !it.charged_to_driver && !it.found_at_client; });
-    return crFiltered().filter(function (it) {
-        try { return crActiveQueue(it) === queue; } catch (err) { console.error(err); return false; }
+    const list = crItemsInQueue(queue);
+    if (queue === "give") return list.filter(function (it) { return !it.given_to_client; });
+    if (queue === "rebill") return list.filter(function (it) { return !it.rebilled; });
+    if (queue === "driver") return list.filter(function (it) { return !it.charged_to_driver && !it.found_at_client; });
+    return list.filter(function (it) {
+        try {
+            const st = crProcessStage(it);
+            const kind = crStageKind(st);
+            if (kind === "closed" || kind === "hold") return false;
+            return crItemDisplayQueueId(it) === queue || crActiveQueue(it) === queue;
+        } catch (err) {
+            console.error(err);
+            return false;
+        }
     });
 }
 
@@ -32328,7 +32551,7 @@ function crViewFilter(list, view, doneFn) {
 }
 
 function crDriverJournalView() {
-    const list = crDriverJournal();
+    const list = crItemsInQueue("driver");
     const v = crUi.driverView || "all";
     if (v === "open") return list.filter(function (it) { return !it.charged_to_driver && !it.found_at_client; });
     if (v === "charged") return list.filter(function (it) { return !!it.charged_to_driver; });
@@ -32533,6 +32756,7 @@ function crFind(id) {
 
 function crSetTab(tab) {
     if (!crCanSeeTab(tab)) return;
+    if (crUi.tab !== tab) crUi.queueStage = "";
     crUi.tab = tab;
     renderTerritoryReturns();
 }
@@ -32552,6 +32776,7 @@ function crResetFilters() {
     crUi.rebillView = "all";
     crUi.driverView = "all";
     crUi.extraView = "all";
+    crUi.queueStage = "";
     crUi.anaRole = "";
     crUi.anaEmp = "";
     crUi.anaType = "";
@@ -32752,6 +32977,10 @@ function crRenderFiltersBar() {
             + '<option value="found"' + (crUi.driverView === "found" ? " selected" : "") + ">Нашли у клиента</option>"
             + "</select></label>";
     }
+    if (crQueueById(crUi.tab) && crUi.tab !== "extra") {
+        html += '<label' + crFilterOnCls(!!crUi.queueStage) + '>Этап<select onchange="crOnFilter(\'queueStage\',this)">'
+            + crQueueStageOptions(crUi.tab, crUi.queueStage) + "</select></label>";
+    }
     html += "</div></div>";
     return html;
 }
@@ -32762,7 +32991,7 @@ function renderTerritoryReturns() {
     try {
     ensureCustomerReturns(appData);
     if (!crCanSeeTab(crUi.tab)) {
-        const tabs = ["all", "video", "recount", "give", "rebill", "driver", "extra", "analytics", "settings"];
+        const tabs = ["all"].concat(crWorkQueues().map(function (q) { return q.queue_id; })).concat(["analytics", "settings"]);
         crUi.tab = tabs.find(crCanSeeTab) || "all";
     }
     if (!crUi.month) crUi.month = selectedMonth || currentMonthValue();
@@ -32770,12 +32999,12 @@ function renderTerritoryReturns() {
     const all = crFiltered();
     const qVideo = crQueueList("video");
     const qRecount = crQueueList("recount");
-    const jGive = crGiveJournal();
-    const jRebill = crRebillJournal();
-    const jDriver = crDriverJournal();
-    const qGive = crViewFilter(jGive, crUi.giveView, function (it) { return !!it.given_to_client; });
-    const qRebill = crViewFilter(jRebill, crUi.rebillView, function (it) { return !!it.rebilled; });
-    const qDriver = crDriverJournalView();
+    const jGive = crItemsInQueue("give");
+    const jRebill = crItemsInQueue("rebill");
+    const jDriver = crItemsInQueue("driver");
+    const qGive = crApplyQueueStageFilter(crViewFilter(jGive, crUi.giveView, function (it) { return !!it.given_to_client; }));
+    const qRebill = crApplyQueueStageFilter(crViewFilter(jRebill, crUi.rebillView, function (it) { return !!it.rebilled; }));
+    const qDriver = crApplyQueueStageFilter(crDriverJournalView());
     const qExtra = crExtraList();
     const pageTitle = document.getElementById("pageTitle");
     if (pageTitle) pageTitle.textContent = "Возвраты по покупателям";
@@ -32794,21 +33023,19 @@ function renderTerritoryReturns() {
         const badge = count != null
             ? '<span class="cr-badge ' + (count ? "has" : "zero") + '">' + count + "</span>"
             : "";
-        return '<button type="button" class="cr-tab cr-tab-' + id + (crUi.tab === id ? " on" : "") + '" onclick="crSetTab(\'' + id + '\')">'
-            + label + badge + "</button>";
+        return '<button type="button" class="cr-tab cr-tab-' + escapeAttribute(id) + (crUi.tab === id ? " on" : "") + '" onclick="crSetTab(\'' + escapeAttribute(id) + '\')">'
+            + escapeHtml(label) + badge + "</button>";
     }
     html += tabBtn("all", "Все возвраты", all.length);
-    html += tabBtn("video", crStageName("video") || "На видео", qVideo.length);
-    html += tabBtn("recount", crStageName("recount") || "На пересчёт", qRecount.length);
-    html += tabBtn("give", crStageName("give") || "Отдать", jGive.length);
-    html += tabBtn("rebill", crStageName("rebill") || "Перебить", jRebill.length);
-    html += tabBtn("driver", crStageName("driver") || "На водителя", jDriver.length);
-    html += tabBtn("extra", crStageName("extra") || "Лишний товар", qExtra.length);
-    crStagesList().forEach(function (s) {
-        if (!s || !s.stage_id || s.is_active === false || s.show_tab === false) return;
-        if (["video", "recount", "give", "rebill", "driver", "extra"].indexOf(s.stage_id) !== -1) return;
-        if (s.kind === "hold" || s.kind === "closed" || s.kind === "journal") return;
-        html += tabBtn(s.stage_id, s.name || s.stage_id, crQueueList(s.stage_id).length);
+    crWorkQueues().forEach(function (q) {
+        if (!q || !q.queue_id) return;
+        let cnt = 0;
+        if (q.queue_id === "extra") cnt = qExtra.length;
+        else if (q.queue_id === "give") cnt = jGive.length;
+        else if (q.queue_id === "rebill") cnt = jRebill.length;
+        else if (q.queue_id === "driver") cnt = jDriver.length;
+        else cnt = crQueueList(q.queue_id).length;
+        html += tabBtn(q.queue_id, q.name || q.queue_id, cnt);
     });
     html += tabBtn("analytics", "Аналитика");
     if (crCanManageDicts()) html += tabBtn("settings", "Настройки");
@@ -32819,15 +33046,23 @@ function renderTerritoryReturns() {
     if (crUi.tab === "analytics") html += crRenderAnalytics(all, qRecount, jGive, jRebill, jDriver);
     else if (crUi.tab === "settings") html += crRenderDictsAdmin();
     else if (crUi.tab === "all") html += crRenderAllTable(all);
-    else if (crUi.tab === "video") html += crRenderQueueTable("video", crViewFilter(crFiltered().filter(function (it) {
-        return crProcessStage(it) === "video";
-    }), crUi.videoView, function (it) { return it.stage_status === "done" || !!it.video_result_id || !!it.video_outcome_id; }));
-    else if (crUi.tab === "recount") html += crRenderRecountCopyBar(qRecount) + crRenderQueueTable("recount", qRecount);
-    else if (crUi.tab === "give") html += crRenderQueueTable("give", qGive);
-    else if (crUi.tab === "rebill") html += crRenderQueueTable("rebill", qRebill);
-    else if (crUi.tab === "driver") html += crRenderQueueTable("driver", qDriver);
     else if (crUi.tab === "extra") html += crRenderExtraJournal(qExtra);
-    else if (crStageById(crUi.tab)) html += crRenderQueueTable(crUi.tab, crQueueList(crUi.tab));
+    else if (crQueueById(crUi.tab)) {
+        const qid = crUi.tab;
+        let list;
+        if (qid === "video") {
+            list = crApplyQueueStageFilter(crViewFilter(crItemsInQueue("video"), crUi.videoView, function (it) {
+                return it.stage_status === "done" || !!it.video_result_id || !!it.video_outcome_id;
+            }));
+        } else if (qid === "recount") {
+            list = crApplyQueueStageFilter(qRecount);
+            html += crRenderRecountCopyBar(list);
+        } else if (qid === "give") list = qGive;
+        else if (qid === "rebill") list = qRebill;
+        else if (qid === "driver") list = qDriver;
+        else list = crApplyQueueStageFilter(crItemsInQueue(qid));
+        html += crRenderQueueTable(qid, list);
+    }
 
     html += "</div>";
     root.innerHTML = html;
@@ -33119,30 +33354,33 @@ function crRenderAllTable(list) {
             + '<td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td>"
             + "<td>" + escapeHtml(crFmtDate(it.return_to_client_date)) + "</td>"
             + "<td>" + (crIsDriverAdj(it) ? crDriverCheck(it, crCanAct("driver")) : crPill(st.cls, st.text)) + "</td>"
+            + "<td>" + escapeHtml(crQueueName(crItemDisplayQueueId(it)) || "—") + "</td>"
+            + "<td>" + escapeHtml(crStageName(crProcessStage(it)) || "—") + "</td>"
             + '<td class="cr-act">'
             + (can ? '<button type="button" class="btn btn-small" onclick="crOpenEditor(\'' + it.return_id + '\')">✎</button>' : "")
             + (can ? '<button type="button" class="btn btn-small" onclick="crSoftDelete(\'' + it.return_id + '\')">✕</button>' : "")
             + "</td></tr>";
     });
-    if (!body) body = '<tr><td colspan="18"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
+    if (!body) body = '<tr><td colspan="20"><div class="empty-row">Нет возвратов за период. Добавьте запись.</div></td></tr>';
     const periodTotal = crPeriodTotal(rows);
     return '<div class="cr-wrap"><table class="cr-table mgmt-table"><thead><tr>'
         + "<th>№</th><th>Неделя</th><th>Дата</th><th>Автор продаж</th><th>Водитель</th><th>№ авто</th>"
         + "<th>Кассир</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Причина</th>"
         + "<th>№ заявки/накладной</th><th>Товароразборщик</th><th>Комментарий</th><th>Дата возврата</th>"
-        + "<th>Статус</th><th></th>"
+        + "<th>Статус</th><th>Рабочая вкладка</th><th>Текущий этап</th><th></th>"
         + "</tr></thead><tbody>" + body + "</tbody><tfoot><tr class=\"cr-period-total\"><td colspan=\"9\">Записей: " + rows.length
         + '</td><td class="cr-qty">' + crQty(rows) + '</td><td class="cr-num">' + crSignedHtml(periodTotal)
-        + '</td><td colspan="7"><span class="cr-period-total-label">ИТОГО ЗА ПЕРИОД:</span> '
+        + '</td><td colspan="9"><span class="cr-period-total-label">ИТОГО ЗА ПЕРИОД:</span> '
         + crSignedHtml(periodTotal) + "</td></tr></tfoot></table></div>";
 }
 
 function crRenderQueueTable(tab, list) {
     const can = crCanAct(tab);
+    list = list || [];
     let cols = "";
     let body = "";
     if (tab === "video") {
-        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Водитель</th><th>Причина</th><th>Статус этапа</th><th>Результат видео</th>";
+        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Водитель</th><th>Причина</th><th>Этап</th><th>Статус этапа</th><th>Результат видео</th><th>Что дальше</th>";
         list.forEach(function (it) {
             const done = it.stage_status === "done" || !!it.video_result_id || !!it.video_outcome_id;
             body += '<tr class="cr-row-video' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
@@ -33150,11 +33388,13 @@ function crRenderQueueTable(tab, list) {
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + escapeHtml(crEmpShort(it.driver_employee_id))
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
+                + "</td><td>" + crStageLabel(it)
                 + "</td><td>" + crPill(done ? "done" : "recount", done ? "Выполнено" : "В работе")
-                + "</td><td>" + crVideoResultSelect(it, can) + "</td></tr>";
+                + "</td><td>" + crVideoResultSelect(it, can)
+                + "</td><td>" + crForwardSelect(it, can) + "</td></tr>";
         });
     } else if (tab === "recount") {
-        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Автор продаж</th><th>Водитель</th><th>Товароразборщик</th><th>Причина</th><th>Этап</th><th>Комментарий</th><th>Результат обработки</th>";
+        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Автор продаж</th><th>Водитель</th><th>Товароразборщик</th><th>Причина</th><th>Этап</th><th>Комментарий</th><th>Результат обработки</th><th>Что дальше</th>";
         list.forEach(function (it) {
             body += '<tr class="cr-row-recount"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
                 + '</td><td class="cr-qty">' + crQtyHtml(it.qty) + '</td><td class="cr-num">' + crSignedHtml(it.amount)
@@ -33165,15 +33405,16 @@ function crRenderQueueTable(tab, list) {
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
                 + '</td><td class="cr-stage-cell">' + crStageSelect(it, can) + crVideoFromBadge(it)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment) + "</td><td>"
-                + crResultSelect(it, can) + "</td></tr>";
+                + crResultSelect(it, can) + "</td><td>" + crForwardSelect(it, can) + "</td></tr>";
         });
     } else if (tab === "give") {
-        cols = "<th>Дата</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Автор продаж</th><th>Комментарий</th><th>Выполнено</th><th>Дата выполнения</th>";
+        cols = "<th>Дата</th><th>Клиент</th><th>Товар</th><th>Этап</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Автор продаж</th><th>Комментарий</th><th>Выполнено</th><th>Дата выполнения</th><th>Что дальше</th>";
         list.forEach(function (it) {
             const done = !!it.given_to_client;
             const dt = it.return_to_client_date || it.given_date || "";
             body += '<tr class="cr-row-give' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
-                + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name) + '</td><td class="cr-qty">' + crQtyHtml(it.qty)
+                + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name) + "</td><td>" + crStageLabel(it)
+                + '</td><td class="cr-qty">' + crQtyHtml(it.qty)
                 + '</td><td class="cr-num">' + crSignedHtml(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + escapeHtml(crEmpShort(it.sales_author_employee_id))
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.comment)
@@ -33181,14 +33422,16 @@ function crRenderQueueTable(tab, list) {
                 + (can ? ' onclick="crToggleGive(\'' + it.return_id + '\',' + (done ? "false" : "true") + ')"' : " disabled") + ">"
                 + (done ? "✓" : "") + "</button></label></td>"
                 + '<td><input type="date" value="' + escapeAttribute(dt) + '"'
-                + (can ? ' onchange="crSetGiveDate(\'' + it.return_id + '\',this.value)"' : " disabled") + "></td></tr>";
+                + (can ? ' onchange="crSetGiveDate(\'' + it.return_id + '\',this.value)"' : " disabled") + "></td>"
+                + "<td>" + crForwardSelect(it, can) + "</td></tr>";
         });
     } else if (tab === "rebill") {
-        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th>Выполнено</th><th>Дата выполнения</th>";
+        cols = "<th>Дата</th><th>Товар</th><th>Этап</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th>Выполнено</th><th>Дата выполнения</th><th>Что дальше</th>";
         list.forEach(function (it) {
             const done = !!it.rebilled;
             const dt = it.rebilled_date || (it.rebilled_at ? String(it.rebilled_at).slice(0, 10) : "");
             body += '<tr class="cr-row-rebill' + (done ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
+                + "</td><td>" + crStageLabel(it)
                 + '</td><td class="cr-qty">' + crQtyHtml(it.qty) + '</td><td class="cr-num">' + crSignedHtml(it.amount)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
@@ -33197,10 +33440,11 @@ function crRenderQueueTable(tab, list) {
                 + (can ? ' onclick="crToggleRebill(\'' + it.return_id + '\',' + (done ? "false" : "true") + ')"' : " disabled") + ">"
                 + (done ? "✓" : "") + "</button></label></td>"
                 + '<td><input type="date" value="' + escapeAttribute(dt) + '"'
-                + (can ? ' onchange="crSetRebillDate(\'' + it.return_id + '\',this.value)"' : " disabled") + "></td></tr>";
+                + (can ? ' onchange="crSetRebillDate(\'' + it.return_id + '\',this.value)"' : " disabled") + "></td>"
+                + "<td>" + crForwardSelect(it, can) + "</td></tr>";
         });
     } else if (tab === "driver") {
-        cols = "<th>Дата</th><th>Водитель</th><th>№ авто</th><th>Клиент</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th>Пробито</th><th>Товар нашли у клиента</th>";
+        cols = "<th>Дата</th><th>Водитель</th><th>№ авто</th><th>Клиент</th><th>Товар</th><th>Этап</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Причина</th><th>Комментарий</th><th>Пробито</th><th>Товар нашли у клиента</th><th>Что дальше</th>";
         list.forEach(function (it) {
             const found = !!it.found_at_client;
             body += '<tr class="cr-row-driver' + (it.charged_to_driver || found ? " cr-hist" : "") + '"><td>' + escapeHtml(crFmtDate(it.date)) + "</td><td>"
@@ -33208,6 +33452,7 @@ function crRenderQueueTable(tab, list) {
                 + "</td><td>" + escapeHtml(crVehiclePlate(it.vehicle_id))
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
                 + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
+                + "</td><td>" + crStageLabel(it)
                 + '</td><td class="cr-qty">' + crQtyHtml(it.qty)
                 + '</td><td class="cr-num">' + crSignedHtml(it.amount) + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + crPill("driver", crReasonName(crItemReasonId(it)) || "ВОДИТЕЛЬ")
@@ -33215,17 +33460,19 @@ function crRenderQueueTable(tab, list) {
                 + "</td><td>" + crDriverCheck(it, can)
                 + '</td><td><label class="cr-check-lab">Нашли у клиента<button type="button" class="cr-check' + (found ? " on" : "") + '"'
                 + (can ? ' onclick="crToggleFoundClient(\'' + it.return_id + '\',' + (found ? "false" : "true") + ')"' : " disabled") + ">"
-                + (found ? "✓" : "") + "</button></label></td></tr>";
+                + (found ? "✓" : "") + "</button></label></td>"
+                + "<td>" + crForwardSelect(it, can) + "</td></tr>";
         });
     } else {
-        cols = "<th>Дата</th><th>Товар</th><th>Кол-во</th><th>Сумма</th><th>Клиент</th><th>№ заявки</th><th>Причина</th><th>Этап</th><th>Результат обработки</th>";
+        cols = "<th>Дата</th><th>Клиент</th><th>Товар</th><th>Этап</th><th>Кол-во</th><th>Сумма</th><th>№ заявки</th><th>Причина</th><th>Что дальше</th>";
         list.forEach(function (it) {
-            body += '<tr><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
+            body += '<tr><td>' + escapeHtml(crFmtDate(it.date)) + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name)
+                + '</td><td class="cr-wrap-text">' + escapeHtml(it.product_name)
+                + "</td><td>" + crStageLabel(it)
                 + '</td><td class="cr-qty">' + crQtyHtml(it.qty) + '</td><td class="cr-num">' + crSignedHtml(it.amount)
-                + '</td><td class="cr-wrap-text">' + escapeHtml(it.client_name) + "</td><td>" + escapeHtml(it.invoice_no)
+                + "</td><td>" + escapeHtml(it.invoice_no)
                 + "</td><td>" + crPill("recount", crReasonName(crItemReasonId(it)) || "—")
-                + "</td><td>" + crStageSelect(it, can)
-                + "</td><td>" + crResultSelect(it, can) + "</td></tr>";
+                + "</td><td>" + crForwardSelect(it, can) + "</td></tr>";
         });
     }
     if (!body) body = '<tr><td colspan="12"><div class="empty-row">Очередь пуста.</div></td></tr>';
@@ -33485,7 +33732,8 @@ function crRenderDictsAdmin() {
     }
     let html = '<div class="card" style="padding:10px"><div class="card-title">Настройки возвратов</div>'
         + '<div class="note">Маршруты задаются через справочники. Название можно переименовать — маршрут держится за ID.</div>'
-        + '<div class="toolbar" style="margin:8px 0">' + stBtn("reasons", "Причины") + stBtn("stages", "Этапы")
+        + '<div class="toolbar" style="margin:8px 0">' + stBtn("queues", "Рабочие вкладки") + stBtn("stages", "Этапы")
+        + stBtn("routing", "Маршрутизация") + stBtn("reasons", "Причины")
         + stBtn("outcomes", "Результаты обработки") + stBtn("videoResults", "Результаты видео")
         + stBtn("vehicles", "Автотранспорт") + stBtn("archiveAdj", "Архив корректировок") + "</div>";
     if (pane === "adjustments") pane = "archiveAdj";
@@ -33511,25 +33759,70 @@ function crRenderDictsAdmin() {
             + '<div class="toolbar"><input id="crNewReasonName" placeholder="Новая причина" style="max-width:240px">'
             + '<select id="crNewReasonStage">' + crStageOptions("recount", true) + "</select>"
             + '<button type="button" class="btn btn-small" onclick="crAddReason()">+ Добавить причину</button></div>';
+    } else if (pane === "queues") {
+        const editQ = crUi.queueEditId ? crQueueById(crUi.queueEditId) : null;
+        let qBody = "";
+        crQueuesList().forEach(function (q) {
+            if (!q || !q.queue_id) return;
+            qBody += "<tr><td>" + escapeHtml(q.name || "") + "</td>"
+                + "<td>" + (q.sort_order || "") + "</td>"
+                + "<td>" + (q.is_active !== false ? "да" : "нет") + "</td>"
+                + "<td><button type=\"button\" class=\"btn btn-small\" onclick=\"crStartEditQueue('" + q.queue_id + "')\">Редактировать</button> "
+                + "<button type=\"button\" class=\"btn btn-small\" onclick=\"crDeleteQueue('" + q.queue_id + "')\">Удалить</button></td></tr>";
+        });
+        if (!qBody) qBody = '<tr><td colspan="4">Нет рабочих вкладок</td></tr>';
+        html += '<div class="note">Рабочая вкладка — место в интерфейсе. Это не этап и не маршрут. «Все возвраты» и «Аналитика» сюда не входят. queue_id стабилен.</div>'
+            + '<div class="cr-dict-form"><label>Название вкладки *<input id="crQueueName" value="' + escapeAttribute(editQ && editQ.name || "") + '" placeholder="Например: На водителя"></label>'
+            + '<label>Порядок<input id="crQueueOrder" class="cr-sm" type="number" value="' + escapeAttribute(editQ && editQ.sort_order != null ? String(editQ.sort_order) : "") + '"></label>'
+            + '<label class="cr-check-lab">Активна<input type="checkbox" id="crQueueActive"' + (!editQ || editQ.is_active !== false ? " checked" : "") + "></label>"
+            + '<button type="button" class="btn btn-primary btn-small" onclick="crSaveQueueForm()">' + (editQ ? "Сохранить" : "+ Добавить вкладку") + "</button>"
+            + (editQ ? '<button type="button" class="btn btn-small" onclick="crCancelQueueForm()">Отмена</button>' : "")
+            + "</div>"
+            + '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Название</th><th>Порядок</th><th>Активна</th><th></th></tr></thead><tbody>'
+            + qBody + "</tbody></table></div>";
     } else if (pane === "stages") {
         const stages = crStagesList();
         let sBody = "";
         stages.forEach(function (s) {
             if (!s || !s.stage_id) return;
-            sBody += "<tr><td><input value=\"" + escapeAttribute(s.name || "") + "\" onchange=\"crRenameStage('" + s.stage_id + "',this.value)\"></td>"
-                + '<td><label class="cr-check-lab"><input type="checkbox"' + (s.show_tab !== false && s.kind !== "hold" && s.kind !== "closed" ? " checked" : "")
-                + ' onchange="crSetStageShowTab(\'' + s.stage_id + '\',this.checked)"> Вкладка</label></td>'
-                + '<td><label class="cr-check-lab"><input type="checkbox"' + (s.is_active !== false ? " checked" : "")
-                + ' onchange="crToggleStageActive(\'' + s.stage_id + '\',this.checked)"> Активен</label></td>'
-                + "<td><button type=\"button\" class=\"btn btn-small\" onclick=\"crDeleteStage('" + s.stage_id + "')\">Удалить</button></td></tr>";
+            sBody += "<tr><td>" + escapeHtml(s.name || "") + "</td>"
+                + "<td>" + escapeHtml(crQueueName(s.display_queue_id) || (s.display_queue_id ? s.display_queue_id : "—")) + "</td>"
+                + "<td>" + (s.sort_order || "") + "</td>"
+                + "<td>" + (s.is_active !== false ? "да" : "нет") + "</td>"
+                + "<td><button type=\"button\" class=\"btn btn-small\" onclick=\"crStartEditStage('" + s.stage_id + "')\">Редактировать</button> "
+                + "<button type=\"button\" class=\"btn btn-small\" onclick=\"crDeleteStage('" + s.stage_id + "')\">Удалить</button></td></tr>";
         });
-        if (!sBody) sBody = '<tr><td colspan="4">Нет этапов</td></tr>';
-        html += '<div class="note">stage_id не меняется при переименовании. Неактивный этап не предлагается в новых операциях, но остаётся в истории.</div>'
-            + '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Название</th><th>Рабочая вкладка</th><th>Активен</th><th></th></tr></thead><tbody>'
-            + sBody + "</tbody></table></div>"
-            + '<div class="toolbar"><input id="crNewStageName" placeholder="Новый этап" style="max-width:240px">'
-            + '<label class="cr-check-lab"><input type="checkbox" id="crNewStageTab" checked> Показывать вкладку</label>'
-            + '<button type="button" class="btn btn-small" onclick="crAddStage()">+ Добавить этап</button></div>';
+        if (!sBody) sBody = '<tr><td colspan="5">Нет этапов</td></tr>';
+        const editS = crUi.stageEditId ? crStageById(crUi.stageEditId) : null;
+        html += '<div class="note">Этап — текущее состояние позиции. «Где показывать» задаёт рабочую вкладку по queue_id. stage_id не меняется при переносе во вкладку.</div>'
+            + '<div class="cr-dict-form"><label>Название этапа *<input id="crStageName" value="' + escapeAttribute(editS && editS.name || "") + '" placeholder="Например: Нашли у клиента"></label>'
+            + '<label>Где показывать *<select id="crStageQueue">' + crQueueOptions(editS && editS.display_queue_id || "", "выбрать вкладку") + "</select></label>"
+            + '<label>Порядок<input id="crStageOrder" class="cr-sm" type="number" value="' + escapeAttribute(editS && editS.sort_order != null ? String(editS.sort_order) : "") + '"></label>'
+            + '<label class="cr-check-lab">Активен<input type="checkbox" id="crStageActive"' + (!editS || editS.is_active !== false ? " checked" : "") + "></label>"
+            + '<button type="button" class="btn btn-primary btn-small" onclick="crSaveStageForm()">Сохранить</button>'
+            + (editS ? '<button type="button" class="btn btn-small" onclick="crCancelStageForm()">Отмена</button>' : "")
+            + "</div>"
+            + '<div class="cr-wrap"><table class="cr-table"><thead><tr><th>Название</th><th>Где показывать</th><th>Порядок</th><th>Активен</th><th></th></tr></thead><tbody>'
+            + sBody + "</tbody></table></div>";
+    } else if (pane === "routing") {
+        html += '<div class="note">Маршрутизация — отдельно от рабочей вкладки. Разрешённый следующий этап (stage_id → stage_id) не равен вкладке, где этап показывают.</div>';
+        crStagesList().forEach(function (s) {
+            if (!s || !s.stage_id || s.kind === "closed") return;
+            const allowed = Array.isArray(s.allowed_next_stage_ids) ? s.allowed_next_stage_ids : [];
+            let checks = "";
+            crStagesList().forEach(function (n) {
+                if (!n || !n.stage_id || n.stage_id === s.stage_id) return;
+                if (n.is_active === false && allowed.indexOf(n.stage_id) === -1) return;
+                const on = allowed.indexOf(n.stage_id) !== -1;
+                checks += '<label style="display:inline-flex;align-items:center;gap:4px;margin:4px 10px 4px 0">'
+                    + '<input type="checkbox"' + (on ? " checked" : "") + ' onchange="crToggleStageRoute(\'' + s.stage_id + '\',\'' + n.stage_id + '\',this.checked)"> '
+                    + escapeHtml(n.name || n.stage_id) + "</label>";
+            });
+            if (!checks) checks = '<span class="note">Нет других этапов</span>';
+            html += '<div class="card" style="padding:8px;margin:8px 0"><div class="card-title" style="font-size:13px">'
+                + escapeHtml(s.name || s.stage_id) + ' <span class="note">показ: ' + escapeHtml(crQueueName(s.display_queue_id) || "—")
+                + "</span></div>" + checks + "</div>";
+        });
     } else if (pane === "outcomes") {
         const list = (crStore().outcomes || []).slice().sort(function (a, b) {
             return (a.sort_order || 0) - (b.sort_order || 0);
@@ -33772,26 +34065,175 @@ function crStageInUse(id) {
 }
 
 function crAddStage() {
+    crSaveStageForm();
+}
+
+function crStartEditStage(id) {
     if (!crCanManageDicts()) return;
-    const el = document.getElementById("crNewStageName");
-    const name = String((el && el.value) || "").trim();
+    crUi.stageEditId = id || "";
+    crUi.settingsTab = "stages";
+    renderTerritoryReturns();
+}
+
+function crCancelStageForm() {
+    crUi.stageEditId = "";
+    renderTerritoryReturns();
+}
+
+function crSaveStageForm() {
+    if (!crCanManageDicts()) return;
+    const name = String((document.getElementById("crStageName") || {}).value || "").trim();
+    const queueId = String((document.getElementById("crStageQueue") || {}).value || "").trim();
+    const orderRaw = String((document.getElementById("crStageOrder") || {}).value || "").trim();
+    const active = !!(document.getElementById("crStageActive") && document.getElementById("crStageActive").checked);
     if (!name) {
         toast("Укажите название этапа.", "error");
         return;
     }
+    const editId = crUi.stageEditId || "";
+    const existing = editId ? crStageById(editId) : null;
+    const terminal = !!(existing && (existing.kind === "hold" || existing.kind === "closed" || existing.stage_id === "hold" || existing.stage_id === "closed"));
+    if (!queueId && !terminal) {
+        toast("Укажите, где показывать этот этап.", "error");
+        return;
+    }
+    if (queueId && !crQueueById(queueId)) {
+        toast("Выберите существующую рабочую вкладку.", "error");
+        return;
+    }
     const store = crStore();
-    const tabEl = document.getElementById("crNewStageTab");
-    store.stages.push({
-        stage_id: nextPrefixedId("stg", store.stages.map(function (a) { return a && a.stage_id; })),
-        name: name,
-        sort_order: (store.stages.length + 1) * 10,
-        kind: "queue",
-        show_tab: !(tabEl && tabEl.checked === false),
-        is_active: true
-    });
+    if (existing) {
+        existing.name = name;
+        existing.display_queue_id = queueId;
+        existing.show_tab = !!queueId;
+        if (orderRaw !== "") existing.sort_order = Number(orderRaw) || existing.sort_order;
+        existing.is_active = active;
+        if (!Array.isArray(existing.allowed_next_stage_ids)) existing.allowed_next_stage_ids = [];
+    } else {
+        store.stages.push({
+            stage_id: nextPrefixedId("stg", store.stages.map(function (a) { return a && a.stage_id; })),
+            name: name,
+            display_queue_id: queueId,
+            sort_order: orderRaw !== "" ? (Number(orderRaw) || ((store.stages.length + 1) * 10)) : ((store.stages.length + 1) * 10),
+            kind: "queue",
+            show_tab: !!queueId,
+            is_active: active,
+            allowed_next_stage_ids: []
+        });
+    }
+    crUi.stageEditId = "";
     saveApp();
     renderTerritoryReturns();
-    toast("Этап добавлен.");
+    toast(existing ? "Этап сохранён." : "Этап добавлен.");
+}
+
+function crSetStageDisplayQueue(id, queueId) {
+    if (!crCanManageDicts()) return;
+    const s = crStageById(id);
+    if (!s) return;
+    s.display_queue_id = String(queueId || "");
+    s.show_tab = !!s.display_queue_id;
+    saveApp();
+    renderTerritoryReturns();
+}
+
+function crToggleStageRoute(stageId, nextId, on) {
+    if (!crCanManageDicts()) return;
+    const s = crStageById(stageId);
+    if (!s) return;
+    if (!Array.isArray(s.allowed_next_stage_ids)) s.allowed_next_stage_ids = [];
+    const i = s.allowed_next_stage_ids.indexOf(nextId);
+    if (on && i === -1) s.allowed_next_stage_ids.push(nextId);
+    if (!on && i !== -1) s.allowed_next_stage_ids.splice(i, 1);
+    saveApp();
+}
+
+function crStartEditQueue(id) {
+    if (!crCanManageDicts()) return;
+    crUi.queueEditId = id || "";
+    crUi.settingsTab = "queues";
+    renderTerritoryReturns();
+}
+
+function crCancelQueueForm() {
+    crUi.queueEditId = "";
+    renderTerritoryReturns();
+}
+
+function crSaveQueueForm() {
+    if (!crCanManageDicts()) return;
+    const name = String((document.getElementById("crQueueName") || {}).value || "").trim();
+    const orderRaw = String((document.getElementById("crQueueOrder") || {}).value || "").trim();
+    const active = !!(document.getElementById("crQueueActive") && document.getElementById("crQueueActive").checked);
+    if (!name) {
+        toast("Укажите название вкладки.", "error");
+        return;
+    }
+    const store = crStore();
+    const editId = crUi.queueEditId || "";
+    const existing = editId ? crQueueById(editId) : null;
+    if (existing) {
+        existing.name = name;
+        if (orderRaw !== "") existing.sort_order = Number(orderRaw) || existing.sort_order;
+        existing.is_active = active;
+    } else {
+        store.queues.push({
+            queue_id: nextPrefixedId("que", store.queues.map(function (a) { return a && a.queue_id; })),
+            name: name,
+            sort_order: orderRaw !== "" ? (Number(orderRaw) || ((store.queues.length + 1) * 10)) : ((store.queues.length + 1) * 10),
+            kind: "queue",
+            is_active: active,
+            system: false
+        });
+    }
+    crUi.queueEditId = "";
+    saveApp();
+    renderTerritoryReturns();
+    toast(existing ? "Вкладка сохранена." : "Рабочая вкладка добавлена.");
+}
+
+function crRenameQueue(id, name) {
+    if (!crCanManageDicts()) return;
+    const q = crQueueById(id);
+    if (!q) return;
+    const n = String(name || "").trim();
+    if (!n) {
+        renderTerritoryReturns();
+        return;
+    }
+    q.name = n;
+    saveApp();
+}
+
+function crToggleQueueActive(id, on) {
+    if (!crCanManageDicts()) return;
+    const q = crQueueById(id);
+    if (!q) return;
+    q.is_active = !!on;
+    saveApp();
+    renderTerritoryReturns();
+}
+
+function crQueueInUse(id) {
+    if (!id) return false;
+    if ((crStore().stages || []).some(function (s) { return s && s.display_queue_id === id; })) return true;
+    return (crStore().items || []).some(function (it) { return it && crItemDisplayQueueId(it) === id; });
+}
+
+function crDeleteQueue(id) {
+    if (!crCanManageDicts()) return;
+    const q = crQueueById(id);
+    if (!q) return;
+    if (q.system || crQueueInUse(id)) {
+        crToggleQueueActive(id, false);
+        toast("Вкладка используется или системная. Деактивирована, данные сохранены.");
+        return;
+    }
+    const store = crStore();
+    store.queues = (store.queues || []).filter(function (x) { return !x || x.queue_id !== id; });
+    saveApp();
+    renderTerritoryReturns();
+    toast("Рабочая вкладка удалена.");
 }
 
 function crRenameStage(id, name) {
@@ -33821,6 +34263,8 @@ function crSetStageShowTab(id, on) {
     const s = crStageById(id);
     if (!s) return;
     s.show_tab = !!on;
+    if (on && !s.display_queue_id) s.display_queue_id = crQueueById(s.stage_id) ? s.stage_id : (crWorkQueues()[0] && crWorkQueues()[0].queue_id) || "";
+    if (!on) s.display_queue_id = "";
     saveApp();
     renderTerritoryReturns();
 }
@@ -33942,6 +34386,24 @@ function crMoveToStage(it, nextStageId) {
     const kind = crStageKind(next);
     it.stage_status = (next === "closed" || kind === "closed") ? "done" : "open";
     return true;
+}
+
+function crForwardItem(returnId, nextStageId) {
+    const it = crFind(returnId);
+    if (!it || !nextStageId) return;
+    if (!crHasFullEdit() && !crCanAct(crItemDisplayQueueId(it)) && !crCanAct(crUi.tab)) return;
+    const from = crProcessStage(it);
+    const keepId = it.return_id;
+    if (!crMoveToStage(it, nextStageId)) return;
+    it.return_id = keepId;
+    crPushHistory(it, "stage", crStageName(from) + " → " + crStageName(it.process_stage), {
+        return_id: it.return_id,
+        stage_from: from,
+        stage_to: it.process_stage
+    });
+    saveApp();
+    renderTerritoryReturns();
+    toast("Передано: " + (crStageName(it.process_stage) || it.process_stage));
 }
 
 function crApplyVideoResult(id, videoResultId) {
@@ -35180,6 +35642,22 @@ function verifyCrSignedFinance() {
     }
     if (crVehicleLabel({ plate: "А123ВС 123", name: "Газель белая", vehicle_id: "veh_x" }) !== "А123ВС 123 — Газель белая") {
         console.warn("Подпись автомобиля: госномер — название");
+    }
+    const qProbe = { return_id: "ret_queue_probe", process_stage: "driver" };
+    if (crItemDisplayQueueId(qProbe) !== "driver") {
+        console.warn("Этап driver должен показываться во вкладке driver по display_queue_id");
+    }
+    const moved = { return_id: "ret_queue_move", process_stage: "driver" };
+    const sameId = moved.return_id;
+    crMoveToStage(moved, "rebill");
+    if (moved.return_id !== sameId || moved.process_stage !== "rebill") {
+        console.warn("Переход этапа не должен менять return_id и должен менять process_stage");
+    }
+    if (crStageDisplayQueueId("rebill") !== "rebill") {
+        console.warn("Этап rebill по умолчанию показывается во вкладке Перебить");
+    }
+    if (crItemDisplayQueueId(moved) !== "rebill") {
+        console.warn("После смены этапа позиция должна попадать во вкладку нового этапа");
     }
 }
 
