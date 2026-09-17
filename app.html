@@ -4751,7 +4751,7 @@
                                 После ввода ФИО нажмите «Сохранить».
                             </div>
                         </div>
-                        <div class="toolbar">
+                        <div class="toolbar fio-filters" style="align-items:end;">
                             <div class="form-group">
                                 <label for="staffDeptFilter">Отдел</label>
                                 <select id="staffDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
@@ -4761,6 +4761,17 @@
                                     <option value="warehouse">Склад</option>
                                     <option value="drivers">Логистика + Торговые</option>
                                 </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="staffWorkGroupFilter">Рабочая группа</label>
+                                <select id="staffWorkGroupFilter" onchange="changeSummaryWorkGroupFilter(this.value)">
+                                    <option value="">Все рабочие группы</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="staffEmployeeSearch">Сотрудник / поиск</label>
+                                <input id="staffEmployeeSearch" type="search" maxlength="80" placeholder="ФИО…"
+                                    oninput="changeSummaryStaffSearch(this.value)">
                             </div>
                         </div>
                     </div>
@@ -5411,6 +5422,8 @@ let currentWorkspaceId = null;
 let selectedMonth = currentMonthValue();
 let currentSection = "timesheet";
 let summaryDeptFilter = "";
+let summaryWorkGroupFilter = "";
+let summaryStaffSearch = "";
 let summarySortMode = "dept";
 let currentSummaryRole = null;
 let currentDeptRole = null;
@@ -7910,6 +7923,7 @@ function allowsEarly730(w) {
 
 function changeSummaryDeptFilter(value) {
     summaryDeptFilter = value || "";
+    summaryWorkGroupFilter = "";
     syncSummarySortControls();
     if (isSummary() || isAdminEntry()) {
         renderTimesheet();
@@ -7917,6 +7931,42 @@ function changeSummaryDeptFilter(value) {
         renderRepSalary();
         renderSummaryStaff();
         updateStats();
+    }
+}
+
+function changeSummaryWorkGroupFilter(value) {
+    summaryWorkGroupFilter = value || "";
+    syncSummarySortControls();
+    if (isSummary() || isAdminEntry()) renderSummaryStaff();
+}
+
+function changeSummaryStaffSearch(value) {
+    summaryStaffSearch = String(value || "");
+    if (isSummary() || isAdminEntry()) renderSummaryStaff();
+}
+
+function syncSummaryStaffWorkGroupOptions() {
+    const sel = document.getElementById("staffWorkGroupFilter");
+    if (!sel) return;
+    const dept = summaryDeptFilter;
+    let html = '<option value="">Все рабочие группы</option>';
+    if (dept) {
+        metricTabsForDept(dept).forEach(function (t) {
+            html += '<option value="' + escapeAttribute(t.id) + '"'
+                + (summaryWorkGroupFilter === t.id ? " selected" : "") + ">"
+                + escapeHtml(t.label) + "</option>";
+        });
+    }
+    sel.innerHTML = html;
+    sel.disabled = !dept;
+    if (!dept) summaryWorkGroupFilter = "";
+    else if (summaryWorkGroupFilter && !metricTabsForDept(dept).some(function (t) {
+        return t.id === summaryWorkGroupFilter;
+    })) {
+        summaryWorkGroupFilter = "";
+        sel.value = "";
+    } else {
+        sel.value = summaryWorkGroupFilter || "";
     }
 }
 
@@ -7941,6 +7991,9 @@ function syncSummarySortControls() {
         const el = document.getElementById(id);
         if (el) el.value = summarySortMode;
     });
+    const search = document.getElementById("staffEmployeeSearch");
+    if (search && document.activeElement !== search) search.value = summaryStaffSearch || "";
+    syncSummaryStaffWorkGroupOptions();
 }
 
 function loginWorkspaces() {
@@ -24863,9 +24916,22 @@ function deleteEmployee(employeeId) {
 
 function summaryDirectoryGroups() {
     const groups = [];
+    const q = String(summaryStaffSearch || "").toLowerCase().replace(/\s+/g, " ").trim();
     orderedDeptWorkspaces().forEach(function (w) {
         if (summaryDeptFilter && w.code !== summaryDeptFilter) return;
-        const people = (w.employees || []).slice();
+        const people = (w.employees || []).filter(function (employee) {
+            if (!employee || !employee.id) return false;
+            if (summaryWorkGroupFilter) {
+                if (!employeeBelongsToWorkGroup(employee, w.code, summaryWorkGroupFilter)) return false;
+            }
+            if (q) {
+                const name = String(employee.name || "").toLowerCase();
+                if (name.indexOf(q) === -1 && String(employee.id || "").toLowerCase().indexOf(q) === -1) {
+                    return false;
+                }
+            }
+            return true;
+        });
         if (people.length) groups.push({ dept: w, employees: people });
     });
     return groups;
@@ -24885,11 +24951,16 @@ function renderSummaryStaff() {
     if (!box || currentWorkspaceIndex === null) return;
     if (!isSummary() && !isAdminEntry()) return;
 
+    syncSummarySortControls();
     const groups = summaryDirectoryGroups();
     const addBtn = document.getElementById("addSummaryEmployeeBtn");
     if (addBtn) addBtn.style.display = canEditStaff() ? "" : "none";
     if (!groups.length) {
-        box.innerHTML = '<div class="empty-row">Сотрудников пока нет. Нажмите «+ Добавить сотрудника».</div>';
+        box.innerHTML = '<div class="empty-row">'
+            + (summaryDeptFilter || summaryWorkGroupFilter || summaryStaffSearch
+                ? "Нет сотрудников по выбранным фильтрам."
+                : "Сотрудников пока нет. Нажмите «+ Добавить сотрудника».")
+            + "</div>";
         return;
     }
 
@@ -24943,9 +25014,22 @@ function renderSummaryStaff() {
                 + "</div>";
         });
     });
+    const searchEl = document.getElementById("staffEmployeeSearch");
+    const keepFocus = searchEl && document.activeElement === searchEl;
+    const start = keepFocus ? searchEl.selectionStart : null;
+    const end = keepFocus ? searchEl.selectionEnd : null;
     withShopUiQuiet(function () {
         box.innerHTML = html;
     });
+    if (keepFocus) {
+        const again = document.getElementById("staffEmployeeSearch");
+        if (again) {
+            again.focus();
+            if (start != null && typeof again.setSelectionRange === "function") {
+                try { again.setSelectionRange(start, end); } catch (err) {}
+            }
+        }
+    }
 }
 
 function addSummaryEmployee() {
