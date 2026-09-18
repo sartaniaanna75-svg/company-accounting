@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -12978,10 +12978,7 @@ function updateDriverEntryMetric(entryId, metricId, raw) {
 
 
 function openMetricCatalogFromTerritory() {
-    showSection("metricCatalog");
-    setTimeout(function () {
-        try { openMetricCatalogForm(); } catch (err) { console.error(err); }
-    }, 0);
+    openCreateMetricForm();
 }
 
 function openFleetVehiclesAdmin() {
@@ -22772,7 +22769,8 @@ function renderMetricCatalog() {
     const body = document.getElementById(generic ? "deptMetricsCatalogBody" : "metricCatalogBody");
     const bar = document.getElementById(generic ? "deptMetricsCatalogToolbar" : "metricCatalogToolbar");
     if (!body) return;
-    const can = canMutateMetricCatalogUi();
+    const canEdit = canEditShopMetricCatalog();
+    const can = canEdit;
     const allDepts = catalogViewShowsAllDepts();
     const companyWide = currentSection === "metricCatalog" && isCompanyWideCatalogMode();
     if (isTerritoryMetricsMode() && metricCatalogFilter.dept === "shop") metricCatalogFilter.dept = "";
@@ -22788,11 +22786,20 @@ function renderMetricCatalog() {
                 ? "Справочник метрик территории. Создание и назначения — здесь."
                 : "Единственное место создания метрик отдела. Рабочие разделы только показывают назначенные метрики.");
     }
+    const deptNote = document.getElementById("deptMetricsNote");
+    if (deptNote && currentSection === "deptMetrics") {
+        deptNote.textContent = canEdit
+            ? "Назначенные показатели отдела. Новые метрики создаются в едином Справочнике метрик (кнопка ниже)."
+            : "Просмотр назначенных показателей. Изменять справочник может администратор.";
+    }
     const deptTabs = document.getElementById("metricCatalogDeptTabs");
     const filtersBox = document.getElementById("metricCatalogFilters");
     if (bar) {
-        let html = can
-            ? '<button type="button" class="btn btn-primary" onclick="openMetricCatalogForm()">+ Создать метрику</button>'
+        let html = canEdit
+            ? (generic
+                ? '<button type="button" class="btn btn-primary" onclick="openCreateMetricForm()">+ Добавить метрику</button>'
+                    + '<button type="button" class="btn btn-secondary" style="margin-left:8px" onclick="showSection(\'metricCatalog\')">📚 Справочник метрик</button>'
+                : '<button type="button" class="btn btn-primary" onclick="openCreateMetricForm()">+ Добавить метрику</button>')
             : '<div class="note">Просмотр. Изменять справочник может администратор.</div>';
         if (!companyWide && allDepts) {
             html += '<select onchange="setMetricCatalogFilter(\'dept\',this.value)" style="margin-left:8px">';
@@ -22933,7 +22940,7 @@ function renderMetricCatalog() {
     const colSpan = 8;
     if (!items.length) {
         body.innerHTML = '<tr><td colspan="' + colSpan + '"><div class="note">Нет метрик по выбранным фильтрам.'
-            + (can ? " Нажмите «+ Создать метрику»." : "") + "</div></td></tr>";
+            + (can ? " Нажмите «+ Добавить метрику»." : "") + "</div></td></tr>";
         return;
     }
     const deptNames = {};
@@ -23159,16 +23166,25 @@ function isCentralMetricCatalogScreen() {
 
 function canMutateMetricCatalogUi() {
     if (!canEditShopMetricCatalog()) return false;
-    if (currentSection === "deptMetrics") return false;
     const modal = document.getElementById("metricCatalogModalBack");
     if (modal && modal.classList.contains("show")) return true;
-    if (currentSection !== "metricCatalog") return false;
-    if (isTerritoryMetricsMode()) return true;
-    if (isCompanyWideCatalogMode()) return true;
-    const code = workspace() && workspace().code;
-    if (code === "shop") return true;
-    if (isGenericMetricsDept(code)) return true;
+    if (currentSection === "metricCatalog") return true;
     return false;
+}
+
+function openCreateMetricForm() {
+    if (!canEditShopMetricCatalog()) {
+        toast("Нет права создавать или изменять метрики.", "error");
+        return;
+    }
+    if (currentSection !== "metricCatalog") {
+        showSection("metricCatalog");
+        setTimeout(function () {
+            try { openMetricCatalogForm(); } catch (err) { console.error(err); }
+        }, 0);
+        return;
+    }
+    openMetricCatalogForm();
 }
 
 function catalogFormDeptList() {
@@ -23315,11 +23331,20 @@ function defaultMetricCatalogAssignmentRow() {
     const dept = (spec && spec.departmentId)
         || ((deptEl && deptEl.value) && deptEl.value !== "shop" ? deptEl.value : "")
         || "warehouse";
+    const tabs = metricTabsForDept(dept);
+    let workTab = "";
+    if (spec && Array.isArray(spec.workTabIds) && spec.workTabIds.length) {
+        workTab = spec.workTabIds[0];
+    } else if (tabs.length) {
+        workTab = tabs[0].id;
+    }
+    const positions = positionsForMetricAssignment(dept, workTab);
+    const positionId = positions.length ? (positions[0].position_id || "") : "";
     return {
         assignment_id: nextMetricAssignmentId(mcAssignDraft),
         department_id: dept,
-        work_tab_id: "",
-        position_id: "",
+        work_tab_id: workTab,
+        position_id: positionId,
         assign_mode: "group_all",
         employee_ids: []
     };
@@ -23537,6 +23562,11 @@ function onMetricCatalogCategoryChange() {
     if (deptEl && spec && spec.departmentId) deptEl.value = spec.departmentId;
     if (deptEl && spec && spec.allTerritory) deptEl.value = deptEl.value === "shop" ? "office" : (deptEl.value || "office");
     if (metricCatalogAssignmentFormActive()) {
+        const formId = String((document.getElementById("mcMetricId") || {}).value || "");
+        if (!formId) {
+            mcAssignDraft = [defaultMetricCatalogAssignmentRow()];
+            renderMetricCatalogAssignments();
+        }
         refreshMetricCatalogFormulaBox();
         return;
     }
@@ -23549,12 +23579,24 @@ function openMetricCatalogForm(id, dupIgnore) {
         toast("Нет права создавать или изменять метрики.", "error");
         return;
     }
+    if (!id && currentSection !== "metricCatalog") {
+        openCreateMetricForm();
+        return;
+    }
     if (!id && !canMutateMetricCatalogUi()) {
-        toast("Новые метрики создаются только в Территория → Метрики → Справочник метрик.", "error");
+        toast("Новые метрики создаются в Справочнике метрик.", "error");
+        openCreateMetricForm();
+        return;
+    }
+    if (id && !canMutateMetricCatalogUi() && currentSection !== "metricCatalog") {
+        showSection("metricCatalog");
+        setTimeout(function () {
+            try { openMetricCatalogForm(id, dupIgnore); } catch (err) { console.error(err); }
+        }, 0);
         return;
     }
     if (id && !canMutateMetricCatalogUi()) {
-        toast("Изменять метрики можно только в Справочнике метрик территории.", "error");
+        toast("Нет права изменять метрики.", "error");
         return;
     }
     const existing = id ? shopMetricCatalogById(id) : null;
@@ -23565,14 +23607,17 @@ function openMetricCatalogForm(id, dupIgnore) {
     }
     let dept = existing ? metricDepartmentId(existing) : (metricCatalogFilter.dept || contextDept || "office");
     if (!existing && isTerritoryMetricsMode() && (!dept || dept === "shop")) dept = "office";
+    if (!existing && isCompanyWideCatalogMode() && (!dept || dept === "shop" || dept === "summary")) dept = "office";
     const territoryForm = isTerritoryMetricsMode();
     const workDeptForm = false;
     let category = existing ? metricTerritoryCategory(existing) : "";
-    if (!existing && territoryForm) {
-        category = "office";
-        if (dept === "drivers") category = "drivers";
-        else if (dept === "warehouse") category = "warehouse";
-        else if (dept === "office") category = "office";
+    if (!existing && (territoryForm || isCentralMetricCatalogScreen())) {
+        if (!category) {
+            if (dept === "drivers") category = "drivers";
+            else if (dept === "warehouse") category = "warehouse";
+            else if (dept === "office") category = "office";
+            else category = "office";
+        }
         const spec = territoryMetricCategoryById(category);
         if (spec && spec.departmentId) dept = spec.departmentId;
     }
@@ -23596,7 +23641,7 @@ function openMetricCatalogForm(id, dupIgnore) {
     const deptLocked = !catalogFormCanPickDept() || !!(it.builtin);
     const useAssignForm = (territoryForm || isCentralMetricCatalogScreen()) && dept !== "shop"
         && metricDepartmentId(it) !== "shop";
-    let html = "<h3 style=\"margin:0 0 8px\">" + (id ? "Изменить метрику" : "Создать метрику") + "</h3>"
+    let html = "<h3 style=\"margin:0 0 8px\">" + (id ? "Изменить метрику" : "Добавить метрику") + "</h3>"
         + '<div class="metric-cat-form">'
         + '<div class="form-group full"><label>Название метрики *</label>'
         + '<input id="mcName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
@@ -23606,7 +23651,7 @@ function openMetricCatalogForm(id, dupIgnore) {
     metricCatalogCategoriesForForm(territoryForm || isCentralMetricCatalogScreen()).forEach(function (c) {
         html += '<option value="' + c.id + '"' + (category === c.id ? " selected" : "") + ">" + escapeHtml(c.label) + "</option>";
     });
-    if (!territoryForm && !isGenericMetricsDept((workspace() && workspace().code) || "")) {
+    if (!territoryForm && !isCentralMetricCatalogScreen() && !isGenericMetricsDept((workspace() && workspace().code) || "")) {
         html += '<option value=""' + (!category ? " selected" : "") + ">Магазин Володарского / без категории территории</option>";
     }
     html += "</select></div>"
@@ -23663,6 +23708,7 @@ function openMetricCatalogForm(id, dupIgnore) {
                 + "</div></div>"
                 + '<div class="form-group full" id="mcPeopleWrap"><div class="mc-people" id="mcPeopleBox"></div></div>'))
         + '<div class="form-group full" id="mcRouteBox"></div>'
+        + '<div class="note full" id="mcFormError" style="color:#b00020;display:none"></div>'
         + '<div class="note full" id="mcDupHint"></div></div>'
         + '<div class="rev-modal-actions" style="margin-top:10px">'
         + '<button type="button" class="btn btn-primary" onclick="saveMetricCatalogForm(\'' + (it.id || "") + '\',' + (dupIgnore ? "true" : "false") + ')">Сохранить</button>'
@@ -23799,14 +23845,33 @@ function refreshMetricCatalogPeopleBox(metricId) {
 }
 
 function saveMetricCatalogForm(id, dupIgnore) {
-    if (!canEditShopMetricCatalog() || !canMutateMetricCatalogUi()) {
-        toast("Нет права создавать или изменять метрики.", "error");
+    function formErr(msg) {
+        const box = document.getElementById("mcFormError");
+        if (box) {
+            box.style.display = "";
+            box.textContent = msg;
+        }
+        toast(msg, "error");
+    }
+    if (!canEditShopMetricCatalog()) {
+        formErr("Нет права создавать или изменять метрики.");
+        return;
+    }
+    if (!canMutateMetricCatalogUi()) {
+        formErr("Откройте Справочник метрик, чтобы сохранить изменения.");
         return;
     }
     const name = String((document.getElementById("mcName") || {}).value || "").replace(/\s+/g, " ").trim();
     if (!name) {
-        toast("Укажите название метрики.", "error");
+        formErr("Укажите название метрики.");
+        const nameEl = document.getElementById("mcName");
+        if (nameEl) nameEl.focus();
         return;
+    }
+    const errBox = document.getElementById("mcFormError");
+    if (errBox) {
+        errBox.style.display = "none";
+        errBox.textContent = "";
     }
     const deptEl = document.getElementById("mcDept");
     let dept = (deptEl && deptEl.value) || catalogDeptContext();
@@ -23818,11 +23883,11 @@ function saveMetricCatalogForm(id, dupIgnore) {
     const spec = cat ? territoryMetricCategoryById(cat) : null;
     if (assignmentRows) {
         if (!cat) {
-            toast("Выберите категорию в Метриках.", "error");
+            formErr("Выберите категорию в Метриках.");
             return;
         }
         if (!assignmentRows.length) {
-            toast("Добавьте хотя бы одно назначение.", "error");
+            formErr("Добавьте хотя бы одно назначение.");
             return;
         }
         let asgErr = "";
@@ -23841,7 +23906,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
             }
         });
         if (asgErr) {
-            toast(asgErr, "error");
+            formErr(asgErr);
             return;
         }
         if (spec && spec.departmentId) dept = spec.departmentId;
@@ -23874,13 +23939,13 @@ function saveMetricCatalogForm(id, dupIgnore) {
                     }).join(" ")
                     + ' <button type="button" class="btn btn-primary btn-small" onclick="saveMetricCatalogForm(\'' + (id || "") + "',true)\">Всё равно создать</button>";
             }
-            toast("Возможно, такая метрика уже существует.", "error");
+            formErr("Возможно, такая метрика уже существует. Выберите похожую или подтвердите создание.");
             return;
         }
     }
     if (!catalogFormCanPickDept() && dept !== catalogDeptContext()) {
         if (!(spec && spec.allTerritory)) {
-            toast("Нельзя сохранить метрику в другой отдел.", "error");
+            formErr("Нельзя сохранить метрику в другой отдел.");
             return;
         }
     }
@@ -23889,7 +23954,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
         : collectMetricCatalogAssignMode();
     const personIdsEarly = assignmentRows ? [] : collectMetricCatalogPersonIds();
     if (!assignmentRows && assignModeEarly === "specific" && !personIdsEarly.length) {
-        toast("Отметьте сотрудников или выберите «Всем сотрудникам категории».", "error");
+        formErr("Отметьте сотрудников или выберите «Всем сотрудникам категории».");
         return;
     }
     const structure = (document.getElementById("mcStructure") || {}).value === "with_submetrics" ? "with_submetrics" : "plain";
@@ -23985,7 +24050,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (structure === "with_submetrics") {
         const nextSubs = collectMetricCatalogSubmetrics(item.submetrics);
         if (!nextSubs.length) {
-            toast("Добавьте хотя бы одну подметрику.", "error");
+            formErr("Добавьте хотя бы одну подметрику.");
             return;
         }
         item.submetrics = nextSubs;
@@ -24425,7 +24490,8 @@ function syncDeptWorkAdminBar() {
     if (fioBtn) fioBtn.style.display = on && canEditStaff() ? "" : "none";
     if (metBtn) {
         metBtn.style.display = on && canEditShopMetricCatalog() ? "" : "none";
-        metBtn.textContent = "📚 Справочник метрик";
+        metBtn.textContent = "+ Добавить метрику";
+        metBtn.onclick = function () { openCreateMetricForm(); };
     }
 }
 
@@ -24457,11 +24523,11 @@ function addEmployeeFromWorkMetrics() {
 }
 
 function openMetricFromWorkMetrics() {
-    if (isTerritoryMetricsMode() || canEditShopMetricCatalog()) {
-        showSection("metricCatalog");
+    if (!canEditShopMetricCatalog()) {
+        toast("Нет права создавать метрики.", "error");
         return;
     }
-    toast("Новые метрики создаются только в Территория → Метрики → Справочник метрик.", "error");
+    openCreateMetricForm();
 }
 
 function defaultTerritoryMetricsHubId() {
@@ -24610,8 +24676,7 @@ function renderTerritoryMetricsHubTabs() {
 }
 
 function openTerritoryMetricForm() {
-    toast("Новые метрики создаются только в Справочнике метрик.", "error");
-    showSection("metricCatalog");
+    openCreateMetricForm();
 }
 
 function renderTerritoryMetrics() {
@@ -24639,9 +24704,7 @@ function renderTerritoryMetrics() {
         }
         if (canEditShopMetricCatalog()) {
             html += '<button type="button" class="btn btn-secondary" onclick="showSection(\'metricCatalog\')">📚 Справочник метрик</button>';
-            if (canMutateMetricCatalogUi() || isTerritoryMetricsMode()) {
-                html += '<button type="button" class="btn btn-secondary" onclick="showSection(\'metricCatalog\');setTimeout(function(){openMetricCatalogForm();},0)">+ Создать метрику</button>';
-            }
+            html += '<button type="button" class="btn btn-primary" onclick="openCreateMetricForm()">+ Добавить метрику</button>';
         }
         if (spec.id === "drivers") {
             html += '<button type="button" class="btn btn-secondary" onclick="openFleetVehiclesAdmin()">Автопарк</button>';
