@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -2433,6 +2433,16 @@
             gap: 8px;
         }
         .drv-stmt-metrics .form-group { margin: 0; }
+        .metrics-table select.metrics-vehicle-select {
+            width: 100%;
+            min-width: 88px;
+            max-width: 148px;
+            font-size: 11px;
+            padding: 3px 4px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: #fff;
+        }
         .drv-stmt-day-total {
             margin-top: 8px;
             font-size: 12px;
@@ -6789,6 +6799,7 @@ const SHOP_METRIC_FILL_TYPES = [
     { id: "number", label: "Числовая" },
     { id: "check", label: "Сделано / Не сделано" },
     { id: "money", label: "Денежная сумма" },
+    { id: "vehicle", label: "Автомобиль (выбор из справочника)" },
     { id: "auto_calc", label: "Автоматический расчёт" },
     { id: "auto_sum", label: "Автоматическая сумма" },
     { id: "month_money", label: "Месячная сумма магазина" }
@@ -12474,6 +12485,8 @@ function collectDeptMetricPeriodSeries(deptCode, metricId, subId, days, employee
     const mid = canonicalMetricId(metricId);
     const series = [];
     if (!mid || !deptCode) return series;
+    const catalogItem = shopMetricCatalogById(mid);
+    if (catalogItem && catalogItem.fill_type === "vehicle") return series;
     const allow = employeeIds && employeeIds.length ? employeeIds : null;
     const empOk = function (id) { return !allow || allow.indexOf(id) !== -1; };
     if (deptCode === "drivers" && !subId) {
@@ -12963,6 +12976,37 @@ function updateDriverEntryMetric(entryId, metricId, raw) {
     refreshDriverStatementUi();
 }
 
+
+function openMetricCatalogFromTerritory() {
+    showSection("metricCatalog");
+    setTimeout(function () {
+        try { openMetricCatalogForm(); } catch (err) { console.error(err); }
+    }, 0);
+}
+
+function openFleetVehiclesAdmin() {
+    ensureFleetVehicles();
+    let html = "<h3>Автопарк</h3>";
+    html += '<div class="note">Справочник автомобилей (vehicle_id). Не является метрикой. В таблице метрик типа «Автомобиль» выбирается машина на дату и водителя.</div>';
+    fleetVehicleItems(true).forEach(function (v) {
+        html += '<div style="display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap">'
+            + '<input style="width:120px" value="' + escapeAttribute(v.plate || "") + '" '
+            + 'onchange="updateFleetVehicleField(\'' + v.vehicle_id + '\',\'plate\',this.value)" placeholder="Госномер">'
+            + '<input style="width:160px" value="' + escapeAttribute(v.name || "") + '" '
+            + 'onchange="updateFleetVehicleField(\'' + v.vehicle_id + '\',\'name\',this.value)" placeholder="Название">'
+            + '<label class="check"><input type="checkbox"' + (v.is_active === false ? "" : " checked")
+            + ' onchange="updateFleetVehicleField(\'' + v.vehicle_id + '\',\'is_active\',this.checked)"> Активен</label>'
+            + "</div>";
+    });
+    html += '<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">'
+        + '<input id="drvNewPlate" style="width:120px" placeholder="Госномер">'
+        + '<input id="drvNewName" style="width:160px" placeholder="Название">'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="addFleetVehicleFromUi();openFleetVehiclesAdmin()">+ Автомобиль</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="closeMetricCatalogModal()">Закрыть</button>'
+        + "</div>";
+    openMetricCatalogModal(html);
+}
+
 function hideDriverStatementHost() {
     ["driverStatementHost", "driverStatementHostWork"].forEach(function (id) {
         const host = document.getElementById(id);
@@ -13150,10 +13194,15 @@ function shopMetricHasMonthData(metricId, month) {
 function shopCatalogToField(item) {
     const fill = item.fill_type || "number";
     const isCheck = fill === "check" || fill === "done_not_done" || fill === "boolean";
+    let type = "number";
+    if (isCheck) type = "check";
+    else if (fill === "money") type = "money";
+    else if (fill === "vehicle") type = "vehicle";
+    else if (fill === "auto_calc") type = "avgCheck";
     return {
         key: item.key || item.id,
         label: item.name,
-        type: isCheck ? "check" : (fill === "money" ? "money" : (fill === "auto_calc" ? "avgCheck" : "number")),
+        type: type,
         metricId: item.id,
         extra: !item.core_column,
         derived: false,
@@ -13224,6 +13273,7 @@ function metricFieldViewMode(field) {
     if (fill === "check" || fill === "done_not_done" || fill === "boolean") return "checklist";
     if (field.type === "check") return "checklist";
     if (fill === "month_money") return "";
+    if (fill === "vehicle" || field.type === "vehicle") return "numeric";
     return "numeric";
 }
 
@@ -23112,9 +23162,13 @@ function canMutateMetricCatalogUi() {
     if (currentSection === "deptMetrics") return false;
     const modal = document.getElementById("metricCatalogModalBack");
     if (modal && modal.classList.contains("show")) return true;
-    if (isTerritoryMetricsMode()) return currentSection === "metricCatalog";
-    if (isCompanyWideCatalogMode()) return currentSection === "metricCatalog";
-    return !!(workspace() && workspace().code === "shop" && currentSection === "metricCatalog");
+    if (currentSection !== "metricCatalog") return false;
+    if (isTerritoryMetricsMode()) return true;
+    if (isCompanyWideCatalogMode()) return true;
+    const code = workspace() && workspace().code;
+    if (code === "shop") return true;
+    if (isGenericMetricsDept(code)) return true;
+    return false;
 }
 
 function catalogFormDeptList() {
@@ -23989,15 +24043,26 @@ function getDeptMetricStored(deptCode, employeeId, day, metricId, month, submetr
     const facts = deptMetricFactsMonth(deptCode, month);
     const rec = facts[employeeId] && facts[employeeId][String(day)];
     if (!rec) return 0;
+    const it = shopMetricCatalogById(parseMetricFactKey(metricId, submetricId).metricId);
+    if (it && it.fill_type === "vehicle") return 0;
     if (rec[key + "Mark"] === "done") return 1;
     if (rec[key + "Mark"] === "fail") return 0;
     return rec[key] != null ? Number(rec[key] || 0) : 0;
+}
+
+function getDeptMetricVehicleId(deptCode, employeeId, day, metricId, month) {
+    const key = metricFactStorageKey(metricId);
+    const facts = deptMetricFactsMonth(deptCode, month);
+    const rec = facts[employeeId] && facts[employeeId][String(day)];
+    if (!rec || rec[key] == null || rec[key] === "") return "";
+    return String(rec[key]);
 }
 
 function deptMetricPersonalMonthTotal(deptCode, employeeId, metricId, month, submetricId) {
     const m = month || selectedMonth;
     const mid = canonicalMetricId(metricId);
     const it = shopMetricCatalogById(mid);
+    if (it && it.fill_type === "vehicle") return 0;
     const agg = metricPeriodAgg(it);
     const days = daysInMonthValue(m);
     if (deptCode === "drivers" && !submetricId) {
@@ -24157,21 +24222,25 @@ function clearDeptMetricDayIfEmpty(deptCode, employeeId, day) {
 
 function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricId) {
     if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
-    if (deptCode === "drivers") {
-        const facts = deptMetricFactsMonth(deptCode);
-        const rec = facts[employeeId] && facts[employeeId][String(day)];
-        if (rec && rec.source === "driver_statement") {
-            toast("Факты водителей вводятся через «Ведомость водителя» (дата → водитель → автомобиль).", "error");
-            return;
-        }
-    }
     const parsed = parseMetricFactKey(metricId, submetricId);
     const it = shopMetricCatalogById(parsed.metricId);
     if (!it || it.active === false) return;
     const key = metricFactStorageKey(parsed.metricId, parsed.submetricId);
-    const n = parseShopMetricNumber(raw);
     const text = String(raw == null ? "" : raw).trim();
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
+    if (it.fill_type === "vehicle") {
+        if (text === "") {
+            delete rec[key];
+            clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
+        } else {
+            rec[key] = text;
+            stampAuthOnRecord(rec);
+        }
+        saveApp();
+        refreshDeptWorkUi();
+        return;
+    }
+    const n = parseShopMetricNumber(raw);
     if (text === "") {
         delete rec[key];
         clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
@@ -24209,6 +24278,17 @@ function deptMetricInputHtml(deptCode, employeeId, day, field) {
     if (field.autoCalc || (it && it.fill_type === "auto_calc")) {
         const n = shopCatalogAutoValue(employeeId, day, field.metricId);
         return '<span class="metrics-auto-fact">' + formatShopMetricField({ type: field.type === "money" ? "money" : "number" }, n) + "</span>";
+    }
+    if (it && it.fill_type === "vehicle") {
+        ensureFleetVehicles();
+        const cur = getDeptMetricVehicleId(deptCode, employeeId, day, field.metricId, selectedMonth);
+        if (!canEdit) {
+            return '<span class="metrics-auto-fact">' + escapeHtml(fleetVehicleLabel(cur) || "—") + "</span>";
+        }
+        return '<select class="metrics-vehicle-select" title="Автомобиль на дату"'
+            + " onchange=\"setDeptMetricValue('" + deptCode + "','" + employeeId + "'," + day + ",'" + field.metricId + "',this.value" + sidArg + ")\">"
+            + fleetVehicleOptionsHtml(cur, true)
+            + "</select>";
     }
     if (it && (it.fill_type === "check" || it.fill_type === "done_not_done" || it.fill_type === "boolean")) {
         const state = deptMetricCheckState(deptCode, employeeId, day, field.metricId, selectedMonth, sid);
@@ -24343,7 +24423,10 @@ function syncDeptWorkAdminBar() {
     const fioBtn = document.getElementById("deptWorkAddFioBtn");
     const metBtn = document.getElementById("deptWorkAddMetricBtn");
     if (fioBtn) fioBtn.style.display = on && canEditStaff() ? "" : "none";
-    if (metBtn) metBtn.style.display = "none";
+    if (metBtn) {
+        metBtn.style.display = on && canEditShopMetricCatalog() ? "" : "none";
+        metBtn.textContent = "📚 Справочник метрик";
+    }
 }
 
 function addEmployeeFromWorkMetrics() {
@@ -24374,8 +24457,11 @@ function addEmployeeFromWorkMetrics() {
 }
 
 function openMetricFromWorkMetrics() {
+    if (isTerritoryMetricsMode() || canEditShopMetricCatalog()) {
+        showSection("metricCatalog");
+        return;
+    }
     toast("Новые метрики создаются только в Территория → Метрики → Справочник метрик.", "error");
-    if (isTerritoryMetricsMode()) showSection("metricCatalog");
 }
 
 function defaultTerritoryMetricsHubId() {
@@ -24551,19 +24637,20 @@ function renderTerritoryMetrics() {
         if (canEditStaff()) {
             html += '<button type="button" class="btn btn-primary" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>';
         }
+        if (canEditShopMetricCatalog()) {
+            html += '<button type="button" class="btn btn-secondary" onclick="showSection(\'metricCatalog\')">📚 Справочник метрик</button>';
+            if (canMutateMetricCatalogUi() || isTerritoryMetricsMode()) {
+                html += '<button type="button" class="btn btn-secondary" onclick="showSection(\'metricCatalog\');setTimeout(function(){openMetricCatalogForm();},0)">+ Создать метрику</button>';
+            }
+        }
         if (spec.id === "drivers") {
-            html += '<span class="note" style="margin-left:8px">Ведомость водителя. Метрики — из Справочника по назначениям на Водителей. Каждая метрика хранит свой metric_id.</span>';
+            html += '<button type="button" class="btn btn-secondary" onclick="openFleetVehiclesAdmin()">Автопарк</button>';
+            html += '<span class="note" style="margin-left:8px">Таблица: даты → водители. Метрика типа «Автомобиль» — выбор машины на дату. Остальные показатели — отдельные metric_id.</span>';
         } else {
             html += '<span class="note" style="margin-left:8px">Категория «' + escapeHtml(spec.label)
                 + "». Метрики назначаются в Справочнике метрик. Значения те же, что в рабочих разделах.</span>";
         }
         bar.innerHTML = html;
-    }
-    if (spec.id === "drivers") {
-        const fillTabs = document.getElementById("territoryMetricsFillTabs");
-        if (fillTabs) fillTabs.innerHTML = "";
-        renderDriverStatement();
-        return;
     }
     hideDriverStatementHost();
     fillDeptWorkTable(spec.departmentId || "office", territoryHubTabIds(spec)[0] || "main", {
@@ -24594,21 +24681,6 @@ function renderDeptWorkMetrics() {
     ensureDeptMetrics(dept);
     const tab = currentDeptMetricTab(dept);
     hideShopOnlyMetricChrome();
-    if (dept === "drivers" && tab === "drivers") {
-        const wrap = document.getElementById("metricsWrap");
-        const rollup = document.getElementById("metricsWrapRollup");
-        const host = document.getElementById("driverStatementHostWork");
-        if (wrap) wrap.style.display = "none";
-        if (rollup) rollup.style.display = "none";
-        if (host) {
-            host.style.display = "";
-            renderDriverStatement(host);
-        } else {
-            renderDriverStatement();
-        }
-        syncDeptWorkAdminBar();
-        return;
-    }
     hideDriverStatementHost();
     fillDeptWorkTable(dept, tab, deptWorkDom("work"));
     syncDeptWorkAdminBar();
@@ -24663,7 +24735,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
                 colHtml += '<col class="metrics-col-emp metrics-col-g-' + (fi % 4) + '">';
                 return;
             }
-            const wide = field.type === "money";
+            const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
             const n = Math.max(peopleOf(field.metricId).length, 1);
             for (let i = 0; i < n; i++) {
                 colHtml += '<col class="metrics-col-emp metrics-col-g-' + (fi % 4) + (wide ? " metrics-col-money" : "") + '">';
@@ -24768,7 +24840,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
         headHtml += '</tr><tr class="metrics-head-emps">';
         fields.forEach(function (field, fi) {
             if (field.service) return;
-            const wide = field.type === "money";
+            const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
             const people = peopleOf(field.metricId);
             people.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
@@ -24799,7 +24871,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
                     + ' metrics-group-start">' + (tot ? tot.toLocaleString("ru-RU") : "—") + "</td>";
                 return;
             }
-            const wide = field.type === "money";
+            const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
             const people = peopleOf(field.metricId);
             people.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
