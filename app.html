@@ -4261,6 +4261,7 @@
                 <div class="metrics-stats" id="metricsCards"></div>
                 <div class="card">
                     <div id="metricsWrapRollup"></div>
+                    <div id="driverStatementHostWork" style="display:none"></div>
                     <div class="table-wrapper" id="metricsWrap">
                         <table class="metrics-table" id="metricsTable">
                             <thead id="metricsHead"></thead>
@@ -6052,6 +6053,11 @@ function metricStoredNumber(deptCode, employeeId, day, metricId, month, submetri
 }
 
 function metricEmployeeFactSum(deptCode, employeeId, item, days) {
+    if (!item) return 0;
+    if (deptCode === "drivers" && metricStructureType(item) !== "with_submetrics") {
+        const series = collectDeptMetricPeriodSeries(deptCode, item.id, "", days || [], [employeeId]);
+        return aggregateMetricNumbers(series, metricPeriodAgg(item));
+    }
     let sum = 0;
     const parts = metricPrimaryFactParts(item);
     (days || []).forEach(function (d) {
@@ -8311,6 +8317,7 @@ function createDefaultData() {
         deptSalesPlans: {},
         users: [],
         management: { indicators: [], plans: {}, manualFacts: {}, tasks: [], meetings: [], events: [] },
+        fleetVehicles: { items: [] },
         orgStructure: { nodes: [], leadership: [] },
         customerReturns: { items: [], vehicles: [], adjustments: [] },
         workspaces: DEPT_DEFAULTS.map(function (d) {
@@ -12456,6 +12463,49 @@ function aggregateMetricNumbers(values, agg) {
     return nums.reduce(function (s, n) { return s + n; }, 0);
 }
 
+function dayMatchesFactDays(day, month, days) {
+    const m = String(month || selectedMonth);
+    return (days || []).some(function (d) {
+        return Number(d.day) === Number(day) && String(d.month || selectedMonth) === m;
+    });
+}
+
+function collectDeptMetricPeriodSeries(deptCode, metricId, subId, days, employeeIds) {
+    const mid = canonicalMetricId(metricId);
+    const series = [];
+    if (!mid || !deptCode) return series;
+    const allow = employeeIds && employeeIds.length ? employeeIds : null;
+    const empOk = function (id) { return !allow || allow.indexOf(id) !== -1; };
+    if (deptCode === "drivers" && !subId) {
+        const months = {};
+        (days || []).forEach(function (d) { months[d.month || selectedMonth] = true; });
+        let fromTrips = false;
+        Object.keys(months).forEach(function (m) {
+            driverMetricEntriesMonth(m).forEach(function (entry) {
+                if (!entry || !empOk(entry.employee_id)) return;
+                if (!dayMatchesFactDays(entry.day, m, days)) return;
+                if (entry.values && entry.values[mid] != null && entry.values[mid] !== "") {
+                    series.push(Number(entry.values[mid] || 0));
+                    fromTrips = true;
+                }
+            });
+        });
+        if (fromTrips) return series;
+    }
+    (days || []).forEach(function (d) {
+        const facts = deptMetricFactsMonth(deptCode, d.month);
+        Object.keys(facts || {}).forEach(function (empId) {
+            if (!empOk(empId)) return;
+            const rec = facts[empId] && facts[empId][String(d.day)];
+            if (!rec) return;
+            const key = metricFactStorageKey(mid, subId);
+            if (rec[key] == null && rec[key + "Mark"] == null) return;
+            series.push(Number(getDeptMetricStored(deptCode, empId, d.day, mid, d.month, subId) || 0));
+        });
+    });
+    return series;
+}
+
 function driverMetricEntriesMonth(month) {
     const root = ensureDeptMetrics("drivers");
     const key = month || selectedMonth;
@@ -12587,23 +12637,94 @@ function deleteDriverMetricEntry(entryId, month) {
 
 let driverStmtFilter = { day: "", employeeId: "" };
 let driverStmtShowVehicles = false;
+let driverStmtHostId = "";
 
-function renderDriverStatement() {
-    const host = document.getElementById("driverStatementHost");
-    const wrap = document.getElementById("territoryMetricsWrap");
-    const rollup = document.getElementById("territoryMetricsWrapRollup");
+function migrateLegacyDriverFactsToEntries(month) {
+    const m = month || selectedMonth;
+    const list = driverMetricEntriesMonth(m);
+    const covered = {};
+    list.forEach(function (e) {
+        if (!e || !e.employee_id) return;
+        covered[e.employee_id + ":" + Number(e.day)] = true;
+    });
+    const metrics = driverStatementMetrics();
+    if (!metrics.length) return;
+    const facts = deptMetricFactsMonth("drivers", m);
+    Object.keys(facts || {}).forEach(function (empId) {
+        const days = facts[empId];
+        if (!days || typeof days !== "object") return;
+        Object.keys(days).forEach(function (dayKey) {
+            const rec = days[dayKey];
+            if (!rec || typeof rec !== "object") return;
+            if (rec.source === "driver_statement") return;
+            const key = empId + ":" + Number(dayKey);
+            if (covered[key]) return;
+            const values = {};
+            let any = false;
+            metrics.forEach(function (it) {
+                const sk = metricFactStorageKey(it.id);
+                if (rec[sk] == null || rec[sk] === "") return;
+                const n = Number(rec[sk] || 0);
+                if (!Number.isFinite(n) || !n) return;
+                values[it.id] = n;
+                any = true;
+            });
+            if (!any) return;
+            list.push({
+                entry_id: nextDriverEntryId(m),
+                day: Number(dayKey),
+                employee_id: empId,
+                vehicle_id: "",
+                work_tab_id: "drivers",
+                department_id: "drivers",
+                values: values,
+                migrated_from_facts: true
+            });
+            covered[key] = true;
+            rec.source = "driver_statement";
+        });
+    });
+}
+
+function renderDriverStatement(hostEl) {
+    let host = hostEl || null;
+    if (!host) {
+        const workHost = document.getElementById("driverStatementHostWork");
+        const terrHost = document.getElementById("driverStatementHost");
+        if (workHost && workHost.style.display !== "none" && workHost.innerHTML) host = workHost;
+        else if (isTerritoryMetricsMode() && territoryMetricsHubId === "drivers") host = terrHost;
+        else if (workspace() && workspace().code === "drivers" && currentDeptMetricTab("drivers") === "drivers") {
+            host = workHost || terrHost;
+        } else host = terrHost || workHost;
+    }
+    const wrap = document.getElementById(
+        host && host.id === "driverStatementHostWork" ? "metricsWrap" : "territoryMetricsWrap"
+    ) || document.getElementById("territoryMetricsWrap") || document.getElementById("metricsWrap");
+    const rollup = document.getElementById(
+        host && host.id === "driverStatementHostWork" ? "metricsWrapRollup" : "territoryMetricsWrapRollup"
+    ) || document.getElementById("territoryMetricsWrapRollup") || document.getElementById("metricsWrapRollup");
     if (!host) return;
     if (wrap) wrap.style.display = "none";
     if (rollup) rollup.style.display = "none";
+    const other = host.id === "driverStatementHostWork"
+        ? document.getElementById("driverStatementHost")
+        : document.getElementById("driverStatementHostWork");
+    if (other) {
+        other.style.display = "none";
+        other.innerHTML = "";
+    }
     host.style.display = "";
+    driverStmtHostId = host.id || "";
     ensureFleetVehicles();
     ensureDeptMetrics("drivers");
+    migrateLegacyDriverFactsToEntries(selectedMonth);
     const metrics = driverStatementMetrics();
     const people = driverStatementPeople();
     const days = daysInMonthValue(selectedMonth);
     if (!driverStmtFilter.day) driverStmtFilter.day = String(Math.min(new Date().getDate(), days));
     const day = Number(driverStmtFilter.day) || 1;
-    const monthNote = document.getElementById("territoryMetricsMonthNote");
+    const monthNote = document.getElementById("territoryMetricsMonthNote")
+        || document.getElementById("metricsMonthNote");
     if (monthNote) {
         monthNote.textContent = monthLabel(selectedMonth)
             + ". Ведомость водителя: дата → водитель → автомобиль → метрики. Итоги дня пишутся в обычные факты metric_id.";
@@ -12685,6 +12806,25 @@ function renderDriverStatement() {
         if (parts.length) {
             html += '<div class="drv-stmt-day-total">Итого за день: ' + parts.join(" · ") + "</div>";
         }
+        if (mine.length > 1) {
+            const byVeh = {};
+            mine.forEach(function (entry) {
+                const lab = fleetVehicleLabel(entry.vehicle_id) || "без автомобиля";
+                if (!byVeh[lab]) byVeh[lab] = [];
+                metrics.forEach(function (it) {
+                    const v = entry.values && entry.values[it.id];
+                    if (v == null || v === "" || !Number(v)) return;
+                    byVeh[lab].push(escapeHtml(it.name) + "="
+                        + (it.fill_type === "money" ? formatShopMetricMoney(v) : blankZero(v)));
+                });
+            });
+            const lines = Object.keys(byVeh).map(function (lab) {
+                return byVeh[lab].length
+                    ? '<div class="note" style="margin:2px 0 0 8px">' + escapeHtml(lab) + ": " + byVeh[lab].join(", ") + "</div>"
+                    : "";
+            }).filter(Boolean);
+            if (lines.length) html += '<div class="note" style="margin-top:4px">Расшифровка по автомобилям:</div>' + lines.join("");
+        }
     });
     html += "</div>";
     host.innerHTML = html;
@@ -12725,19 +12865,24 @@ function renderDriverStatementEntryCard(entry, metrics, people, day) {
     return html;
 }
 
+function refreshDriverStatementUi() {
+    const el = driverStmtHostId ? document.getElementById(driverStmtHostId) : null;
+    renderDriverStatement(el);
+}
+
 function setDriverStmtDay(value) {
     driverStmtFilter.day = String(value || "");
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function setDriverStmtEmployee(value) {
     driverStmtFilter.employeeId = value || "";
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function toggleDriverVehicleAdmin() {
     driverStmtShowVehicles = !driverStmtShowVehicles;
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function addFleetVehicleFromUi() {
@@ -12745,7 +12890,7 @@ function addFleetVehicleFromUi() {
     const name = (document.getElementById("drvNewName") || {}).value;
     if (!addFleetVehicle(plate, name)) return;
     toast("Автомобиль добавлен.");
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function updateFleetVehicleField(id, field, value) {
@@ -12754,7 +12899,7 @@ function updateFleetVehicleField(id, field, value) {
     if (field === "is_active") v.is_active = !!value;
     else v[field] = String(value || "").replace(/\s+/g, " ").trim();
     saveApp();
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function addDriverStatementEntry() {
@@ -12774,13 +12919,13 @@ function addDriverStatementEntry() {
         department_id: "drivers",
         values: {}
     });
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function removeDriverStatementEntry(entryId) {
     if (!confirm("Удалить запись ведомости? Итоги дня пересчитаются.")) return;
     deleteDriverMetricEntry(entryId);
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function findDriverEntry(entryId, month) {
@@ -12799,7 +12944,7 @@ function updateDriverEntryField(entryId, field, value) {
     if (prevEmp !== entry.employee_id || Number(prevDay) !== Number(entry.day)) {
         rebuildDriverDayFactsFromEntries(prevEmp, prevDay);
     }
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function updateDriverEntryMetric(entryId, metricId, raw) {
@@ -12815,19 +12960,25 @@ function updateDriverEntryMetric(entryId, metricId, raw) {
         entry.values[metricId] = it.fill_type === "money" ? Math.round(n) : n;
     }
     saveDriverMetricEntry(entry);
-    renderDriverStatement();
+    refreshDriverStatementUi();
 }
 
 function hideDriverStatementHost() {
-    const host = document.getElementById("driverStatementHost");
+    ["driverStatementHost", "driverStatementHostWork"].forEach(function (id) {
+        const host = document.getElementById(id);
+        if (host) {
+            host.style.display = "none";
+            host.innerHTML = "";
+        }
+    });
     const wrap = document.getElementById("territoryMetricsWrap");
     const rollup = document.getElementById("territoryMetricsWrapRollup");
-    if (host) {
-        host.style.display = "none";
-        host.innerHTML = "";
-    }
+    const workWrap = document.getElementById("metricsWrap");
+    const workRollup = document.getElementById("metricsWrapRollup");
     if (wrap) wrap.style.display = "";
     if (rollup) rollup.style.display = "";
+    if (workWrap) workWrap.style.display = "";
+    if (workRollup) workRollup.style.display = "";
 }
 
 function deptTimesheetStatus(deptCode, employeeId, day, month) {
@@ -24006,6 +24157,14 @@ function clearDeptMetricDayIfEmpty(deptCode, employeeId, day) {
 
 function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricId) {
     if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
+    if (deptCode === "drivers") {
+        const facts = deptMetricFactsMonth(deptCode);
+        const rec = facts[employeeId] && facts[employeeId][String(day)];
+        if (rec && rec.source === "driver_statement") {
+            toast("Факты водителей вводятся через «Ведомость водителя» (дата → водитель → автомобиль).", "error");
+            return;
+        }
+    }
     const parsed = parseMetricFactKey(metricId, submetricId);
     const it = shopMetricCatalogById(parsed.metricId);
     if (!it || it.active === false) return;
@@ -24435,6 +24594,22 @@ function renderDeptWorkMetrics() {
     ensureDeptMetrics(dept);
     const tab = currentDeptMetricTab(dept);
     hideShopOnlyMetricChrome();
+    if (dept === "drivers" && tab === "drivers") {
+        const wrap = document.getElementById("metricsWrap");
+        const rollup = document.getElementById("metricsWrapRollup");
+        const host = document.getElementById("driverStatementHostWork");
+        if (wrap) wrap.style.display = "none";
+        if (rollup) rollup.style.display = "none";
+        if (host) {
+            host.style.display = "";
+            renderDriverStatement(host);
+        } else {
+            renderDriverStatement();
+        }
+        syncDeptWorkAdminBar();
+        return;
+    }
+    hideDriverStatementHost();
     fillDeptWorkTable(dept, tab, deptWorkDom("work"));
     syncDeptWorkAdminBar();
 }
@@ -30694,10 +30869,11 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
             }
         }
         const codes = mgmtMetricFactDeptCodes(deptCode, mid);
+        const agg = metricPeriodAgg(catalogItem);
         let sum = 0;
         codes.forEach(function (code) {
-            (days || []).forEach(function (d) {
-                if (code === "shop") {
+            if (code === "shop") {
+                (days || []).forEach(function (d) {
                     if (mid === "metric_recount") {
                         sum += shopRecountDayExecutorTotal(d.day, d.month);
                         return;
@@ -30706,13 +30882,11 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
                     ids.forEach(function (id) {
                         sum += Number(shopMetricStoredFact(id, d.day, mid, d.month, subId) || 0);
                     });
-                    return;
-                }
-                const facts = deptMetricFactsMonth(code, d.month);
-                Object.keys(facts || {}).forEach(function (empId) {
-                    sum += Number(getDeptMetricStored(code, empId, d.day, mid, d.month, subId) || 0);
                 });
-            });
+                return;
+            }
+            const series = collectDeptMetricPeriodSeries(code, mid, subId, days || [], null);
+            sum += aggregateMetricNumbers(series, agg);
         });
         return sum;
     } catch (err) {
