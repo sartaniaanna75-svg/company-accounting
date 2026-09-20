@@ -12150,6 +12150,13 @@ function catalogViewShowsAllDepts() {
     return currentSection === "metricCatalog" && (isCompanyWideCatalogMode() || isTerritoryMetricsMode());
 }
 
+function catalogItemsForDept(dept) {
+    const code = dept || catalogDeptContext();
+    return shopMetricCatalogItems().filter(function (it) {
+        return metricDepartmentId(it) === code;
+    });
+}
+
 function catalogItemsForView() {
     if (currentSection === "deptMetrics") return catalogItemsForDept(catalogDeptContext());
     if (currentSection === "metricCatalog" && isTerritoryMetricsMode()) {
@@ -22741,7 +22748,10 @@ function shopCatalogNextCustomId() {
 function shopCatalogNextOrder(sectionId, deptCode) {
     let max = 0;
     const dept = deptCode || catalogDeptContext();
-    catalogItemsForDept(dept).forEach(function (it) {
+    const items = typeof catalogItemsForDept === "function"
+        ? catalogItemsForDept(dept)
+        : shopMetricCatalogItems().filter(function (it) { return metricDepartmentId(it) === dept; });
+    items.forEach(function (it) {
         if (sectionId && !metricShowsOnTab(it, sectionId)) return;
         max = Math.max(max, Number(it.sort_order || 0));
     });
@@ -24987,12 +24997,16 @@ function fillDeptWorkTable(dept, tab, ids, options) {
 
 function shopExtraFunctionsHtml(employee) {
     try {
-    if (!workspace() || isSummary()) return "";
-    const code = workspace().code;
-    if (code !== "shop" && !isGenericMetricsDept(code)) return "";
+    if (!employee || !employee.id) return "";
+    const homeCode = employeeHomeDeptCode(employee.id);
+    let code = workspace() && workspace().code;
+    if (!code || isSummary() || isAdminEntry() || code === "summary") {
+        code = homeCode;
+    }
+    if (!code || (code !== "shop" && !isGenericMetricsDept(code))) return "";
     const opts = shopGrantableExtraMetrics(employee);
     if (!opts.length) {
-        if (!isGenericMetricsDept(code)) return "";
+        if (!isGenericMetricsDept(code) && code !== "shop") return "";
         return fieldBlock(
             "Рабочие метрики",
             '<div class="note emp-extra-fn-hint">Месяц ' + escapeHtml(monthLabel(selectedMonth))
@@ -25955,6 +25969,7 @@ function renderSummaryStaff() {
                 + (tabSel ? fieldBlock("Рабочая группа", tabSel, "emp-field-tab") : "")
                 + fieldBlock("Статус", statusSel, "emp-field-status")
                 + employeeSpuMeetingsFieldHtml(employee, locked)
+                + shopExtraFunctionsHtml(employee)
                 + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">", "emp-field-rate")
                 + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">", "emp-field-taxi")
                 + (isDrivers && isRep ? percentBlock : "")
@@ -26032,7 +26047,7 @@ function moveEmployeeToDepartment(employeeId, deptCode) {
     } else {
         employee.work_tab_id = "";
     }
-    assignGroupAllMetricsToEmployee(employee);
+    try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
 
     saveApp();
     renderSummaryStaff();
