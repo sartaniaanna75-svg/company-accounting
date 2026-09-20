@@ -2575,6 +2575,15 @@
         }
         .mc-filters .form-group { margin: 0; min-width: 120px; }
         .mc-filters label { font-size: 11px; }
+        .kpi-metric-pick-list {
+            max-height: min(52vh, 420px);
+            overflow: auto;
+            margin-top: 8px;
+            border-top: 1px solid #e5e7eb;
+            padding-top: 8px;
+        }
+        .kpi-metric-pick-list .rev-group-card { margin-bottom: 6px; }
+        .kpi-metric-pick-search { min-width: 160px; flex: 1; }
         .mc-view-tabs { margin: 0 0 10px; }
         .mc-dept-tabs {
             display: flex;
@@ -5857,6 +5866,7 @@ let navLayoutDraft = null;
 let navSourceNodes = null;
 let navDragPayload = null;
 let currentCustomNavItemId = null;
+let kpiMetricPick = null;
 let metricFormReturnSection = "";
 let editingSummaryUserRole = null;
 let summaryUserPinVisible = {};
@@ -10739,6 +10749,7 @@ function leaveWorkspace() {
     currentDeptRole = null;
     currentUserId = "";
     currentSection = "timesheet";
+    currentCustomNavItemId = null;
     currentEntry = "dept";
     selectedMonth = currentMonthValue();
     clearLoginPinState();
@@ -20049,6 +20060,382 @@ function shopKpiAssignableMetrics(view) {
     return list;
 }
 
+function kpiPickSectionOfDept(dept) {
+    if (dept === "shop") return "shop";
+    if (TERRITORY_DEPT_CODES.indexOf(dept) !== -1) return "territory";
+    return "";
+}
+
+function kpiPickDeptCodesForSection(section) {
+    if (section === "shop") return ["shop"];
+    if (section === "territory") return TERRITORY_DEPT_CODES.slice();
+    return DEPT_DEFAULTS.map(function (d) { return d.code; });
+}
+
+function kpiPickDefaultFromView(view) {
+    view = view || payrollViewFromSection();
+    const base = {
+        section: "",
+        dept: "",
+        work_tab: "",
+        position_id: "",
+        employee_id: "",
+        search: "",
+        highlightMetricId: ""
+    };
+    if (!view) return base;
+    if (view.id === "drivers") {
+        return Object.assign(base, {
+            section: "territory",
+            dept: "drivers",
+            work_tab: "drivers"
+        });
+    }
+    if (view.id === "warehouse") {
+        return Object.assign(base, {
+            section: "territory",
+            dept: "warehouse",
+            work_tab: ""
+        });
+    }
+    if (view.id === "shop") {
+        return Object.assign(base, {
+            section: "shop",
+            dept: "shop",
+            work_tab: ""
+        });
+    }
+    return base;
+}
+
+function kpiPickFromMetricId(metricId) {
+    const mid = canonicalMetricId(metricId);
+    const it = shopMetricCatalogById(mid);
+    const pick = {
+        section: "",
+        dept: "",
+        work_tab: "",
+        position_id: "",
+        employee_id: "",
+        search: "",
+        highlightMetricId: mid || ""
+    };
+    if (!it) {
+        const tpl = shopKpiTemplate(mid);
+        if (tpl && (tpl.category === "pickers" || tpl.category === "cashiers" || tpl.category === "managers")) {
+            pick.section = "shop";
+            pick.dept = "shop";
+            pick.work_tab = tpl.category || "";
+        } else if (mid === "metric_arrival_730") {
+            pick.section = "shop";
+            pick.dept = "shop";
+        }
+        return pick;
+    }
+    const dept = metricDepartmentId(it);
+    pick.dept = dept || "";
+    pick.section = kpiPickSectionOfDept(dept);
+    const tabs = metricWorkTabIds(it);
+    pick.work_tab = tabs.length === 1 ? tabs[0] : "";
+    const rows = metricAssignmentFilterRows(it);
+    const posIds = {};
+    rows.forEach(function (row) {
+        if (row && row.position_id) posIds[row.position_id] = true;
+    });
+    const posList = Object.keys(posIds);
+    if (posList.length === 1) pick.position_id = posList[0];
+    return pick;
+}
+
+function ensureKpiMetricPick(opts) {
+    opts = opts || {};
+    if (opts.reset || !kpiMetricPick) {
+        kpiMetricPick = kpiPickDefaultFromView(opts.view || payrollViewFromSection());
+    }
+    if (opts.metricId) {
+        const restored = kpiPickFromMetricId(opts.metricId);
+        kpiMetricPick.section = restored.section || kpiMetricPick.section;
+        kpiMetricPick.dept = restored.dept || kpiMetricPick.dept;
+        kpiMetricPick.work_tab = restored.work_tab || kpiMetricPick.work_tab;
+        if (restored.position_id) kpiMetricPick.position_id = restored.position_id;
+        kpiMetricPick.highlightMetricId = restored.highlightMetricId || canonicalMetricId(opts.metricId);
+    }
+    if (opts.employeeId) kpiMetricPick.employee_id = String(opts.employeeId || "");
+    return kpiMetricPick;
+}
+
+function kpiMetricMatchesPick(item, pick) {
+    pick = pick || kpiMetricPick || {};
+    if (!item) return false;
+    const mid = canonicalMetricId(item.id || item.metric_id || item.metricId);
+    if (mid === "metric_arrival_730") {
+        if (pick.section === "territory") return false;
+        if (pick.dept && pick.dept !== "shop") return false;
+        if (pick.work_tab && ["pickers", "cashiers", "managers"].indexOf(pick.work_tab) === -1) return false;
+        return true;
+    }
+    const catalogItem = shopMetricCatalogById(mid) || item;
+    const allowedDepts = pick.dept
+        ? [pick.dept]
+        : (pick.section ? kpiPickDeptCodesForSection(pick.section) : []);
+    if (!allowedDepts.length) {
+        return metricMatchesCatalogAssignmentFilters(catalogItem, {
+            dept: "",
+            tab: pick.work_tab || "",
+            tabDept: "",
+            position_id: pick.position_id || "",
+            employee_id: pick.employee_id || ""
+        });
+    }
+    return allowedDepts.some(function (dept) {
+        return metricMatchesCatalogAssignmentFilters(catalogItem, {
+            dept: dept,
+            tab: pick.work_tab || "",
+            tabDept: dept,
+            position_id: pick.position_id || "",
+            employee_id: pick.employee_id || ""
+        });
+    });
+}
+
+function shopKpiMetricsForPick(pick) {
+    pick = pick || kpiMetricPick || kpiPickDefaultFromView();
+    const q = String(pick.search || "").toLowerCase().replace(/ё/g, "е").trim();
+    return shopKpiAssignableMetrics(payrollViewFromSection()).filter(function (m) {
+        if (!kpiMetricMatchesPick(m, pick)) return false;
+        if (!q) return true;
+        const name = String(shopMetricDisplayName(m.id, m.name) || "").toLowerCase().replace(/ё/g, "е");
+        return name.indexOf(q) !== -1;
+    }).sort(function (a, b) {
+        return String(shopMetricDisplayName(a.id, a.name) || "").localeCompare(
+            String(shopMetricDisplayName(b.id, b.name) || ""), "ru");
+    });
+}
+
+function kpiPickWorkGroupOptions(pick) {
+    pick = pick || kpiMetricPick || {};
+    if (!pick.dept) return [];
+    return metricTabsForDept(pick.dept).map(function (t) {
+        return { value: t.id, label: t.label };
+    });
+}
+
+function kpiPickPositionOptions(pick) {
+    pick = pick || kpiMetricPick || {};
+    if (!pick.dept) return [];
+    return positionsForMetricAssignment(pick.dept, pick.work_tab || "").map(function (p) {
+        return { value: p.position_id, label: p.name || p.position_id };
+    });
+}
+
+function kpiPickEmployeeOptions(pick) {
+    pick = pick || kpiMetricPick || {};
+    let people = [];
+    if (pick.dept) {
+        people = employeesForWorkGroup(pick.dept, pick.work_tab || "");
+    } else {
+        people = payrollEmployees(payrollViewFromSection());
+    }
+    if (pick.position_id) {
+        people = people.filter(function (e) { return employeeHasPositionId(e, pick.position_id); });
+    }
+    return people.filter(function (e) {
+        return e && e.id && e.id !== SHOP_SELF_CHECKOUT_ID;
+    }).map(function (e) {
+        return {
+            value: e.id,
+            label: (typeof shopMetricEmployeeCaption === "function" ? shopMetricEmployeeCaption(e) : (e.name || e.id))
+        };
+    });
+}
+
+function setKpiMetricPickFilter(key, value) {
+    ensureKpiMetricPick();
+    const next = value == null ? "" : String(value);
+    if (key === "section") {
+        kpiMetricPick.section = next;
+        const allowed = kpiPickDeptCodesForSection(next);
+        if (kpiMetricPick.dept && allowed.indexOf(kpiMetricPick.dept) === -1) kpiMetricPick.dept = "";
+        if (next === "shop" && !kpiMetricPick.dept) kpiMetricPick.dept = "shop";
+        kpiMetricPick.work_tab = "";
+        kpiMetricPick.position_id = "";
+        kpiMetricPick.employee_id = "";
+    } else if (key === "dept") {
+        kpiMetricPick.dept = next;
+        if (next) kpiMetricPick.section = kpiPickSectionOfDept(next) || kpiMetricPick.section;
+        kpiMetricPick.work_tab = "";
+        kpiMetricPick.position_id = "";
+        kpiMetricPick.employee_id = "";
+    } else if (key === "work_tab") {
+        kpiMetricPick.work_tab = next;
+        kpiMetricPick.position_id = "";
+        kpiMetricPick.employee_id = "";
+    } else if (key === "position_id") {
+        kpiMetricPick.position_id = next;
+        kpiMetricPick.employee_id = "";
+    } else if (key === "employee_id") {
+        kpiMetricPick.employee_id = next;
+    } else if (key === "search") {
+        kpiMetricPick.search = next;
+        renderShopKpiMetricPicker();
+        const inp = document.querySelector("#shopPayModal .kpi-metric-pick-search input");
+        if (inp) {
+            inp.focus();
+            const len = String(inp.value || "").length;
+            try { inp.setSelectionRange(len, len); } catch (err) {}
+        }
+        return;
+    }
+    renderShopKpiMetricPicker();
+}
+
+function addShopKpiDef(opts) {
+    if (!canEditShopPayrollRules()) return;
+    ensureKpiMetricPick(Object.assign({ reset: true, view: payrollViewFromSection() }, opts || {}));
+    renderShopKpiMetricPicker();
+}
+
+function renderShopKpiMetricPicker() {
+    if (!canEditShopPayrollRules()) return;
+    const pick = ensureKpiMetricPick();
+    const view = payrollViewFromSection();
+    const depts = (pick.section ? kpiPickDeptCodesForSection(pick.section) : DEPT_DEFAULTS.map(function (d) { return d.code; }))
+        .map(function (code) {
+            const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
+            return d || { code: code, name: code };
+        });
+    if (pick.dept && !depts.some(function (d) { return d.code === pick.dept; })) {
+        pick.dept = "";
+        pick.work_tab = "";
+    }
+    const groups = kpiPickWorkGroupOptions(pick);
+    if (pick.work_tab && !groups.some(function (g) { return g.value === pick.work_tab; })) {
+        pick.work_tab = "";
+    }
+    const positions = kpiPickPositionOptions(pick);
+    if (pick.position_id && !positions.some(function (p) { return p.value === pick.position_id; })) {
+        pick.position_id = "";
+    }
+    const employees = kpiPickEmployeeOptions(pick);
+    if (pick.employee_id && !employees.some(function (e) { return e.value === pick.employee_id; })) {
+        pick.employee_id = "";
+    }
+    const metrics = shopKpiMetricsForPick(pick);
+    const isRestore = !!pick.highlightMetricId;
+    let html = "<h3>" + (isRestore ? "Метрика KPI" : "Создать KPI") + "</h3>"
+        + '<div class="note" style="margin-bottom:10px">'
+        + (isRestore
+            ? "Фильтры восстановлены по metric_id существующего правила. Можно выбрать другую метрику для нового KPI; текущее правило не меняется, пока не создадите новое."
+            : "Выберите существующую метрику из справочника. Фильтры сужают список по назначениям metric_id. Новую метрику здесь создать нельзя.")
+        + "</div>"
+        + '<div class="note" style="margin-bottom:10px">Контекст: ' + escapeHtml(view.title || view.id)
+        + ". Фильтры можно изменить вручную.</div>"
+        + '<div class="mc-filters">'
+        + '<div class="form-group"><label>Раздел</label><select onchange="setKpiMetricPickFilter(\'section\',this.value)">'
+        + '<option value="">Все</option>'
+        + '<option value="shop"' + (pick.section === "shop" ? " selected" : "") + ">Магазин Володарского</option>"
+        + '<option value="territory"' + (pick.section === "territory" ? " selected" : "") + ">Территория</option>"
+        + "</select></div>"
+        + '<div class="form-group"><label>Отдел</label><select onchange="setKpiMetricPickFilter(\'dept\',this.value)">'
+        + '<option value="">Все</option>';
+    depts.forEach(function (d) {
+        html += '<option value="' + escapeAttribute(d.code) + '"'
+            + (pick.dept === d.code ? " selected" : "") + ">"
+            + escapeHtml(d.name) + "</option>";
+    });
+    html += "</select></div>"
+        + '<div class="form-group"><label>Рабочая группа</label><select onchange="setKpiMetricPickFilter(\'work_tab\',this.value)"'
+        + (pick.dept ? "" : " disabled") + ">"
+        + '<option value="">Все</option>';
+    groups.forEach(function (g) {
+        html += '<option value="' + escapeAttribute(g.value) + '"'
+            + (pick.work_tab === g.value ? " selected" : "") + ">"
+            + escapeHtml(g.label) + "</option>";
+    });
+    html += "</select></div>"
+        + '<div class="form-group"><label>Должность</label><select onchange="setKpiMetricPickFilter(\'position_id\',this.value)"'
+        + (pick.dept ? "" : " disabled") + ">"
+        + '<option value="">Все</option>';
+    positions.forEach(function (p) {
+        html += '<option value="' + escapeAttribute(p.value) + '"'
+            + (pick.position_id === p.value ? " selected" : "") + ">"
+            + escapeHtml(p.label) + "</option>";
+    });
+    html += "</select></div>"
+        + '<div class="form-group"><label>Сотрудник</label><select onchange="setKpiMetricPickFilter(\'employee_id\',this.value)">'
+        + '<option value="">Все</option>';
+    employees.forEach(function (e) {
+        html += '<option value="' + escapeAttribute(e.value) + '"'
+            + (pick.employee_id === e.value ? " selected" : "") + ">"
+            + escapeHtml(e.label) + "</option>";
+    });
+    html += "</select></div>"
+        + '<div class="form-group kpi-metric-pick-search"><label>Поиск метрики</label>'
+        + '<input type="search" maxlength="80" placeholder="Например: пробег" value="'
+        + escapeAttribute(pick.search || "") + '" '
+        + "oninput=\"setKpiMetricPickFilter('search',this.value)\"></div>"
+        + "</div>"
+        + '<div class="note">Метрик в выборке: ' + metrics.length + "</div>"
+        + '<div class="kpi-metric-pick-list">';
+    if (!metrics.length) {
+        html += '<div class="note">Нет метрик для этой выборки. Ослабьте фильтры или проверьте назначения в Справочнике метрик.</div>';
+    }
+    metrics.forEach(function (metric) {
+        const mid = canonicalMetricId(metric.id);
+        const highlight = pick.highlightMetricId && pick.highlightMetricId === mid;
+        const mark = highlight ? ' style="outline:2px solid #93c5fd"' : "";
+        if (mid === METRIC_SHELF_LABELS_ID) {
+            html += '<div class="rev-group-card"' + mark + ' style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
+                + metric.id + "','manual_source')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
+                + ' <span class="note"> · заполнение вручную</span></button></div>';
+            html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
+                + metric.id + "','derived_recipient')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
+                + ' <span class="note"> · автоматически от товароразборщиков</span></button></div>';
+            return;
+        }
+        html += '<div class="rev-group-card"' + mark + ' style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="pickShopKpiSource(\''
+            + metric.id + "')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
+            + ' <span class="note"> · ' + escapeHtml(shopKpiFactSourceLabel(metric))
+            + "</span></button></div>";
+    });
+    html += '</div><div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="closeShopPayModal()">Отмена</button></div>';
+    openShopPayModal(html);
+}
+
+function pickShopKpiSource(templateId, participationRole) {
+    if (!canEditShopPayrollRules()) return;
+    const it = shopMetricCatalogById(templateId);
+    const subs = metricSubmetrics(it, true);
+    if (!it || metricStructureType(it) !== "with_submetrics" || !subs.length) {
+        createShopKpiDef(templateId, participationRole, "");
+        return;
+    }
+    let html = "<h3>Источник KPI</h3><div class=\"note\" style=\"margin-bottom:10px\">"
+        + escapeHtml(it.name)
+        + ". Подметрики с разными единицами не складываются. Выберите конкретную подметрику.</div>";
+    subs.forEach(function (sub) {
+        html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
+            + it.id + "','" + (participationRole || "") + "','" + sub.id + "')\">"
+            + escapeHtml(sub.name) + "</button></div>";
+    });
+    html += '<div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="renderShopKpiMetricPicker()">Назад</button></div>';
+    openShopPayModal(html);
+}
+
+function openShopKpiDefMetricPicker(kpiId) {
+    if (!canEditShopPayrollRules()) return;
+    const def = shopKpiDefForMonth(kpiId, selectedMonth) || ((ensureShopPayroll().kpiDefs || []).find(function (d) {
+        return d && d.kpi_id === kpiId;
+    }));
+    if (!def) {
+        toast("Правило KPI не найдено.", "error");
+        return;
+    }
+    const mid = canonicalMetricId(def.metricId || def.metric_id);
+    ensureKpiMetricPick({ reset: true, view: payrollViewFromSection(), metricId: mid });
+    renderShopKpiMetricPicker();
+}
+
 function shopKpiBudget(rule) {
     if (!rule) return 0;
     if (rule.budget != null && rule.budget !== "") return Number(rule.budget || 0);
@@ -21315,6 +21702,8 @@ function renderShopSalaryRules(view) {
             + (inactive ? "" : " checked")
             + " onchange=\"setShopKpiDefField('" + kpiId + "','active',this.checked)\"> Активно</label></td>"
             + "<td><div class=\"shop-kpi-mini\">" + escapeHtml(shopKpiFactSourceLabel(def)) + "</div>"
+            + '<button type="button" class="btn btn-secondary btn-small" style="margin-top:4px" onclick="openShopKpiDefMetricPicker(\''
+            + kpiId + "')\">Метрика / фильтры</button>"
             + (metricId === METRIC_SHELF_LABELS_ID
                 ? '<select onchange="setShopKpiDefField(\'' + kpiId + "','participationRole',this.value)\">"
                     + '<option value="manual_source"' + (shopShelfParticipation(def) === "manual_source" ? " selected" : "") + ">Вручную</option>"
@@ -21512,48 +21901,6 @@ function closeShopKpiDef(kpiId) {
     renderPayrollView(payrollViewFromSection());
 }
 
-function addShopKpiDef() {
-    if (!canEditShopPayrollRules()) return;
-    let html = "<h3>Создать KPI</h3><div class=\"note\" style=\"margin-bottom:12px\">Выберите метрику из справочника. Новую метрику здесь создать нельзя — правило KPI привязывается к существующему metric_id.</div>";
-    shopKpiAssignableMetrics().forEach(function (metric) {
-        if (canonicalMetricId(metric.id) === METRIC_SHELF_LABELS_ID) {
-            html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
-                + metric.id + "','manual_source')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
-                + ' <span class="note"> · заполнение вручную</span></button></div>';
-            html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
-                + metric.id + "','derived_recipient')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
-                + ' <span class="note"> · автоматически от товароразборщиков</span></button></div>';
-            return;
-        }
-        html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="pickShopKpiSource(\''
-            + metric.id + "')\">" + escapeHtml(shopMetricDisplayName(metric.id, metric.name))
-            + ' <span class="note"> · ' + escapeHtml(shopKpiFactSourceLabel(metric))
-            + "</span></button></div>";
-    });
-    html += '<div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="closeShopPayModal()">Отмена</button></div>';
-    openShopPayModal(html);
-}
-
-function pickShopKpiSource(templateId, participationRole) {
-    if (!canEditShopPayrollRules()) return;
-    const it = shopMetricCatalogById(templateId);
-    const subs = metricSubmetrics(it, true);
-    if (!it || metricStructureType(it) !== "with_submetrics" || !subs.length) {
-        createShopKpiDef(templateId, participationRole, "");
-        return;
-    }
-    let html = "<h3>Источник KPI</h3><div class=\"note\" style=\"margin-bottom:10px\">"
-        + escapeHtml(it.name)
-        + ". Подметрики с разными единицами не складываются. Выберите конкретную подметрику.</div>";
-    subs.forEach(function (sub) {
-        html += '<div class="rev-group-card" style="margin-bottom:8px"><button type="button" class="btn btn-secondary" style="width:100%;text-align:left" onclick="createShopKpiDef(\''
-            + it.id + "','" + (participationRole || "") + "','" + sub.id + "')\">"
-            + escapeHtml(sub.name) + "</button></div>";
-    });
-    html += '<div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="addShopKpiDef()">Назад</button></div>';
-    openShopPayModal(html);
-}
-
 function createShopKpiDef(templateId, participationRole, submetricId) {
     if (!canEditShopPayrollRules()) return;
     const tpl = shopKpiTemplate(templateId);
@@ -21588,13 +21935,21 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
     const ts730 = metricId === "metric_arrival_730" || tpl.calcType === "timesheet_730";
     const check = isShopCheckKpi({ metricId: metricId });
     const sub = sid ? metricSubmetrics(srcItem, false).find(function (s) { return s.id === sid; }) : null;
+    const pickDept = (kpiMetricPick && kpiMetricPick.dept) || "";
+    const pickTab = (kpiMetricPick && kpiMetricPick.work_tab) || "";
+    const resolvedDept = ts730 ? "all" : (pickDept || metricDept || view.departmentId);
+    let resolvedTab = ts730 ? "" : (pickTab || (srcItem ? (metricTabId(srcItem) || "") : "") || (view.workTabId || (tpl.category || "")));
+    if (!ts730 && resolvedDept && resolvedTab) {
+        const allowedTabs = metricTabsForDept(resolvedDept).map(function (t) { return t.id; });
+        if (allowedTabs.indexOf(resolvedTab) === -1) resolvedTab = view.workTabId || allowedTabs[0] || "";
+    }
     ensureShopPayroll().kpiDefs.push(stampKpiDef({
         kpi_id: generateKpiId(),
         metricId: metricId,
         submetric_id: sid,
         submetricId: sid,
-        department_id: ts730 ? "all" : (metricDept || view.departmentId),
-        work_tab_id: ts730 ? "" : (srcItem ? (metricTabId(srcItem) || "") : (view.workTabId || (tpl.category || ""))),
+        department_id: resolvedDept,
+        work_tab_id: resolvedTab,
         name: metricId === METRIC_WRITEOFF_LOSSES_ID ? WRITEOFF_KPI_NAME : ((SHOP_KPI_METRIC_NAMES[metricId] || tpl.name) + (sub ? " · " + sub.name : "")),
         type: "plan",
         calcType: ts730 ? "timesheet_730" : (maxLimit ? "max_limit" : (check ? "checklist" : "budget_ratio")),
