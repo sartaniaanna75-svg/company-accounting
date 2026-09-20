@@ -27896,6 +27896,163 @@ function ensureSpuOrgNodes() {
     });
 }
 
+/** Мягкий поиск узла Структуры СПУ по подсказкам имени (без смены org_node_id). */
+function spuFindOrgNodeByHints(hints, parentId) {
+    const wantParent = parentId == null ? null : String(parentId);
+    const hs = (hints || []).map(function (h) { return String(h || "").toLowerCase(); }).filter(Boolean);
+    if (!hs.length) return null;
+    return spuOrgNodes().find(function (n) {
+        if (!n || n.is_active === false) return false;
+        if (wantParent != null && String(n.parent_org_node_id || "") !== wantParent) return false;
+        const name = String(n.name || "").toLowerCase().replace(/\s+/g, " ");
+        return hs.every(function (h) { return name.indexOf(h) !== -1; });
+    }) || null;
+}
+
+function spuEnsureOrgNodeSoft(spec) {
+    ensureSpuOrgNodes();
+    const parentId = String((spec && spec.parent_org_node_id) || "");
+    let found = spuFindOrgNodeByHints(spec.hints || [spec.name], parentId);
+    if (!found && spec.name) {
+        found = spuOrgNodes().find(function (n) {
+            if (!n || n.is_active === false) return false;
+            if (String(n.parent_org_node_id || "") !== parentId) return false;
+            return String(n.name || "").replace(/\s+/g, " ").toLowerCase()
+                === String(spec.name || "").replace(/\s+/g, " ").toLowerCase();
+        }) || null;
+    }
+    if (found) {
+        if (spec.spu_department_id && !found.spu_department_id) found.spu_department_id = spec.spu_department_id;
+        if (spec.sort_order != null && (found.sort_order == null || found.sort_order === 0)) {
+            found.sort_order = Number(spec.sort_order);
+        }
+        return found;
+    }
+    const node = {
+        org_node_id: nextPrefixedId("spuorg", spuOrgNodes().map(function (x) { return x && x.org_node_id; })),
+        name: String(spec.name || "Департамент").trim(),
+        parent_org_node_id: parentId,
+        responsible_employee_id: "",
+        spu_department_id: spec.spu_department_id || "",
+        sort_order: Number(spec.sort_order || 10),
+        is_active: true,
+        aggregate_from_children: false,
+        created_at: spuOrgNowIso(),
+        updated_at: spuOrgNowIso()
+    };
+    appData.management.spuOrgNodes.push(node);
+    return node;
+}
+
+/**
+ * Дерево «Департамент маркетинга и продаж» + привязка показателей к План–факту.
+ * Не меняет indicator_id / metric_id / формулы / историю значений.
+ */
+function ensureSpuMarketingSalesPlanFactSetup() {
+    if (!appData || !appData.management) return;
+    ensureSpuOrgNodes();
+    ensureSpuDefaultIndicators();
+
+    const sales = spuEnsureOrgNodeSoft({
+        name: "Департамент маркетинга и продаж",
+        hints: ["маркетинг", "продаж"],
+        parent_org_node_id: "",
+        spu_department_id: "spu_sales",
+        sort_order: 20
+    });
+    const optNode = spuEnsureOrgNodeSoft({
+        name: "ОПТ-ПРОДАЖИ",
+        hints: ["опт", "продаж"],
+        parent_org_node_id: sales.org_node_id,
+        spu_department_id: "spu_sales",
+        sort_order: 10
+    });
+    const whNode = spuEnsureOrgNodeSoft({
+        name: "СКЛАД-ПРОДАЖИ",
+        hints: ["склад", "продаж"],
+        parent_org_node_id: sales.org_node_id,
+        spu_department_id: "spu_sales",
+        sort_order: 20
+    });
+    const retailNode = spuEnsureOrgNodeSoft({
+        name: "РОЗНИЦА-ПРОДАЖИ",
+        hints: ["розниц", "продаж"],
+        parent_org_node_id: sales.org_node_id,
+        spu_department_id: "spu_sales",
+        sort_order: 30
+    });
+
+    // Количество чеков Склад — отдельный показатель СПУ (без копии metric_id).
+    let whChecksMetric = null;
+    try {
+        whChecksMetric = spuFindCatalogMetric("warehouse", ["количество чеков", "чеков"])
+            || spuFindCatalogMetric("warehouse", ["чек"]);
+    } catch (err) {}
+    spuAdoptIndicator({
+        spu_code: "wh_checks",
+        name: "Количество чеков Склад",
+        department_id: "warehouse",
+        source_type: whChecksMetric ? "worktime_metric" : "manual",
+        source_metric_id: whChecksMetric ? whChecksMetric.id : "",
+        source_future: whChecksMetric ? "" : "one_c",
+        unit: "number",
+        show_on_dashboard: true,
+        show_in_planfact: true,
+        sort_order: 665,
+        spu_department_id: "spu_sales"
+    });
+
+    function byCode(code) {
+        return ((appData.management.indicators || []).find(function (x) {
+            return x && x.spu_code === code && !x.is_deleted;
+        })) || null;
+    }
+
+    function softBind(code, node, order, nameHint) {
+        const it = byCode(code);
+        if (!it || !node) return null;
+        ensureSpuIndicatorDisplayNodes(it);
+        // Назначение на узел: мягко, если ещё не привязан к этому дереву продаж.
+        const cur = String(it.target_org_node_id || "");
+        const salesTree = [sales.org_node_id, optNode.org_node_id, whNode.org_node_id, retailNode.org_node_id];
+        if (!cur || salesTree.indexOf(cur) !== -1) {
+            spuSetIndicatorDisplayNodes(it, node.org_node_id, spuIndicatorExtraNodeIds(it).filter(function (id) {
+                return id !== node.org_node_id;
+            }));
+        }
+        if (it.show_in_planfact !== true) it.show_in_planfact = true;
+        if (nameHint && (!it.name || String(it.name).replace(/\s+/g, " ").trim() === nameHint.from)) {
+            it.name = nameHint.to;
+        }
+        if (order != null) it.sort_order = Number(order);
+        return it;
+    }
+
+    // ОПТ-ПРОДАЖИ
+    softBind("opt_margin", optNode, 10);
+
+    // СКЛАД-ПРОДАЖИ
+    softBind("wh_checks", whNode, 10);
+    softBind("wh_margin", whNode, 20);
+
+    // РОЗНИЦА-ПРОДАЖИ
+    softBind("shop_checks", retailNode, 10, { from: "Количество чеков", to: "Количество чеков Розница" });
+    softBind("shop_margin", retailNode, 20);
+
+    // Порядок во Вводе показателей / отображении внутри узлов
+    if (!appData.management.input_order || typeof appData.management.input_order !== "object") {
+        appData.management.input_order = {};
+    }
+    function setOrder(node, codes) {
+        if (!node) return;
+        const ids = codes.map(byCode).filter(Boolean).map(function (it) { return it.indicator_id; });
+        if (ids.length) appData.management.input_order[node.org_node_id] = ids;
+    }
+    setOrder(optNode, ["opt_margin"]);
+    setOrder(whNode, ["wh_checks", "wh_margin"]);
+    setOrder(retailNode, ["shop_checks", "shop_margin"]);
+}
+
 function spuOrgNodes() {
     ensureSpuOrgNodes();
     return (appData.management && appData.management.spuOrgNodes) || [];
@@ -30744,6 +30901,7 @@ function ensureManagement() {
         ensureSpuDepartments();
         ensureSpuOrgNodes();
         ensureSpuDefaultIndicators();
+        ensureSpuMarketingSalesPlanFactSetup();
         ensureSpuIndicatorOrgLinks();
         ensureSpuOrgHistory();
     } catch (err) {
