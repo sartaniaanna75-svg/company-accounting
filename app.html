@@ -27016,6 +27016,8 @@ let spuIndListFilter = { q: "", dept: "", kind: "" };
 let spuIndSelected = {};
 let spuPfBreakOpen = {};
 let spuInputFilter = { owner: "", status: "" };
+/** UI-only cascade filters for WT metric picker: source_id → { section, dept, group, q } */
+let spuIndSrcMetricFilters = {};
 
 let orgChartScale = 1;
 let orgCollapsed = {};
@@ -28700,6 +28702,157 @@ function spuParticipatingWorkMetrics(keepIds) {
     });
 }
 
+/** Раздел каталога WT для фильтра источника: shop | territory (стабильные ID). */
+function spuSrcMetricSectionId(item) {
+    return metricDepartmentId(item) === "shop" ? "shop" : "territory";
+}
+
+function spuSrcMetricSectionLabel(sectionId) {
+    if (sectionId === "shop") return "Магазин Володарского";
+    if (sectionId === "territory") return "Территория";
+    return sectionId || "—";
+}
+
+function spuSrcMetricDeptOptions(sectionId) {
+    if (sectionId === "shop") {
+        return [{ code: "shop", name: "Магазин Володарского" }];
+    }
+    if (sectionId === "territory") {
+        return [
+            { code: "office", name: "Офис" },
+            { code: "warehouse", name: "Склад" },
+            { code: "drivers", name: "Водители" }
+        ];
+    }
+    return DEPT_DEFAULTS.map(function (d) {
+        return { code: d.code, name: d.code === "drivers" ? "Водители" : d.name };
+    });
+}
+
+function spuIndSrcMetricFilterGet(sourceId, metricId) {
+    if (!spuIndSrcMetricFilters) spuIndSrcMetricFilters = {};
+    const sid = String(sourceId || "");
+    if (spuIndSrcMetricFilters[sid]) return spuIndSrcMetricFilters[sid];
+    const filt = { section: "", dept: "", group: "", q: "" };
+    const m = metricId ? shopMetricCatalogById(metricId) : null;
+    if (m) {
+        filt.section = spuSrcMetricSectionId(m);
+        filt.dept = metricDepartmentId(m) || "";
+        const tabs = metricWorkTabIds(m);
+        filt.group = tabs.length === 1 ? tabs[0] : "";
+    }
+    spuIndSrcMetricFilters[sid] = filt;
+    return filt;
+}
+
+function spuIndSrcMetricFilterSet(sourceId, field, value) {
+    const filt = spuIndSrcMetricFilterGet(sourceId, "");
+    filt[field] = String(value == null ? "" : value);
+    if (field === "section") {
+        if (filt.section === "shop") filt.dept = "shop";
+        else if (filt.section === "territory" && filt.dept === "shop") filt.dept = "";
+        else if (!filt.section) { /* keep dept */ }
+        // reset group when section changes
+        filt.group = "";
+    }
+    if (field === "dept") filt.group = "";
+    spuIndSrcMetricFilters[String(sourceId || "")] = filt;
+}
+
+function spuIndFilterWorkMetrics(allMetrics, filt, keepMetricId) {
+    const f = filt || { section: "", dept: "", group: "", q: "" };
+    const q = String(f.q || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const keep = canonicalMetricId(keepMetricId);
+    return (allMetrics || []).filter(function (m) {
+        if (!m || !m.id) return false;
+        if (keep && canonicalMetricId(m.id) === keep) return true;
+        const dept = metricDepartmentId(m);
+        const section = spuSrcMetricSectionId(m);
+        if (f.section && section !== f.section) return false;
+        if (f.dept && dept !== f.dept) return false;
+        if (f.group) {
+            const tabs = metricWorkTabIds(m);
+            if (tabs.indexOf(f.group) === -1) return false;
+        }
+        if (q) {
+            const name = String(m.name || "").toLowerCase();
+            const id = String(m.id || "").toLowerCase();
+            if (name.indexOf(q) === -1 && id.indexOf(q) === -1) return false;
+        }
+        return true;
+    });
+}
+
+function spuIndSrcMetricPickerHtml(s, allMetrics) {
+    const sid = s.source_id || "";
+    const filt = spuIndSrcMetricFilterGet(sid, s.source_metric_id);
+    const filtered = spuIndFilterWorkMetrics(allMetrics, filt, s.source_metric_id);
+    const deptOpts = spuSrcMetricDeptOptions(filt.section);
+    const groupDept = filt.dept || (filt.section === "shop" ? "shop" : "");
+    const groups = groupDept ? metricTabsForDept(groupDept) : [];
+    let html = '<div class="spu-src-metric-filters" style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px">';
+    html += '<label>Раздел<select class="spu-src-f-section" onchange="spuIndOnSrcMetricFilterChange(\''
+        + escapeAttribute(sid) + '\',\'section\',this.value)">'
+        + '<option value=""' + (!filt.section ? " selected" : "") + ">Все</option>"
+        + '<option value="shop"' + (filt.section === "shop" ? " selected" : "") + ">Магазин Володарского</option>"
+        + '<option value="territory"' + (filt.section === "territory" ? " selected" : "") + ">Территория</option>"
+        + "</select></label>";
+    html += '<label>Отдел<select class="spu-src-f-dept" onchange="spuIndOnSrcMetricFilterChange(\''
+        + escapeAttribute(sid) + '\',\'dept\',this.value)">'
+        + '<option value=""' + (!filt.dept ? " selected" : "") + ">Все</option>";
+    deptOpts.forEach(function (d) {
+        html += '<option value="' + escapeAttribute(d.code) + '"' + (filt.dept === d.code ? " selected" : "") + ">"
+            + escapeHtml(d.name) + "</option>";
+    });
+    html += "</select></label>";
+    html += '<label>Рабочая группа<select class="spu-src-f-group" onchange="spuIndOnSrcMetricFilterChange(\''
+        + escapeAttribute(sid) + '\',\'group\',this.value)">'
+        + '<option value=""' + (!filt.group ? " selected" : "") + ">Все</option>";
+    groups.forEach(function (g) {
+        html += '<option value="' + escapeAttribute(g.id) + '"' + (filt.group === g.id ? " selected" : "") + ">"
+            + escapeHtml(g.label) + "</option>";
+    });
+    html += "</select></label>";
+    html += '<label>Поиск<input type="search" class="spu-src-f-q" value="' + escapeAttribute(filt.q || "")
+        + '" placeholder="Название метрики" oninput="spuIndOnSrcMetricFilterChange(\''
+        + escapeAttribute(sid) + '\',\'q\',this.value)"></label>';
+    html += "</div>";
+    html += '<div class="form-group"><label>Метрика Work Time</label><select class="spu-src-metric" onchange="spuIndOnMetricChange()">'
+        + '<option value="">Выберите метрику Work Time (не копируется в СПУ)</option>';
+    if (!filtered.length) {
+        html += '<option value="" disabled>Нет метрик по фильтру</option>';
+    }
+    filtered.forEach(function (m) {
+        html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
+            + escapeHtml(m.name) + "</option>";
+    });
+    html += "</select>"
+        + '<div class="note" style="margin:4px 0 0">Показано ' + filtered.length + " из " + (allMetrics || []).length
+        + ". Фильтр только для выбора источника — metric_id и данные метрики не меняются.</div></div>";
+    return html;
+}
+
+function spuIndOnSrcMetricFilterChange(sourceId, field, value) {
+    spuIndSyncDraftFromDom();
+    spuIndSrcMetricFilterSet(sourceId, field, value);
+    // Keep focus-friendly search: restore caret after re-render
+    const keepSearch = field === "q";
+    const qVal = keepSearch ? String(value || "") : "";
+    renderSpuIndSourcesBox();
+    renderSpuIndFormulaBox();
+    if (keepSearch) {
+        const row = document.querySelector('.spu-src-row[data-source-id="' + sourceId + '"]');
+        const inp = row && row.querySelector(".spu-src-f-q");
+        if (inp) {
+            try {
+                inp.focus();
+                const n = String(inp.value || qVal || "").length;
+                inp.setSelectionRange(n, n);
+            } catch (err) {}
+        }
+    }
+}
+
 function spuMetricSectionKey(item) {
     if (!item) return "";
     const cat = metricTerritoryCategory(item);
@@ -29169,6 +29322,10 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         ? cfg.formula_expr.slice()
         : ((it && Array.isArray(it.formula_expr)) ? it.formula_expr.slice() : []);
     spuIndFormSources = sources.length ? sources : (kind === "manual" || kind === "one_c" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
+    spuIndSrcMetricFilters = {};
+    (spuIndFormSources || []).forEach(function (s) {
+        if (s && s.source_id && s.source_metric_id) spuIndSrcMetricFilterGet(s.source_id, s.source_metric_id);
+    });
     const pfOn = it ? it.show_in_planfact === true : false;
     const brOn = !it || it.show_breakdown !== false;
     const planMode = (it && it.plan_mode) || "spu";
@@ -29371,6 +29528,7 @@ function spuIndSyncDraftFromDom() {
 
 function spuIndReplaceSource(sourceId) {
     spuIndSyncDraftFromDom();
+    if (spuIndSrcMetricFilters) delete spuIndSrcMetricFilters[sourceId];
     spuIndFormSources = (spuIndFormSources || []).map(function (s) {
         if (!s || s.source_id !== sourceId) return s;
         return spuNewSourceRow({ source_id: sourceId });
@@ -29465,13 +29623,7 @@ function renderSpuIndSourcesBox() {
             html += "</select></div>";
         } else {
             const item = shopMetricCatalogById(s.source_metric_id);
-            html += '<div class="form-group"><label>Метрика Work Time</label><select class="spu-src-metric" onchange="spuIndOnMetricChange()">'
-                + '<option value="">Выберите метрику Work Time (не копируется в СПУ)</option>';
-            metrics.forEach(function (m) {
-                html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
-                    + escapeHtml(m.name) + "</option>";
-            });
-            html += "</select></div>";
+            html += spuIndSrcMetricPickerHtml(s, metrics);
             html += '<div class="form-group"><label>Результат</label><select class="spu-src-result">';
             html += '<option value="fact"' + (s.source_result === "fact" ? " selected" : "") + ">Факт</option>";
             html += '<option value="department_total"' + (!s.source_result || s.source_result === "department_total" || s.source_result === "metric_total" ? " selected" : "") + ">Итого подразделения / Итого метрики</option>";
