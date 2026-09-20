@@ -27896,7 +27896,92 @@ function mgmtIndicatorTargetNodeId(it) {
     if (!it) return "";
     const id = String(it.target_org_node_id || "").trim();
     if (id && spuOrgGetNode(id)) return id;
+    // Fallback: первый из дополнительных назначений
+    const extras = spuIndicatorExtraNodeIds(it);
+    if (extras.length && spuOrgGetNode(extras[0])) return extras[0];
     return "";
+}
+
+/** Все департаменты СПУ, где показывается показатель (основной + дополнительные), без дублей. */
+function spuIndicatorDisplayNodeIds(it) {
+    if (!it) return [];
+    ensureSpuIndicatorDisplayNodes(it);
+    const out = [];
+    const seen = {};
+    function push(id) {
+        const key = String(id || "").trim();
+        if (!key || seen[key]) return;
+        if (!spuOrgGetNode(key)) return;
+        seen[key] = true;
+        out.push(key);
+    }
+    push(it.target_org_node_id);
+    (it.target_org_node_ids || []).forEach(push);
+    return out;
+}
+
+function spuIndicatorExtraNodeIds(it) {
+    if (!it || !Array.isArray(it.target_org_node_ids)) return [];
+    const primary = String(it.target_org_node_id || "").trim();
+    return it.target_org_node_ids.filter(function (id) {
+        const key = String(id || "").trim();
+        return key && key !== primary && !!spuOrgGetNode(key);
+    });
+}
+
+function spuIndicatorAssignedToNode(it, nodeId) {
+    if (!it || !nodeId) return false;
+    return spuIndicatorDisplayNodeIds(it).indexOf(String(nodeId)) !== -1;
+}
+
+function ensureSpuIndicatorDisplayNodes(it) {
+    if (!it || typeof it !== "object") return it;
+    if (!Array.isArray(it.target_org_node_ids)) it.target_org_node_ids = [];
+    const primary = String(it.target_org_node_id || "").trim();
+    // Мягкая миграция: старый один target_org_node_id → массив назначений без смены ID/значений.
+    if (primary && it.target_org_node_ids.indexOf(primary) === -1) {
+        it.target_org_node_ids = [primary].concat(it.target_org_node_ids.filter(function (id) {
+            return String(id || "") !== primary;
+        }));
+    }
+    // Убрать пустые и дубли
+    const seen = {};
+    it.target_org_node_ids = it.target_org_node_ids.filter(function (id) {
+        const key = String(id || "").trim();
+        if (!key || seen[key]) return false;
+        seen[key] = true;
+        return true;
+    });
+    return it;
+}
+
+function spuSetIndicatorDisplayNodes(it, primaryId, extraIds) {
+    if (!it) return;
+    const primary = String(primaryId || "").trim();
+    const extras = [];
+    const seen = {};
+    if (primary) seen[primary] = true;
+    (extraIds || []).forEach(function (id) {
+        const key = String(id || "").trim();
+        if (!key || seen[key] || !spuOrgGetNode(key)) return;
+        seen[key] = true;
+        extras.push(key);
+    });
+    it.target_org_node_id = primary;
+    it.target_org_node_ids = primary ? [primary].concat(extras) : extras.slice();
+    const dest = primary ? spuOrgGetNode(primary) : null;
+    if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+}
+
+function spuIndicatorDisplayNodesLabel(it) {
+    const ids = spuIndicatorDisplayNodeIds(it);
+    if (!ids.length) return "—";
+    const primary = mgmtIndicatorTargetNodeId(it);
+    return ids.map(function (id) {
+        const n = spuOrgGetNode(id);
+        const name = n ? n.name : id;
+        return id === primary ? name + " (основной)" : name;
+    }).join(", ");
 }
 
 function spuOrgIndicatorsForNode(nodeId, includeInactiveInd) {
@@ -27905,7 +27990,7 @@ function spuOrgIndicatorsForNode(nodeId, includeInactiveInd) {
         if (!it) return false;
         if (!includeInactiveInd && (it.is_active === false || it.is_deleted)) return false;
         if (it.is_deleted) return false;
-        return mgmtIndicatorTargetNodeId(it) === nodeId;
+        return spuIndicatorAssignedToNode(it, nodeId);
     }).sort(function (a, b) { return Number(a.sort_order || 0) - Number(b.sort_order || 0); });
 }
 
@@ -28172,6 +28257,7 @@ function ensureSpuIndicatorSources(it) {
     }
     // Стабильный ID показателя СПУ: indicator_id (алиас spu_indicator_id для явного отделения от metric_id).
     if (it.indicator_id && !it.spu_indicator_id) it.spu_indicator_id = it.indicator_id;
+    ensureSpuIndicatorDisplayNodes(it);
     if (!Array.isArray(it.owner_history)) it.owner_history = it.owner_history || [];
     if (it.owner_employee_id && !it.owner_history.length) {
         it.owner_history.push({
@@ -28730,7 +28816,7 @@ function spuOrgUsageDetails(nodeId) {
     const node = spuOrgGetNode(nodeId);
     const children = spuOrgChildren(nodeId, true);
     const indicators = ((appData.management && appData.management.indicators) || []).filter(function (it) {
-        return it && mgmtIndicatorTargetNodeId(it) === nodeId;
+        return it && spuIndicatorAssignedToNode(it, nodeId);
     });
     const finance = indicators.filter(mgmtIsFinanceIndicator);
     const routes = spuOrgRoutesForNode(nodeId);
@@ -28752,10 +28838,15 @@ function spuOrgTransferLinks(fromId, toId) {
         ch.updated_at = spuOrgNowIso();
     });
     ((appData.management && appData.management.indicators) || []).forEach(function (it) {
-        if (it && mgmtIndicatorTargetNodeId(it) === fromId) {
-            it.target_org_node_id = toId;
-            const dest = spuOrgGetNode(toId);
-            if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+        if (!it) return;
+        ensureSpuIndicatorDisplayNodes(it);
+        if (mgmtIndicatorTargetNodeId(it) === fromId) {
+            const extras = spuIndicatorExtraNodeIds(it).map(function (id) { return id === fromId ? toId : id; })
+                .filter(function (id) { return id !== toId; });
+            spuSetIndicatorDisplayNodes(it, toId, extras);
+        } else if (spuIndicatorAssignedToNode(it, fromId)) {
+            const extras = spuIndicatorExtraNodeIds(it).map(function (id) { return id === fromId ? toId : id; });
+            spuSetIndicatorDisplayNodes(it, it.target_org_node_id, extras);
         }
     });
     const items = typeof shopMetricCatalogItems === "function" ? shopMetricCatalogItems() : [];
@@ -28788,9 +28879,9 @@ function setMgmtIndicatorOrgNode(indicatorId, nodeId) {
         return x && x.indicator_id === indicatorId;
     });
     if (!it) return;
-    it.target_org_node_id = String(nodeId || "");
-    const dest = nodeId ? spuOrgGetNode(nodeId) : null;
-    if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+    ensureSpuIndicatorDisplayNodes(it);
+    const extras = spuIndicatorExtraNodeIds(it).filter(function (id) { return id !== String(nodeId || ""); });
+    spuSetIndicatorDisplayNodes(it, nodeId, extras);
     saveApp();
     renderManagement();
 }
@@ -28820,7 +28911,7 @@ function spuOrgNodeIsUsed(nodeId) {
         if (item.result_route && item.result_route.target_org_node_id === nodeId) used = true;
     });
     ((appData.management && appData.management.indicators) || []).forEach(function (it) {
-        if (it && it.target_org_node_id === nodeId) used = true;
+        if (it && spuIndicatorAssignedToNode(it, nodeId)) used = true;
     });
     return used;
 }
@@ -29098,8 +29189,13 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + [["manual", "Ручной ввод"], ["worktime", "Из Work Time"], ["calculated", "Расчётный"], ["one_c", "Из 1С (позже)"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (kind === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
-        + '<div class="form-group"><label>Куда выводится в структуре СПУ *</label><select id="spuIndTarget">'
+        + '<div class="form-group"><label>Основной департамент СПУ *</label><select id="spuIndTarget" onchange="spuIndOnPrimaryTargetChange()">'
         + mgmtSpuOrgOptionsHtml(nodeId || (it && it.target_org_node_id) || "", false) + "</select></div>"
+        + '<div class="form-group"><label>Дополнительно использовать в департаментах</label>'
+        + '<div class="note" style="margin:0 0 6px">Один показатель — одно значение. Копии не создаются: те же spu_indicator_id, источник и история показываются в нескольких местах.</div>'
+        + '<div id="spuIndExtraNodes" style="display:flex;flex-direction:column;gap:4px;max-height:160px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">'
+        + spuIndExtraNodesCheckboxesHtml(it, nodeId || (it && it.target_org_node_id) || "")
+        + "</div></div>"
         + '<div class="form-group"><label id="spuIndOwnerLab">' + escapeHtml(spuOwnerRoleLabel(kind)) + '</label><select id="spuIndOwner">'
         + mgmtEmployeeOptions(ownerId) + "</select></div>"
         + '<div class="form-group"><label>Тип значения</label><select id="spuIndUnit">'
@@ -29174,6 +29270,66 @@ function onSpuIndKindChange() {
         renderSpuIndSourcesBox();
         renderSpuIndFormulaBox();
     }
+}
+
+function spuIndExtraNodesCheckboxesHtml(it, primaryPreset) {
+    const primary = String(primaryPreset || (it && it.target_org_node_id) || "").trim();
+    const selected = {};
+    if (it) {
+        ensureSpuIndicatorDisplayNodes(it);
+        spuIndicatorExtraNodeIds(it).forEach(function (id) { selected[id] = true; });
+    }
+    let html = "";
+    let count = 0;
+    function walk(parentId, depth) {
+        spuOrgChildren(parentId, false).forEach(function (n) {
+            if (n.org_node_id === primary) {
+                walk(n.org_node_id, depth + 1);
+                return;
+            }
+            count += 1;
+            const pad = Array(depth + 1).join("· ");
+            html += '<label class="check"><input type="checkbox" class="spu-ind-extra-node" value="'
+                + escapeAttribute(n.org_node_id) + '"'
+                + (selected[n.org_node_id] ? " checked" : "") + "> "
+                + escapeHtml(pad + (n.name || n.org_node_id)) + "</label>";
+            walk(n.org_node_id, depth + 1);
+        });
+    }
+    walk("", 0);
+    if (!count) html = '<div class="note">Нет других департаментов для дополнительного назначения.</div>';
+    return html;
+}
+
+function spuIndOnPrimaryTargetChange() {
+    const box = document.getElementById("spuIndExtraNodes");
+    if (!box) return;
+    const primary = ((document.getElementById("spuIndTarget") || {}).value || "");
+    const editId = ((document.getElementById("spuIndId") || {}).value || "");
+    const it = editId ? spuFindIndicator(editId) : null;
+    // Preserve currently checked extras (except new primary)
+    const kept = {};
+    box.querySelectorAll(".spu-ind-extra-node:checked").forEach(function (el) {
+        if (el.value && el.value !== primary) kept[el.value] = true;
+    });
+    const fake = it ? Object.assign({}, it) : { target_org_node_id: primary, target_org_node_ids: Object.keys(kept) };
+    if (!it) {
+        fake.target_org_node_ids = [primary].concat(Object.keys(kept));
+    } else {
+        fake.target_org_node_id = primary;
+        fake.target_org_node_ids = [primary].concat(Object.keys(kept));
+    }
+    box.innerHTML = spuIndExtraNodesCheckboxesHtml(fake, primary);
+}
+
+function spuIndReadExtraNodeIdsFromDom() {
+    const primary = String(((document.getElementById("spuIndTarget") || {}).value || "")).trim();
+    const out = [];
+    document.querySelectorAll(".spu-ind-extra-node:checked").forEach(function (el) {
+        const id = String(el.value || "").trim();
+        if (id && id !== primary) out.push(id);
+    });
+    return out;
 }
 
 function onSpuIndCalcChange() {
@@ -29460,9 +29616,7 @@ function saveSpuOrgIndicator() {
     }
     const keepId = it.indicator_id;
     it.name = name;
-    it.target_org_node_id = target;
-    const dest = spuOrgGetNode(target);
-    if (dest && dest.spu_department_id) it.spu_department_id = dest.spu_department_id;
+    spuSetIndicatorDisplayNodes(it, target, spuIndReadExtraNodeIdsFromDom());
     it.show_in_planfact = !!(document.getElementById("spuIndPf") && document.getElementById("spuIndPf").checked);
     it.show_breakdown = !!(document.getElementById("spuIndBreak") && document.getElementById("spuIndBreak").checked);
     it.sort_order = Number((document.getElementById("spuIndOrder") || {}).value || 10);
@@ -30084,7 +30238,7 @@ function renderSpuIndicatorsConstructorHtml() {
         list = list.filter(function (it) { return spuIndicatorUiKind(it) === tab; });
     }
     list = list.filter(function (it) {
-        if (filt.dept && mgmtIndicatorTargetNodeId(it) !== filt.dept) return false;
+        if (filt.dept && !spuIndicatorAssignedToNode(it, filt.dept)) return false;
         if (filt.kind && spuIndicatorUiKind(it) !== filt.kind) return false;
         if (q && String(it.name || "").toLowerCase().indexOf(q) === -1) return false;
         return true;
@@ -30123,7 +30277,6 @@ function renderSpuIndicatorsConstructorHtml() {
     html += '<div class="spu-ind-list">';
     list.forEach(function (it) {
         ensureSpuIndicatorSources(it);
-        const node = spuOrgGetNode(mgmtIndicatorTargetNodeId(it));
         const uiKind = spuIndicatorUiKind(it);
         const cfg = spuActiveConfig(it);
         const srcN = (uiKind === "manual" || uiKind === "one_c") ? 0 : (cfg.sources || []).length;
@@ -30137,7 +30290,7 @@ function renderSpuIndicatorsConstructorHtml() {
         }
         html += "<div><h4>" + escapeHtml(it.name) + "</h4>"
             + '<div class="spu-ind-meta">Тип: ' + escapeHtml(spuIndicatorUiKindLabel(uiKind))
-            + " · Куда: " + escapeHtml(node ? node.name : "—")
+            + " · Куда: " + escapeHtml(spuIndicatorDisplayNodesLabel(it))
             + " · " + escapeHtml(spuOwnerRoleLabel(uiKind)) + ": " + escapeHtml(emp ? emp.name : "—")
             + " · Источников: " + srcN
             + " · Расчёт: " + escapeHtml(calc)
@@ -32536,7 +32689,14 @@ function renderMgmtIndicatorInputHtml() {
             const canAssign = canEditMgmtIndicators() || canEditSpuStructure();
             html += "<tr>"
                 + "<td>" + escapeHtml(it.name)
-                + '<div class="mgmt-src">' + escapeHtml(spuIndicatorUiKindLabel(spuIndicatorUiKind(it))) + "</div></td>"
+                + '<div class="mgmt-src">' + escapeHtml(spuIndicatorUiKindLabel(spuIndicatorUiKind(it)))
+                + (spuIndicatorExtraNodeIds(it).length
+                    ? " · также: " + escapeHtml(spuIndicatorExtraNodeIds(it).map(function (id) {
+                        const n = spuOrgGetNode(id);
+                        return n ? n.name : id;
+                    }).join(", "))
+                    : "")
+                + "</div></td>"
                 + "<td>";
             if (canManual && (it.source_type === "manual" || it.source_type === "one_c_future" || spuIndicatorUiKind(it) === "manual" || spuIndicatorUiKind(it) === "one_c")) {
                 html += '<input class="mgmt-manual" value="' + escapeAttribute(fact == null ? "" : String(fact)) + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
