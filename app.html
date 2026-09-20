@@ -9576,7 +9576,7 @@ function employeeSpuMeetingsFieldHtml(employee, disabled) {
         '<label class="check"><input type="checkbox" class="emp-spu-meet"'
             + (on ? " checked" : "") + (disabled ? " disabled" : "")
             + ' onchange="updateEmployee(\'' + employee.id + '\',\'participates_in_spu_meetings\',this.checked)">'
-            + " Участвует в собраниях СПУ</label>",
+            + " Участвует в СПУ</label>",
         "emp-field-spu"
     );
 }
@@ -25818,7 +25818,7 @@ function openEmployeeCreateForm() {
         + '<div class="form-group"><label>Активность</label><select id="empFormStatus">'
         + '<option value="working" selected>Работает</option>'
         + '<option value="fired">Уволен</option></select></div>'
-        + '<div class="form-group"><label class="check"><input type="checkbox" id="empFormSpuMeet"> Участвует в собраниях СПУ</label></div>'
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="empFormSpuMeet"> Участвует в СПУ</label></div>'
         + "</div>"
         + "</div>"
         + '<div class="rev-modal-actions">'
@@ -26647,7 +26647,7 @@ function openStaffOrgEditor(employeeId) {
         + orgPositionOptions(e.position_id || e.position || "", homeCode) + "</select></div>"
         + '<div class="form-group"><label>Рабочий отдел</label><select id="orgEmpDept" onchange="var p=document.getElementById(\'orgEmpPos\');if(p)p.innerHTML=orgPositionOptions(\'\',this.value)">' + deptHtml + "</select></div>"
         + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMgr"' + (mgr ? " checked" : "") + "> Руководитель</label></div>"
-        + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMeet"' + (meet ? " checked" : "") + "> Участвует в собраниях СПУ</label></div>"
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="orgEmpMeet"' + (meet ? " checked" : "") + "> Участвует в СПУ</label></div>"
         + '<div class="form-group"><label>Департамент(ы) СПУ</label>' + spuHtml + "</div>"
         + '<div class="form-group"><label>Порядок отображения</label>'
         + '<input id="orgEmpSort" type="number" value="' + escapeAttribute(String(e.spu_sort_order || 0)) + '"></div>'
@@ -31390,7 +31390,67 @@ function mgmtIsLeaderEmployee(emp) {
 function mgmtIsMeetingParticipant(emp) {
     if (!emp || !emp.id) return false;
     if (!isWorking(emp)) return false;
-    return emp.participates_in_spu_meetings === true;
+    return mgmtEmployeeParticipatesInSpu(emp);
+}
+
+/** Существующий признак карточки сотрудника («Участие в СПУ» / «Участвует в собраниях СПУ»). */
+function mgmtEmployeeParticipatesInSpu(emp) {
+    if (!emp || !emp.id) return false;
+    return emp.participates_in_spu_meetings === true || emp.meeting_participant === true;
+}
+
+/** Кандидат в селекторы «Ответственный» СПУ: активен + участие в СПУ. */
+function mgmtIsSpuResponsibleCandidate(emp) {
+    if (!emp || !emp.id || emp.id === SHOP_SELF_CHECKOUT_ID) return false;
+    if (typeof isWorking === "function" && !isWorking(emp)) return false;
+    return mgmtEmployeeParticipatesInSpu(emp);
+}
+
+/**
+ * Единый список ответственных СПУ.
+ * selectedId — сохранить в списке для истории, даже если галочку уже сняли.
+ */
+function mgmtSpuResponsiblePeople(selectedId) {
+    const out = [];
+    const seen = {};
+    function pushEmp(e, legacy) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        seen[e.id] = true;
+        const home = typeof employeeHome === "function" ? employeeHome(e.id) : null;
+        out.push({
+            id: e.id,
+            name: e.name || e.id,
+            dept: home && typeof officialName === "function" ? officialName(home) : "",
+            deptCode: home && home.code ? home.code : (typeof employeeHomeDeptCode === "function" ? employeeHomeDeptCode(e.id) : ""),
+            sort: Number(e.spu_sort_order || 0),
+            legacy: !!legacy
+        });
+    }
+    mgmtAllEmployees().forEach(function (e) {
+        if (mgmtIsSpuResponsibleCandidate(e)) pushEmp(e, false);
+    });
+    const sel = String(selectedId || "").trim();
+    if (sel && !seen[sel]) {
+        const cur = typeof getEmployee === "function" ? getEmployee(sel) : null;
+        if (cur) pushEmp(cur, true);
+        else pushEmp({ id: sel, name: sel }, true);
+    }
+    out.sort(function (a, b) {
+        if (a.sort !== b.sort) return a.sort - b.sort;
+        return String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+    return out;
+}
+
+function mgmtSpuResponsibleOptionsHtml(selected, emptyLabel) {
+    const empty = emptyLabel == null ? "—" : emptyLabel;
+    let html = '<option value="">' + escapeHtml(empty) + "</option>";
+    mgmtSpuResponsiblePeople(selected).forEach(function (p) {
+        html += '<option value="' + escapeAttribute(p.id) + '"' + (String(p.id) === String(selected || "") ? " selected" : "") + ">"
+            + escapeHtml(p.name + (p.dept ? " · " + p.dept : "") + (p.legacy ? " (ранее)" : ""))
+            + "</option>";
+    });
+    return html;
 }
 
 function mgmtLeaderPeople() {
@@ -31471,7 +31531,7 @@ function mgmtMeetingAttendeeCheckboxesHtml(selectedIds, className) {
     (selectedIds || []).forEach(function (id) { if (id) selected[id] = true; });
     const people = mgmtMeetingAttendeePeople(selectedIds);
     if (!people.length) {
-        return '<div class="note">Нет сотрудников с признаком «Участвует в собраниях СПУ». Отметьте его в карточке сотрудника.</div>';
+        return '<div class="note">Нет сотрудников с признаком «Участвует в СПУ». Отметьте его в карточке сотрудника.</div>';
     }
     let html = '<div class="wt-people">';
     people.forEach(function (p) {
@@ -31484,12 +31544,7 @@ function mgmtMeetingAttendeeCheckboxesHtml(selectedIds, className) {
 }
 
 function mgmtLeaderOptions(selected) {
-    let html = '<option value="">—</option>';
-    mgmtLeaderPeople().forEach(function (p) {
-        html += '<option value="' + escapeAttribute(p.id) + '"' + (p.id === selected ? " selected" : "") + ">"
-            + escapeHtml(p.name + (p.dept ? " · " + p.dept : "")) + "</option>";
-    });
-    return html;
+    return mgmtSpuResponsibleOptionsHtml(selected, "—");
 }
 
 function mgmtDeptHeadKey(code) {
@@ -32743,12 +32798,7 @@ function mgmtSpuDeptOptionsHtml(selected, allowAll) {
 }
 
 function mgmtPfLeaderOptions(selected) {
-    let html = '<option value="">Все</option>';
-    mgmtLeaderPeople().forEach(function (p) {
-        html += '<option value="' + escapeAttribute(p.id) + '"' + (p.id === selected ? " selected" : "") + ">"
-            + escapeHtml(p.name) + "</option>";
-    });
-    return html;
+    return mgmtSpuResponsibleOptionsHtml(selected, "Все");
 }
 
 function renderMgmtPlanFactHtml() {
@@ -33265,28 +33315,6 @@ function setMgmtIndicatorOwner(indicatorId, employeeId) {
     renderManagement();
 }
 
-function mgmtEmployeeOptionsForDept(deptCode, selected) {
-    let html = '<option value="">—</option>';
-    const codes = deptCode ? [deptCode] : DEPT_DEFAULTS.map(function (d) { return d.code; });
-    const seen = {};
-    codes.forEach(function (code) {
-        const w = findWorkspaceByCode(code);
-        const dname = mgmtDeptName(code);
-        ((w && w.employees) || []).forEach(function (e) {
-            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id] || !isWorking(e)) return;
-            seen[e.id] = true;
-            html += '<option value="' + escapeAttribute(e.id) + '"' + (e.id === selected ? " selected" : "") + ">"
-                + escapeHtml((e.name || e.id) + (deptCode ? "" : " · " + dname)) + "</option>";
-        });
-    });
-    if (selected && !seen[selected]) {
-        const e = getEmployee(selected);
-        html += '<option value="' + escapeAttribute(selected) + '" selected>'
-            + escapeHtml((e && e.name) || selected) + "</option>";
-    }
-    return html;
-}
-
 function mgmtWorkStatus(item) {
     const st = item && item.status;
     if (st === "done") return "done";
@@ -33626,7 +33654,7 @@ function renderMgmtMeetingsHtml() {
             const selected = {};
             (meta.participant_employee_ids || []).forEach(function (id) { selected[id] = true; });
             const shown = mgmtMeetingAttendeePeople(meta.participant_employee_ids || []);
-            if (!shown.length) html += '<span class="mgmt-src">Нет сотрудников с признаком «Участвует в собраниях СПУ». Отметьте его в карточке сотрудника.</span>';
+            if (!shown.length) html += '<span class="mgmt-src">Нет сотрудников с признаком «Участвует в СПУ». Отметьте его в карточке сотрудника.</span>';
             shown.forEach(function (p) {
                 html += '<label class="check"><input type="checkbox"' + (canM ? "" : " disabled")
                     + (selected[p.id] ? " checked" : "")
@@ -34145,20 +34173,28 @@ function renderMgmtSettingsHtml() {
 }
 
 function mgmtEmployeeOptions(selected) {
-    let html = '<option value="">—</option>';
-    DEPT_DEFAULTS.forEach(function (d) {
-        const w = findWorkspaceByCode(d.code);
-        ((w && w.employees) || []).forEach(function (e) {
-            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
-            html += '<option value="' + escapeAttribute(e.id) + '"' + (e.id === selected ? " selected" : "") + ">"
-                + escapeHtml((e.name || e.id) + " · " + d.name) + "</option>";
-        });
-    });
-    return html;
+    return mgmtSpuResponsibleOptionsHtml(selected, "—");
 }
 
 function mgmtEmployeeFilterOptions(selected) {
-    return '<option value="">Все</option>' + mgmtEmployeeOptions(selected).replace('<option value="">—</option>', "");
+    return mgmtSpuResponsibleOptionsHtml(selected, "Все");
+}
+
+function mgmtEmployeeOptionsForDept(deptCode, selected) {
+    const empty = '<option value="">—</option>';
+    const people = mgmtSpuResponsiblePeople(selected).filter(function (p) {
+        if (p.legacy && String(p.id) === String(selected || "")) return true;
+        if (!deptCode) return true;
+        return String(p.deptCode || "") === String(deptCode);
+    });
+    if (!people.length) return empty;
+    let html = empty;
+    people.forEach(function (p) {
+        html += '<option value="' + escapeAttribute(p.id) + '"' + (String(p.id) === String(selected || "") ? " selected" : "") + ">"
+            + escapeHtml(p.name + (!deptCode && p.dept ? " · " + p.dept : "") + (p.legacy ? " (ранее)" : ""))
+            + "</option>";
+    });
+    return html;
 }
 
 function closeMgmtModal() {
