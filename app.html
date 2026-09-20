@@ -372,6 +372,61 @@
         }
         .mgmt-chip.on, .mgmt-tab.on { background: #0f172a; color: #fff; border-color: #0f172a; }
         .mgmt-period { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; margin-bottom: 6px; }
+        .spu-input-page { display: flex; flex-direction: column; gap: 8px; }
+        .spu-input-toolbar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+        .spu-input-toolbar label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); }
+        .spu-input-toolbar select { min-width: 140px; font-size: 12px; }
+        .spu-input-tabs { display: flex; gap: 0; flex-wrap: nowrap; width: 100%; margin: 2px 0 4px; overflow-x: auto; border-radius: 8px; }
+        .spu-input-tab {
+            flex: 1 1 auto; min-width: 110px; text-align: center; white-space: nowrap;
+            border: 1px solid transparent; border-radius: 0; padding: 8px 10px;
+            font-size: 12px; font-weight: 600; cursor: pointer; letter-spacing: .01em;
+            background: #e2e8f0; color: #334155;
+        }
+        .spu-input-tab:first-child { border-radius: 8px 0 0 8px; }
+        .spu-input-tab:last-child { border-radius: 0 8px 8px 0; }
+        .spu-input-tab.on { color: #fff; box-shadow: 0 2px 8px rgba(15, 23, 42, .16); position: relative; z-index: 1; }
+        .spu-input-tab .spu-input-badge {
+            display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px;
+            font-size: 10px; font-weight: 700; background: rgba(15,23,42,.14);
+        }
+        .spu-input-tab.on .spu-input-badge { background: rgba(255,255,255,.28); }
+        .spu-input-tab-t0 { background: #dbeafe; color: #1e3a8a; }
+        .spu-input-tab-t1 { background: #e0e7ff; color: #3730a3; }
+        .spu-input-tab-t2 { background: #ffedd5; color: #9a3412; }
+        .spu-input-tab-t3 { background: #dcfce7; color: #166534; }
+        .spu-input-tab-t4 { background: #cffafe; color: #155e75; }
+        .spu-input-tab-t5 { background: #fce7f3; color: #9d174d; }
+        .spu-input-tab-t6 { background: #fef3c7; color: #92400e; }
+        .spu-input-tab-t7 { background: #ede9fe; color: #5b21b6; }
+        .spu-input-tab-t0.on { background: #1d4ed8; }
+        .spu-input-tab-t1.on { background: #4338ca; }
+        .spu-input-tab-t2.on { background: #ea580c; }
+        .spu-input-tab-t3.on { background: #15803d; }
+        .spu-input-tab-t4.on { background: #0e7490; }
+        .spu-input-tab-t5.on { background: #db2777; }
+        .spu-input-tab-t6.on { background: #b45309; }
+        .spu-input-tab-t7.on { background: #6d28d9; }
+        .spu-input-panel {
+            border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+            background: #fff;
+        }
+        .spu-input-panel-h {
+            padding: 8px 12px; font-size: 13px; font-weight: 700;
+            display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
+        }
+        .spu-input-panel-h.t0 { background: #eff6ff; color: #1e3a8a; }
+        .spu-input-panel-h.t1 { background: #eef2ff; color: #3730a3; }
+        .spu-input-panel-h.t2 { background: #fff7ed; color: #9a3412; }
+        .spu-input-panel-h.t3 { background: #f0fdf4; color: #166534; }
+        .spu-input-panel-h.t4 { background: #ecfeff; color: #155e75; }
+        .spu-input-panel-h.t5 { background: #fdf2f8; color: #9d174d; }
+        .spu-input-panel-h.t6 { background: #fffbeb; color: #92400e; }
+        .spu-input-panel-h.t7 { background: #f5f3ff; color: #5b21b6; }
+        .spu-input-fill-tabs { display: flex; gap: 4px; flex-wrap: wrap; padding: 8px 12px; border-bottom: 1px solid #eef2f7; }
+        .spu-input-order { display: inline-flex; gap: 2px; }
+        .spu-input-order .btn { padding: 2px 6px; min-width: 28px; }
+        .spu-input-ro { color: var(--muted); font-size: 12px; }
         .mgmt-block { margin: 8px 0 12px; }
         .mgmt-block h4 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
         .mgmt-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -27015,7 +27070,7 @@ let spuIndListTab = "all";
 let spuIndListFilter = { q: "", dept: "", kind: "" };
 let spuIndSelected = {};
 let spuPfBreakOpen = {};
-let spuInputFilter = { owner: "", status: "" };
+let spuInputFilter = { owner: "", status: "", nodeId: "", fill: "all" };
 /** UI-only cascade filters for WT metric picker: source_id → { section, dept, group, q } */
 let spuIndSrcMetricFilters = {};
 
@@ -30681,6 +30736,7 @@ function ensureManagement() {
     if (!Array.isArray(root.spuOrgNodes)) root.spuOrgNodes = [];
     if (!Array.isArray(root.spuResponsibilities)) root.spuResponsibilities = [];
     if (!Array.isArray(root.retired_spu_codes)) root.retired_spu_codes = [];
+    if (!root.input_order || typeof root.input_order !== "object") root.input_order = {};
     appData.spu = root;
     if (wtBusy.management) return;
     wtBusy.management = true;
@@ -32922,9 +32978,130 @@ function mgmtIsManualInputIndicator(it) {
 }
 
 function setSpuInputFilter(field, value) {
-    if (!spuInputFilter) spuInputFilter = { owner: "", status: "" };
+    if (!spuInputFilter) spuInputFilter = { owner: "", status: "", nodeId: "", fill: "all" };
     spuInputFilter[field] = value;
     renderManagement();
+}
+
+function setSpuInputNode(nodeId) {
+    if (!spuInputFilter) spuInputFilter = { owner: "", status: "", nodeId: "", fill: "all" };
+    spuInputFilter.nodeId = String(nodeId || "");
+    renderManagement();
+}
+
+function setSpuInputFillTab(fill) {
+    if (!spuInputFilter) spuInputFilter = { owner: "", status: "", nodeId: "", fill: "all" };
+    spuInputFilter.fill = (fill === "empty" || fill === "filled") ? fill : "all";
+    renderManagement();
+}
+
+/** Узлы Структуры СПУ в том же порядке, что дерево (DFS по sort_order). */
+function spuInputOrgNodesInStructureOrder(includeInactive) {
+    const out = [];
+    function walk(parentId) {
+        spuOrgChildren(parentId, !!includeInactive).forEach(function (n) {
+            if (!n) return;
+            out.push(n);
+            walk(n.org_node_id);
+        });
+    }
+    walk("");
+    return out;
+}
+
+/** Вкладки: узлы структуры, у которых есть показатели (порядок = структура). */
+function spuInputTabNodes() {
+    return spuInputOrgNodesInStructureOrder(false).filter(function (n) {
+        return spuOrgIndicatorsForNode(n.org_node_id).length > 0;
+    });
+}
+
+function spuInputOrderStore() {
+    ensureManagement();
+    if (!appData.management.input_order || typeof appData.management.input_order !== "object") {
+        appData.management.input_order = {};
+    }
+    return appData.management.input_order;
+}
+
+/** Порядок показателей внутри org_node_id — отдельно от глобального sort_order. */
+function spuSortedIndicatorsForInputNode(nodeId) {
+    const list = spuOrgIndicatorsForNode(nodeId);
+    const order = Array.isArray(spuInputOrderStore()[nodeId]) ? spuInputOrderStore()[nodeId] : [];
+    const rank = {};
+    order.forEach(function (id, i) {
+        if (id != null && rank[id] == null) rank[String(id)] = i;
+    });
+    return list.slice().sort(function (a, b) {
+        const ia = String(a.indicator_id || "");
+        const ib = String(b.indicator_id || "");
+        const ra = rank[ia];
+        const rb = rank[ib];
+        const ha = ra != null;
+        const hb = rb != null;
+        if (ha && hb && ra !== rb) return ra - rb;
+        if (ha !== hb) return ha ? -1 : 1;
+        const so = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+        if (so) return so;
+        return String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+}
+
+function spuInputEnsureOrderList(nodeId) {
+    const sorted = spuSortedIndicatorsForInputNode(nodeId);
+    const ids = sorted.map(function (it) { return it.indicator_id; });
+    spuInputOrderStore()[nodeId] = ids;
+    return ids;
+}
+
+function spuInputMoveIndicator(nodeId, indicatorId, dir) {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    const nid = String(nodeId || "");
+    const iid = String(indicatorId || "");
+    if (!nid || !iid) return;
+    const ids = spuInputEnsureOrderList(nid);
+    const idx = ids.indexOf(iid);
+    const swap = idx + (dir < 0 ? -1 : 1);
+    if (idx < 0 || swap < 0 || swap >= ids.length) return;
+    const tmp = ids[idx];
+    ids[idx] = ids[swap];
+    ids[swap] = tmp;
+    spuInputOrderStore()[nid] = ids;
+    saveApp();
+    renderManagement();
+}
+
+function spuInputNeedsManualFill(it) {
+    return mgmtIsManualInputIndicator(it);
+}
+
+function spuInputFillStatus(it) {
+    if (spuInputNeedsManualFill(it)) {
+        const v = mgmtManualFact(it.indicator_id);
+        return (v != null && v !== "") ? "filled" : "empty";
+    }
+    const read = mgmtReadIndicator(it);
+    return (read && read.value != null && read.value !== "" && Number.isFinite(Number(read.value)))
+        ? "filled"
+        : "empty";
+}
+
+function spuInputDisplayValue(it) {
+    if (spuInputNeedsManualFill(it)) {
+        const v = mgmtManualFact(it.indicator_id);
+        return v == null || v === "" ? null : v;
+    }
+    const read = mgmtReadIndicator(it);
+    return read && read.value != null ? read.value : null;
+}
+
+function spuInputSourceStatusLabel(it) {
+    const ui = spuIndicatorUiKind(it);
+    if (ui === "manual") return "Ручной ввод";
+    if (ui === "one_c") return "Из 1С (позже)";
+    if (ui === "calculated") return "Расчётный";
+    if (ui === "worktime") return "Из Work Time";
+    return spuIndicatorUiKindLabel(ui);
 }
 
 function renderMgmtFinanceHtml() {
@@ -32933,87 +33110,148 @@ function renderMgmtFinanceHtml() {
 
 function renderMgmtIndicatorInputHtml() {
     const canManual = canEditMgmtIndicators();
-    const filt = spuInputFilter || { owner: "", status: "" };
-    let list = mgmtVisibleIndicators().filter(mgmtIsManualInputIndicator);
-    if (filt.owner) list = list.filter(function (it) { return String(it.owner_employee_id || "") === String(filt.owner); });
-    const period = mgmtPeriodKey();
-    function fillStatus(it) {
-        const v = mgmtManualFact(it.indicator_id);
-        return v != null && v !== "" ? "filled" : "empty";
+    const canOrder = canEditMgmtIndicators() || canEditSpuStructure();
+    const canAssign = canManual || canEditSpuStructure();
+    if (!spuInputFilter) spuInputFilter = { owner: "", status: "", nodeId: "", fill: "all" };
+    const filt = spuInputFilter;
+    const tabs = spuInputTabNodes();
+    if (filt.nodeId && !tabs.some(function (n) { return n.org_node_id === filt.nodeId; })) {
+        filt.nodeId = "";
     }
-    if (filt.status === "filled") list = list.filter(function (it) { return fillStatus(it) === "filled"; });
-    if (filt.status === "empty") list = list.filter(function (it) { return fillStatus(it) === "empty"; });
-    list = list.slice().sort(function (a, b) {
-        const na = (spuOrgGetNode(mgmtIndicatorTargetNodeId(a)) || {}).name || "";
-        const nb = (spuOrgGetNode(mgmtIndicatorTargetNodeId(b)) || {}).name || "";
-        const c = String(na).localeCompare(String(nb), "ru");
-        if (c) return c;
-        return Number(a.sort_order || 0) - Number(b.sort_order || 0);
-    });
-    const filledN = list.filter(function (it) { return fillStatus(it) === "filled"; }).length;
-    let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
-    html += '<div class="note" style="margin:6px 0">Ввод только для показателей СПУ с ручным заполнением (и «Из 1С» до подключения). Расчётные и «Из Work Time» здесь не требуют ввода.</div>';
-    html += '<div class="mgmt-src" style="margin:6px 0;font-weight:600">Заполнено ' + filledN + " из " + list.length + " · период " + escapeHtml(period) + "</div>";
-    html += '<div class="cr-filters" style="margin:8px 0">'
+    if (!filt.nodeId && tabs.length) filt.nodeId = tabs[0].org_node_id;
+    const activeNode = filt.nodeId ? spuOrgGetNode(filt.nodeId) : null;
+    const activeTint = Math.max(0, tabs.findIndex(function (n) { return n.org_node_id === filt.nodeId; })) % 8;
+    const period = mgmtPeriodKey();
+
+    let html = '<div class="spu-input-page">';
+    html += mgmtPeriodToolbarHtml();
+    html += '<div class="spu-input-toolbar">'
         + '<label>Ответственный<select onchange="setSpuInputFilter(\'owner\',this.value)">'
         + mgmtEmployeeFilterOptions(filt.owner || "") + "</select></label>"
         + '<label>Статус<select onchange="setSpuInputFilter(\'status\',this.value)">'
         + '<option value=""' + (!filt.status ? " selected" : "") + ">Все</option>"
         + '<option value="empty"' + (filt.status === "empty" ? " selected" : "") + ">Не заполнено</option>"
         + '<option value="filled"' + (filt.status === "filled" ? " selected" : "") + ">Заполнено</option>"
-        + "</select></label></div>";
-    const byNode = {};
-    const order = [];
-    list.forEach(function (it) {
-        const nid = mgmtIndicatorTargetNodeId(it) || "_";
-        if (!byNode[nid]) {
-            byNode[nid] = [];
-            order.push(nid);
-        }
-        byNode[nid].push(it);
-    });
-    if (!list.length) {
-        html += '<div class="empty-row">Нет показателей для ручного ввода за выбранный период.</div>';
+        + "</select></label>"
+        + '<div class="note" style="margin:0;align-self:center">Период: ' + escapeHtml(period) + "</div>"
+        + "</div>";
+
+    if (!tabs.length) {
+        html += '<div class="empty-row">Нет департаментов с показателями. Назначьте показатели в «Структура СПУ».</div></div>';
         return html;
     }
-    order.forEach(function (nid) {
-        const node = spuOrgGetNode(nid);
-        html += '<h4 style="margin:16px 0 8px">' + escapeHtml(node ? node.name : "Без департамента") + "</h4>";
-        html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-            + "<th>Показатель</th><th>Значение</th><th>Статус</th><th>Ответственный</th>"
-            + "</tr></thead><tbody>";
-        byNode[nid].forEach(function (it) {
-            const fact = mgmtManualFact(it.indicator_id);
-            const st = fillStatus(it);
-            const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
-            const canAssign = canEditMgmtIndicators() || canEditSpuStructure();
-            html += "<tr>"
-                + "<td>" + escapeHtml(it.name)
-                + '<div class="mgmt-src">' + escapeHtml(spuIndicatorUiKindLabel(spuIndicatorUiKind(it)))
-                + (spuIndicatorExtraNodeIds(it).length
-                    ? " · также: " + escapeHtml(spuIndicatorExtraNodeIds(it).map(function (id) {
+
+    html += '<div class="spu-input-tabs">';
+    tabs.forEach(function (n, idx) {
+        const tint = idx % 8;
+        const inds = spuSortedIndicatorsForInputNode(n.org_node_id);
+        const need = inds.filter(spuInputNeedsManualFill);
+        const left = need.filter(function (it) { return spuInputFillStatus(it) === "empty"; }).length;
+        html += '<button type="button" class="spu-input-tab spu-input-tab-t' + tint
+            + (n.org_node_id === filt.nodeId ? " on" : "")
+            + '" onclick="setSpuInputNode(\'' + escapeAttribute(n.org_node_id) + '\')">'
+            + escapeHtml(n.name || n.org_node_id)
+            + (left ? '<span class="spu-input-badge">' + left + "</span>" : "")
+            + "</button>";
+    });
+    html += "</div>";
+
+    let list = filt.nodeId ? spuSortedIndicatorsForInputNode(filt.nodeId) : [];
+    if (filt.owner) {
+        list = list.filter(function (it) { return String(it.owner_employee_id || "") === String(filt.owner); });
+    }
+    if (filt.status === "filled") list = list.filter(function (it) { return spuInputFillStatus(it) === "filled"; });
+    if (filt.status === "empty") list = list.filter(function (it) { return spuInputFillStatus(it) === "empty"; });
+
+    const fillTab = filt.fill || "all";
+    let view = list;
+    if (fillTab === "empty") {
+        view = list.filter(function (it) {
+            return spuInputNeedsManualFill(it) && spuInputFillStatus(it) === "empty";
+        });
+    } else if (fillTab === "filled") {
+        view = list.filter(function (it) { return spuInputFillStatus(it) === "filled"; });
+    }
+
+    const needAll = list.filter(spuInputNeedsManualFill);
+    const filledNeed = needAll.filter(function (it) { return spuInputFillStatus(it) === "filled"; }).length;
+    const leftNeed = needAll.length - filledNeed;
+
+    html += '<div class="spu-input-panel">';
+    html += '<div class="spu-input-panel-h t' + activeTint + '">'
+        + "<span>" + escapeHtml(activeNode ? activeNode.name : "Департамент") + "</span>"
+        + '<span style="font-weight:600;font-size:12px">Заполнено ' + filledNeed + " из " + needAll.length
+        + (leftNeed ? " · Осталось " + leftNeed : "") + "</span>"
+        + "</div>";
+    html += '<div class="spu-input-fill-tabs">'
+        + '<button type="button" class="mgmt-chip' + (fillTab === "all" ? " on" : "") + '" onclick="setSpuInputFillTab(\'all\')">Все</button>'
+        + '<button type="button" class="mgmt-chip' + (fillTab === "empty" ? " on" : "") + '" onclick="setSpuInputFillTab(\'empty\')">Требуют заполнения</button>'
+        + '<button type="button" class="mgmt-chip' + (fillTab === "filled" ? " on" : "") + '" onclick="setSpuInputFillTab(\'filled\')">Заполнено</button>'
+        + "</div>";
+
+    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+        + (canOrder ? "<th style=\"width:64px\">Порядок</th>" : "")
+        + "<th>Показатель</th><th>Значение</th><th>Ответственный</th><th>Источник / статус</th>"
+        + "</tr></thead><tbody>";
+
+    if (!view.length) {
+        html += '<tr><td colspan="' + (canOrder ? 5 : 4) + '"><div class="empty-row">Нет показателей по выбранным фильтрам.</div></td></tr>';
+    }
+
+    const fullOrder = filt.nodeId ? spuSortedIndicatorsForInputNode(filt.nodeId) : [];
+    view.forEach(function (it) {
+        const ui = spuIndicatorUiKind(it);
+        const editable = spuInputNeedsManualFill(it) && canManual;
+        const val = spuInputDisplayValue(it);
+        const st = spuInputFillStatus(it);
+        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+        const idxInFull = fullOrder.findIndex(function (x) { return x.indicator_id === it.indicator_id; });
+        html += "<tr>";
+        if (canOrder) {
+            html += '<td><div class="spu-input-order">'
+                + '<button type="button" class="btn btn-secondary btn-small" title="Выше" '
+                + 'onclick="spuInputMoveIndicator(\'' + filt.nodeId + "','" + it.indicator_id + "',-1)\""
+                + (idxInFull <= 0 ? " disabled" : "") + ">↑</button>"
+                + '<button type="button" class="btn btn-secondary btn-small" title="Ниже" '
+                + 'onclick="spuInputMoveIndicator(\'' + filt.nodeId + "','" + it.indicator_id + "',1)\""
+                + (idxInFull < 0 || idxInFull >= fullOrder.length - 1 ? " disabled" : "") + ">↓</button>"
+                + "</div></td>";
+        }
+        html += '<td class="wrap">' + escapeHtml(it.name)
+            + (spuIndicatorExtraNodeIds(it).length
+                ? '<div class="mgmt-src">также в: '
+                    + escapeHtml(spuIndicatorExtraNodeIds(it).map(function (id) {
                         const n = spuOrgGetNode(id);
                         return n ? n.name : id;
                     }).join(", "))
-                    : "")
-                + "</div></td>"
-                + "<td>";
-            if (canManual && (it.source_type === "manual" || it.source_type === "one_c_future" || spuIndicatorUiKind(it) === "manual" || spuIndicatorUiKind(it) === "one_c")) {
-                html += '<input class="mgmt-manual" value="' + escapeAttribute(fact == null ? "" : String(fact)) + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
-            } else {
-                html += escapeHtml(fact == null ? "—" : mgmtFormatValue(it, fact));
-            }
-            html += "</td><td>" + (st === "filled" ? "Заполнено" : "Не заполнено") + "</td><td>";
-            if (canAssign) {
-                html += "<select onchange=\"setMgmtIndicatorOwner('" + it.indicator_id + "',this.value)\">"
-                    + mgmtEmployeeOptions(it.owner_employee_id || "") + "</select>";
-            } else {
-                html += escapeHtml(emp ? emp.name : "—");
-            }
-            html += "</td></tr>";
-        });
-        html += "</tbody></table></div>";
+                    + "</div>"
+                : "")
+            + "</td><td>";
+        if (editable) {
+            html += '<input class="mgmt-manual" value="' + escapeAttribute(val == null ? "" : String(val))
+                + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
+        } else {
+            html += '<span class="spu-input-ro">'
+                + escapeHtml(val == null || val === "" ? "—" : mgmtFormatValue(it, val))
+                + "</span>";
+        }
+        html += "</td><td>";
+        if (canAssign) {
+            html += "<select onchange=\"setMgmtIndicatorOwner('" + it.indicator_id + "',this.value)\">"
+                + mgmtEmployeeOptions(it.owner_employee_id || "") + "</select>";
+        } else {
+            html += escapeHtml(emp ? emp.name : "—");
+        }
+        html += "</td><td class=\"wrap\">"
+            + escapeHtml(spuInputSourceStatusLabel(it))
+            + '<div class="mgmt-src">'
+            + (st === "filled" ? "Заполнено" : (spuInputNeedsManualFill(it) ? "Требует заполнения" : "Нет данных"))
+            + (ui === "worktime" || ui === "calculated"
+                ? " · " + escapeHtml(mgmtSourcePath(it) || "")
+                : "")
+            + "</div></td></tr>";
     });
+    html += "</tbody></table></div></div></div>";
     return html;
 }
 
