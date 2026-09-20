@@ -28859,7 +28859,7 @@ function mgmtAggregateNumbers(values, type) {
     return nums.reduce(function (a, b) { return a + b; }, 0);
 }
 
-function mgmtPlanCandidateKeys() {
+function mgmtPeriodCandidateKeys() {
     const keys = [];
     function add(k) {
         if (k && keys.indexOf(k) === -1) keys.push(k);
@@ -28869,19 +28869,30 @@ function mgmtPlanCandidateKeys() {
     if (r && r.from) {
         add("week:" + r.from);
         try {
-            const thu = mgmtThuWeek(r.from);
-            if (thu && thu.from) add("week:" + thu.from);
+            const rep = mgmtSpuReportingWeek(r.from);
+            if (rep && rep.period_key) add(rep.period_key);
         } catch (err) {}
         try {
             const d = mgmtParseIso(r.from);
-            const wd = (d.getDay() + 6) % 7;
-            const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() - wd);
+            const thuOff = (d.getDay() + 3) % 7;
+            const thu = new Date(d.getFullYear(), d.getMonth(), d.getDate() - thuOff);
+            add("week:" + mgmtIsoFromDate(thu));
+        } catch (errThu) {}
+        try {
+            const d = mgmtParseIso(r.from);
+            const monOff = (d.getDay() + 6) % 7;
+            const mon = new Date(d.getFullYear(), d.getMonth(), d.getDate() - monOff);
             add("week:" + mgmtIsoFromDate(mon));
-        } catch (err2) {}
+        } catch (errMon) {}
     }
     const month = (r && r.month) || (r && r.to ? String(r.to).slice(0, 7) : "");
     if (month) add("month:" + month);
     return keys;
+}
+
+/** @deprecated alias — единый список ключей периода для планов и фактов */
+function mgmtPlanCandidateKeys() {
+    return mgmtPeriodCandidateKeys();
 }
 
 function mgmtKpiPlanForMetric(metricId, subId, month) {
@@ -31039,6 +31050,12 @@ function ensureManagement() {
     if (!Array.isArray(root.retired_spu_codes)) root.retired_spu_codes = [];
     if (!root.input_order || typeof root.input_order !== "object") root.input_order = {};
     if (!Array.isArray(root.panel_blocks)) root.panel_blocks = [];
+    if (root.reporting_week_start_day == null || root.reporting_week_start_day === "") {
+        root.reporting_week_start_day = 4; /* Четверг → Среда по умолчанию */
+    } else {
+        const wd = Number(root.reporting_week_start_day);
+        root.reporting_week_start_day = (Number.isFinite(wd) && wd >= 0 && wd <= 6) ? wd : 4;
+    }
     if (!wtBusy.management) {
         try { mgmtPanelNormalizeBlocks(); } catch (normErr) { console.error(normErr); }
     }
@@ -31654,6 +31671,98 @@ function mgmtParseIso(iso) {
     return new Date(p[0], (p[1] || 1) - 1, p[2] || 1);
 }
 
+/** День начала отчётной недели СПУ: 0=вс … 4=чт … 6=сб. По умолчанию четверг. */
+function mgmtSpuWeekStartDay() {
+    try {
+        if (appData && appData.management && appData.management.reporting_week_start_day != null) {
+            const n = Number(appData.management.reporting_week_start_day);
+            if (Number.isFinite(n) && n >= 0 && n <= 6) return n;
+        }
+    } catch (err) {}
+    return 4;
+}
+
+function mgmtSpuWeekdayLabel(day) {
+    const names = ["Воскресенье", "Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота"];
+    const n = Number(day);
+    return names[(Number.isFinite(n) && n >= 0 && n <= 6) ? n : 4] || "Четверг";
+}
+
+function setMgmtSpuWeekStartDay(day) {
+    ensureManagement();
+    const n = Number(day);
+    appData.management.reporting_week_start_day = (Number.isFinite(n) && n >= 0 && n <= 6) ? n : 4;
+    saveApp();
+    renderManagement();
+}
+
+/**
+ * Единый отчётный период СПУ (неделя).
+ * Возвращает: period_type, start_date, end_date, period_key (+ from/to/key для совместимости).
+ */
+function mgmtSpuReportingWeek(iso) {
+    const src = iso || mgmtIsoFromDate(new Date());
+    const d = mgmtParseIso(src);
+    const startDay = mgmtSpuWeekStartDay();
+    const offset = (d.getDay() - startDay + 7) % 7;
+    const from = new Date(d.getFullYear(), d.getMonth(), d.getDate() - offset);
+    const to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 6);
+    const fromIso = mgmtIsoFromDate(from);
+    const toIso = mgmtIsoFromDate(to);
+    return {
+        period_type: "week",
+        start_date: fromIso,
+        end_date: toIso,
+        period_key: "week:" + fromIso,
+        from: fromIso,
+        to: toIso,
+        key: "thu:" + fromIso
+    };
+}
+
+function mgmtSpuShiftReportingWeek(fromIso, delta) {
+    const base = mgmtSpuReportingWeek(fromIso || mgmtSpuReportingWeek().start_date);
+    const d = mgmtParseIso(base.start_date);
+    d.setDate(d.getDate() + Number(delta || 0) * 7);
+    return mgmtSpuReportingWeek(mgmtIsoFromDate(d));
+}
+
+/** Текущий выбранный отчётный период СПУ (неделя или месяц). */
+function mgmtSpuReportingPeriod() {
+    const r = mgmtPeriodRange();
+    if (r.kind === "month") {
+        return {
+            period_type: "month",
+            start_date: r.from,
+            end_date: r.to,
+            period_key: "month:" + r.month,
+            from: r.from,
+            to: r.to,
+            month: r.month
+        };
+    }
+    if (r.kind === "today") {
+        return {
+            period_type: "day",
+            start_date: r.from,
+            end_date: r.to,
+            period_key: "day:" + r.from,
+            from: r.from,
+            to: r.to
+        };
+    }
+    const w = mgmtSpuReportingWeek(r.from || mgmtAnchorIso);
+    return {
+        period_type: "week",
+        start_date: w.start_date,
+        end_date: w.end_date,
+        period_key: w.period_key,
+        from: w.from,
+        to: w.to,
+        key: w.key
+    };
+}
+
 function mgmtPeriodRange() {
     if (!mgmtAnchorIso) mgmtAnchorIso = mgmtIsoFromDate(new Date());
     const d = mgmtParseIso(mgmtAnchorIso);
@@ -31661,15 +31770,10 @@ function mgmtPeriodRange() {
         const iso = mgmtIsoFromDate(d);
         return { from: iso, to: iso, kind: "today" };
     }
-    if (mgmtPeriodKind === "week") {
-        const wd = (d.getDay() + 6) % 7;
-        const from = new Date(d.getFullYear(), d.getMonth(), d.getDate() - wd);
-        const to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 6);
-        return { from: mgmtIsoFromDate(from), to: mgmtIsoFromDate(to), kind: "week" };
-    }
-    if (mgmtPeriodKind === "thu_week") {
-        const w = mgmtThuWeek(mgmtAnchorIso);
-        return { from: w.from, to: w.to, kind: "week" };
+    /* week и thu_week — один отчётный календарь СПУ (по умолчанию чт→ср) */
+    if (mgmtPeriodKind === "week" || mgmtPeriodKind === "thu_week") {
+        const w = mgmtSpuReportingWeek(mgmtAnchorIso);
+        return { from: w.start_date, to: w.end_date, kind: "week" };
     }
     const month = d.getFullYear() + "-" + mgmtPad(d.getMonth() + 1);
     const last = daysInMonthValue(month);
@@ -31929,19 +32033,6 @@ function setMgmtDeptHead(code, empId) {
 function mgmtRunInThuWeek(fromIso, fn) {
     const savedKind = mgmtPeriodKind;
     const savedIso = mgmtAnchorIso;
-    mgmtPeriodKind = "thu_week";
-    mgmtAnchorIso = fromIso;
-    try {
-        return fn();
-    } finally {
-        mgmtPeriodKind = savedKind;
-        mgmtAnchorIso = savedIso;
-    }
-}
-
-function mgmtRunInWeek(fromIso, fn) {
-    const savedKind = mgmtPeriodKind;
-    const savedIso = mgmtAnchorIso;
     mgmtPeriodKind = "week";
     mgmtAnchorIso = fromIso;
     try {
@@ -31952,6 +32043,10 @@ function mgmtRunInWeek(fromIso, fn) {
     }
 }
 
+function mgmtRunInWeek(fromIso, fn) {
+    return mgmtRunInThuWeek(fromIso, fn);
+}
+
 function mgmtWeeksOverlappingMonth(month) {
     const value = month || selectedMonth || currentMonthValue();
     const p = String(value).split("-").map(Number);
@@ -31959,16 +32054,18 @@ function mgmtWeeksOverlappingMonth(month) {
     const m = p[1] || 1;
     const first = new Date(y, m - 1, 1);
     const last = new Date(y, m, 0);
-    const wd = (first.getDay() + 6) % 7;
-    let cur = new Date(first.getFullYear(), first.getMonth(), first.getDate() - wd);
+    const startDay = mgmtSpuWeekStartDay();
+    const offset = (first.getDay() - startDay + 7) % 7;
+    let cur = new Date(first.getFullYear(), first.getMonth(), first.getDate() - offset);
     const weeks = [];
     while (cur <= last) {
         const from = new Date(cur);
         const to = new Date(cur.getFullYear(), cur.getMonth(), cur.getDate() + 6);
+        const fromIso = mgmtIsoFromDate(from);
         weeks.push({
-            from: mgmtIsoFromDate(from),
+            from: fromIso,
             to: mgmtIsoFromDate(to),
-            key: "week:" + mgmtIsoFromDate(from)
+            key: "week:" + fromIso
         });
         cur.setDate(cur.getDate() + 7);
     }
@@ -32237,15 +32334,20 @@ function mgmtKpiFact(it) {
 }
 
 function mgmtManualFact(indicatorId) {
-    const key = mgmtPeriodKey();
-    const rec = appData.management.manualFacts[key] && appData.management.manualFacts[key][indicatorId];
-    return rec && rec.value != null && rec.value !== "" ? Number(rec.value) : null;
+    if (!appData || !appData.management || !appData.management.manualFacts) return null;
+    const facts = appData.management.manualFacts;
+    const keys = typeof mgmtPeriodCandidateKeys === "function" ? mgmtPeriodCandidateKeys() : [mgmtPeriodKey()];
+    for (let i = 0; i < keys.length; i++) {
+        const rec = facts[keys[i]] && facts[keys[i]][indicatorId];
+        if (rec && rec.value != null && rec.value !== "") return Number(rec.value);
+    }
+    return null;
 }
 
 function mgmtPlanStoredValue(indicatorId) {
     if (!appData || !appData.management || !appData.management.plans) return null;
     const plans = appData.management.plans;
-    const keys = typeof mgmtPlanCandidateKeys === "function" ? mgmtPlanCandidateKeys() : [mgmtPeriodKey()];
+    const keys = typeof mgmtPeriodCandidateKeys === "function" ? mgmtPeriodCandidateKeys() : [mgmtPeriodKey()];
     for (let i = 0; i < keys.length; i++) {
         const rec = plans[keys[i]] && plans[keys[i]][indicatorId];
         if (rec && rec.value != null && rec.value !== "") return Number(rec.value);
@@ -32519,11 +32621,17 @@ function setMgmtDeptFilter(code) {
 function mgmtPeriodToolbarHtml() {
     const r = mgmtPeriodRange();
     const label = r.from === r.to ? mgmtFmtRu(r.from) : mgmtFmtRu(r.from) + " — " + mgmtFmtRu(r.to);
+    const startDay = mgmtSpuWeekStartDay();
+    const endDay = (startDay + 6) % 7;
+    const short = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+    const weekHint = mgmtPeriodKind === "week"
+        ? (' <span class="mgmt-src">(' + short[startDay] + "–" + short[endDay] + ")</span>")
+        : "";
     return '<div class="mgmt-period">'
         + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "week" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'week\')">Неделя</button>'
         + '<button type="button" class="mgmt-chip' + (mgmtPeriodKind === "month" ? " on" : "") + '" onclick="setMgmtPeriodKind(\'month\')">Месяц</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtShiftPeriod(-1)">←</button>'
-        + "<strong>" + escapeHtml(label) + "</strong>"
+        + "<strong>" + escapeHtml(label) + "</strong>" + weekHint
         + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtShiftPeriod(1)">→</button>'
         + "</div>";
 }
@@ -34085,7 +34193,11 @@ function renderMgmtDashboardHtml() {
         });
         html += "</div>";
         html += '<div class="spu-kpi">';
-        html += '<div class="spu-kpi-period"><label>ПЕРИОД (чт–ср)</label>'
+        html += '<div class="spu-kpi-period"><label>ПЕРИОД ('
+            + escapeHtml((["вс", "пн", "вт", "ср", "чт", "пт", "сб"][mgmtSpuWeekStartDay()] || "чт")
+                + "–"
+                + (["вс", "пн", "вт", "ср", "чт", "пт", "сб"][(mgmtSpuWeekStartDay() + 6) % 7] || "ср"))
+            + ")</label>"
             + '<select onchange="setMgmtDashWeek(this.value)">' + mgmtThuWeekOptions(week.from) + "</select>"
             + '<div class="k-lab" style="margin-top:8px">Неделя</div>'
             + '<div class="k-val" style="font-size:13px">' + escapeHtml(mgmtFmtRu(week.from) + " – " + mgmtFmtRu(week.to)) + "</div>"
@@ -34426,7 +34538,9 @@ function renderMgmtPlanFactHtml() {
         + '<span><i class="mgmt-warn"></i>80–99%</span>'
         + '<span><i class="mgmt-bad"></i>&lt; 80%</span>'
         + '<span><i class="pf-na"></i>Нет данных</span>'
-        + "<span>Сравнение: Неделя 2 − Неделя 1, в процентных пунктах. Неделя: четверг → среда.</span>"
+        + "<span>Сравнение: Неделя 2 − Неделя 1, в процентных пунктах. Неделя: "
+        + escapeHtml(mgmtSpuWeekdayLabel(mgmtSpuWeekStartDay()) + " → " + mgmtSpuWeekdayLabel((mgmtSpuWeekStartDay() + 6) % 7))
+        + ".</span>"
         + "</div>";
     return html;
 }
@@ -34817,18 +34931,11 @@ function mgmtWorkRowClass(item) {
 }
 
 function mgmtThuWeek(iso) {
-    const src = iso || mgmtIsoFromDate(new Date());
-    const d = mgmtParseIso(src);
-    const offset = (d.getDay() + 3) % 7;
-    const from = new Date(d.getFullYear(), d.getMonth(), d.getDate() - offset);
-    const to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 6);
-    return { from: mgmtIsoFromDate(from), to: mgmtIsoFromDate(to), key: "thu:" + mgmtIsoFromDate(from) };
+    return mgmtSpuReportingWeek(iso);
 }
 
 function mgmtShiftThuWeek(fromIso, delta) {
-    const d = mgmtParseIso(fromIso || mgmtThuWeek().from);
-    d.setDate(d.getDate() + Number(delta || 0) * 7);
-    return mgmtThuWeek(mgmtIsoFromDate(d));
+    return mgmtSpuShiftReportingWeek(fromIso, delta);
 }
 
 function mgmtWeekMeta(key) {
@@ -35597,7 +35704,22 @@ function renderMgmtSettingsHtml() {
         if (!mgmtSettingsHub) return true;
         return mgmtIndicatorHubKey(it) === mgmtSettingsHub;
     });
-    let html = '<p class="spu-ind-note">Настройка связей: существующая метрика (по ID) → подразделения → место на панели СПУ. Новые метрики создаются только в Территория → Метрики или в Метриках магазина. СПУ копию не создаёт и факты не вводит.</p>'
+    const startDay = mgmtSpuWeekStartDay();
+    const endDay = (startDay + 6) % 7;
+    let html = '<div class="spu-report-week-box" style="margin:0 0 14px;padding:12px 14px;border:1px solid #dbe3ef;border-radius:8px;background:#f8fafc">'
+        + '<div style="font-weight:600;margin-bottom:6px">Отчётная неделя СПУ</div>'
+        + '<label style="display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap">Начало недели: '
+        + '<select onchange="setMgmtSpuWeekStartDay(this.value)">';
+    [4, 1, 0, 2, 3, 5, 6].forEach(function (d) {
+        html += '<option value="' + d + '"' + (startDay === d ? " selected" : "") + ">"
+            + escapeHtml(mgmtSpuWeekdayLabel(d)) + "</option>";
+    });
+    html += "</select></label>"
+        + '<div class="note" style="margin:8px 0 0">Конец определяется автоматически: <b>'
+        + escapeHtml(mgmtSpuWeekdayLabel(startDay)) + " → " + escapeHtml(mgmtSpuWeekdayLabel(endDay))
+        + "</b>. Одна настройка для Ввода показателей, План–факта, Панели управления и графиков СПУ.</div>"
+        + "</div>";
+    html += '<p class="spu-ind-note">Настройка связей: существующая метрика (по ID) → подразделения → место на панели СПУ. Новые метрики создаются только в Территория → Метрики или в Метриках магазина. СПУ копию не создаёт и факты не вводит.</p>'
         + '<div class="spu-ind-hubs metrics-tabs">';
     mgmtSettingsHubs().forEach(function (h) {
         html += '<button type="button" class="metrics-tab' + (String(mgmtSettingsHub) === String(h.id) ? " active" : "") + '"'
