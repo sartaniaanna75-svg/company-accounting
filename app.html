@@ -610,6 +610,9 @@
         }
         .spu-color-swatch.on { border-color: #0f172a; box-shadow: 0 0 0 1px #fff inset; }
         .ps-dyn { font-size: 12px; font-weight: 600; margin-left: 4px; }
+        .spu-custom-kpi .ck .ps-dyn {
+            display: block; margin: 6px 0 0; margin-left: 0; line-height: 1.3;
+        }
         .ps-dyn-good { color: #15803d; }
         .ps-dyn-bad { color: #b91c1c; }
         .ps-dyn-flat, .ps-dyn-na { color: #64748b; font-weight: 500; }
@@ -719,25 +722,49 @@
         .pf-table thead .pf-sticky-0,
         .pf-table thead .pf-sticky-1,
         .pf-table thead .pf-sticky-2 { z-index: 6; background: #e2e8f0; }
+        /* Уровень 1 — департамент */
         .pf-dept td,
         .pf-dept .pf-sticky-0,
         .pf-dept .pf-sticky-1,
-        .pf-dept .pf-sticky-2 { background: #cfe2f3; font-weight: 700; }
+        .pf-dept .pf-sticky-2 {
+            background: #c5d8ea;
+            font-weight: 700;
+            font-size: 12px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+        }
+        /* Уровень 2 — поддепартамент */
         .pf-dept-d1 td,
         .pf-dept-d1 .pf-sticky-0,
         .pf-dept-d1 .pf-sticky-1,
-        .pf-dept-d1 .pf-sticky-2 { background: #dceaf7; font-weight: 700; }
+        .pf-dept-d1 .pf-sticky-2,
         .pf-dept-d2 td,
         .pf-dept-d2 .pf-sticky-0,
         .pf-dept-d2 .pf-sticky-1,
-        .pf-dept-d2 .pf-sticky-2 { background: #e8f1f8; font-weight: 600; }
+        .pf-dept-d2 .pf-sticky-2 {
+            background: #e8f0f7;
+            font-weight: 600;
+            font-size: 11.5px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+            color: #1e3a5f;
+        }
+        /* Уровень 3 — показатель */
         .pf-ind-row td,
         .pf-ind-row .pf-sticky-0,
         .pf-ind-row .pf-sticky-1,
-        .pf-ind-row .pf-sticky-2 { background: #fff; font-weight: 400; }
+        .pf-ind-row .pf-sticky-2 {
+            background: #fff;
+            font-weight: 400;
+            font-size: 11px;
+            padding-top: 2px;
+            padding-bottom: 2px;
+        }
         .pf-break-row td { background: #f8fafc; font-size: 12px; color: #475569; }
-        .pf-break-row .pf-break-name { padding-left: 28px; }
+        .pf-break-row .pf-break-name { padding-left: 20px; }
         .pf-name-pad { display: inline-block; }
+        .pf-node-label { font-weight: inherit; }
+        .pf-ind-name { font-weight: 400; color: #0f172a; }
         .pf-pct { text-align: center; min-width: 72px; width: 72px; }
         .pf-n { text-align: right; min-width: 78px; width: 78px; font-variant-numeric: tabular-nums; }
         .pf-na { background: #f8fafc; color: #94a3b8; }
@@ -756,13 +783,17 @@
         .pf-bar select { font-size: 12px; padding: 3px 6px; max-width: 220px; }
         .pf-bar .pf-arrow { align-self: center; font-weight: 700; color: #64748b; padding-bottom: 2px; }
         .pf-toggle {
-            float: right;
+            display: inline-block;
             border: 0;
             background: transparent;
             cursor: pointer;
-            font-size: 12px;
-            padding: 0 4px;
+            font-size: 11px;
+            padding: 0 4px 0 0;
+            line-height: 1;
+            vertical-align: baseline;
+            color: #334155;
         }
+        .pf-dept .pf-toggle { font-size: 12px; }
         .pf-in {
             width: 72px;
             max-width: 100%;
@@ -28849,8 +28880,9 @@ function mgmtAggregateNumbers(values, type) {
     const nums = (values || []).filter(function (v) {
         return v != null && v !== "" && Number.isFinite(Number(v));
     }).map(Number);
-    if (!nums.length) return null;
     const agg = String(type || "sum");
+    if (agg === "count") return nums.length;
+    if (!nums.length) return null;
     if (agg === "average" || agg === "avg") {
         return nums.reduce(function (a, b) { return a + b; }, 0) / nums.length;
     }
@@ -32221,46 +32253,114 @@ function mgmtMetricFactDeptCodes(deptCode, metricId) {
     return DEPT_DEFAULTS.map(function (d) { return d.code; });
 }
 
+/**
+ * Агрегация дневных фактов Work Time для Показателя СПУ.
+ * Явно из настройки Показателя (aggregation_type); иначе period_agg метрики каталога.
+ */
+function mgmtResolveMetricDayAgg(indicator, catalogItem) {
+    const raw = indicator && String(indicator.aggregation_type || "");
+    if (raw === "average" || raw === "avg") return "avg";
+    if (raw === "last") return "last";
+    if (raw === "count") return "count";
+    if (raw === "sum") return "sum";
+    return metricPeriodAgg(catalogItem);
+}
+
+/** Дневные значения магазинной метрики только за дни отчётного периода СПУ. */
+function collectShopMetricPeriodSeries(metricId, subId, days) {
+    const mid = canonicalMetricId(metricId);
+    const series = [];
+    if (!mid) return series;
+    (days || []).forEach(function (d) {
+        if (mid === "metric_recount") {
+            const v = shopRecountDayExecutorTotal(d.day, d.month);
+            if (v != null && Number.isFinite(Number(v))) series.push(Number(v));
+            return;
+        }
+        if (mid === STORE_METRIC_VISITORS || mid === "store_metric_visitors") {
+            const v = Number(getShopStoreValue(d.day, "visitors", d.month) || 0);
+            if (Number.isFinite(v)) series.push(v);
+            return;
+        }
+        const ids = shopMetricContributorIds(mid, d.month);
+        ids.forEach(function (id) {
+            const raw = shopMetricStoredFact(id, d.day, mid, d.month, subId);
+            if (raw == null || raw === "") return;
+            const n = Number(raw);
+            if (Number.isFinite(n)) series.push(n);
+        });
+    });
+    return series;
+}
+
+/**
+ * Факт Work Time за отчётный период СПУ:
+ * только дни из days (mgmtDaysInPeriod), в т.ч. через границу месяцев;
+ * без копирования фактов; агрегация — из настройки Показателя / period_agg метрики.
+ */
 function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
     try {
         const mid = canonicalMetricId(metricId);
         if (!mid) return 0;
         const catalogItem = shopMetricCatalogById(mid);
+        const dayList = days || [];
+        const agg = mgmtResolveMetricDayAgg(indicator, catalogItem);
         if (catalogItem && metricRollupEnabled(catalogItem) && metricDepartmentId(catalogItem) !== "shop") {
             const src = indicator && indicator.source_result;
+            let rollup = 0;
             if (src === "group_total" && indicator.source_work_tab_id) {
-                return metricGroupRollupTotal(catalogItem, indicator.source_work_tab_id, days || []);
+                rollup = metricGroupRollupTotal(catalogItem, indicator.source_work_tab_id, dayList);
+            } else if (src !== "fact") {
+                rollup = metricDeptRollupTotal(catalogItem, dayList);
+            } else {
+                rollup = null;
             }
-            if (src !== "fact") {
-                return metricDeptRollupTotal(catalogItem, days || []);
+            if (rollup != null) {
+                /* rollup уже сумма по сотрудникам за дни периода; avg/last/count — по дневным итогам */
+                if (agg === "sum" || agg === "count") {
+                    if (agg === "count") {
+                        const series = collectDeptMetricPeriodSeries(
+                            metricRollupDeptCode(catalogItem),
+                            mid,
+                            subId,
+                            dayList,
+                            null
+                        );
+                        return aggregateMetricNumbers(series, "count");
+                    }
+                    return rollup;
+                }
+                /* для avg/last собираем дневные итоги отдела */
+                const byDay = {};
+                dayList.forEach(function (d) {
+                    const key = String(d.month) + "-" + String(d.day);
+                    byDay[key] = 0;
+                });
+                const dept = metricRollupDeptCode(catalogItem);
+                const people = metricRollupPeople(catalogItem);
+                people.forEach(function (e) {
+                    if (!e || !e.id) return;
+                    dayList.forEach(function (d) {
+                        const key = String(d.month) + "-" + String(d.day);
+                        byDay[key] += metricStoredNumber(dept, e.id, d.day, mid, d.month, subId);
+                    });
+                });
+                const daySeries = dayList.map(function (d) {
+                    return byDay[String(d.month) + "-" + String(d.day)] || 0;
+                });
+                return aggregateMetricNumbers(daySeries, agg);
             }
         }
         const codes = mgmtMetricFactDeptCodes(deptCode, mid);
-        const agg = metricPeriodAgg(catalogItem);
-        let sum = 0;
+        const series = [];
         codes.forEach(function (code) {
             if (code === "shop") {
-                (days || []).forEach(function (d) {
-                    if (mid === "metric_recount") {
-                        sum += shopRecountDayExecutorTotal(d.day, d.month);
-                        return;
-                    }
-                    // Покупатели магазина — колонка store, не копия метрики каталога.
-                    if (mid === STORE_METRIC_VISITORS || mid === "store_metric_visitors") {
-                        sum += Number(getShopStoreValue(d.day, "visitors", d.month) || 0);
-                        return;
-                    }
-                    const ids = shopMetricContributorIds(mid, d.month);
-                    ids.forEach(function (id) {
-                        sum += Number(shopMetricStoredFact(id, d.day, mid, d.month, subId) || 0);
-                    });
-                });
+                Array.prototype.push.apply(series, collectShopMetricPeriodSeries(mid, subId, dayList));
                 return;
             }
-            const series = collectDeptMetricPeriodSeries(code, mid, subId, days || [], null);
-            sum += aggregateMetricNumbers(series, agg);
+            Array.prototype.push.apply(series, collectDeptMetricPeriodSeries(code, mid, subId, dayList, null));
         });
-        return sum;
+        return aggregateMetricNumbers(series, agg);
     } catch (err) {
         console.error(err);
         return 0;
@@ -33056,7 +33156,8 @@ function mgmtPanelDefaultKpiItem(indicatorId) {
         show_fact: true,
         show_plan: false,
         show_completion: false,
-        show_dynamics: false
+        show_dynamics: false,
+        dynamics_mode: "abs"
     };
 }
 
@@ -33083,6 +33184,13 @@ function mgmtPanelDefaultTableRow(indicatorId) {
     };
 }
 
+function mgmtPanelNormalizeDynamicsMode(raw) {
+    const m = String(raw || "").toLowerCase();
+    if (m === "pct" || m === "percent" || m === "percentage") return "pct";
+    if (m === "both" || m === "abs_pct" || m === "sum_pct") return "both";
+    return "abs";
+}
+
 function mgmtPanelNormalizeKpiItem(raw) {
     const id = raw && typeof raw === "object" ? String(raw.indicator_id || "") : String(raw || "");
     const item = {
@@ -33092,7 +33200,8 @@ function mgmtPanelNormalizeKpiItem(raw) {
         show_fact: true,
         show_plan: false,
         show_completion: false,
-        show_dynamics: false
+        show_dynamics: false,
+        dynamics_mode: "abs"
     };
     if (!raw || typeof raw !== "object") return item;
     item.color_custom = !!raw.color_custom;
@@ -33102,6 +33211,7 @@ function mgmtPanelNormalizeKpiItem(raw) {
     item.show_plan = !!raw.show_plan;
     item.show_completion = !!raw.show_completion;
     item.show_dynamics = !!raw.show_dynamics;
+    item.dynamics_mode = mgmtPanelNormalizeDynamicsMode(raw.dynamics_mode);
     return item;
 }
 
@@ -33473,26 +33583,72 @@ function mgmtPanelCompletionPct(fact, plan) {
     return Number.isFinite(pct) ? pct : null;
 }
 
-function mgmtPanelDynamicsHtml(it, curr, prev, enabled) {
+function mgmtPanelFormatAbsChange(it, delta) {
+    const d = Number(delta);
+    if (!Number.isFinite(d)) return "—";
+    const sign = d > 0 ? "+" : "";
+    if (it && it.unit === "percent") {
+        return sign + (Math.round(d * 10) / 10).toLocaleString("ru-RU") + " п.п.";
+    }
+    if (it && it.unit === "money") {
+        return sign + Math.round(d).toLocaleString("ru-RU") + " ₽";
+    }
+    if (it && it.unit === "people") {
+        return sign + Math.round(d).toLocaleString("ru-RU");
+    }
+    return sign + (Math.round(d * 10) / 10).toLocaleString("ru-RU");
+}
+
+function mgmtPanelFormatPctChange(curr, prev) {
+    const c = Number(curr);
+    const p = Number(prev);
+    if (!Number.isFinite(c) || !Number.isFinite(p)) return null;
+    if (Math.abs(p) < 1e-12) return null;
+    const pct = ((c - p) / Math.abs(p)) * 100;
+    if (!Number.isFinite(pct)) return null;
+    const rounded = Math.round(pct * 10) / 10;
+    return (rounded > 0 ? "+" : "") + String(rounded).replace(".", ",") + "%";
+}
+
+/**
+ * Динамика KPI: факт текущего отчётного периода vs предыдущего
+ * (через mgmtSpuShiftReportingWeek), без новых показателей СПУ.
+ * mode: abs | pct | both
+ */
+function mgmtPanelDynamicsHtml(it, curr, prev, enabled, mode) {
     if (!enabled) return "";
-    if (curr == null || prev == null || !Number.isFinite(Number(curr)) || !Number.isFinite(Number(prev))) {
-        return '<span class="ps-dyn ps-dyn-na">Нет данных</span>';
+    if (curr == null || !Number.isFinite(Number(curr))) {
+        return '<span class="ps-dyn ps-dyn-na">Нет данных для сравнения</span>';
+    }
+    if (prev == null || !Number.isFinite(Number(prev))) {
+        return '<span class="ps-dyn ps-dyn-na">Нет данных для сравнения</span>';
     }
     const c = Number(curr);
     const p = Number(prev);
-    if (Math.abs(p) < 1e-12) {
-        if (Math.abs(c) < 1e-12) return '<span class="ps-dyn ps-dyn-flat">0%</span>';
-        return '<span class="ps-dyn ps-dyn-na">Нет данных</span>';
-    }
-    const pct = ((c - p) / Math.abs(p)) * 100;
-    if (!Number.isFinite(pct)) return '<span class="ps-dyn ps-dyn-na">Нет данных</span>';
-    const rounded = Math.round(pct * 10) / 10;
-    const text = (rounded > 0 ? "+" : "") + String(rounded).replace(".", ",") + "%";
-    const mode = mgmtDynamicsEval(it);
+    const delta = c - p;
+    const dynMode = mgmtPanelNormalizeDynamicsMode(mode);
+    const isPercentUnit = !!(it && it.unit === "percent");
+    const arrow = delta > 0 ? "↑" : (delta < 0 ? "↓" : "→");
+    const evalMode = mgmtDynamicsEval(it);
     let cls = "ps-dyn-flat";
-    if (mode !== "none" && Math.abs(rounded) >= 0.05) {
-        if (mode === "growth_good") cls = rounded > 0 ? "ps-dyn-good" : "ps-dyn-bad";
-        else if (mode === "decline_good") cls = rounded < 0 ? "ps-dyn-good" : "ps-dyn-bad";
+    if (evalMode !== "none" && Math.abs(delta) >= 1e-9) {
+        if (evalMode === "growth_good") cls = delta > 0 ? "ps-dyn-good" : "ps-dyn-bad";
+        else if (evalMode === "decline_good") cls = delta < 0 ? "ps-dyn-good" : "ps-dyn-bad";
+    }
+
+    let text = "";
+    if (isPercentUnit) {
+        /* процентные показатели: только разница в п.п. */
+        text = arrow + " " + mgmtPanelFormatAbsChange(it, delta);
+    } else if (dynMode === "pct") {
+        const pctText = mgmtPanelFormatPctChange(c, p);
+        text = arrow + " " + (pctText == null ? "—" : pctText);
+    } else if (dynMode === "both") {
+        const absText = mgmtPanelFormatAbsChange(it, delta);
+        const pctText = mgmtPanelFormatPctChange(c, p);
+        text = arrow + " " + absText + (pctText == null ? " · —" : (" · " + pctText));
+    } else {
+        text = arrow + " " + mgmtPanelFormatAbsChange(it, delta);
     }
     return '<span class="ps-dyn ' + cls + '">' + escapeHtml(text) + "</span>";
 }
@@ -33605,6 +33761,8 @@ function mgmtPanelSetKpiItem(blockId, idx, field, value) {
         item.color_custom = true;
     } else if (field === "show_fact" || field === "show_plan" || field === "show_completion" || field === "show_dynamics") {
         item[field] = !!value;
+    } else if (field === "dynamics_mode") {
+        item.dynamics_mode = mgmtPanelNormalizeDynamicsMode(value);
     }
     b.items[idx] = item;
     saveApp();
@@ -33983,8 +34141,16 @@ function renderMgmtPanelSetupHtml() {
                         + '<label><input type="checkbox"' + (row.show_completion ? " checked" : "") + ' onchange="mgmtPanelSetKpiItem(\''
                         + escapeAttribute(b.block_id) + "'," + ii + ",'show_completion',this.checked)\"> Выполнение %</label>"
                         + '<label><input type="checkbox"' + (row.show_dynamics ? " checked" : "") + ' onchange="mgmtPanelSetKpiItem(\''
-                        + escapeAttribute(b.block_id) + "'," + ii + ",'show_dynamics',this.checked)\"> Динамика</label>"
-                        + "</div>";
+                        + escapeAttribute(b.block_id) + "'," + ii + ",'show_dynamics',this.checked)\"> Показывать динамику</label>"
+                        + "</div>"
+                        + (row.show_dynamics
+                            ? ('<div class="ps-checks" style="margin-top:2px"><label>Вид динамики<select onchange="mgmtPanelSetKpiItem(\''
+                                + escapeAttribute(b.block_id) + "'," + ii + ",'dynamics_mode',this.value)\">"
+                                + '<option value="abs"' + (row.dynamics_mode === "abs" ? " selected" : "") + ">Сумма</option>"
+                                + '<option value="pct"' + (row.dynamics_mode === "pct" ? " selected" : "") + ">Процент</option>"
+                                + '<option value="both"' + (row.dynamics_mode === "both" ? " selected" : "") + ">Сумма + процент</option>"
+                                + "</select></label></div>")
+                            : "");
                 });
                 html += '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelAddIndicator(\''
                     + escapeAttribute(b.block_id) + "')\">+ Показатель</button></div>";
@@ -34060,7 +34226,10 @@ function renderMgmtCustomKpiCardHtml(item, weekFrom) {
     const row = mgmtPanelNormalizeKpiItem(item);
     if (!row.indicator_id) return "";
     const pack = mgmtDashReadByIndicatorId(row.indicator_id, weekFrom);
-    const prev = mgmtDashReadByIndicatorId(row.indicator_id, mgmtShiftThuWeek(weekFrom, -1).from);
+    const prevWeek = typeof mgmtSpuShiftReportingWeek === "function"
+        ? mgmtSpuShiftReportingWeek(weekFrom, -1)
+        : mgmtShiftThuWeek(weekFrom, -1);
+    const prev = mgmtDashReadByIndicatorId(row.indicator_id, prevWeek.start_date || prevWeek.from);
     const plan = row.show_plan || row.show_completion ? mgmtDashPlanByIndicatorId(row.indicator_id, weekFrom) : null;
     const color = mgmtPanelResolveColor(row.color, row.color_custom, pack.it);
     const showAny = row.show_fact || row.show_plan || row.show_completion || row.show_dynamics;
@@ -34083,7 +34252,9 @@ function renderMgmtCustomKpiCardHtml(item, weekFrom) {
         meta += "<div>Выполнение: " + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</div>";
     }
     if (meta) html += '<div class="k-meta">' + meta + "</div>";
-    if (row.show_dynamics) html += mgmtPanelDynamicsHtml(pack.it, pack.value, prev && prev.value, true);
+    if (row.show_dynamics) {
+        html += mgmtPanelDynamicsHtml(pack.it, pack.value, prev && prev.value, true, row.dynamics_mode);
+    }
     html += "</div>";
     return html;
 }
@@ -34103,7 +34274,10 @@ function renderMgmtCustomTableHtml(block, weekFrom) {
     html += "</tr></thead><tbody>";
     rows.forEach(function (row) {
         const pack = mgmtDashReadByIndicatorId(row.indicator_id, weekFrom);
-        const prev = mgmtDashReadByIndicatorId(row.indicator_id, mgmtShiftThuWeek(weekFrom, -1).from);
+        const prevWeek = typeof mgmtSpuShiftReportingWeek === "function"
+            ? mgmtSpuShiftReportingWeek(weekFrom, -1)
+            : mgmtShiftThuWeek(weekFrom, -1);
+        const prev = mgmtDashReadByIndicatorId(row.indicator_id, prevWeek.start_date || prevWeek.from);
         const plan = (row.show_plan || row.show_completion) ? mgmtDashPlanByIndicatorId(row.indicator_id, weekFrom) : null;
         html += "<tr><td>" + escapeHtml((pack.it && pack.it.name) || row.indicator_id) + "</td>";
         if (showPlan) {
@@ -34117,7 +34291,7 @@ function renderMgmtCustomTableHtml(block, weekFrom) {
             html += "<td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</td>";
         }
         if (showDyn) {
-            html += "<td>" + (row.show_dynamics ? mgmtPanelDynamicsHtml(pack.it, pack.value, prev && prev.value, true) : "—") + "</td>";
+            html += "<td>" + (row.show_dynamics ? mgmtPanelDynamicsHtml(pack.it, pack.value, prev && prev.value, true, "abs") : "—") + "</td>";
         }
         html += "</tr>";
     });
@@ -34419,7 +34593,16 @@ function renderMgmtPlanFactHtml() {
         }
         return false;
     }
-    function renderPfIndicatorRow(it, headEmp, depth, editOk) {
+    function pfNodePad(depth) {
+        const d = Number(depth || 0);
+        if (d <= 0) return 2;
+        if (d === 1) return 14;
+        return 22;
+    }
+    function pfIndPad(nodeDepth) {
+        return pfNodePad(nodeDepth) + 12;
+    }
+    function renderPfIndicatorRow(it, headEmp, nodeDepth, editOk) {
         n += 1;
         const a = mgmtPfRead(it, w1.from);
         const b = mgmtPfRead(it, w2.from);
@@ -34429,19 +34612,16 @@ function renderMgmtPlanFactHtml() {
         const st = good == null ? "Нет данных" : (good === 0 ? "Без изменений" : (good > 0 ? "Улучшение" : "Ухудшение"));
         const dCls = good == null ? "pf-na" : (good === 0 ? "" : (good > 0 ? "mgmt-ok" : "mgmt-bad"));
         const owner = it.owner_employee_id ? getEmployee(it.owner_employee_id) : headEmp;
-        const pad = 10 + Number(depth || 0) * 14;
+        const pad = pfIndPad(nodeDepth);
         const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: [] };
         const canBreak = it.show_breakdown !== false && cfg.sources && cfg.sources.length > 1 && it.source_type !== "aggregate_children";
         const brOpen = !!(canBreak && spuPfBreakOpen[it.indicator_id]);
         html += '<tr class="pf-ind-row">'
             + '<td class="pf-left pf-sticky-0">' + n + "</td>"
             + '<td class="pf-left pf-sticky-1">' + escapeHtml(owner ? owner.name : (headEmp ? headEmp.name : "—")) + "</td>"
-            + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad" style="padding-left:' + pad + 'px">'
-            + (canBreak ? '<button type="button" class="pf-toggle" onclick="toggleMgmtPfBreak(\'' + it.indicator_id + "')\">" + (brOpen ? "▼" : "▶") + "</button> " : "· ")
-            + escapeHtml(it.name) + "</span>"
-            + '<div class="mgmt-src" style="padding-left:' + pad + 'px">'
-            + escapeHtml(it.source_type === "manual" ? "Источник: Ручной ввод" : mgmtSourcePath(it))
-            + "</div></td>"
+            + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad pf-ind-name" style="padding-left:' + pad + 'px">'
+            + (canBreak ? '<button type="button" class="pf-toggle" onclick="toggleMgmtPfBreak(\'' + it.indicator_id + "')\">" + (brOpen ? "▼" : "▶") + "</button>" : "")
+            + escapeHtml(it.name) + "</span></td>"
             + mgmtPfNumCell(it, w1.from, "plan", a, editOk)
             + mgmtPfNumCell(it, w1.from, "fact", a, editOk)
             + '<td class="pf-pct ' + mgmtPctClass(it, a.pct) + '">' + escapeHtml(mgmtFormatPct(a.pct)) + "</td>"
@@ -34495,8 +34675,8 @@ function renderMgmtPlanFactHtml() {
         const items = spuOrgIndicatorsForNode(node.org_node_id).filter(spuOrgShowInPlanFact);
         items.forEach(function (it) { assigned[it.indicator_id] = true; });
         const collapsed = !!mgmtPfCollapsed[node.org_node_id];
-        const pad = 4 + Number(depth || 0) * 14;
-        const dCls = depth >= 2 ? "pf-dept pf-dept-d2" : (depth === 1 ? "pf-dept pf-dept-d1" : "pf-dept");
+        const pad = pfNodePad(depth);
+        const dCls = depth <= 0 ? "pf-dept" : "pf-dept pf-dept-d1";
         html += '<tr class="' + dCls + '">'
             + '<td class="pf-left pf-sticky-0"></td>'
             + '<td class="pf-left pf-sticky-1">'
@@ -34506,15 +34686,15 @@ function renderMgmtPlanFactHtml() {
                     + mgmtLeaderOptions(headNow) + "</select>"
                 : escapeHtml(headEmp ? headEmp.name : "—"))
             + "</td>"
-            + '<td class="pf-left pf-sticky-2" colspan="1"><span class="pf-name-pad" style="padding-left:' + pad + 'px">'
-            + escapeHtml(node.name) + "</span>"
+            + '<td class="pf-left pf-sticky-2" colspan="1"><span class="pf-name-pad pf-node-label" style="padding-left:' + pad + 'px">'
             + '<button type="button" class="pf-toggle" onclick="toggleMgmtPfDept(\''
-            + escapeAttribute(node.org_node_id) + "')\">" + (collapsed ? "▶" : "▼") + "</button></td>";
+            + escapeAttribute(node.org_node_id) + "')\">" + (collapsed ? "▶" : "▼") + "</button>"
+            + escapeHtml(node.name) + "</span></td>";
         for (let i = 0; i < 9; i++) html += "<td></td>";
         html += "</tr>";
         if (collapsed) return;
         items.forEach(function (it) {
-            renderPfIndicatorRow(it, headEmp, depth + 1, canEdit);
+            renderPfIndicatorRow(it, headEmp, depth, canEdit);
         });
         if (node.aggregate_from_children) {
             renderPfIndicatorRow({
@@ -34523,7 +34703,7 @@ function renderMgmtPlanFactHtml() {
                 source_type: "aggregate_children",
                 target_org_node_id: node.org_node_id,
                 unit: items[0] ? items[0].unit : "money"
-            }, headEmp, depth + 1, false);
+            }, headEmp, depth, false);
         }
         children.forEach(function (ch) { renderPfNode(ch, depth + 1); });
         } catch (nodeErr) {
@@ -36083,10 +36263,11 @@ function openMgmtIndicatorForm(id) {
         + [["HIGHER_IS_BETTER", "Больше — лучше"], ["LOWER_IS_BETTER", "Меньше — лучше"], ["TARGET_VALUE", "Ближе к цели"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (mgmtScoreDirection(it) === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
-        + '<div class="form-group"><label for="miAgg">Агрегация</label><select id="miAgg">'
-        + [["sum", "SUM"], ["average", "AVERAGE"], ["last", "LAST_VALUE"], ["count", "COUNT"], ["ratio", "RATIO"], ["none", "NOT_APPLICABLE"]].map(function (p) {
+        + '<div class="form-group"><label for="miAgg">Агрегация (за отчётный период СПУ)</label><select id="miAgg">'
+        + [["sum", "Сумма"], ["average", "Среднее"], ["last", "Последнее значение"], ["count", "Количество"], ["ratio", "RATIO"], ["none", "NOT_APPLICABLE"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (it.aggregation_type === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
+        + '<div class="note full" style="margin-top:-6px">Для источника Work Time: сумма / среднее / последнее / количество дневных фактов metric_id только в датах отчётной недели СПУ (в т.ч. через границу месяцев).</div>'
         + '<div class="form-group compact"><label for="miGood">Зелёный от, %</label><input id="miGood" type="number" step="1" value="' + escapeAttribute(String(it.good_pct == null ? 100 : it.good_pct)) + '"></div>'
         + '<div class="form-group compact"><label for="miWarn">Жёлтый от, %</label><input id="miWarn" type="number" step="1" value="' + escapeAttribute(String(it.warn_pct == null ? 80 : it.warn_pct)) + '"></div>'
         + "</section>"
