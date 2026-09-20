@@ -28030,7 +28030,26 @@ function spuManagedIndicators(includeDeleted) {
 
 function spuMigrateLegacyCalcSources(it) {
     if (!it || typeof it !== "object") return it;
-    if (Array.isArray(it.sources) && it.sources.length) return it;
+    if (Array.isArray(it.sources) && it.sources.length) {
+        // Уже есть источники: если формула пуста, а есть calc_left/right — соберём формулу по indicator_id.
+        if ((!Array.isArray(it.formula_expr) || !it.formula_expr.length)
+            && it.calc_left_id && it.calc_right_id
+            && (it.source_type === "calculated" || it.calc_op)) {
+            const op = it.calc_op === "sum" ? "+" : (it.calc_op === "difference" ? "-" : "/");
+            it.formula_expr = [
+                { t: "ind", id: it.calc_left_id },
+                { t: "op", v: op },
+                { t: "ind", id: it.calc_right_id }
+            ];
+            if (it.calc_op === "percent") {
+                it.formula_expr.push({ t: "op", v: "*" }, { t: "num", v: 100 });
+            }
+            it.aggregation_type = "formula";
+            it.calc_mode = "formula";
+            it.indicator_kind = "calculated";
+        }
+        return it;
+    }
     if (!(it.calc_left_id || it.calc_right_id) && it.source_type !== "calculated") return it;
     const srcs = [];
     if (it.calc_left_id) {
@@ -28047,14 +28066,13 @@ function spuMigrateLegacyCalcSources(it) {
     }
     if (!srcs.length) return it;
     it.sources = srcs;
-    if ((!Array.isArray(it.formula_expr) || !it.formula_expr.length) && srcs.length >= 2) {
-        const left = srcs[0].source_id;
-        const right = srcs[1].source_id;
+    if ((!Array.isArray(it.formula_expr) || !it.formula_expr.length) && it.calc_left_id && it.calc_right_id) {
         const op = it.calc_op === "sum" ? "+" : (it.calc_op === "difference" ? "-" : "/");
+        // Связь формулы по стабильному spu_indicator_id (= indicator_id), не по временным source_id.
         it.formula_expr = [
-            { t: "src", id: left },
+            { t: "ind", id: it.calc_left_id },
             { t: "op", v: op },
-            { t: "src", id: right }
+            { t: "ind", id: it.calc_right_id }
         ];
         if (it.calc_op === "percent") {
             it.formula_expr.push({ t: "op", v: "*" }, { t: "num", v: 100 });
@@ -28064,6 +28082,20 @@ function spuMigrateLegacyCalcSources(it) {
         it.indicator_kind = "calculated";
     }
     return it;
+}
+
+/** Переписать токены формулы: src→ind по spu_indicator_id, чтобы связь не ломалась при замене строк источников. */
+function spuNormalizeFormulaTokens(it, sources, tokens) {
+    const srcList = sources || (it && it.sources) || [];
+    return (tokens || []).map(function (tok) {
+        if (!tok || tok.t !== "src") return tok;
+        const s = srcList.find(function (x) { return x && x.source_id === tok.id; });
+        if (s && (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual")
+            && s.source_indicator_id) {
+            return { t: "ind", id: s.source_indicator_id };
+        }
+        return tok;
+    });
 }
 
 function setSpuStructureTab(tab) {
@@ -29390,6 +29422,7 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + '<div class="form-group" id="spuIndFactWrap"><label>Факт текущего периода</label><input id="spuIndFact" placeholder="Факт" value="'
         + escapeAttribute(factVal == null ? "" : String(factVal)) + '"></div>'
         + '<label class="check"><input id="spuIndPf" type="checkbox"' + (pfOn ? " checked" : "") + "> Показывать в План–факте</label>"
+        + '<div class="note" style="margin:0 0 8px">Источник формулы может быть скрыт из План–факта — значение всё равно участвует в расчёте. План, факт, % выполнения и динамика считаются в План–факте, отдельные показатели для них не нужны.</div>'
         + '<label class="check"><input id="spuIndBreak" type="checkbox"' + (brOn ? " checked" : "") + "> Показывать расшифровку</label>"
         + '<div class="form-group"><label>Статус</label><select id="spuIndActive">'
         + '<option value="1"' + (activeOn ? " selected" : "") + ">Активен</option>"
@@ -29423,7 +29456,18 @@ function onSpuIndKindChange() {
     if (oneCWrap) oneCWrap.style.display = spuIndFormKind === "one_c" ? "" : "none";
     if (factWrap) factWrap.style.display = (spuIndFormKind === "manual" || spuIndFormKind === "one_c") ? "" : "none";
     if (needsSources) {
-        if (!(spuIndFormSources || []).length) spuIndFormSources = [spuNewSourceRow({})];
+        if (!(spuIndFormSources || []).length) {
+            spuIndFormSources = [spuNewSourceRow({
+                source_type: spuIndFormKind === "calculated" ? "spu_indicator" : "worktime_metric"
+            })];
+        }
+        const aggEl = document.getElementById("spuIndAgg");
+        if (spuIndFormKind === "calculated" && aggEl) {
+            if (!aggEl.value || aggEl.value === "sum" || aggEl.value === "none") {
+                aggEl.value = "formula";
+                spuIndFormCalc = "formula";
+            }
+        }
         renderSpuIndSourcesBox();
         renderSpuIndFormulaBox();
     }
@@ -29545,7 +29589,9 @@ function spuIndOnTypeChange() {
 
 function spuIndAddSource() {
     spuIndSyncDraftFromDom();
-    spuIndFormSources.push(spuNewSourceRow({}));
+    spuIndFormSources.push(spuNewSourceRow({
+        source_type: spuIndFormKind === "calculated" ? "spu_indicator" : "worktime_metric"
+    }));
     renderSpuIndSourcesBox();
     renderSpuIndFormulaBox();
 }
@@ -29659,12 +29705,18 @@ function renderSpuIndFormulaBox() {
     const aggEl = document.getElementById("spuIndAgg");
     const calc = aggEl ? aggEl.value : spuIndFormCalc;
     if (calc !== "formula") { box.innerHTML = ""; return; }
-    let html = "<h4>Формула</h4><div class=\"note\">В формуле хранятся ID, не названия. Деление на ноль даёт «нет данных».</div>";
-    html += '<div class="wt-people" style="margin:6px 0">';
+    let html = "<h4>Формула</h4>"
+        + '<div class="note">Связь по стабильным ID показателей (spu_indicator_id). В интерфейсе — названия. '
+        + "Пример конверсии: Количество чеков ÷ Количество покупателей × 100. Деление на 0 → нет данных.</div>";
+    html += '<div class="wt-people" style="margin:6px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
+    if (!(spuIndFormFormula || []).length) {
+        html += '<span class="note">Формула пуста — добавьте источники и операции ниже.</span>';
+    }
     (spuIndFormFormula || []).forEach(function (tok, i) {
         let lab = "";
-        if (tok.t === "op") lab = tok.v;
-        else if (tok.t === "lp") lab = "(";
+        if (tok.t === "op") {
+            lab = tok.v === "*" ? "×" : (tok.v === "/" ? "÷" : (tok.v === "-" ? "−" : tok.v));
+        } else if (tok.t === "lp") lab = "(";
         else if (tok.t === "rp") lab = ")";
         else if (tok.t === "num") lab = String(tok.v);
         else if (tok.t === "src") {
@@ -29679,16 +29731,64 @@ function renderSpuIndFormulaBox() {
             + ' <button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaRemove(' + i + ')">×</button></span>';
     });
     html += "</div>";
-    html += '<div class="toolbar" style="flex-wrap:wrap">';
+    html += '<div class="toolbar" style="flex-wrap:wrap;gap:4px">';
     (spuIndFormSources || []).forEach(function (s, idx) {
-        html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'src\',id:\'' + s.source_id + '\'})">Ист. ' + (idx + 1) + "</button> ";
+        const lab = spuSourceShortLabel(s) || ("Источник " + (idx + 1));
+        const useInd = s && s.source_indicator_id
+            && (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual");
+        if (useInd) {
+            html += '<button type="button" class="btn btn-secondary btn-small" title="' + escapeAttribute(lab)
+                + '" onclick="spuIndFormulaPush({t:\'ind\',id:\'' + s.source_indicator_id + '\'})">'
+                + escapeHtml(lab.length > 28 ? lab.slice(0, 26) + "…" : lab) + "</button> ";
+        } else {
+            html += '<button type="button" class="btn btn-secondary btn-small" title="' + escapeAttribute(lab)
+                + '" onclick="spuIndFormulaPush({t:\'src\',id:\'' + s.source_id + '\'})">'
+                + escapeHtml(lab.length > 28 ? lab.slice(0, 26) + "…" : lab) + "</button> ";
+        }
     });
     [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].forEach(function (p) {
         html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'op\',v:\'' + p[0] + '\'})">' + p[1] + "</button> ";
     });
     html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'lp\',v:\'(\'})">(</button> '
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'rp\',v:\')\'})">)</button></div>';
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'rp\',v:\')\'})">)</button> '
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPushNum(100)">100</button> '
+        + '<label style="display:inline-flex;align-items:center;gap:4px;margin:0">Число '
+        + '<input id="spuIndFormulaNum" type="number" step="any" style="width:72px" value="100"> '
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPushNum()">+</button></label>'
+        + "</div>";
+    // Live preview from current draft sources + formula (does not save)
+    try {
+        const draft = {
+            indicator_id: ((document.getElementById("spuIndId") || {}).value || "mind_preview"),
+            sources: (spuIndFormSources || []).slice(),
+            formula_expr: (spuIndFormFormula || []).slice(),
+            aggregation_type: "formula",
+            calc_mode: "formula",
+            source_type: "calculated"
+        };
+        const preview = spuEvalFormula(draft, draft.formula_expr, []);
+        const unitEl = document.getElementById("spuIndUnit");
+        const unit = unitEl ? unitEl.value : "number";
+        let shown = "—";
+        if (preview != null && Number.isFinite(Number(preview))) {
+            shown = unit === "percent"
+                ? (Math.round(Number(preview) * 10) / 10).toLocaleString("ru-RU") + "%"
+                : Number(preview).toLocaleString("ru-RU");
+        }
+        html += '<div class="note" style="margin-top:8px">Превью факта по формуле: <b>' + escapeHtml(shown) + "</b></div>";
+    } catch (err) {}
     box.innerHTML = html;
+}
+
+function spuIndFormulaPushNum(preset) {
+    const el = document.getElementById("spuIndFormulaNum");
+    const raw = preset != null ? preset : (el ? el.value : "");
+    const n = Number(String(raw).replace(",", "."));
+    if (!Number.isFinite(n)) {
+        toast("Укажите число для формулы", "error");
+        return;
+    }
+    spuIndFormulaPush({ t: "num", v: n });
 }
 
 function spuIndFormulaPush(tok) {
@@ -29783,7 +29883,7 @@ function saveSpuOrgIndicator() {
         it.is_deleted = false;
     }
     it.unit = ((document.getElementById("spuIndUnit") || {}).value || it.unit || "number");
-    if (it.unit === "count") it.unit = "number";
+    // unit: number | count | money | percent | days | hours — count = «Количество»
     const planModeEl = document.querySelector("input[name=\"spuIndPlanMode\"]:checked");
     it.plan_mode = planModeEl ? planModeEl.value : "spu";
     const planVal = ((document.getElementById("spuIndPlan") || {}).value || "");
@@ -29836,7 +29936,26 @@ function saveSpuOrgIndicator() {
     it.aggregation_type = calc === "formula" ? "formula" : calc;
     it.calc_mode = calc;
     it.plan_aggregation_type = calc === "formula" ? "sum" : calc;
-    it.formula_expr = calc === "formula" ? (spuIndFormFormula || []).slice() : [];
+    it.formula_expr = calc === "formula"
+        ? spuNormalizeFormulaTokens(it, it.sources, (spuIndFormFormula || []).slice())
+        : [];
+    // Для расчётных: зафиксируем calc_left/right по первым двум ind/src показателям (для legacy-читателей).
+    if (kind === "calculated" || calc === "formula") {
+        const indIds = [];
+        (it.formula_expr || []).forEach(function (tok) {
+            if (tok && tok.t === "ind" && tok.id && indIds.indexOf(tok.id) === -1) indIds.push(tok.id);
+        });
+        (it.sources || []).forEach(function (s) {
+            if (s && s.source_indicator_id && indIds.indexOf(s.source_indicator_id) === -1) {
+                indIds.push(s.source_indicator_id);
+            }
+        });
+        if (indIds[0]) it.calc_left_id = indIds[0];
+        if (indIds[1]) it.calc_right_id = indIds[1];
+        if (it.unit === "percent" && !it.calc_op) it.calc_op = "percent";
+        it.source_type = "calculated";
+        it.indicator_kind = "calculated";
+    }
     spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode);
     const m0 = shopMetricCatalogById(first.source_metric_id);
     if (m0 && !it.department_id) it.department_id = metricDepartmentId(m0) || it.department_id || "";
@@ -30879,6 +30998,12 @@ function spuAdoptIndicator(spec) {
             const right = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_right_code; });
             if (right) found.calc_right_id = right.indicator_id;
         }
+        if (spec.show_in_planfact === true && found.show_in_planfact == null) {
+            found.show_in_planfact = true;
+        }
+        if (spec.unit && !found.unit) found.unit = spec.unit;
+        if (spec.calc_op && found.source_type === "calculated" && !found.calc_op) found.calc_op = spec.calc_op;
+        ensureSpuIndicatorSources(found);
         return normalizeMgmtIndicator(found);
     }
     const it = normalizeMgmtIndicator(spec);
@@ -30890,6 +31015,8 @@ function spuAdoptIndicator(spec) {
         const right = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_right_code; });
         if (right) it.calc_right_id = right.indicator_id;
     }
+    if (spec.show_in_planfact === true) it.show_in_planfact = true;
+    ensureSpuIndicatorSources(it);
     root.indicators.push(it);
     return it;
 }
@@ -30960,6 +31087,7 @@ function ensureSpuDefaultIndicators() {
         { spu_code: "shop_checks", name: "Количество чеков", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopChecks ? shopChecks.id : "metric_checks", unit: "number", show_on_dashboard: true, sort_order: 220 },
         { spu_code: "shop_avg", name: "Средний чек", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_sales", calc_right_code: "shop_checks", unit: "money", show_on_dashboard: true, sort_order: 230 },
         { spu_code: "shop_visitors", name: "Количество покупателей", department_id: "shop", source_type: shopVisitors ? "worktime_metric" : "manual", source_metric_id: shopVisitors ? shopVisitors.id : "", unit: "number", show_on_dashboard: true, sort_order: 240 },
+        { spu_code: "shop_conversion", name: "Конверсия покупатели → чеки", department_id: "shop", source_type: "calculated", calc_op: "percent", calc_left_code: "shop_checks", calc_right_code: "shop_visitors", unit: "percent", show_on_dashboard: true, show_in_planfact: true, sort_order: 245 },
         { spu_code: "shop_plan_fact", name: "Факт продаж", department_id: "shop", source_type: "sales_plan", source_sales_plan_view: "shop", source_sales_plan_field: "fact", unit: "money", show_on_dashboard: false, sort_order: 250 },
         { spu_code: "wh_assembled", name: "Количество собранных позиций", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whAssembled ? whAssembled.id : "", unit: "number", show_on_dashboard: true, sort_order: 310 },
         { spu_code: "wh_unpacked", name: "Количество разобранного товара", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whUnpacked ? whUnpacked.id : "", unit: "number", show_on_dashboard: true, sort_order: 320 },
