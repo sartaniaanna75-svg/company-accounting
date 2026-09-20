@@ -10966,8 +10966,16 @@ function snapshotNavSourceNodes() {
 
 function navBtnById(id) {
     const host = document.getElementById("navCustomArea");
-    if (!host) return null;
-    return host.querySelector('.nav-btn[data-nav-id="' + id + '"]');
+    if (!host || !id) return null;
+    const want = String(id);
+    const byAttr = host.querySelector('.nav-btn[data-nav-id="' + want.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"]');
+    if (byAttr) return byAttr;
+    let found = null;
+    host.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
+        if (found) return;
+        if (navItemStableId(btn) === want) found = btn;
+    });
+    return found;
 }
 
 function visibleNavItemIds() {
@@ -11020,18 +11028,27 @@ function mergeVisibleIntoNavLayout(layout) {
     const missing = visibleNavItemIds().filter(function (id) { return !seen[id]; });
     if (missing.length) {
         if (!next.groups.length) next.groups = defaultNavLayoutGroups();
-        next.groups[next.groups.length - 1].item_ids = next.groups[next.groups.length - 1].item_ids.concat(missing);
+        const last = next.groups[next.groups.length - 1];
+        missing.forEach(function (id) {
+            // Новый пункт management-panel — рядом с Панелью управления, только если он ещё не в layout.
+            // Уже сохранённый пользовательский порядок НЕ переставляем.
+            if (String(id).indexOf("::management-panel") !== -1) {
+                let placed = false;
+                for (let gi = 0; gi < next.groups.length && !placed; gi++) {
+                    const ids = next.groups[gi].item_ids || [];
+                    const dashIdx = ids.findIndex(function (x) { return /::management$/.test(String(x)); });
+                    if (dashIdx >= 0) {
+                        ids.splice(dashIdx + 1, 0, id);
+                        next.groups[gi].item_ids = ids;
+                        placed = true;
+                    }
+                }
+                if (!placed) last.item_ids.push(id);
+                return;
+            }
+            last.item_ids.push(id);
+        });
     }
-    next.groups.forEach(function (g) {
-        const ids = g.item_ids || [];
-        const panelIdx = ids.findIndex(function (id) { return String(id).indexOf("::management-panel") !== -1; });
-        const dashIdx = ids.findIndex(function (id) { return /::management$/.test(String(id)); });
-        if (panelIdx < 0 || dashIdx < 0 || panelIdx === dashIdx + 1) return;
-        const panelId = ids.splice(panelIdx, 1)[0];
-        const dashNow = ids.findIndex(function (id) { return /::management$/.test(String(id)); });
-        ids.splice(dashNow + 1, 0, panelId);
-        g.item_ids = ids;
-    });
     return next;
 }
 
@@ -31035,6 +31052,7 @@ function ensureManagement() {
         ensureSpuMarketingSalesPlanFactSetup();
         ensureSpuIndicatorOrgLinks();
         ensureSpuOrgHistory();
+        ensureMgmtPanelLegacyMigration();
     } catch (err) {
         console.error(err);
     } finally {
@@ -33022,6 +33040,7 @@ function mgmtPanelNormalizeBlocks() {
     appData.management.panel_blocks.forEach(function (b) {
         if (!b) return;
         b.panel_section_id = mgmtPanelResolveSectionId(b.panel_section_id, b);
+        if (b.legacy_key) b.legacy_key = String(b.legacy_key);
         if (b.type === "chart") {
             if (!Array.isArray(b.series)) b.series = [];
             b.series = b.series.map(mgmtPanelNormalizeSeries);
@@ -33052,6 +33071,152 @@ function mgmtPanelNormalizeBlocks() {
         b.indicator_ids = b.items.map(function (it) { return it.indicator_id; });
         if (b.indicator_id != null) delete b.indicator_id;
     });
+}
+
+/** Резолв существующего Показателя СПУ по spu_code (без создания новых). */
+function mgmtPanelIndicatorIdFromCode(code) {
+    const it = typeof mgmtDashIndicator === "function" ? mgmtDashIndicator(code) : null;
+    if (!it) return "";
+    return String(it.indicator_id || it.spu_indicator_id || "");
+}
+
+function mgmtPanelLegacyMainCodes(sectionId) {
+    if (sectionId === "opt") return ["opt_revenue", "opt_margin", "opt_rent"];
+    if (sectionId === "wh") return ["wh_revenue", "wh_margin", "wh_rent"];
+    if (sectionId === "shop") return ["shop_sales", "shop_margin", "shop_rent"];
+    return [];
+}
+
+function mgmtPanelLegacyHasKey(legacyKey) {
+    const want = String(legacyKey || "");
+    if (!want || !appData || !appData.management || !Array.isArray(appData.management.panel_blocks)) return false;
+    return appData.management.panel_blocks.some(function (b) { return b && String(b.legacy_key || "") === want; });
+}
+
+/**
+ * Одноразовая (идемпотентная) миграция захардкоженной Панели управления
+ * в единую конфигурацию panel_blocks. Не создаёт новые показатели СПУ.
+ */
+function ensureMgmtPanelLegacyMigration() {
+    if (!appData || !appData.management) return;
+    const root = appData.management;
+    if (!Array.isArray(root.panel_blocks)) root.panel_blocks = [];
+    if (root.panel_legacy_migrated_v1) return;
+    const indicators = typeof mgmtIndicators === "function" ? mgmtIndicators() : [];
+    if (!indicators || !indicators.length) return;
+
+    const panels = typeof mgmtDashPanels === "function" ? mgmtDashPanels() : [];
+    let maxSort = 0;
+    root.panel_blocks.forEach(function (b) {
+        const n = Number(b && b.sort_order);
+        if (Number.isFinite(n) && n > maxSort) maxSort = n;
+    });
+    let sortOrder = maxSort;
+    let added = 0;
+    const usedIds = root.panel_blocks.map(function (b) { return b && b.block_id; });
+
+    function nextLegacyBlockId(sectionId, kind, idx) {
+        const base = "pb_leg_" + sectionId + "_" + kind + (idx != null ? "_" + idx : "");
+        if (usedIds.indexOf(base) === -1) {
+            usedIds.push(base);
+            return base;
+        }
+        const alt = nextPrefixedId("pb", usedIds);
+        usedIds.push(alt);
+        return alt;
+    }
+
+    function pushBlock(block) {
+        if (!block || !block.legacy_key || mgmtPanelLegacyHasKey(block.legacy_key)) return;
+        sortOrder += 10;
+        block.sort_order = sortOrder;
+        block.visible = block.visible !== false;
+        root.panel_blocks.push(block);
+        added += 1;
+    }
+
+    panels.forEach(function (panel) {
+        if (!panel || !panel.id) return;
+        const sectionId = String(panel.id);
+        const kpiKey = "legacy:" + sectionId + ":kpi";
+        if (!mgmtPanelLegacyHasKey(kpiKey)) {
+            const codes = mgmtPanelLegacyMainCodes(sectionId).concat(Array.isArray(panel.extra) ? panel.extra : []);
+            const seen = {};
+            const items = [];
+            codes.forEach(function (code) {
+                const id = mgmtPanelIndicatorIdFromCode(code);
+                if (!id || seen[id]) return;
+                seen[id] = true;
+                items.push(mgmtPanelNormalizeKpiItem({
+                    indicator_id: id,
+                    show_fact: true,
+                    show_dynamics: true
+                }));
+            });
+            if (items.length) {
+                pushBlock({
+                    block_id: nextLegacyBlockId(sectionId, "kpi"),
+                    type: "kpi",
+                    title: String(panel.label || sectionId),
+                    color: mgmtPanelDefaultColor("kpi"),
+                    panel_section_id: sectionId,
+                    legacy_key: kpiKey,
+                    items: items,
+                    series: [],
+                    rows: []
+                });
+            }
+        }
+
+        (panel.charts || []).forEach(function (ch, ci) {
+            const chartKey = "legacy:" + sectionId + ":chart:" + ci;
+            if (mgmtPanelLegacyHasKey(chartKey)) return;
+            const series = [];
+            const barColors = ["#4F81BD", "#9BBB59"];
+            (ch.bars || []).forEach(function (code, bi) {
+                const id = mgmtPanelIndicatorIdFromCode(code);
+                if (!id) return;
+                series.push(mgmtPanelNormalizeSeries({
+                    indicator_id: id,
+                    chart_type: "bar",
+                    color: barColors[bi % barColors.length],
+                    color_custom: true,
+                    show_legend: true,
+                    show_values: true
+                }));
+            });
+            if (ch.line) {
+                const lineId = mgmtPanelIndicatorIdFromCode(ch.line);
+                if (lineId) {
+                    series.push(mgmtPanelNormalizeSeries({
+                        indicator_id: lineId,
+                        chart_type: "line",
+                        color: "#F79646",
+                        color_custom: true,
+                        show_legend: true,
+                        show_values: true
+                    }));
+                }
+            }
+            if (!series.length) return;
+            pushBlock({
+                block_id: nextLegacyBlockId(sectionId, "chart", ci),
+                type: "chart",
+                title: String(ch.title || ("График " + (ci + 1))),
+                color: mgmtPanelDefaultColor("chart"),
+                panel_section_id: sectionId,
+                legacy_key: chartKey,
+                items: [],
+                series: series,
+                rows: []
+            });
+        });
+    });
+
+    root.panel_legacy_migrated_v1 = true;
+    if (added > 0 && typeof saveApp === "function") {
+        try { saveApp(); } catch (saveErr) { console.error(saveErr); }
+    }
 }
 
 function mgmtPanelSectionDefs() {
@@ -33632,8 +33797,8 @@ function renderMgmtPanelSetupHtml() {
         const blocks = mgmtPanelFilteredBlocks(setupSec);
         const allBlocks = mgmtPanelBlocks();
         let html = '<div class="spu-panel-setup">';
-        html += '<div class="ps-head"><div class="note" style="margin:0">Конструктор блоков по разделам Панели управления. '
-            + "Показатели СПУ можно брать из любого департамента. Конфигурация сохраняется в данных приложения.</div>"
+        html += '<div class="ps-head"><div class="note" style="margin:0">Редактор той же Панели управления: существующие блоки разделов '
+            + "можно менять, новые — создавать. Показатели СПУ подключаются по id, без дублирования.</div>"
             + '<div class="ps-actions">'
             + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelAddBlock(\'kpi\')">+ Добавить KPI</button>'
             + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelAddBlock(\'chart\')">+ Добавить график</button>'
@@ -33700,6 +33865,8 @@ function renderMgmtPanelSetupHtml() {
                         + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelRemoveIndicator(\''
                         + escapeAttribute(b.block_id) + "'," + ii + ')">удалить</button>'
                         + "</div>"
+                        + (it ? '<div class="note" style="margin:0 0 4px">id: ' + escapeHtml(it.indicator_id || "")
+                            + (it.spu_code ? " · code: " + escapeHtml(it.spu_code) : "") + "</div>" : "")
                         + '<div class="ps-checks">'
                         + '<label><input type="checkbox"' + (row.show_fact ? " checked" : "") + ' onchange="mgmtPanelSetKpiItem(\''
                         + escapeAttribute(b.block_id) + "'," + ii + ",'show_fact',this.checked)\"> Факт</label>"
@@ -33855,8 +34022,11 @@ function renderMgmtCustomPanelBlocksHtml(weekFrom, weeks) {
     const blocks = mgmtPanelBlocks().filter(function (b) {
         return b && b.visible !== false && b.panel_section_id === sectionId;
     });
-    if (!blocks.length) return "";
-    let html = '<div class="spu-custom-blocks"><h3>Настроенные блоки</h3>';
+    if (!blocks.length) {
+        return '<div class="spu-custom-blocks"><div class="note">В этом разделе пока нет блоков. '
+            + "Добавьте их в «Настройка панели».</div></div>";
+    }
+    let html = '<div class="spu-custom-blocks">';
     blocks.forEach(function (b) {
         const accent = b.color || mgmtPanelDefaultColor(b.type);
         if (b.type === "kpi") {
@@ -33920,37 +34090,11 @@ function renderMgmtDashboardHtml() {
             + '<div class="k-lab" style="margin-top:8px">Неделя</div>'
             + '<div class="k-val" style="font-size:13px">' + escapeHtml(mgmtFmtRu(week.from) + " – " + mgmtFmtRu(week.to)) + "</div>"
             + "</div>";
-        html += mgmtDashKpiCol("ОПТ", "opt_revenue", "opt_margin", "opt_rent", week.from);
-        html += mgmtDashKpiCol("СКЛАД", "wh_revenue", "wh_margin", "wh_rent", week.from);
-        html += mgmtDashKpiCol("МАГАЗИН", "shop_sales", "shop_margin", "shop_rent", week.from);
-        html += "</div>";
-
-        html += '<div class="spu-extra">';
-        (panel.extra || []).forEach(function (code) {
-            const pack = mgmtDashReadAt(code, week.from);
-            const prev = mgmtDashPrev(code, week.from);
-            html += "<div><div class=\"k-lab\">" + escapeHtml(pack.it ? pack.it.name : code) + "</div>"
-                + "<b>" + escapeHtml(pack.it ? mgmtFormatValue(pack.it, pack.value, pack.status) : "—") + "</b>"
-                + " " + mgmtDashDeltaHtml(pack.it, pack.value, prev && prev.value)
-                + "</div>";
-        });
         html += "</div>";
 
         html += '<div class="spu-deptbar"><span>' + escapeHtml(panel.label) + "</span>"
             + "<span>Ответственный " + mgmtDashOwnerHtml(panel.spu) + "</span></div>";
 
-        (panel.charts || []).forEach(function (ch) {
-            let drawn;
-            try {
-                drawn = mgmtSvgComboChart(weeks, ch.bars || [], ch.line || "");
-            } catch (chartErr) {
-                console.error(chartErr);
-                drawn = { svg: '<div class="note">График недоступен</div>', legend: "" };
-            }
-            html += '<div class="spu-chart"><h4>' + escapeHtml(ch.title) + "</h4>"
-                + '<div class="spu-chart-body">' + drawn.svg + "</div>"
-                + '<div class="spu-leg">' + drawn.legend + "</div></div>";
-        });
         html += renderMgmtCustomPanelBlocksHtml(week.from, weeks);
         html += "</div>";
         return html;
