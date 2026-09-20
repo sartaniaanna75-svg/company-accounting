@@ -531,6 +531,49 @@
         .spu-up { color: #92d050; }
         .spu-down { color: #ff6b6b; }
         .spu-flat { color: #d0d7de; }
+        .spu-panel-setup { font-size: 13px; }
+        .spu-panel-setup .ps-head {
+            display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+            margin: 0 0 10px; justify-content: space-between;
+        }
+        .spu-panel-setup .ps-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+        .spu-panel-block {
+            border: 1px solid #dbe3ef; border-radius: 8px; padding: 10px 12px;
+            margin: 0 0 10px; background: #f8fafc;
+        }
+        .spu-panel-block.is-hidden { opacity: .55; }
+        .spu-panel-block .ps-row {
+            display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px;
+        }
+        .spu-panel-block .ps-row label {
+            display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: #64748b;
+        }
+        .spu-panel-block input[type="text"],
+        .spu-panel-block select { font-size: 12px; min-width: 120px; }
+        .spu-panel-block input[type="color"] {
+            min-width: 44px; height: 28px; padding: 0; border: 1px solid #cbd5e1;
+        }
+        .spu-panel-block .ps-series {
+            border-top: 1px dashed #cbd5e1; padding-top: 8px; margin-top: 4px;
+        }
+        .spu-panel-block .ps-series-row {
+            display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; margin: 0 0 6px;
+        }
+        .spu-custom-blocks { margin: 12px 0 0; }
+        .spu-custom-blocks h3 {
+            margin: 0 0 8px; font-size: 13px; text-transform: uppercase;
+            letter-spacing: .04em; color: #64748b;
+        }
+        .spu-custom-kpi {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap: 8px; margin: 0 0 12px;
+        }
+        .spu-custom-kpi .ck {
+            border: 1px solid #dbe3ef; border-radius: 8px; padding: 10px 12px;
+            background: #fff; border-top: 3px solid #2f5496;
+        }
+        .spu-custom-kpi .ck .k-lab { font-size: 11px; color: #64748b; }
+        .spu-custom-kpi .ck .k-val { font-size: 18px; font-weight: 700; margin-top: 4px; }
         .spu-extra {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -4097,6 +4140,9 @@
         <div class="menu-title" data-for="summary" data-spu="1">СПУ</div>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management" onclick="showSection('management', this)">
             Панель управления
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-panel" onclick="showSection('management-panel', this)">
+            Настройка панели
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-planfact" onclick="showSection('management-planfact', this)">
             План–факт компании
@@ -10922,6 +10968,16 @@ function mergeVisibleIntoNavLayout(layout) {
         if (!next.groups.length) next.groups = defaultNavLayoutGroups();
         next.groups[next.groups.length - 1].item_ids = next.groups[next.groups.length - 1].item_ids.concat(missing);
     }
+    next.groups.forEach(function (g) {
+        const ids = g.item_ids || [];
+        const panelIdx = ids.findIndex(function (id) { return String(id).indexOf("::management-panel") !== -1; });
+        const dashIdx = ids.findIndex(function (id) { return /::management$/.test(String(id)); });
+        if (panelIdx < 0 || dashIdx < 0 || panelIdx === dashIdx + 1) return;
+        const panelId = ids.splice(panelIdx, 1)[0];
+        const dashNow = ids.findIndex(function (id) { return /::management$/.test(String(id)); });
+        ids.splice(dashNow + 1, 0, panelId);
+        g.item_ids = ids;
+    });
     return next;
 }
 
@@ -11187,7 +11243,7 @@ function allowedSpuSections() {
     const list = ["management"];
     const open = isAppAdmin() || canOpenManagement() || userHasPerm("management", "view");
     if (open) {
-        ["management-planfact", "management-meetings", "management-tasks", "management-events", "management-finance"].forEach(function (sec) {
+        ["management-panel", "management-planfact", "management-meetings", "management-tasks", "management-events", "management-finance"].forEach(function (sec) {
             if (list.indexOf(sec) === -1) list.push(sec);
         });
     }
@@ -11318,6 +11374,7 @@ function sectionTitle(id) {
         territoryReturns: "Возвраты по покупателям",
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
         management: "Панель управления",
+        "management-panel": "Настройка панели",
         "management-planfact": "План–факт компании",
         "management-finance": "Ввод показателей",
         "management-meetings": "Протокол встреч",
@@ -30894,6 +30951,7 @@ function ensureManagement() {
     if (!Array.isArray(root.spuResponsibilities)) root.spuResponsibilities = [];
     if (!Array.isArray(root.retired_spu_codes)) root.retired_spu_codes = [];
     if (!root.input_order || typeof root.input_order !== "object") root.input_order = {};
+    if (!Array.isArray(root.panel_blocks)) root.panel_blocks = [];
     appData.spu = root;
     if (wtBusy.management) return;
     wtBusy.management = true;
@@ -32237,6 +32295,7 @@ function renderManagement() {
         }
         const items = [
             { id: "dashboard", label: "Панель управления", show: isSpuMode() || isAppAdmin() || userHasPerm("management", "view") || canOpenManagement() },
+            { id: "panel", label: "Настройка панели", show: isSpuMode() || isAppAdmin() || userHasPerm("management", "view") || canOpenManagement() || canEditMgmtIndicators() },
             { id: "planfact", label: "План–факт компании", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "meetings", label: "Протокол встреч", show: userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement() },
             { id: "tasks", label: "Ежедневные задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement() },
@@ -32257,6 +32316,7 @@ function renderManagement() {
         }
         const titles = {
             dashboard: "Панель управления",
+            panel: "Настройка панели",
             planfact: "План–факт компании",
             finance: "Ввод показателей",
             meetings: "Протокол встреч",
@@ -32271,7 +32331,8 @@ function renderManagement() {
         if (mgmtTab === "dashboard" || currentSection === "management") {
             mgmtTab = "dashboard";
             body.innerHTML = renderMgmtDashboardHtml();
-        } else if (mgmtTab === "planfact") body.innerHTML = renderMgmtPlanFactHtml();
+        } else if (mgmtTab === "panel") body.innerHTML = renderMgmtPanelSetupHtml();
+        else if (mgmtTab === "planfact") body.innerHTML = renderMgmtPlanFactHtml();
         else if (mgmtTab === "finance") body.innerHTML = renderMgmtFinanceHtml();
         else if (mgmtTab === "tasks") body.innerHTML = renderMgmtTasksHtml();
         else if (mgmtTab === "meetings") body.innerHTML = renderMgmtMeetingsHtml();
@@ -32733,6 +32794,355 @@ function mgmtDashOwnerHtml(spuId) {
         + mgmtLeaderOptions(headNow) + "</select>";
 }
 
+function mgmtPanelBlocks() {
+    try { ensureManagement(); } catch (err) { console.error(err); }
+    if (!appData || !appData.management || !Array.isArray(appData.management.panel_blocks)) return [];
+    return appData.management.panel_blocks
+        .filter(function (b) { return b && b.block_id; })
+        .sort(function (a, b) { return Number(a.sort_order || 0) - Number(b.sort_order || 0); });
+}
+
+function mgmtIndicatorById(id) {
+    const want = String(id || "");
+    if (!want) return null;
+    return mgmtIndicators().find(function (x) {
+        return x && (x.indicator_id === want || x.spu_indicator_id === want);
+    }) || null;
+}
+
+function mgmtDashReadByIndicatorId(indicatorId, fromIso) {
+    try {
+        const it = mgmtIndicatorById(indicatorId);
+        if (!it) return { it: null, value: null, status: "missing" };
+        return mgmtRunInThuWeek(fromIso, function () {
+            const read = mgmtReadIndicator(it);
+            return { it: it, value: read.value, status: read.status };
+        });
+    } catch (err) {
+        console.error(err);
+        return { it: mgmtIndicatorById(indicatorId), value: null, status: "error" };
+    }
+}
+
+function mgmtPanelNewBlockId() {
+    const ids = mgmtPanelBlocks().map(function (b) { return b.block_id; });
+    return nextPrefixedId("pb", ids);
+}
+
+function mgmtPanelDefaultColor(type) {
+    return type === "chart" ? "#4F81BD" : "#2f5496";
+}
+
+function mgmtPanelAddBlock(type) {
+    ensureManagement();
+    const t = type === "chart" ? "chart" : "kpi";
+    const blocks = appData.management.panel_blocks;
+    const maxOrder = blocks.reduce(function (m, b) { return Math.max(m, Number(b && b.sort_order || 0)); }, 0);
+    const block = {
+        block_id: mgmtPanelNewBlockId(),
+        type: t,
+        title: t === "chart" ? "Новый график" : "Новый KPI",
+        visible: true,
+        sort_order: maxOrder + 10,
+        color: mgmtPanelDefaultColor(t),
+        indicator_ids: [],
+        series: t === "chart" ? [{ indicator_id: "", chart_type: "bar", color: "#4F81BD" }] : []
+    };
+    blocks.push(block);
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelFindBlock(blockId) {
+    return mgmtPanelBlocks().find(function (b) { return b.block_id === blockId; }) || null;
+}
+
+function mgmtPanelSetField(blockId, field, value) {
+    const b = mgmtPanelFindBlock(blockId);
+    if (!b) return;
+    if (field === "title") b.title = String(value || "");
+    else if (field === "visible") b.visible = !!value;
+    else if (field === "color") b.color = String(value || mgmtPanelDefaultColor(b.type));
+    else if (field === "indicator_id") {
+        const id = String(value || "");
+        b.indicator_ids = id ? [id] : [];
+    }
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelToggleVisible(blockId) {
+    const b = mgmtPanelFindBlock(blockId);
+    if (!b) return;
+    b.visible = b.visible === false;
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelMoveBlock(blockId, dir) {
+    ensureManagement();
+    const list = mgmtPanelBlocks().slice();
+    const idx = list.findIndex(function (b) { return b.block_id === blockId; });
+    if (idx < 0) return;
+    const to = idx + (dir < 0 ? -1 : 1);
+    if (to < 0 || to >= list.length) return;
+    const tmp = list[idx];
+    list[idx] = list[to];
+    list[to] = tmp;
+    list.forEach(function (b, i) { b.sort_order = (i + 1) * 10; });
+    appData.management.panel_blocks = list;
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelDeleteBlock(blockId) {
+    ensureManagement();
+    if (!confirm("Удалить блок с панели?")) return;
+    appData.management.panel_blocks = (appData.management.panel_blocks || [])
+        .filter(function (b) { return !b || b.block_id !== blockId; });
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelAddSeries(blockId) {
+    const b = mgmtPanelFindBlock(blockId);
+    if (!b || b.type !== "chart") return;
+    if (!Array.isArray(b.series)) b.series = [];
+    b.series.push({ indicator_id: "", chart_type: "bar", color: "#9BBB59" });
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelSetSeries(blockId, idx, field, value) {
+    const b = mgmtPanelFindBlock(blockId);
+    if (!b || !Array.isArray(b.series) || !b.series[idx]) return;
+    const row = b.series[idx];
+    if (field === "indicator_id") row.indicator_id = String(value || "");
+    else if (field === "chart_type") row.chart_type = value === "line" ? "line" : "bar";
+    else if (field === "color") row.color = String(value || "#4F81BD");
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelRemoveSeries(blockId, idx) {
+    const b = mgmtPanelFindBlock(blockId);
+    if (!b || !Array.isArray(b.series)) return;
+    b.series.splice(idx, 1);
+    if (!b.series.length) b.series.push({ indicator_id: "", chart_type: "bar", color: "#4F81BD" });
+    saveApp();
+    renderManagement();
+}
+
+function mgmtPanelIndicatorOptions(selectedId) {
+    const sel = String(selectedId || "");
+    let html = '<option value="">— Показатель СПУ —</option>';
+    mgmtIndicators().forEach(function (it) {
+        const id = it.indicator_id || it.spu_indicator_id || "";
+        if (!id) return;
+        html += '<option value="' + escapeAttribute(id) + '"' + (id === sel ? " selected" : "") + ">"
+            + escapeHtml(it.name || it.spu_code || id) + "</option>";
+    });
+    return html;
+}
+
+function mgmtSvgPanelChart(weeks, seriesCfg) {
+    const W = 760;
+    const H = 210;
+    const padL = 48;
+    const padR = 44;
+    const padT = 18;
+    const padB = 28;
+    const innerW = W - padL - padR;
+    const innerH = H - padT - padB;
+    const series = (seriesCfg || []).filter(function (s) { return s && s.indicator_id; }).map(function (s) {
+        const it = mgmtIndicatorById(s.indicator_id);
+        return {
+            indicator_id: s.indicator_id,
+            it: it,
+            type: s.chart_type === "line" ? "line" : "bar",
+            color: s.color || (s.chart_type === "line" ? "#F79646" : "#4F81BD"),
+            values: weeks.map(function (w) { return mgmtDashReadByIndicatorId(s.indicator_id, w.from).value; })
+        };
+    });
+    if (!series.length) {
+        return { svg: '<div class="note">Выберите показатели для графика</div>', legend: "" };
+    }
+    function maxOf(arr) {
+        let m = 0;
+        arr.forEach(function (v) {
+            if (v != null && Number.isFinite(Number(v))) m = Math.max(m, Math.abs(Number(v)));
+        });
+        return m || 1;
+    }
+    const barVals = [];
+    const lineVals = [];
+    series.forEach(function (s) {
+        (s.type === "line" ? lineVals : barVals).push.apply(s.type === "line" ? lineVals : barVals, s.values);
+    });
+    const maxBar = maxOf(barVals);
+    const maxLine = maxOf(lineVals);
+    const n = weeks.length || 1;
+    const groupW = innerW / n;
+    const bars = series.filter(function (s) { return s.type === "bar"; });
+    const barCount = Math.max(1, bars.length);
+    const barW = Math.max(8, Math.min(22, (groupW - 10) / barCount));
+    let svg = '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="xMidYMid meet">';
+    svg += '<rect x="0" y="0" width="' + W + '" height="' + H + '" fill="#fff"/>';
+    for (let g = 0; g <= 4; g++) {
+        const y = padT + innerH * (g / 4);
+        svg += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) + '" y2="' + y + '" stroke="#e5e7eb"/>';
+    }
+    weeks.forEach(function (w, i) {
+        const x = padL + groupW * i + groupW / 2;
+        svg += '<text x="' + x + '" y="' + (H - 8) + '" text-anchor="middle" font-size="10" fill="#64748b">'
+            + escapeHtml(mgmtFmtDdMm(w.from)) + "</text>";
+    });
+    bars.forEach(function (s, bi) {
+        s.values.forEach(function (v, i) {
+            if (v == null || !Number.isFinite(Number(v))) return;
+            const h = (Math.abs(Number(v)) / maxBar) * (innerH - 8);
+            const x = padL + groupW * i + (groupW - barCount * barW - 4) / 2 + bi * (barW + 2);
+            const y = padT + innerH - h;
+            svg += '<rect x="' + x + '" y="' + y + '" width="' + barW + '" height="' + h + '" fill="' + escapeAttribute(s.color) + '"/>';
+            svg += '<text x="' + (x + barW / 2) + '" y="' + (y - 3) + '" text-anchor="middle" font-size="9" fill="#334155">'
+                + escapeHtml(mgmtChartCompact(v, s.it && s.it.unit)) + "</text>";
+        });
+    });
+    series.filter(function (s) { return s.type === "line"; }).forEach(function (lineSeries) {
+        let d = "";
+        const pts = [];
+        lineSeries.values.forEach(function (v, i) {
+            if (v == null || !Number.isFinite(Number(v))) return;
+            const x = padL + groupW * i + groupW / 2;
+            const y = padT + innerH - (Math.abs(Number(v)) / maxLine) * (innerH - 8);
+            pts.push({ x: x, y: y, v: v });
+            d += (d ? " L " : "M ") + x + " " + y;
+        });
+        if (d) {
+            svg += '<path d="' + d + '" fill="none" stroke="' + escapeAttribute(lineSeries.color) + '" stroke-width="2.5"/>';
+            pts.forEach(function (p) {
+                svg += '<circle cx="' + p.x + '" cy="' + p.y + '" r="3.5" fill="' + escapeAttribute(lineSeries.color) + '"/>';
+                svg += '<text x="' + p.x + '" y="' + (p.y - 8) + '" text-anchor="middle" font-size="9" fill="#334155">'
+                    + escapeHtml(mgmtChartCompact(p.v, lineSeries.it && lineSeries.it.unit)) + "</text>";
+            });
+        }
+    });
+    svg += "</svg>";
+    const legend = series.map(function (s) {
+        const name = (s.it && s.it.name) || s.indicator_id;
+        const kind = s.type === "line" ? "линия" : "столбец";
+        return '<span style="margin-right:10px"><span style="display:inline-block;width:10px;height:10px;background:'
+            + escapeAttribute(s.color) + ';margin-right:4px;vertical-align:middle"></span>'
+            + escapeHtml(name) + " (" + kind + ")</span>";
+    }).join("");
+    return { svg: svg, legend: legend };
+}
+
+function renderMgmtPanelSetupHtml() {
+    try {
+        ensureManagement();
+        const blocks = mgmtPanelBlocks();
+        let html = '<div class="spu-panel-setup">';
+        html += '<div class="ps-head"><div class="note" style="margin:0">Конструктор блоков для панели управления. '
+            + "Выберите существующие показатели СПУ. Конфигурация сохраняется в данных приложения.</div>"
+            + '<div class="ps-actions">'
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelAddBlock(\'kpi\')">+ Добавить KPI</button>'
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelAddBlock(\'chart\')">+ Добавить график</button>'
+            + '<button type="button" class="btn btn-primary btn-small" onclick="saveApp();alert(\'Конфигурация панели сохранена\')">Сохранить</button>'
+            + "</div></div>";
+        if (!blocks.length) {
+            html += '<div class="note">Пока нет блоков. Нажмите «+ Добавить KPI» или «+ Добавить график».</div>';
+        }
+        blocks.forEach(function (b, bi) {
+            const hidden = b.visible === false;
+            html += '<div class="spu-panel-block' + (hidden ? " is-hidden" : "") + '">';
+            html += '<div class="ps-row">'
+                + "<strong>" + (b.type === "chart" ? "График" : "KPI") + "</strong>"
+                + '<label>Заголовок<input type="text" value="' + escapeAttribute(b.title || "") + '" '
+                + 'onchange="mgmtPanelSetField(\'' + escapeAttribute(b.block_id) + '\',\'title\',this.value)"></label>'
+                + '<label>Цвет блока<input type="color" value="' + escapeAttribute(b.color || mgmtPanelDefaultColor(b.type)) + '" '
+                + 'onchange="mgmtPanelSetField(\'' + escapeAttribute(b.block_id) + '\',\'color\',this.value)"></label>'
+                + '<label style="flex-direction:row;align-items:center;gap:6px;margin-top:14px">'
+                + '<input type="checkbox"' + (hidden ? "" : " checked") + ' '
+                + 'onchange="mgmtPanelToggleVisible(\'' + escapeAttribute(b.block_id) + '\')"> Показать</label>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelMoveBlock(\''
+                + escapeAttribute(b.block_id) + "',-1)\"" + (bi === 0 ? " disabled" : "") + ">↑</button>"
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelMoveBlock(\''
+                + escapeAttribute(b.block_id) + "',1)\"" + (bi === blocks.length - 1 ? " disabled" : "") + ">↓</button>"
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelDeleteBlock(\''
+                + escapeAttribute(b.block_id) + "')\">Удалить</button>"
+                + "</div>";
+            if (b.type === "kpi") {
+                const indId = (b.indicator_ids && b.indicator_ids[0]) || "";
+                html += '<div class="ps-row"><label>Показатель СПУ<select onchange="mgmtPanelSetField(\''
+                    + escapeAttribute(b.block_id) + '\',\'indicator_id\',this.value)">'
+                    + mgmtPanelIndicatorOptions(indId) + "</select></label></div>";
+            } else {
+                html += '<div class="ps-series"><div class="note" style="margin:0 0 6px">Серии графика: столбец или линия, цвет.</div>';
+                (b.series || []).forEach(function (s, si) {
+                    html += '<div class="ps-series-row">'
+                        + '<label>Показатель<select onchange="mgmtPanelSetSeries(\'' + escapeAttribute(b.block_id) + "',"
+                        + si + ",'indicator_id',this.value)\">" + mgmtPanelIndicatorOptions(s.indicator_id) + "</select></label>"
+                        + '<label>Вид<select onchange="mgmtPanelSetSeries(\'' + escapeAttribute(b.block_id) + "',"
+                        + si + ",'chart_type',this.value)\">"
+                        + '<option value="bar"' + (s.chart_type !== "line" ? " selected" : "") + ">Столбец</option>"
+                        + '<option value="line"' + (s.chart_type === "line" ? " selected" : "") + ">Линия</option>"
+                        + "</select></label>"
+                        + '<label>Цвет<input type="color" value="' + escapeAttribute(s.color || "#4F81BD") + '" '
+                        + 'onchange="mgmtPanelSetSeries(\'' + escapeAttribute(b.block_id) + "'," + si + ",'color',this.value)\"></label>"
+                        + '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelRemoveSeries(\''
+                        + escapeAttribute(b.block_id) + "'," + si + ')">−</button>'
+                        + "</div>";
+                });
+                html += '<button type="button" class="btn btn-secondary btn-small" onclick="mgmtPanelAddSeries(\''
+                    + escapeAttribute(b.block_id) + "')\">+ Серия</button></div>";
+            }
+            html += "</div>";
+        });
+        html += "</div>";
+        return html;
+    } catch (err) {
+        console.error(err);
+        return '<div class="note">Ошибка настройки панели: '
+            + escapeHtml(err && err.message ? err.message : String(err)) + "</div>";
+    }
+}
+
+function renderMgmtCustomPanelBlocksHtml(weekFrom, weeks) {
+    const blocks = mgmtPanelBlocks().filter(function (b) { return b && b.visible !== false; });
+    if (!blocks.length) return "";
+    let html = '<div class="spu-custom-blocks"><h3>Настроенные блоки</h3>';
+    const kpis = blocks.filter(function (b) { return b.type === "kpi"; });
+    if (kpis.length) {
+        html += '<div class="spu-custom-kpi">';
+        kpis.forEach(function (b) {
+            const indId = (b.indicator_ids && b.indicator_ids[0]) || "";
+            const pack = indId ? mgmtDashReadByIndicatorId(indId, weekFrom) : { it: null, value: null, status: "missing" };
+            const prev = indId ? mgmtDashReadByIndicatorId(indId, mgmtShiftThuWeek(weekFrom, -1).from) : null;
+            html += '<div class="ck" style="border-top-color:' + escapeAttribute(b.color || "#2f5496") + '">'
+                + '<div class="k-lab">' + escapeHtml(b.title || (pack.it && pack.it.name) || "KPI") + "</div>"
+                + '<div class="k-val">' + escapeHtml(pack.it ? mgmtFormatValue(pack.it, pack.value, pack.status) : "—") + "</div>"
+                + (pack.it ? mgmtDashDeltaHtml(pack.it, pack.value, prev && prev.value) : "")
+                + "</div>";
+        });
+        html += "</div>";
+    }
+    blocks.filter(function (b) { return b.type === "chart"; }).forEach(function (b) {
+        let drawn;
+        try {
+            drawn = mgmtSvgPanelChart(weeks, b.series || []);
+        } catch (chartErr) {
+            console.error(chartErr);
+            drawn = { svg: '<div class="note">График недоступен</div>', legend: "" };
+        }
+        html += '<div class="spu-chart"><h4>' + escapeHtml(b.title || "График") + "</h4>"
+            + '<div class="spu-chart-body">' + drawn.svg + "</div>"
+            + '<div class="spu-leg">' + drawn.legend + "</div></div>";
+    });
+    html += "</div>";
+    return html;
+}
+
 function renderMgmtDashboardHtml() {
     try {
         ensureManagement();
@@ -32788,6 +33198,7 @@ function renderMgmtDashboardHtml() {
                 + '<div class="spu-chart-body">' + drawn.svg + "</div>"
                 + '<div class="spu-leg">' + drawn.legend + "</div></div>";
         });
+        html += renderMgmtCustomPanelBlocksHtml(week.from, weeks);
         html += "</div>";
         return html;
     } catch (err) {
