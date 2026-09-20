@@ -358,7 +358,15 @@
         }
         .nav-ed-item.is-over { background: #eff6ff; }
         .nav-ed-item span { flex: 1; min-width: 0; }
-        .nav-ed-tools { display: flex; gap: 6px; margin: 8px 0; }
+        .nav-ed-item-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+        .nav-ed-item.is-hidden-item { opacity: 0.55; }
+        .nav-ed-item.is-custom { border-color: #93c5fd; }
+        .nav-ed-tools { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; }
+        .nav-ed-add {
+            display: flex; gap: 6px; flex-wrap: wrap; align-items: center;
+            margin: 8px 0; padding: 8px; border: 1px dashed #cbd5e1; border-radius: 8px; background: #fff;
+        }
+        .nav-ed-add input { flex: 1; min-width: 140px; font-size: 13px; padding: 4px 8px; }
 
         .mgmt-tabs { display: none; }
         .mgmt-chips { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
@@ -4437,6 +4445,18 @@
                 </div>
             </section>
 
+            <section id="customPage" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title" id="customPageTitle">Раздел</div>
+                            <div class="note" id="customPageNote">Пользовательский пункт меню</div>
+                        </div>
+                    </div>
+                    <div id="customPageBody"></div>
+                </div>
+            </section>
+
 
             <!-- =================================================
                  МЕТРИКИ — только Магазин
@@ -5836,6 +5856,7 @@ let metricCatalogFormMode = "";
 let navLayoutDraft = null;
 let navSourceNodes = null;
 let navDragPayload = null;
+let currentCustomNavItemId = null;
 let metricFormReturnSection = "";
 let editingSummaryUserRole = null;
 let summaryUserPinVisible = {};
@@ -10702,6 +10723,7 @@ function saveSession() {
             id: workspace().id,
             month: selectedMonth,
             section: currentSection,
+            customNavItemId: currentCustomNavItemId || "",
             summaryRole: currentSummaryRole,
             deptRole: currentDeptRole,
             userId: currentUserId,
@@ -10756,6 +10778,7 @@ function tryRestoreSession() {
             id = saved.id;
             if (saved.month) selectedMonth = saved.month;
             if (saved.section) currentSection = saved.section;
+            if (saved.customNavItemId) currentCustomNavItemId = saved.customNavItemId;
             if (saved.summaryRole) currentSummaryRole = saved.summaryRole;
             if (saved.deptRole) currentDeptRole = saved.deptRole;
             if (saved.userId) currentUserId = saved.userId;
@@ -10839,7 +10862,7 @@ function applyModeUI() {
             } else if (sec === "metricCatalog" && mode === "both") {
                 el.textContent = el.getAttribute("data-default-label") || "📚 Метрики";
             }
-            if (sec && allowed.indexOf(sec) === -1) show = false;
+            if (sec && allowed.indexOf(sec) === -1 && sec !== "customPage") show = false;
             if (sec === "metricCatalog" && mode === "both"
                 && (code === "warehouse" || code === "drivers" || code === "office")) {
                 show = false;
@@ -10851,18 +10874,20 @@ function applyModeUI() {
             }
             if (isOrgMode()) {
                 if (el.classList.contains("nav-btn")) {
-                    show = el.getAttribute("data-org") === "1" && sec && allowed.indexOf(sec) !== -1;
+                    show = el.getAttribute("data-org") === "1" && sec
+                        && (allowed.indexOf(sec) !== -1 || sec === "customPage");
                 } else {
                     show = el.getAttribute("data-org") === "1";
                 }
             } else if (isSpuMode()) {
-                show = el.getAttribute("data-spu") === "1" && sec && allowed.indexOf(sec) !== -1;
+                show = el.getAttribute("data-spu") === "1" && sec
+                    && (allowed.indexOf(sec) !== -1 || sec === "customPage");
             } else if (isAdminEntry()) {
-                show = (sec === "users" || sec === "settings" || sec === "metricCatalog" || sec === "summaryStaff")
-                    && allowed.indexOf(sec) !== -1;
+                show = (sec === "users" || sec === "settings" || sec === "metricCatalog" || sec === "summaryStaff" || sec === "customPage")
+                    && (allowed.indexOf(sec) !== -1 || sec === "customPage");
                 if (sec === "metricCatalog") show = show && mode === "both";
             } else if (isTerritoryMetricsMode()) {
-                show = mode === "territoryMetricsHub" && (!sec || allowed.indexOf(sec) !== -1);
+                show = mode === "territoryMetricsHub" && (!sec || allowed.indexOf(sec) !== -1 || sec === "customPage");
             } else if (summary) {
                 if (sec === "management" || String(sec || "").indexOf("management-") === 0) show = false;
                 if (sec === "org-chart" || sec === "org-settings") show = false;
@@ -10934,7 +10959,10 @@ function applyModeUI() {
     const editBtn = document.getElementById("navLayoutEditBtn");
     if (editBtn) editBtn.style.display = canConfigureNavLayout() ? "" : "none";
     try { sanitizeAdminNavLayoutMetricCatalog(); } catch (sanErr) { console.error(sanErr); }
+    try { ensureCustomNavButtons(); } catch (custErr) { console.error(custErr); }
     try { applyNavLayout(); } catch (navErr) { console.error(navErr); }
+    try { applyNavItemLabels(); } catch (labErr) { console.error(labErr); }
+    try { applyNavItemHidden(); } catch (hidErr) { console.error(hidErr); }
 }
 
 function sanitizeAdminNavLayoutMetricCatalog() {
@@ -10963,6 +10991,51 @@ function sanitizeAdminNavLayoutMetricCatalog() {
 function ensureNavLayouts() {
     if (!appData.navLayouts || typeof appData.navLayouts !== "object") appData.navLayouts = {};
     return appData.navLayouts;
+}
+
+function ensureNavLayoutMeta(navCode) {
+    const layouts = ensureNavLayouts();
+    const key = String(navCode || currentNavCode() || "");
+    if (!key) return { saved: false, groups: [], item_labels: {}, item_hidden: {}, custom_items: [] };
+    if (!layouts[key] || typeof layouts[key] !== "object") {
+        layouts[key] = { saved: false, groups: [], item_labels: {}, item_hidden: {}, custom_items: [] };
+    }
+    const L = layouts[key];
+    if (!L.item_labels || typeof L.item_labels !== "object") L.item_labels = {};
+    if (!L.item_hidden || typeof L.item_hidden !== "object") L.item_hidden = {};
+    if (!Array.isArray(L.custom_items)) L.custom_items = [];
+    if (!Array.isArray(L.groups)) L.groups = [];
+    return L;
+}
+
+function isNavCustomItemId(id) {
+    return String(id || "").indexOf("custom::") === 0;
+}
+
+function navCustomDataFor(navCode) {
+    if (navCode === "spu" || navCode === "org" || navCode === "summary" || navCode === "admin") return "summary";
+    if (navCode === "territoryMetrics") return "territoryMetricsHub";
+    return navCode || "dept";
+}
+
+function nextNavCustomItemId() {
+    const used = [];
+    const layouts = ensureNavLayouts();
+    Object.keys(layouts).forEach(function (k) {
+        ((layouts[k] && layouts[k].custom_items) || []).forEach(function (c) {
+            if (c && c.item_id) used.push(String(c.item_id).replace(/^custom::/, ""));
+        });
+    });
+    if (navLayoutDraft && Array.isArray(navLayoutDraft.custom_items)) {
+        navLayoutDraft.custom_items.forEach(function (c) {
+            if (c && c.item_id) used.push(String(c.item_id).replace(/^custom::/, ""));
+        });
+    }
+    return "custom::" + nextPrefixedId("nmi", used);
+}
+
+function invalidateNavSourceSnapshot() {
+    navSourceNodes = null;
 }
 
 function canConfigureNavLayout() {
@@ -10999,8 +11072,6 @@ function navBtnById(id) {
     const host = document.getElementById("navCustomArea");
     if (!host || !id) return null;
     const want = String(id);
-    const byAttr = host.querySelector('.nav-btn[data-nav-id="' + want.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"]');
-    if (byAttr) return byAttr;
     let found = null;
     host.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         if (found) return;
@@ -11023,8 +11094,31 @@ function visibleNavItemIds() {
 }
 
 function navItemLabel(id) {
+    const code = currentNavCode();
+    const meta = ensureNavLayoutMeta(code);
+    if (meta.item_labels && meta.item_labels[id]) {
+        return String(meta.item_labels[id]).replace(/\s+/g, " ").trim();
+    }
+    if (navLayoutDraft && navLayoutDraft.item_labels && navLayoutDraft.item_labels[id]) {
+        return String(navLayoutDraft.item_labels[id]).replace(/\s+/g, " ").trim();
+    }
+    if (isNavCustomItemId(id)) {
+        const pool = (navLayoutDraft && navLayoutDraft.custom_items) || meta.custom_items || [];
+        for (let i = 0; i < pool.length; i++) {
+            if (pool[i] && pool[i].item_id === id) {
+                return String(pool[i].label || "").replace(/\s+/g, " ").trim() || id;
+            }
+        }
+    }
     const btn = navBtnById(id);
     return btn ? String(btn.textContent || "").replace(/\s+/g, " ").trim() : id;
+}
+
+function navDraftItemLabel(id) {
+    if (navLayoutDraft && navLayoutDraft.item_labels && navLayoutDraft.item_labels[id]) {
+        return String(navLayoutDraft.item_labels[id]).replace(/\s+/g, " ").trim();
+    }
+    return navItemLabel(id);
 }
 
 function defaultNavLayoutGroups() {
@@ -11043,7 +11137,115 @@ function cloneNavLayout(layout) {
             item_ids: (g.item_ids || []).slice()
         };
     });
-    return { saved: !!(layout && layout.saved), groups: groups.length ? groups : defaultNavLayoutGroups() };
+    return {
+        saved: !!(layout && layout.saved),
+        groups: groups.length ? groups : defaultNavLayoutGroups(),
+        item_labels: Object.assign({}, (layout && layout.item_labels) || {}),
+        item_hidden: Object.assign({}, (layout && layout.item_hidden) || {}),
+        custom_items: ((layout && layout.custom_items) || []).map(function (c) {
+            return {
+                item_id: String((c && c.item_id) || ""),
+                label: String((c && c.label) || ""),
+                parent_section_id: String((c && c.parent_section_id) || ""),
+                active: !(c && c.active === false),
+                created_at: String((c && c.created_at) || "")
+            };
+        }).filter(function (c) { return !!c.item_id; })
+    };
+}
+
+function ensureCustomNavButtons(overrideItemsForCurrent) {
+    const host = document.getElementById("navCustomArea");
+    if (!host) return;
+    const layouts = ensureNavLayouts();
+    const currentCode = currentNavCode();
+    const activeMap = {};
+    Object.keys(layouts).forEach(function (navCode) {
+        const meta = ensureNavLayoutMeta(navCode);
+        let items = meta.custom_items || [];
+        if (navCode === currentCode && overrideItemsForCurrent) {
+            items = overrideItemsForCurrent;
+        }
+        items.forEach(function (item) {
+            if (!item || !item.item_id || item.active === false) return;
+            activeMap[item.item_id] = { item: item, navCode: navCode };
+        });
+    });
+    if (overrideItemsForCurrent && currentCode) {
+        overrideItemsForCurrent.forEach(function (item) {
+            if (!item || !item.item_id || item.active === false) return;
+            activeMap[item.item_id] = { item: item, navCode: currentCode };
+        });
+    }
+    let changed = false;
+    host.querySelectorAll('.nav-btn[data-custom-item="1"]').forEach(function (btn) {
+        const id = btn.getAttribute("data-nav-id") || "";
+        if (!activeMap[id]) {
+            btn.parentNode && btn.parentNode.removeChild(btn);
+            changed = true;
+        }
+    });
+    Object.keys(activeMap).forEach(function (id) {
+        const pack = activeMap[id];
+        const item = pack.item;
+        const navCode = pack.navCode;
+        let btn = navBtnById(id);
+        if (!btn) {
+            btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "nav-btn";
+            btn.setAttribute("data-custom-item", "1");
+            btn.setAttribute("data-nav-id", id);
+            btn.setAttribute("data-section", "customPage");
+            btn.setAttribute("data-parent-section", navCode);
+            btn.setAttribute("data-for", navCustomDataFor(navCode));
+            if (navCode === "spu") btn.setAttribute("data-spu", "1");
+            if (navCode === "org") btn.setAttribute("data-org", "1");
+            btn.onclick = function () { showSection("customPage", this); };
+            host.appendChild(btn);
+            changed = true;
+        } else {
+            btn.setAttribute("data-parent-section", navCode);
+            btn.setAttribute("data-for", navCustomDataFor(navCode));
+            if (navCode === "spu") btn.setAttribute("data-spu", "1");
+            else btn.removeAttribute("data-spu");
+            if (navCode === "org") btn.setAttribute("data-org", "1");
+            else btn.removeAttribute("data-org");
+        }
+        const meta = ensureNavLayoutMeta(navCode);
+        const label = (meta.item_labels && meta.item_labels[id])
+            || (overrideItemsForCurrent && navLayoutDraft && navLayoutDraft.item_labels && navLayoutDraft.item_labels[id])
+            || item.label
+            || id;
+        btn.textContent = label;
+        btn.setAttribute("data-default-label", item.label || label);
+    });
+    if (changed) invalidateNavSourceSnapshot();
+}
+
+function applyNavItemLabels() {
+    const code = currentNavCode();
+    const meta = ensureNavLayoutMeta(code);
+    const labels = meta.item_labels || {};
+    Object.keys(labels).forEach(function (id) {
+        const btn = navBtnById(id);
+        if (!btn) return;
+        if (!btn.getAttribute("data-default-label")) {
+            btn.setAttribute("data-default-label", String(btn.textContent || "").replace(/\s+/g, " ").trim());
+        }
+        btn.textContent = labels[id];
+    });
+}
+
+function applyNavItemHidden() {
+    const code = currentNavCode();
+    const meta = ensureNavLayoutMeta(code);
+    const hidden = meta.item_hidden || {};
+    Object.keys(hidden).forEach(function (id) {
+        if (!hidden[id]) return;
+        const btn = navBtnById(id);
+        if (btn) btn.style.display = "none";
+    });
 }
 
 function mergeVisibleIntoNavLayout(layout) {
@@ -11051,7 +11253,14 @@ function mergeVisibleIntoNavLayout(layout) {
     const seen = {};
     next.groups.forEach(function (g) {
         g.item_ids = (g.item_ids || []).filter(function (id) {
-            if (!id || seen[id] || !navBtnById(id)) return false;
+            if (!id || seen[id]) return false;
+            if (isNavCustomItemId(id)) {
+                const custom = (next.custom_items || []).find(function (c) { return c && c.item_id === id; });
+                if (!custom || custom.active === false) return false;
+                seen[id] = true;
+                return true;
+            }
+            if (!navBtnById(id)) return false;
             seen[id] = true;
             return true;
         });
@@ -11061,8 +11270,6 @@ function mergeVisibleIntoNavLayout(layout) {
         if (!next.groups.length) next.groups = defaultNavLayoutGroups();
         const last = next.groups[next.groups.length - 1];
         missing.forEach(function (id) {
-            // Новый пункт management-panel — рядом с Панелью управления, только если он ещё не в layout.
-            // Уже сохранённый пользовательский порядок НЕ переставляем.
             if (String(id).indexOf("::management-panel") !== -1) {
                 let placed = false;
                 for (let gi = 0; gi < next.groups.length && !placed; gi++) {
@@ -11089,7 +11296,7 @@ function applyNavLayout() {
     if (!host || !navSourceNodes) return;
     host.querySelectorAll(".nav-layout-group").forEach(function (el) { el.remove(); });
     const key = currentNavCode();
-    const stored = ensureNavLayouts()[key];
+    const stored = ensureNavLayoutMeta(key);
     if (!stored || !stored.saved) {
         navSourceNodes.forEach(function (n) {
             if (n && n.parentNode === host) host.appendChild(n);
@@ -11136,15 +11343,50 @@ function openNavLayoutEditor() {
         toast("Настраивать меню может администратор.", "error");
         return;
     }
+    ensureCustomNavButtons();
     snapshotNavSourceNodes();
     const key = currentNavCode();
-    const stored = ensureNavLayouts()[key];
-    navLayoutDraft = mergeVisibleIntoNavLayout(stored && stored.saved ? stored : { saved: false, groups: defaultNavLayoutGroups() });
+    const stored = ensureNavLayoutMeta(key);
+    navLayoutDraft = mergeVisibleIntoNavLayout(stored && stored.saved ? stored : {
+        saved: false,
+        groups: defaultNavLayoutGroups(),
+        item_labels: stored.item_labels,
+        item_hidden: stored.item_hidden,
+        custom_items: stored.custom_items
+    });
+    navLayoutDraft.item_labels = Object.assign({}, stored.item_labels || {}, navLayoutDraft.item_labels || {});
+    navLayoutDraft.item_hidden = Object.assign({}, stored.item_hidden || {}, navLayoutDraft.item_hidden || {});
+    navLayoutDraft.custom_items = (stored.custom_items || []).map(function (c) {
+        return {
+            item_id: c.item_id,
+            label: c.label,
+            parent_section_id: c.parent_section_id || key,
+            active: c.active !== false,
+            created_at: c.created_at || ""
+        };
+    });
     navLayoutDraft.groups.forEach(function (g) {
         g.item_ids = (g.item_ids || []).filter(function (id) {
             const btn = navBtnById(id);
-            return btn && btn.style.display !== "none";
+            if (!btn) {
+                return isNavCustomItemId(id) && (navLayoutDraft.custom_items || []).some(function (c) {
+                    return c && c.item_id === id && c.active !== false;
+                });
+            }
+            if (btn.style.display !== "none") return true;
+            return !!(navLayoutDraft.item_hidden && navLayoutDraft.item_hidden[id]);
         });
+    });
+    (navLayoutDraft.custom_items || []).forEach(function (c) {
+        if (!c || c.active === false) return;
+        let found = false;
+        navLayoutDraft.groups.forEach(function (g) {
+            if ((g.item_ids || []).indexOf(c.item_id) !== -1) found = true;
+        });
+        if (!found) {
+            if (!navLayoutDraft.groups.length) navLayoutDraft.groups = defaultNavLayoutGroups();
+            navLayoutDraft.groups[navLayoutDraft.groups.length - 1].item_ids.push(c.item_id);
+        }
     });
     renderNavLayoutEditor();
 }
@@ -11152,9 +11394,9 @@ function openNavLayoutEditor() {
 function renderNavLayoutEditor() {
     if (!navLayoutDraft) return;
     const key = currentNavCode();
-    let html = "<h3>Меню раздела</h3>"
+    let html = "<h3>Настройка меню</h3>"
         + '<div class="note">' + escapeHtml(entryLabel(key) || key)
-        + ". Перетащите пункты и группы. Права доступа не меняются.</div>"
+        + ". Порядок, названия и видимость. Стабильные ID пунктов не меняются. Права доступа не меняются.</div>"
         + '<div class="nav-ed-tools">'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="addNavLayoutGroup()">+ Группа</button>'
         + "</div><div class=\"nav-ed-list\">";
@@ -11167,19 +11409,136 @@ function renderNavLayoutEditor() {
             + '<button type="button" class="btn btn-secondary btn-small" onclick="removeNavLayoutGroup(' + gi + ')">×</button>'
             + "</div>";
         (g.item_ids || []).forEach(function (id, ii) {
-            html += '<div class="nav-ed-item" draggable="true" ondragstart="onNavLayoutDragStart(event,\'item\',' + gi + ',' + ii + ')" '
+            const isCustom = isNavCustomItemId(id);
+            const isHidden = !!(navLayoutDraft.item_hidden && navLayoutDraft.item_hidden[id]);
+            html += '<div class="nav-ed-item' + (isCustom ? " is-custom" : "") + (isHidden ? " is-hidden-item" : "") + '" '
+                + 'draggable="true" ondragstart="onNavLayoutDragStart(event,\'item\',' + gi + ',' + ii + ')" '
                 + 'ondragover="onNavLayoutDragOver(event)" ondrop="onNavLayoutDropItem(event,' + gi + ',' + ii + ')">'
-                + '<span class="nav-ed-handle">☰</span><span>' + escapeHtml(navItemLabel(id)) + "</span></div>";
+                + '<span class="nav-ed-handle">☰</span>'
+                + '<span>' + escapeHtml(navDraftItemLabel(id)) + (isHidden ? " (скрыт)" : "") + "</span>"
+                + '<div class="nav-ed-item-actions">'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="moveNavLayoutItem(' + gi + ',' + ii + ',-1)" title="Выше">↑</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="moveNavLayoutItem(' + gi + ',' + ii + ',1)" title="Ниже">↓</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="renameNavLayoutItem(' + gi + ',' + ii + ')">Переименовать</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="toggleNavLayoutItemHidden(' + gi + ',' + ii + ')">'
+                + (isHidden ? "Показать" : "Скрыть") + "</button>"
+                + (isCustom
+                    ? '<button type="button" class="btn btn-secondary btn-small" onclick="deactivateNavLayoutCustomItem(' + gi + ',' + ii + ')">Деактивировать</button>'
+                    : "")
+                + "</div></div>";
         });
         if (!(g.item_ids || []).length) {
             html += '<div class="note">Пустая группа. Перетащите сюда пункт или удалите.</div>';
         }
         html += "</div>";
     });
-    html += "</div><div class=\"rev-modal-actions\">"
+    html += '</div><div class="nav-ed-add">'
+        + '<label style="font-size:12px;color:#64748b;">Название:</label>'
+        + '<input type="text" id="navEdNewItemName" placeholder="Например: Автотранспорт" '
+        + 'onkeydown="if(event.key===\'Enter\'){event.preventDefault();addNavLayoutCustomItem();}">'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="addNavLayoutCustomItem()">+ Добавить пункт</button>'
+        + "</div><div class=\"rev-modal-actions\">"
         + '<button type="button" class="btn btn-primary" onclick="saveNavLayoutEditor()">Сохранить</button>'
-        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+        + '<button type="button" class="btn btn-secondary" onclick="closeNavLayoutEditor()">Отмена</button></div>';
     if (typeof openMgmtModal === "function") openMgmtModal(html, "nav-layout-modal");
+}
+
+function closeNavLayoutEditor() {
+    navLayoutDraft = null;
+    if (typeof closeMgmtModal === "function") closeMgmtModal();
+    try { ensureCustomNavButtons(); } catch (e) { console.error(e); }
+    try { applyModeUI(); } catch (e2) { console.error(e2); }
+}
+
+function moveNavLayoutItem(gi, ii, dir) {
+    if (!navLayoutDraft || !navLayoutDraft.groups[gi]) return;
+    const ids = navLayoutDraft.groups[gi].item_ids || [];
+    const to = ii + dir;
+    if (to < 0 || to >= ids.length) return;
+    const tmp = ids[ii];
+    ids[ii] = ids[to];
+    ids[to] = tmp;
+    renderNavLayoutEditor();
+}
+
+function renameNavLayoutItem(gi, ii) {
+    if (!navLayoutDraft || !navLayoutDraft.groups[gi]) return;
+    const id = navLayoutDraft.groups[gi].item_ids[ii];
+    if (!id) return;
+    const cur = navDraftItemLabel(id);
+    const next = window.prompt("Новое название пункта:", cur);
+    if (next === null) return;
+    const label = String(next).replace(/\s+/g, " ").trim();
+    if (!label) {
+        toast("Название не может быть пустым.", "error");
+        return;
+    }
+    if (!navLayoutDraft.item_labels) navLayoutDraft.item_labels = {};
+    navLayoutDraft.item_labels[id] = label;
+    if (isNavCustomItemId(id) && Array.isArray(navLayoutDraft.custom_items)) {
+        navLayoutDraft.custom_items.forEach(function (c) {
+            if (c && c.item_id === id) c.label = label;
+        });
+    }
+    renderNavLayoutEditor();
+}
+
+function toggleNavLayoutItemHidden(gi, ii) {
+    if (!navLayoutDraft || !navLayoutDraft.groups[gi]) return;
+    const id = navLayoutDraft.groups[gi].item_ids[ii];
+    if (!id) return;
+    if (!navLayoutDraft.item_hidden) navLayoutDraft.item_hidden = {};
+    navLayoutDraft.item_hidden[id] = !navLayoutDraft.item_hidden[id];
+    if (!navLayoutDraft.item_hidden[id]) delete navLayoutDraft.item_hidden[id];
+    renderNavLayoutEditor();
+}
+
+function deactivateNavLayoutCustomItem(gi, ii) {
+    if (!navLayoutDraft || !navLayoutDraft.groups[gi]) return;
+    const id = navLayoutDraft.groups[gi].item_ids[ii];
+    if (!isNavCustomItemId(id)) {
+        toast("Системный пункт нельзя деактивировать.", "error");
+        return;
+    }
+    if (!window.confirm("Деактивировать пункт «" + navDraftItemLabel(id) + "»? История и ID сохранятся.")) return;
+    (navLayoutDraft.custom_items || []).forEach(function (c) {
+        if (c && c.item_id === id) c.active = false;
+    });
+    navLayoutDraft.groups.forEach(function (g) {
+        g.item_ids = (g.item_ids || []).filter(function (x) { return x !== id; });
+    });
+    if (navLayoutDraft.item_labels) delete navLayoutDraft.item_labels[id];
+    if (navLayoutDraft.item_hidden) delete navLayoutDraft.item_hidden[id];
+    ensureCustomNavButtons(navLayoutDraft.custom_items);
+    renderNavLayoutEditor();
+}
+
+function addNavLayoutCustomItem() {
+    if (!navLayoutDraft) return;
+    const input = document.getElementById("navEdNewItemName");
+    const label = String((input && input.value) || "").replace(/\s+/g, " ").trim();
+    if (!label) {
+        toast("Введите название пункта.", "error");
+        return;
+    }
+    const key = currentNavCode();
+    const item_id = nextNavCustomItemId();
+    if (!navLayoutDraft.custom_items) navLayoutDraft.custom_items = [];
+    navLayoutDraft.custom_items.push({
+        item_id: item_id,
+        label: label,
+        parent_section_id: key,
+        active: true,
+        created_at: new Date().toISOString()
+    });
+    if (!navLayoutDraft.item_labels) navLayoutDraft.item_labels = {};
+    navLayoutDraft.item_labels[item_id] = label;
+    ensureCustomNavButtons(navLayoutDraft.custom_items);
+    snapshotNavSourceNodes();
+    if (!navLayoutDraft.groups.length) navLayoutDraft.groups = defaultNavLayoutGroups();
+    navLayoutDraft.groups[navLayoutDraft.groups.length - 1].item_ids.push(item_id);
+    if (input) input.value = "";
+    renderNavLayoutEditor();
 }
 
 function addNavLayoutGroup() {
@@ -11261,22 +11620,35 @@ function saveNavLayoutEditor() {
     if (!canConfigureNavLayout() || !navLayoutDraft) return;
     const key = currentNavCode();
     if (!key) return;
+    ensureCustomNavButtons(navLayoutDraft.custom_items);
+    invalidateNavSourceSnapshot();
+    snapshotNavSourceNodes();
     const used = {};
     navLayoutDraft.groups.forEach(function (g) {
         g.title = String(g.title || "").replace(/\s+/g, " ").trim();
         g.item_ids = (g.item_ids || []).filter(function (id) {
-            if (!id || used[id] || !navBtnById(id)) return false;
+            if (!id || used[id]) return false;
+            if (isNavCustomItemId(id)) {
+                const custom = (navLayoutDraft.custom_items || []).find(function (c) {
+                    return c && c.item_id === id && c.active !== false;
+                });
+                if (!custom) return false;
+                used[id] = true;
+                return true;
+            }
+            if (!navBtnById(id)) return false;
             used[id] = true;
             return true;
         });
     });
-    const prev = ensureNavLayouts()[key];
+    const prev = ensureNavLayoutMeta(key);
     const hiddenKeep = [];
     ((prev && prev.groups) || []).forEach(function (g) {
         (g.item_ids || []).forEach(function (id) {
+            if (used[id]) return;
+            const intentionallyHidden = !!(navLayoutDraft.item_hidden && navLayoutDraft.item_hidden[id]);
             const btn = navBtnById(id);
-            if (!btn || used[id]) return;
-            if (btn.style.display === "none") {
+            if (intentionallyHidden || (btn && btn.style.display === "none" && !isNavCustomItemId(id))) {
                 used[id] = true;
                 hiddenKeep.push(id);
             }
@@ -11287,16 +11659,61 @@ function saveNavLayoutEditor() {
         const last = navLayoutDraft.groups[navLayoutDraft.groups.length - 1];
         last.item_ids = last.item_ids.concat(hiddenKeep);
     }
+    const labels = {};
+    Object.keys(navLayoutDraft.item_labels || {}).forEach(function (id) {
+        const v = String(navLayoutDraft.item_labels[id] || "").replace(/\s+/g, " ").trim();
+        if (v) labels[id] = v;
+    });
+    const hidden = {};
+    Object.keys(navLayoutDraft.item_hidden || {}).forEach(function (id) {
+        if (navLayoutDraft.item_hidden[id]) hidden[id] = true;
+    });
+    const customItems = (navLayoutDraft.custom_items || []).map(function (c) {
+        return {
+            item_id: c.item_id,
+            label: String(c.label || labels[c.item_id] || "").replace(/\s+/g, " ").trim() || c.item_id,
+            parent_section_id: c.parent_section_id || key,
+            active: c.active !== false,
+            created_at: c.created_at || new Date().toISOString()
+        };
+    }).filter(function (c) { return !!c.item_id; });
     ensureNavLayouts()[key] = {
         saved: true,
         groups: navLayoutDraft.groups.map(function (g) {
             return { group_id: g.group_id, title: g.title, item_ids: g.item_ids.slice() };
-        })
+        }),
+        item_labels: labels,
+        item_hidden: hidden,
+        custom_items: customItems
     };
+    navLayoutDraft = null;
     saveApp();
     if (typeof closeMgmtModal === "function") closeMgmtModal();
     applyModeUI();
-    toast("Порядок меню сохранён.");
+    toast("Меню раздела сохранено.");
+}
+
+function navCustomPageTitle() {
+    if (currentCustomNavItemId) {
+        const t = navItemLabel(currentCustomNavItemId);
+        if (t) return t;
+    }
+    const active = document.querySelector('.nav-btn.active[data-section="customPage"]');
+    if (active) return String(active.textContent || "").replace(/\s+/g, " ").trim() || "Раздел";
+    return "Раздел";
+}
+
+function renderCustomPage() {
+    const title = navCustomPageTitle();
+    const titleEl = document.getElementById("customPageTitle");
+    const noteEl = document.getElementById("customPageNote");
+    const body = document.getElementById("customPageBody");
+    if (titleEl) titleEl.textContent = title;
+    if (noteEl) noteEl.textContent = "Пользовательский пункт меню";
+    if (body) {
+        body.innerHTML = '<div class="note" style="margin-top:8px;">Раздел пока не настроен. '
+            + "Идентификатор пункта меню сохранён — позже сюда можно добавить учёт и данные без пересоздания меню.</div>";
+    }
 }
 
 function toggleSidebar() {
@@ -11448,6 +11865,7 @@ function defaultSection() {
 }
 
 function sectionTitle(id) {
+    if (id === "customPage") return navCustomPageTitle();
     const titles = {
         timesheet: isSummary() ? "Сводка" : "Табель — " + officialName(workspace()),
         metrics: "Метрики магазина",
@@ -11498,7 +11916,11 @@ function loadWorkspace() {
         if (!selectedMonth) selectedMonth = currentMonthValue();
         if (currentSection === "metrics") currentSection = "metrics-pickers";
         try {
-            if (allowedSections().indexOf(currentSection) === -1) currentSection = defaultSection();
+            if (currentSection === "customPage") {
+                /* keep custom page after reload */
+            } else if (allowedSections().indexOf(currentSection) === -1) {
+                currentSection = defaultSection();
+            }
         } catch (secErr) {
             console.error(secErr);
             currentSection = "timesheet";
@@ -11524,7 +11946,9 @@ function showSection(id, button) {
     if (id === "metrics") id = "metrics-pickers";
     const requestedSection = id;
     try {
-        if (allowedSections().indexOf(id) === -1) {
+        if (id === "customPage") {
+            if (button) currentCustomNavItemId = navItemStableId(button);
+        } else if (allowedSections().indexOf(id) === -1) {
             if (isSpuMode() && isMgmtNavSection(requestedSection)) {
                 const spu = allowedSpuSections();
                 if (spu.indexOf(requestedSection) !== -1) id = requestedSection;
@@ -11562,10 +11986,16 @@ function showSection(id, button) {
     document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
         const visible = btn.style.display !== "none";
         const hub = btn.getAttribute("data-hub");
-        const on = hub
-            ? (visible && ((hub === "returns" && id === "territoryReturns")
-                || (hub !== "returns" && id === "territoryMetrics" && hub === String(territoryMetricsHubId || ""))))
-            : (visible && btn.getAttribute("data-section") === id);
+        let on = false;
+        if (id === "customPage") {
+            on = visible && btn.getAttribute("data-section") === "customPage"
+                && navItemStableId(btn) === String(currentCustomNavItemId || "");
+        } else if (hub) {
+            on = visible && ((hub === "returns" && id === "territoryReturns")
+                || (hub !== "returns" && id === "territoryMetrics" && hub === String(territoryMetricsHubId || "")));
+        } else {
+            on = visible && btn.getAttribute("data-section") === id;
+        }
         btn.classList.toggle("active", on);
     });
     if (button) button.classList.add("active");
@@ -11616,6 +12046,7 @@ function showSection(id, button) {
     if (id === "management") runSection(renderManagement);
     if (isMgmtNavSection(id)) runSection(renderManagement);
     if (isOrgNavSection(id)) runSection(renderOrgStructure);
+    if (id === "customPage") runSection(renderCustomPage);
     } catch (err) {
         console.error(err);
         try {
@@ -11667,6 +12098,7 @@ function refreshAll() {
     if (isDeptWorkSection(currentSection)) run(renderDeptWorkMetrics);
     if (isMgmtNavSection(currentSection)) run(renderManagement);
     if (isOrgNavSection(currentSection)) run(renderOrgStructure);
+    if (currentSection === "customPage") run(renderCustomPage);
     if (currentSection === "users") {
         run(renderAccessUsers);
         run(renderStaffOrgAdmin);
