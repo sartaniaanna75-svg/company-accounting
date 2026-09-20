@@ -5542,7 +5542,7 @@ let shopMetricCategory = "pickers";
 let deptMetricTab = "";
 let territoryMetricsHubId = "";
 let metricCatalogExpanded = {};
-let metricCatalogFilter = { tab: "", active: "active", structure: "", dept: "", position_id: "", employee_id: "", search: "" };
+let metricCatalogFilter = { tab: "", active: "active", structure: "", kind: "", dept: "", position_id: "", employee_id: "", search: "" };
 let timesheetWorkTabFilterByDept = {};
 let revisionPanel = "schedule";
 let disciplinePanel = "late";
@@ -5646,6 +5646,7 @@ const SALES_PLAN_VIEWS = {
 };
 let justAddedEmployeeId = null;
 let mcAssignDraft = [];
+let metricCatalogFormMode = "";
 let navLayoutDraft = null;
 let navSourceNodes = null;
 let navDragPayload = null;
@@ -5949,6 +5950,30 @@ function employeeMatchesWorkTab(employee, dept, workTabId) {
 }
 function metricStructureType(item) {
     return item && item.structure_type === "with_submetrics" ? "with_submetrics" : "plain";
+}
+function metricIsChecklist(item) {
+    if (!item) return false;
+    if (item.kind === "checklist") return true;
+    const fill = String(item.fill_type || "");
+    return fill === "check" || fill === "done_not_done" || fill === "boolean";
+}
+function isAssignableDeptCode(code) {
+    return DEPT_DEFAULTS.some(function (d) { return d && d.code === code; });
+}
+function metricAssignedToDeptTab(item, deptCode, tabId) {
+    if (!item || !deptCode) return false;
+    const rows = (item.assignments && item.assignments.length)
+        ? item.assignments
+        : metricAssignmentFilterRows(item);
+    if (rows && rows.length) {
+        return rows.some(function (row) {
+            if (!row || row.department_id !== deptCode) return false;
+            if (!tabId) return true;
+            return !row.work_tab_id || row.work_tab_id === tabId;
+        });
+    }
+    if (metricDepartmentId(item) !== deptCode) return false;
+    return !tabId || metricShowsOnTab(item, tabId);
 }
 function metricSubmetrics(item, onlyActive) {
     const list = (item && Array.isArray(item.submetrics)) ? item.submetrics : [];
@@ -11905,7 +11930,7 @@ function employeesForMetricAssignmentRow(row) {
     if (!row || !row.department_id || !row.work_tab_id) return [];
     return employeesForWorkGroup(row.department_id, row.work_tab_id).filter(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
-        if (employeeHomeDeptCode(e.id) === "shop") return false;
+        if (employeeHomeDeptCode(e.id) !== row.department_id) return false;
         if (!employeeHasPositionId(e, row.position_id)) return false;
         return true;
     });
@@ -11953,7 +11978,7 @@ function nextMetricAssignmentId(existing) {
 function normalizeMetricAssignmentRow(row, siblings) {
     if (!row || typeof row !== "object") return null;
     const dept = String(row.department_id || "");
-    if (!isTerritoryCode(dept)) return null;
+    if (!isAssignableDeptCode(dept)) return null;
     const tab = String(row.work_tab_id || "");
     if (tab && !metricTabsForDept(dept).some(function (t) { return t.id === tab; })) return null;
     const ids = [];
@@ -12025,7 +12050,9 @@ function applyMetricCatalogAssignments(item) {
         });
     });
     const handled = {};
-    TERRITORY_DEPT_CODES.forEach(function (code) {
+    DEPT_DEFAULTS.forEach(function (def) {
+        const code = def && def.code;
+        if (!code) return;
         const w = findWorkspaceByCode(code);
         ((w && w.employees) || []).forEach(function (e) {
             if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
@@ -15391,11 +15418,15 @@ function shopAppendCatalogExtraFields(list, category) {
         if (id) have[id] = true;
     });
     shopMetricCatalogItems().filter(function (it) {
-        return metricDepartmentId(it) === "shop" && metricShowsOnTab(it, category.id) && !it.core_column && shopCatalogItemShownInUi(it);
+        if (!it || it.core_column || !shopCatalogItemShownInUi(it)) return false;
+        if (it.id === METRIC_WRITEOFF_LOSSES_ID || it.fill_type === "month_money") return false;
+        if (Array.isArray(it.assignments) && it.assignments.length) {
+            return metricAssignedToDeptTab(it, "shop", category.id);
+        }
+        return metricDepartmentId(it) === "shop" && metricShowsOnTab(it, category.id);
     }).sort(function (a, b) { return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0); }).forEach(function (it) {
         if (have[it.id]) return;
         if (it.id === "metric_recount" && category.id === "managers") return;
-        if (it.id === METRIC_WRITEOFF_LOSSES_ID || it.fill_type === "month_money") return;
         if (it.fill_type === "auto_sum") {
             list.push({
                 key: "_sum_" + it.id,
@@ -22764,6 +22795,7 @@ function shopCatalogNextOrder(sectionId, deptCode) {
 function closeMetricCatalogModal() {
     const back = document.getElementById("metricCatalogModalBack");
     if (back) back.classList.remove("show");
+    metricCatalogFormMode = "";
 }
 
 function openMetricCatalogModal(html) {
@@ -22811,8 +22843,10 @@ function renderMetricCatalog() {
         let html = canEdit
             ? (generic
                 ? '<button type="button" class="btn btn-primary" onclick="openCreateMetricForm()">+ Добавить метрику</button>'
+                    + '<button type="button" class="btn btn-secondary" style="margin-left:8px" onclick="openCreateChecklistForm()">+ Создать чек-лист</button>'
                     + '<button type="button" class="btn btn-secondary" style="margin-left:8px" onclick="showSection(\'metricCatalog\')">📚 Справочник метрик</button>'
-                : '<button type="button" class="btn btn-primary" onclick="openCreateMetricForm()">+ Добавить метрику</button>')
+                : '<button type="button" class="btn btn-primary" onclick="openCreateMetricForm()">+ Добавить метрику</button>'
+                    + '<button type="button" class="btn btn-secondary" style="margin-left:8px" onclick="openCreateChecklistForm()">+ Создать чек-лист</button>')
             : '<div class="note">Просмотр. Изменять справочник может администратор.</div>';
         if (!companyWide && allDepts) {
             html += '<select onchange="setMetricCatalogFilter(\'dept\',this.value)" style="margin-left:8px">';
@@ -22842,7 +22876,12 @@ function renderMetricCatalog() {
         html += '<select onchange="setMetricCatalogFilter(\'structure\',this.value)">';
         html += '<option value="">Все структуры</option>';
         html += '<option value="plain"' + (metricCatalogFilter.structure === "plain" ? " selected" : "") + ">Обычные</option>";
-        html += '<option value="with_submetrics"' + (metricCatalogFilter.structure === "with_submetrics" ? " selected" : "") + ">С подметриками</option>";
+        html += '<option value="with_submetrics"' + (metricCatalogFilter.structure === "with_submetrics" ? " selected" : "") + ">С подметриками / пунктами</option>";
+        html += "</select>";
+        html += '<select onchange="setMetricCatalogFilter(\'kind\',this.value)" style="margin-left:8px">';
+        html += '<option value="">Все типы</option>';
+        html += '<option value="checklist"' + (metricCatalogFilter.kind === "checklist" ? " selected" : "") + ">Только чек-листы</option>";
+        html += '<option value="metric"' + (metricCatalogFilter.kind === "metric" ? " selected" : "") + ">Без чек-листов</option>";
         html += "</select>";
         bar.innerHTML = html;
     }
@@ -22866,6 +22905,8 @@ function renderMetricCatalog() {
         if (metricCatalogFilter.active === "active" && it.active === false) return false;
         if (metricCatalogFilter.active === "inactive" && it.active !== false) return false;
         if (metricCatalogFilter.structure && metricStructureType(it) !== metricCatalogFilter.structure) return false;
+        if (metricCatalogFilter.kind === "checklist" && !metricIsChecklist(it)) return false;
+        if (metricCatalogFilter.kind === "metric" && metricIsChecklist(it)) return false;
         return true;
     }
     const scopeItems = catalogItemsForView().filter(passActiveStructure);
@@ -23159,14 +23200,19 @@ function deleteShopMetricCatalogItem(id) {
     const it = shopMetricCatalogById(id);
     if (!it || it.builtin) return;
     if (shopMetricHasLinkedData(id)) {
-        toast("Есть связанные данные. Отключите метрику, не удаляйте.", "error");
+        it.active = false;
+        saveApp();
+        renderMetricCatalog();
+        refreshMetricsUi();
+        toast((metricIsChecklist(it) ? "Чек-лист" : "Метрика")
+            + " уже использовался — отключён, история сохранена.", "error");
         return;
     }
     ensureShopMetricCatalog().items = shopMetricCatalogItems().filter(function (x) { return x.id !== id; });
     saveApp();
     renderMetricCatalog();
     refreshMetricsUi();
-    toast("Метрика удалена.");
+    toast(metricIsChecklist(it) ? "Чек-лист удалён." : "Метрика удалена.");
 }
 
 function shopCatalogPositionOptions() {
@@ -23190,6 +23236,23 @@ function openCreateMetricForm() {
         toast("Нет права создавать или изменять метрики.", "error");
         return;
     }
+    metricCatalogFormMode = "";
+    if (currentSection !== "metricCatalog") {
+        showSection("metricCatalog");
+        setTimeout(function () {
+            try { openMetricCatalogForm(); } catch (err) { console.error(err); }
+        }, 0);
+        return;
+    }
+    openMetricCatalogForm();
+}
+
+function openCreateChecklistForm() {
+    if (!canEditShopMetricCatalog()) {
+        toast("Нет права создавать или изменять чек-листы.", "error");
+        return;
+    }
+    metricCatalogFormMode = "checklist";
     if (currentSection !== "metricCatalog") {
         showSection("metricCatalog");
         setTimeout(function () {
@@ -23342,8 +23405,9 @@ function defaultMetricCatalogAssignmentRow() {
     const spec = territoryMetricCategoryById(cat);
     const deptEl = document.getElementById("mcDept");
     const dept = (spec && spec.departmentId)
-        || ((deptEl && deptEl.value) && deptEl.value !== "shop" ? deptEl.value : "")
-        || "warehouse";
+        || (deptEl && deptEl.value)
+        || catalogDeptContext()
+        || "office";
     const tabs = metricTabsForDept(dept);
     let workTab = "";
     if (spec && Array.isArray(spec.workTabIds) && spec.workTabIds.length) {
@@ -23352,7 +23416,7 @@ function defaultMetricCatalogAssignmentRow() {
         workTab = tabs[0].id;
     }
     const positions = positionsForMetricAssignment(dept, workTab);
-    const positionId = positions.length ? (positions[0].position_id || "") : "";
+    const positionId = "";
     return {
         assignment_id: nextMetricAssignmentId(mcAssignDraft),
         department_id: dept,
@@ -23451,11 +23515,9 @@ function renderMetricCatalogAssignments() {
     const box = document.getElementById("mcAssignList");
     if (!box) return;
     if (!Array.isArray(mcAssignDraft)) mcAssignDraft = [];
-    const depts = DEPT_DEFAULTS.filter(function (d) {
-        return d && TERRITORY_DEPT_CODES.indexOf(d.code) !== -1;
-    });
+    const depts = DEPT_DEFAULTS.filter(function (d) { return d && d.code; });
     if (!mcAssignDraft.length) {
-        box.innerHTML = '<div class="note">Назначений нет. Добавьте хотя бы одно — это не создаёт копию метрики.</div>';
+        box.innerHTML = '<div class="note">Назначений нет. Добавьте хотя бы одно — это не создаёт копию чек-листа/метрики.</div>';
         return;
     }
     box.innerHTML = mcAssignDraft.map(function (row, idx) {
@@ -23467,7 +23529,7 @@ function renderMetricCatalogAssignments() {
             + '<div class="mc-asg-head"><h4>Назначение №' + (idx + 1) + "</h4>"
             + '<button type="button" class="btn btn-secondary btn-small" onclick="removeMetricCatalogAssignment(' + idx + ')">Удалить назначение</button></div>'
             + '<div class="mc-asg-grid">'
-            + '<div class="form-group"><label>Раздел</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'department_id\',this.value)">';
+            + '<div class="form-group"><label>Раздел / отдел</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'department_id\',this.value)">';
         depts.forEach(function (d) {
             html += '<option value="' + escapeAttribute(d.code) + '"' + (row.department_id === d.code ? " selected" : "") + ">"
                 + escapeHtml(d.name) + "</option>";
@@ -23481,7 +23543,7 @@ function renderMetricCatalogAssignments() {
         });
         html += "</select></div>"
             + '<div class="form-group"><label>Должность</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'position_id\',this.value)">'
-            + '<option value="">— выбрать —</option>';
+            + '<option value="">Все должности</option>';
         positions.forEach(function (p) {
             html += '<option value="' + escapeAttribute(p.position_id) + '"' + (row.position_id === p.position_id ? " selected" : "") + ">"
                 + escapeHtml(p.name) + "</option>";
@@ -23502,7 +23564,8 @@ function renderMetricCatalogAssignments() {
             });
             html += "</div>";
         } else {
-            html += '<div class="note" style="margin-top:6px">Метрика будет доступна всем сотрудникам этой группы и должности. Сейчас подходящих: '
+            html += '<div class="note" style="margin-top:6px">Доступно всем сотрудникам этой группы'
+                + (row.position_id ? " и должности" : "") + ". Сейчас подходящих: "
                 + people.length + ".</div>";
         }
         html += "</div>";
@@ -23618,6 +23681,7 @@ function openMetricCatalogForm(id, dupIgnore) {
         toast("Эту метрику откройте в справочнике территории без фильтра отдела.", "error");
         return;
     }
+    if (id) metricCatalogFormMode = metricIsChecklist(existing) ? "checklist" : "";
     let dept = existing ? metricDepartmentId(existing) : (metricCatalogFilter.dept || contextDept || "office");
     if (!existing && isTerritoryMetricsMode() && (!dept || dept === "shop")) dept = "office";
     if (!existing && isCompanyWideCatalogMode() && (!dept || dept === "shop" || dept === "summary")) dept = "office";
@@ -23629,6 +23693,7 @@ function openMetricCatalogForm(id, dupIgnore) {
             if (dept === "drivers") category = "drivers";
             else if (dept === "warehouse") category = "warehouse";
             else if (dept === "office") category = "office";
+            else if (dept === "shop") category = "";
             else category = "office";
         }
         const spec = territoryMetricCategoryById(category);
@@ -23636,29 +23701,37 @@ function openMetricCatalogForm(id, dupIgnore) {
     }
     const tab = existing ? metricTabId(existing) : (defaultWorkTabsForDept(dept)[0] || defaultMetricTabId(dept));
     const defaultSpecific = !!justAddedEmployeeId;
+    const checklistMode = metricCatalogFormMode === "checklist" || (!!existing && metricIsChecklist(existing));
     const it = existing || {
         id: "",
         name: "",
         section_id: tab,
         metric_tab_id: tab,
-        fill_type: "number",
+        fill_type: checklistMode ? "check" : "number",
+        structure_type: checklistMode ? "with_submetrics" : "plain",
+        kind: checklistMode ? "checklist" : "",
         sort_order: shopCatalogNextOrder(tab, dept),
         active: true,
         assignable: true,
         department_id: dept,
         assign_mode: defaultSpecific ? "specific" : "group_all",
         position_titles: [],
+        submetrics: checklistMode ? [{ id: nextSubmetricId(), name: "Пункт 1", sort_order: 10, active: true }] : [],
         formula: { op: "div", left: "metric_sales", right: "metric_checks" }
     };
     const depts = catalogFormDeptList();
     const deptLocked = !catalogFormCanPickDept() || !!(it.builtin);
-    const useAssignForm = (territoryForm || isCentralMetricCatalogScreen()) && dept !== "shop"
-        && metricDepartmentId(it) !== "shop";
-    let html = "<h3 style=\"margin:0 0 8px\">" + (id ? "Изменить метрику" : "Добавить метрику") + "</h3>"
+    const useAssignForm = checklistMode
+        || ((territoryForm || isCentralMetricCatalogScreen()) && dept !== "shop" && metricDepartmentId(it) !== "shop");
+    const formTitle = checklistMode
+        ? (id ? "Изменить чек-лист" : "Создать чек-лист")
+        : (id ? "Изменить метрику" : "Добавить метрику");
+    let html = "<h3 style=\"margin:0 0 8px\">" + formTitle + "</h3>"
         + '<div class="metric-cat-form">'
-        + '<div class="form-group full"><label>Название метрики *</label>'
+        + '<div class="form-group full"><label>' + (checklistMode ? "Название чек-листа *" : "Название метрики *") + "</label>"
         + '<input id="mcName" maxlength="120" value="' + escapeAttribute(it.name || "") + '"></div>'
         + '<input type="hidden" id="mcMetricId" value="' + escapeAttribute(it.id || "") + '">'
+        + '<input type="hidden" id="mcFormMode" value="' + (checklistMode ? "checklist" : "") + '">'
         + '<div class="form-group full"><label>' + (useAssignForm ? "Категория в Метриках *" : "Категория / отдел *") + "</label>"
         + '<select id="mcCategory" onchange="onMetricCatalogCategoryChange()">';
     metricCatalogCategoriesForForm(territoryForm || isCentralMetricCatalogScreen()).forEach(function (c) {
@@ -23680,15 +23753,19 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<div class="form-group full"><label>Структура</label>'
         + '<input type="hidden" id="mcStructure" value="' + (metricStructureType(it)) + '">'
         + '<div class="mc-seg" id="mcStructSeg">'
-        + '<button type="button" data-struct="plain" class="' + (metricStructureType(it) === "plain" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'plain\')">Обычная</button>'
-        + '<button type="button" data-struct="with_submetrics" class="' + (metricStructureType(it) === "with_submetrics" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'with_submetrics\')">С подметриками</button>'
+        + '<button type="button" data-struct="plain" class="' + (metricStructureType(it) === "plain" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'plain\')">'
+        + (checklistMode ? "Один пункт" : "Обычная") + "</button>"
+        + '<button type="button" data-struct="with_submetrics" class="' + (metricStructureType(it) === "with_submetrics" ? "on" : "") + '" onclick="onMetricCatalogStructureChange(\'with_submetrics\')">'
+        + (checklistMode ? "Несколько пунктов" : "С подметриками") + "</button>"
         + "</div></div>"
         + (useAssignForm
             ? ""
             : '<div class="form-group full"><label>Должность / рабочая группа</label><div class="mc-tabs-checks" id="mcTabsBox"></div></div>')
-        + '<div class="form-group"><label>Тип метрики *</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()"'
+        + '<div class="form-group"><label>Тип *</label><select id="mcFill" onchange="refreshMetricCatalogFormulaBox()"'
         + (it.builtin && it.core_column ? " disabled" : "") + ">";
-    SHOP_METRIC_FILL_TYPES.forEach(function (s) {
+    (checklistMode
+        ? SHOP_METRIC_FILL_TYPES.filter(function (s) { return s.id === "check"; })
+        : SHOP_METRIC_FILL_TYPES).forEach(function (s) {
         html += '<option value="' + s.id + '"' + (it.fill_type === s.id ? " selected" : "") + ">" + escapeHtml(s.label) + "</option>";
     });
     html += "</select></div>"
@@ -23699,18 +23776,20 @@ function openMetricCatalogForm(id, dupIgnore) {
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("")
         + "</select></div>"
-        + '<div class="form-group"><label>Активна</label><label class="check"><input id="mcActive" type="checkbox"'
+        + '<div class="form-group"><label>Активен</label><label class="check"><input id="mcActive" type="checkbox"'
         + (it.active === false ? "" : " checked") + "> Да</label></div>"
         + '<div class="form-group full" id="mcSubBox" style="display:' + (metricStructureType(it) === "with_submetrics" ? "" : "none") + '">'
-        + "<label>Подметрики</label><div class=\"mc-sub-list\" id=\"mcSubList\">"
+        + "<label>" + (checklistMode ? "Пункты чек-листа" : "Подметрики") + "</label><div class=\"mc-sub-list\" id=\"mcSubList\">"
         + metricSubmetrics(it, false).map(function (s) {
             return metricCatalogFormSubrowHtml(s.id, s.name, s.sort_order, s.active !== false);
         }).join("")
-        + '</div><button type="button" class="btn btn-secondary btn-small" style="margin-top:6px" onclick="addMetricCatalogFormSubrow()">+ Добавить</button></div>'
+        + '</div><button type="button" class="btn btn-secondary btn-small" style="margin-top:6px" onclick="addMetricCatalogFormSubrow()">+ Добавить '
+        + (checklistMode ? "пункт" : "") + "</button></div>"
         + '<div class="form-group full" id="mcFormulaBox"></div>'
         + (useAssignForm
-            ? ('<div class="form-group full"><label>Кому назначить метрику</label>'
-                + '<div class="note">Одна метрика — один metric_id. Несколько назначений не создают копии.</div>'
+            ? ('<div class="form-group full"><label>Куда назначить'
+                + (checklistMode ? " чек-лист" : " метрику") + "</label>"
+                + '<div class="note">Раздел → отдел → рабочая группа → должность → сотрудники. Несколько назначений — один id, без копий.</div>'
                 + '<div id="mcAssignList" class="mc-asg-list"></div>'
                 + '<button type="button" class="btn btn-secondary btn-small" onclick="addMetricCatalogAssignment()">+ Добавить назначение</button></div>')
             : ('<div class="form-group full"><label>Назначение</label><div class="mc-assign">'
@@ -23910,10 +23989,6 @@ function saveMetricCatalogForm(id, dupIgnore) {
                 asgErr = "В назначении №" + (idx + 1) + " выберите раздел и рабочую группу.";
                 return;
             }
-            if (!row.position_id) {
-                asgErr = "В назначении №" + (idx + 1) + " выберите должность.";
-                return;
-            }
             if (row.assign_mode === "specific" && !(row.employee_ids || []).length) {
                 asgErr = "В назначении №" + (idx + 1) + " отметьте сотрудников или выберите «Все подходящие».";
             }
@@ -23922,9 +23997,10 @@ function saveMetricCatalogForm(id, dupIgnore) {
             formErr(asgErr);
             return;
         }
-        if (spec && spec.departmentId) dept = spec.departmentId;
+        // Home department: first assignment wins; category only suggests display hub.
+        if (assignmentRows[0] && assignmentRows[0].department_id) dept = assignmentRows[0].department_id;
+        else if (spec && spec.departmentId) dept = spec.departmentId;
         else if (spec && spec.allTerritory && (!dept || dept === "shop")) dept = "office";
-        else if (assignmentRows[0] && assignmentRows[0].department_id) dept = assignmentRows[0].department_id;
     } else if (spec && spec.departmentId) {
         dept = spec.departmentId;
         const allowed = workTabsAllowedForTerritoryCategory(cat, dept);
@@ -24035,7 +24111,8 @@ function saveMetricCatalogForm(id, dupIgnore) {
     item.work_tab_scopes = assignmentRows ? {} : collectMetricCatalogTabScopes();
     if (cat) {
         item.territory_category = cat;
-        if (spec && spec.departmentId) item.department_id = spec.departmentId;
+        // Keep department_id from assignments / explicit dept — category is display hub only.
+        if (!assignmentRows && spec && spec.departmentId) item.department_id = spec.departmentId;
     } else if (dept === "shop") {
         item.territory_category = "";
     } else {
@@ -24060,10 +24137,17 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     item.structure_type = structure;
     item.period_agg = periodAgg;
+    if (fill === "check" || fill === "done_not_done" || fill === "boolean"
+        || (document.getElementById("mcFormMode") || {}).value === "checklist") {
+        item.kind = "checklist";
+        item.fill_type = "check";
+    } else if (item.kind === "checklist") {
+        item.kind = "";
+    }
     if (structure === "with_submetrics") {
         const nextSubs = collectMetricCatalogSubmetrics(item.submetrics);
         if (!nextSubs.length) {
-            formErr("Добавьте хотя бы одну подметрику.");
+            formErr(item.kind === "checklist" ? "Добавьте хотя бы один пункт чек-листа." : "Добавьте хотя бы одну подметрику.");
             return;
         }
         item.submetrics = nextSubs;
@@ -24113,7 +24197,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
         renderMetricCatalog();
         refreshMetricsUi();
     }
-    toast("Метрика сохранена.");
+    toast(item.kind === "checklist" ? "Чек-лист сохранён." : "Метрика сохранена.");
 }
 
 function getDeptMetricStored(deptCode, employeeId, day, metricId, month, submetricId) {
@@ -24226,6 +24310,10 @@ function deptMetricFields(deptCode, tabId) {
     const list = [];
     shopMetricCatalogItems().filter(function (it) {
         if (!it || !shopCatalogItemShownInUi(it)) return false;
+        if (Array.isArray(it.assignments) && it.assignments.length) {
+            if (!metricAssignedToDeptTab(it, deptCode, tab)) return false;
+            return workMetricPeopleForTab(deptCode, it.id, tab).length > 0 || metricIsChecklist(it);
+        }
         if (metricDepartmentId(it) === "shop") return false;
         const cat = metricTerritoryCategory(it);
         if (cat === "common") {
