@@ -30986,9 +30986,27 @@ function spuAdoptIndicator(spec) {
         found.spu_code = spec.spu_code;
         if (spec.group && !found.group) found.group = spec.group;
         if (spec.source_future && !found.source_future) found.source_future = spec.source_future;
-        if (spec.source_type === "worktime_metric" && !found.source_metric_id && spec.source_metric_id) {
-            found.source_metric_id = spec.source_metric_id;
-            found.source_submetric_id = spec.source_submetric_id || "";
+        if (spec.source_type === "worktime_metric" && spec.source_metric_id) {
+            if (!found.source_metric_id) {
+                found.source_metric_id = spec.source_metric_id;
+                found.source_submetric_id = spec.source_submetric_id || "";
+            }
+            // Мягко вернуть к Work Time, если показатель был manual без metric_id (покупатели магазина).
+            if ((!found.source_type || found.source_type === "manual") && found.source_metric_id) {
+                found.source_type = "worktime_metric";
+                found.indicator_kind = "worktime";
+                // Сбросить пустой/устаревший sources, чтобы ensure пересобрал из metric_id.
+                if (!Array.isArray(found.sources) || !found.sources.length
+                    || (found.sources.length === 1 && !found.sources[0].source_metric_id)) {
+                    found.sources = [];
+                }
+            }
+        }
+        if (spec.show_in_planfact === true && found.show_in_planfact == null) {
+            found.show_in_planfact = true;
+        }
+        if (spec.show_in_planfact === false && found.show_in_planfact == null) {
+            found.show_in_planfact = false;
         }
         if (spec.calc_left_code && !found.calc_left_id) {
             const left = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_left_code; });
@@ -30997,9 +31015,6 @@ function spuAdoptIndicator(spec) {
         if (spec.calc_right_code && !found.calc_right_id) {
             const right = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_right_code; });
             if (right) found.calc_right_id = right.indicator_id;
-        }
-        if (spec.show_in_planfact === true && found.show_in_planfact == null) {
-            found.show_in_planfact = true;
         }
         if (spec.unit && !found.unit) found.unit = spec.unit;
         if (spec.calc_op && found.source_type === "calculated" && !found.calc_op) found.calc_op = spec.calc_op;
@@ -31084,9 +31099,9 @@ function ensureSpuDefaultIndicators() {
     });
     specs.push(
         { spu_code: "shop_sales", name: "Выручка", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopSales ? shopSales.id : "metric_sales", unit: "money", show_on_dashboard: true, sort_order: 210 },
-        { spu_code: "shop_checks", name: "Количество чеков", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopChecks ? shopChecks.id : "metric_checks", unit: "number", show_on_dashboard: true, sort_order: 220 },
+        { spu_code: "shop_checks", name: "Количество чеков", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopChecks ? shopChecks.id : "metric_checks", unit: "number", show_on_dashboard: true, show_in_planfact: false, sort_order: 220 },
         { spu_code: "shop_avg", name: "Средний чек", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_sales", calc_right_code: "shop_checks", unit: "money", show_on_dashboard: true, sort_order: 230 },
-        { spu_code: "shop_visitors", name: "Количество покупателей", department_id: "shop", source_type: shopVisitors ? "worktime_metric" : "manual", source_metric_id: shopVisitors ? shopVisitors.id : "", unit: "number", show_on_dashboard: true, sort_order: 240 },
+        { spu_code: "shop_visitors", name: "Количество покупателей", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopVisitors ? shopVisitors.id : STORE_METRIC_VISITORS, unit: "number", show_on_dashboard: true, show_in_planfact: false, sort_order: 240 },
         { spu_code: "shop_conversion", name: "Конверсия покупатели → чеки", department_id: "shop", source_type: "calculated", calc_op: "percent", calc_left_code: "shop_checks", calc_right_code: "shop_visitors", unit: "percent", show_on_dashboard: true, show_in_planfact: true, sort_order: 245 },
         { spu_code: "shop_plan_fact", name: "Факт продаж", department_id: "shop", source_type: "sales_plan", source_sales_plan_view: "shop", source_sales_plan_field: "fact", unit: "money", show_on_dashboard: false, sort_order: 250 },
         { spu_code: "wh_assembled", name: "Количество собранных позиций", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whAssembled ? whAssembled.id : "", unit: "number", show_on_dashboard: true, sort_order: 310 },
@@ -31660,6 +31675,11 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
                 (days || []).forEach(function (d) {
                     if (mid === "metric_recount") {
                         sum += shopRecountDayExecutorTotal(d.day, d.month);
+                        return;
+                    }
+                    // Покупатели магазина — колонка store, не копия метрики каталога.
+                    if (mid === STORE_METRIC_VISITORS || mid === "store_metric_visitors") {
+                        sum += Number(getShopStoreValue(d.day, "visitors", d.month) || 0);
                         return;
                     }
                     const ids = shopMetricContributorIds(mid, d.month);
