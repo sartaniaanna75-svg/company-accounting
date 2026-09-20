@@ -4056,7 +4056,7 @@
             График мероприятий
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-finance" onclick="showSection('management-finance', this)">
-            Ввод финансовых показателей
+            Ввод показателей
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-settings" onclick="showSection('management-settings', this)">
             Настройка показателей
@@ -11264,7 +11264,7 @@ function sectionTitle(id) {
         deptMetrics: "Метрики — " + (workspace() ? officialName(workspace()) : ""),
         management: "Панель управления",
         "management-planfact": "План–факт компании",
-        "management-finance": "Ввод финансовых показателей",
+        "management-finance": "Ввод показателей",
         "management-meetings": "Протокол встреч",
         "management-tasks": "Ежедневные задачи",
         "management-events": "График мероприятий",
@@ -27003,18 +27003,19 @@ const MGMT_DASH_UI_KEY = "worktime_spu_dash_ui_v1";
 let mgmtDashPanel = "opt";
 let mgmtDashWeek = "";
 let mgmtSettingsHub = "";
-let spuStructureTab = "departments";
+let spuStructureTab = "indicators";
 let spuSourcesInnerTab = "metrics";
-let spuMetricsInnerTab = "all";
+let spuMetricsInnerTab = "in_spu";
 let spuMetricsFilter = { q: "", section: "", group: "", inSpu: "" };
 let spuIndFormSources = [];
-let spuIndFormKind = "automatic";
+let spuIndFormKind = "manual";
 let spuIndFormCalc = "sum";
 let spuIndFormFormula = [];
-let spuIndListTab = "active";
+let spuIndListTab = "all";
 let spuIndListFilter = { q: "", dept: "", kind: "" };
 let spuIndSelected = {};
 let spuPfBreakOpen = {};
+let spuInputFilter = { owner: "", status: "" };
 
 let orgChartScale = 1;
 let orgCollapsed = {};
@@ -28054,15 +28055,68 @@ function spuSourceTypeLabel(type) {
     if (type === "spu_indicator") return "Показатель СПУ";
     if (type === "manual") return "Ручной ввод";
     if (type === "calculated") return "Расчётный";
+    if (type === "one_c_future" || type === "one_c") return "1С (позже)";
     return "Метрика Work Time";
 }
 
 function spuIndicatorKind(it) {
     if (!it) return "automatic";
-    if (it.indicator_kind === "manual" || it.indicator_kind === "calculated" || it.indicator_kind === "automatic") return it.indicator_kind;
+    if (it.indicator_kind === "manual" || it.indicator_kind === "calculated" || it.indicator_kind === "automatic"
+        || it.indicator_kind === "worktime" || it.indicator_kind === "one_c") {
+        return it.indicator_kind;
+    }
     if (it.source_type === "manual") return "manual";
+    if (it.source_type === "one_c_future" || it.source_future === "one_c") return "one_c";
     if (it.source_type === "calculated" || it.aggregation_type === "formula" || (Array.isArray(it.sources) && it.sources.length > 1)) return "calculated";
+    if (it.source_type === "worktime_metric" || it.source_type === "timesheet") return "worktime";
     return "automatic";
+}
+
+/** UI-тип показателя СПУ: manual | worktime | calculated | one_c (не путать с metric_id Work Time). */
+function spuIndicatorUiKind(it) {
+    if (!it) return "manual";
+    const k = spuIndicatorKind(it);
+    if (k === "manual") return "manual";
+    if (k === "calculated") return "calculated";
+    if (k === "one_c" || it.source_type === "one_c_future" || it.source_future === "one_c") return "one_c";
+    if (k === "worktime" || k === "automatic") return "worktime";
+    if (it.source_type === "worktime_metric" || it.source_type === "timesheet" || it.source_type === "sales_plan" || it.source_type === "kpi") return "worktime";
+    return "worktime";
+}
+
+function spuIndicatorUiKindLabel(kind) {
+    if (kind === "manual") return "Ручной ввод";
+    if (kind === "worktime") return "Из Work Time";
+    if (kind === "calculated") return "Расчётный";
+    if (kind === "one_c") return "Из 1С";
+    return "Показатель СПУ";
+}
+
+function spuOwnerRoleLabel(uiKind) {
+    return uiKind === "manual" ? "Ответственный за заполнение" : "Ответственный за контроль";
+}
+
+function spuCommitOwnerHistory(it, newOwnerId) {
+    if (!it) return;
+    const next = String(newOwnerId || "");
+    const prev = String(it.owner_employee_id || "");
+    if (prev === next) return;
+    if (!Array.isArray(it.owner_history)) it.owner_history = [];
+    const period = typeof mgmtPeriodKey === "function" ? mgmtPeriodKey() : "";
+    const open = it.owner_history.filter(function (h) { return h && !h.to_period; });
+    open.forEach(function (h) {
+        if (h.employee_id === prev || (!prev && !h.employee_id)) h.to_period = period || (new Date().toISOString().slice(0, 7));
+    });
+    if (next) {
+        it.owner_history.push({
+            employee_id: next,
+            from_period: period || (new Date().toISOString().slice(0, 7)),
+            to_period: "",
+            role: spuIndicatorUiKind(it) === "manual" ? "fill" : "control",
+            updated_at: new Date().toISOString()
+        });
+    }
+    it.owner_employee_id = next;
 }
 
 function spuFinanceIndicators() {
@@ -28109,6 +28163,25 @@ function ensureSpuIndicatorSources(it) {
     if (!it.plan_mode) it.plan_mode = "spu";
     if (it.show_breakdown == null) it.show_breakdown = true;
     if (!it.indicator_kind) it.indicator_kind = spuIndicatorKind(it);
+    // Мягкая миграция UI-типов без смены indicator_id и без дублей.
+    if (it.indicator_kind === "automatic") {
+        if (it.source_type === "one_c_future" || it.source_future === "one_c") it.indicator_kind = "one_c";
+        else if (it.source_type === "calculated" || it.aggregation_type === "formula") it.indicator_kind = "calculated";
+        else if (it.source_type === "manual") it.indicator_kind = "manual";
+        else it.indicator_kind = "worktime";
+    }
+    // Стабильный ID показателя СПУ: indicator_id (алиас spu_indicator_id для явного отделения от metric_id).
+    if (it.indicator_id && !it.spu_indicator_id) it.spu_indicator_id = it.indicator_id;
+    if (!Array.isArray(it.owner_history)) it.owner_history = it.owner_history || [];
+    if (it.owner_employee_id && !it.owner_history.length) {
+        it.owner_history.push({
+            employee_id: it.owner_employee_id,
+            from_period: "",
+            to_period: "",
+            role: spuIndicatorUiKind(it) === "manual" ? "fill" : "control",
+            updated_at: it.updated_at || new Date().toISOString()
+        });
+    }
     if (!Array.isArray(it.formula_expr)) it.formula_expr = it.formula_expr || [];
     if (!Array.isArray(it.source_versions)) it.source_versions = it.source_versions || [];
     if (it.is_deleted) it.is_active = false;
@@ -28534,8 +28607,10 @@ function spuParticipatingWorkMetrics(keepIds) {
         const mid = canonicalMetricId(id);
         if (mid) keep[mid] = true;
     });
+    // Для выбора источника показателя СПУ доступен весь каталог WT.
+    // Сами метрики в список «Показатели СПУ» не попадают.
     return spuWorkMetricsCatalog().filter(function (m) {
-        return metricUseInSpu(m) || keep[canonicalMetricId(m.id)];
+        return !!m && !!m.id;
     });
 }
 
@@ -28995,38 +29070,50 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
     const sources = it
         ? ((cfg && cfg.sources && cfg.sources.length) ? cfg.sources : spuNormalizeSources(it))
         : (presetMetric ? [spuNewSourceRow({ source_metric_id: presetMetric.id })] : []);
-    const kind = it ? spuIndicatorKind(it) : (presetMetric ? "automatic" : "automatic");
+    const uiKind = it ? spuIndicatorUiKind(it) : (presetMetric ? "worktime" : "manual");
+    const kind = uiKind === "worktime" ? "worktime" : uiKind;
     spuIndFormKind = kind;
     spuIndFormCalc = (cfg && cfg.calc_mode) || (it && (it.calc_mode || it.aggregation_type)) || "sum";
     spuIndFormFormula = (cfg && Array.isArray(cfg.formula_expr) && cfg.formula_expr.length)
         ? cfg.formula_expr.slice()
         : ((it && Array.isArray(it.formula_expr)) ? it.formula_expr.slice() : []);
-    spuIndFormSources = sources.length ? sources : (kind === "manual" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
+    spuIndFormSources = sources.length ? sources : (kind === "manual" || kind === "one_c" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
     const pfOn = it ? it.show_in_planfact === true : false;
     const brOn = !it || it.show_breakdown !== false;
     const planMode = (it && it.plan_mode) || "spu";
     const planVal = it ? mgmtPlanStoredValue(it.indicator_id) : null;
-    const factVal = it && kind === "manual" ? mgmtManualFact(it.indicator_id) : null;
+    const factVal = it && (kind === "manual" || kind === "one_c") ? mgmtManualFact(it.indicator_id) : null;
     const archived = !!(it && spuIndicatorIsArchived(it));
     const activeOn = !it || (!archived && it.is_active !== false);
+    const ownerId = (it && it.owner_employee_id) || "";
     let html = "<h3>" + (it ? "Показатель СПУ" : "Добавить показатель СПУ") + "</h3>"
-        + '<div class="note">Маршрутизация: источники → расчёт → департамент СПУ → отображение (План–факт). Метрики Work Time не копируются и не удаляются вместе с показателем.</div>'
+        + '<div class="note"><b>ЧТО ЭТО</b> → <b>ОТКУДА БЕРЁТСЯ</b> → <b>КТО ОТВЕЧАЕТ</b> → <b>КУДА ВЫВОДИТСЯ</b>. '
+        + "Это отдельный справочник показателей СПУ (spu_indicator_id). Метрики Work Time сюда не копируются.</div>"
         + '<input type="hidden" id="spuIndNode" value="' + escapeAttribute(nodeId || "") + '">'
         + '<input type="hidden" id="spuIndId" value="' + escapeAttribute((it && it.indicator_id) || "") + '">'
+        + (it ? '<div class="note">ID показателя: <code>' + escapeHtml(it.indicator_id) + "</code></div>" : "")
         + '<div class="form-group"><label>Название *</label><input id="spuIndName" value="'
         + escapeAttribute(it ? it.name : (presetMetric ? presetMetric.name : "")) + '"></div>'
-        + '<div class="form-group"><label>Департамент СПУ *</label><select id="spuIndTarget">'
-        + mgmtSpuOrgOptionsHtml(nodeId || (it && it.target_org_node_id) || "", false) + "</select></div>"
         + '<div class="form-group"><label>Тип показателя *</label><select id="spuIndKind" onchange="onSpuIndKindChange()">'
-        + [["automatic", "Автоматический"], ["calculated", "Расчётный"], ["manual", "Ручной"]].map(function (p) {
+        + [["manual", "Ручной ввод"], ["worktime", "Из Work Time"], ["calculated", "Расчётный"], ["one_c", "Из 1С (позже)"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (kind === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Куда выводится в структуре СПУ *</label><select id="spuIndTarget">'
+        + mgmtSpuOrgOptionsHtml(nodeId || (it && it.target_org_node_id) || "", false) + "</select></div>"
+        + '<div class="form-group"><label id="spuIndOwnerLab">' + escapeHtml(spuOwnerRoleLabel(kind)) + '</label><select id="spuIndOwner">'
+        + mgmtEmployeeOptions(ownerId) + "</select></div>"
         + '<div class="form-group"><label>Тип значения</label><select id="spuIndUnit">'
         + [["number", "Число"], ["count", "Количество"], ["money", "Деньги"], ["percent", "Процент"], ["days", "Дни"], ["hours", "Часы"]].map(function (p) {
             const cur = (it && it.unit) || ((presetMetric && presetMetric.fill_type === "money") ? "money" : "number");
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Периодичность</label><select id="spuIndPeriodicity">'
+        + [["month", "Месяц"], ["week", "Неделя"]].map(function (p) {
+            const cur = (it && it.periodicity) || "month";
+            return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
         + '<div id="spuIndMetricWrap">'
+        + '<div class="note" id="spuIndSrcHint">Источник → Work Time / Табель / другой показатель. Исходная метрика остаётся в Work Time и не становится показателем СПУ.</div>'
         + '<div class="form-group"><label>Способ расчёта</label><select id="spuIndAgg" onchange="onSpuIndCalcChange()">'
         + [["sum", "Сумма"], ["average", "Среднее"], ["none", "Один источник"], ["formula", "Формула"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (spuIndFormCalc === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
@@ -29036,7 +29123,10 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + '<div id="spuIndFormulaBox"></div>'
         + "</div>"
         + '<div id="spuIndManualWrap">'
-        + '<div class="note">Ручной показатель: План и Факт вводятся в СПУ за выбранный период. Источники не нужны, metric_id не создаётся.</div>'
+        + '<div class="note">Ручной показатель: значение вводит ответственный за выбранный период. Источники не нужны, metric_id не создаётся.</div>'
+        + "</div>"
+        + '<div id="spuIndOneCWrap" style="display:none">'
+        + '<div class="note">Тип «Из 1С» зарезервирован под будущую интеграцию. Сейчас значение можно вводить вручную. Позже источник переключается на 1С без смены ID и без потери истории.</div>'
         + "</div>"
         + "<div class=\"form-group\"><label>Источник плана</label>"
         + '<label class="check"><input type="radio" name="spuIndPlanMode" value="spu"' + (planMode !== "sources" && planMode !== "calculated" ? " checked" : "") + "> Вводить вручную в СПУ</label>"
@@ -29050,7 +29140,7 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + '<label class="check"><input id="spuIndBreak" type="checkbox"' + (brOn ? " checked" : "") + "> Показывать расшифровку</label>"
         + '<div class="form-group"><label>Статус</label><select id="spuIndActive">'
         + '<option value="1"' + (activeOn ? " selected" : "") + ">Активен</option>"
-        + '<option value="archive"' + (archived ? " selected" : "") + ">Архив</option></select></div>"
+        + '<option value="archive"' + (archived ? " selected" : "") + ">Архив / Неактивен</option></select></div>"
         + '<div class="form-group"><label>Порядок</label><input id="spuIndOrder" type="number" value="' + escapeAttribute(String((it && it.sort_order) || 10)) + '"></div>'
         + '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="saveSpuOrgIndicator()">Сохранить</button> '
         + (it && archived ? '<button type="button" class="btn btn-primary" onclick="restoreSpuIndicator(\'' + it.indicator_id + '\')">Восстановить</button> ' : "")
@@ -29067,14 +29157,19 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
 function onSpuIndKindChange() {
     const el = document.getElementById("spuIndKind") || document.querySelector('input[name="spuIndKind"]:checked');
     const v = el ? (el.value || el.getAttribute("value")) : spuIndFormKind;
-    spuIndFormKind = (v === "manual" || v === "calculated") ? v : "automatic";
+    spuIndFormKind = (v === "manual" || v === "calculated" || v === "worktime" || v === "one_c") ? v : "worktime";
     const metricWrap = document.getElementById("spuIndMetricWrap");
     const manualWrap = document.getElementById("spuIndManualWrap");
+    const oneCWrap = document.getElementById("spuIndOneCWrap");
     const factWrap = document.getElementById("spuIndFactWrap");
-    if (metricWrap) metricWrap.style.display = spuIndFormKind === "manual" ? "none" : "";
+    const ownerLab = document.getElementById("spuIndOwnerLab");
+    if (ownerLab) ownerLab.textContent = spuOwnerRoleLabel(spuIndFormKind);
+    const needsSources = spuIndFormKind === "worktime" || spuIndFormKind === "calculated";
+    if (metricWrap) metricWrap.style.display = needsSources ? "" : "none";
     if (manualWrap) manualWrap.style.display = spuIndFormKind === "manual" ? "" : "none";
-    if (factWrap) factWrap.style.display = spuIndFormKind === "manual" ? "" : "none";
-    if (spuIndFormKind !== "manual") {
+    if (oneCWrap) oneCWrap.style.display = spuIndFormKind === "one_c" ? "" : "none";
+    if (factWrap) factWrap.style.display = (spuIndFormKind === "manual" || spuIndFormKind === "one_c") ? "" : "none";
+    if (needsSources) {
         if (!(spuIndFormSources || []).length) spuIndFormSources = [spuNewSourceRow({})];
         renderSpuIndSourcesBox();
         renderSpuIndFormulaBox();
@@ -29144,7 +29239,7 @@ function spuIndAddSource() {
 function spuIndRemoveSource(sourceId) {
     spuIndSyncDraftFromDom();
     spuIndFormSources = (spuIndFormSources || []).filter(function (s) { return s && s.source_id !== sourceId; });
-    if (!spuIndFormSources.length && spuIndFormKind !== "manual") spuIndFormSources.push(spuNewSourceRow({}));
+    if (!spuIndFormSources.length && (spuIndFormKind === "worktime" || spuIndFormKind === "calculated" || spuIndFormKind === "automatic")) spuIndFormSources.push(spuNewSourceRow({}));
     renderSpuIndSourcesBox();
     renderSpuIndFormulaBox();
 }
@@ -29215,7 +29310,7 @@ function renderSpuIndSourcesBox() {
         } else {
             const item = shopMetricCatalogById(s.source_metric_id);
             html += '<div class="form-group"><label>Метрика Work Time</label><select class="spu-src-metric" onchange="spuIndOnMetricChange()">'
-                + '<option value="">Выберите метрику («Участвует в СПУ»)</option>';
+                + '<option value="">Выберите метрику Work Time (не копируется в СПУ)</option>';
             metrics.forEach(function (m) {
                 html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
                     + escapeHtml(m.name) + "</option>";
@@ -29330,29 +29425,23 @@ function saveSpuOrgIndicator() {
         return;
     }
     const kindEl = document.getElementById("spuIndKind") || document.querySelector('input[name="spuIndKind"]:checked');
-    const kind = kindEl && (kindEl.value === "manual" || kindEl.value === "calculated") ? kindEl.value : "automatic";
+    let kind = kindEl ? String(kindEl.value || "") : "manual";
+    if (kind !== "manual" && kind !== "calculated" && kind !== "worktime" && kind !== "one_c") {
+        kind = kind === "automatic" ? "worktime" : "manual";
+    }
     const calc = ((document.getElementById("spuIndAgg") || {}).value || "sum");
     let sources = [];
-    if (kind !== "manual") {
+    if (kind === "worktime" || kind === "calculated") {
         sources = (spuIndFormSources || []).filter(function (s) {
             if (!s) return false;
             if (s.source_type === "timesheet") return !!s.source_timesheet_agg;
             if (s.source_type === "sales_plan" || s.source_type === "kpi" || s.source_type === "one_c_future") return true;
             if (s.source_type === "finance" || s.source_type === "spu_indicator" || s.source_type === "manual") return !!s.source_indicator_id && s.source_indicator_id !== editId;
             const m = shopMetricCatalogById(s.source_metric_id);
-            return !!(s.source_metric_id && m && (metricUseInSpu(m) || editId));
+            return !!(s.source_metric_id && m);
         });
         if (!sources.length) {
             toast("Добавьте хотя бы один источник.", "error");
-            return;
-        }
-        const badMetric = sources.find(function (s) {
-            if (s.source_type && s.source_type !== "worktime_metric") return false;
-            const m = shopMetricCatalogById(s.source_metric_id);
-            return m && !metricUseInSpu(m);
-        });
-        if (badMetric && !editId) {
-            toast("Метрика-источник должна быть отмечена «Участвует в СПУ».", "error");
             return;
         }
         if (spuWouldCycle(editId || "mind_new", { sources: sources, formula_expr: spuIndFormFormula, aggregation_type: calc, calc_mode: calc })) {
@@ -29377,6 +29466,7 @@ function saveSpuOrgIndicator() {
     it.show_in_planfact = !!(document.getElementById("spuIndPf") && document.getElementById("spuIndPf").checked);
     it.show_breakdown = !!(document.getElementById("spuIndBreak") && document.getElementById("spuIndBreak").checked);
     it.sort_order = Number((document.getElementById("spuIndOrder") || {}).value || 10);
+    it.periodicity = ((document.getElementById("spuIndPeriodicity") || {}).value || it.periodicity || "month");
     const stVal = ((document.getElementById("spuIndActive") || {}).value || "1");
     it.user_status_set = true;
     if (stVal === "archive") {
@@ -29392,9 +29482,19 @@ function saveSpuOrgIndicator() {
     it.plan_mode = planModeEl ? planModeEl.value : "spu";
     const planVal = ((document.getElementById("spuIndPlan") || {}).value || "");
     if (it.plan_mode === "spu" && planVal !== "") setMgmtPlanValue(it.indicator_id, planVal);
-    it.indicator_kind = kind;
-    if (kind === "manual") {
-        it.source_type = "manual";
+    const newOwner = ((document.getElementById("spuIndOwner") || {}).value || "");
+    spuCommitOwnerHistory(it, newOwner);
+    it.indicator_kind = kind === "automatic" ? "worktime" : kind;
+    if (kind === "manual" || kind === "one_c") {
+        if (kind === "one_c") {
+            it.source_type = "one_c_future";
+            it.source_future = "one_c";
+        } else {
+            it.source_type = "manual";
+            if (it.source_future === "one_c" && kind === "manual") {
+                /* переключение 1С → ручной: ID и история сохраняются */
+            }
+        }
         it.source_metric_id = "";
         it.sources = [];
         it.aggregation_type = "none";
@@ -29404,6 +29504,7 @@ function saveSpuOrgIndicator() {
         const factVal = ((document.getElementById("spuIndFact") || {}).value || "");
         if (document.getElementById("spuIndFact")) setMgmtManualFact(it.indicator_id, factVal);
         it.indicator_id = keepId;
+        it.spu_indicator_id = keepId;
         saveApp();
         closeMgmtModal();
         if (mgmtTab === "structure") spuStructureTab = "indicators";
@@ -29412,7 +29513,11 @@ function saveSpuOrgIndicator() {
         return;
     }
     const first = sources[0];
+    it.source_future = "";
     it.source_type = (kind === "calculated" || sources.length > 1 || calc === "formula") ? "calculated" : (first.source_type || "worktime_metric");
+    if (kind === "worktime" && it.source_type === "calculated" && sources.length === 1 && calc !== "formula") {
+        it.source_type = first.source_type || "worktime_metric";
+    }
     it.source_metric_id = first.source_metric_id || "";
     it.source_result = first.source_result || "department_total";
     it.source_work_tab_id = first.source_work_tab_id || "";
@@ -29453,6 +29558,7 @@ function saveSpuOrgIndicator() {
         if (typeof applyMetricResultRoute === "function") applyMetricResultRoute(m);
     });
     it.indicator_id = keepId;
+    it.spu_indicator_id = keepId;
     saveApp();
     closeMgmtModal();
     if (mgmtTab === "structure") spuStructureTab = "indicators";
@@ -29534,7 +29640,7 @@ function restoreSpuIndicator(indicatorId, silent) {
     if (!silent) {
         saveApp();
         closeMgmtModal();
-        spuIndListTab = "active";
+        spuIndListTab = "all";
         if (mgmtTab === "structure") spuStructureTab = "indicators";
         renderManagement();
         toast("Показатель восстановлен.", "success");
@@ -29628,7 +29734,8 @@ function hardDeleteSpuIndicator(indicatorId) {
 }
 
 function setSpuIndListTab(tab) {
-    spuIndListTab = tab === "archive" ? "archive" : "active";
+    const allowed = { all: 1, manual: 1, worktime: 1, calculated: 1, one_c: 1, archive: 1 };
+    spuIndListTab = allowed[tab] ? tab : "all";
     spuIndSelected = {};
     renderManagement();
 }
@@ -29862,10 +29969,10 @@ function renderSpuMetricSettingsHtml() {
     rows = rows.slice().sort(function (a, b) {
         return String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
-    let html = '<p class="spu-ind-note">Каталог существующих Метрик Work Time (тот же metric_id). Отметьте «Участвует в СПУ», чтобы метрику можно было выбрать источником показателя. Копии не создаются. Неотмеченные метрики в План–факт не попадают.</p>';
+    let html = '<p class="spu-ind-note">Каталог Метрик Work Time — только для выбора <b>источника</b> показателя СПУ (тот же metric_id, без копий). Отметка «Участвует в СПУ» помечает удобные источники; сама метрика не становится показателем СПУ и не попадает в План–факт автоматически.</p>';
     html += '<div class="metrics-tabs" style="margin:0 0 12px">'
-        + '<button type="button" class="metrics-tab' + (inner === "all" ? " active" : "") + '" onclick="setSpuMetricsInnerTab(\'all\')">Все метрики (' + all.length + ')</button>'
-        + '<button type="button" class="metrics-tab' + (inner === "in_spu" ? " active" : "") + '" onclick="setSpuMetricsInnerTab(\'in_spu\')">Участвующие в СПУ (' + all.filter(metricUseInSpu).length + ")</button>"
+        + '<button type="button" class="metrics-tab' + (inner === "in_spu" ? " active" : "") + '" onclick="setSpuMetricsInnerTab(\'in_spu\')">Помеченные как источник (' + all.filter(metricUseInSpu).length + ")</button>"
+        + '<button type="button" class="metrics-tab' + (inner === "all" ? " active" : "") + '" onclick="setSpuMetricsInnerTab(\'all\')">Весь каталог WT (' + all.length + ')</button>'
         + "</div>";
     if (inner === "all") {
         html += '<div class="toolbar" style="flex-wrap:wrap;gap:8px">'
@@ -29920,9 +30027,9 @@ function renderSpuMetricSettingsHtml() {
 
 function renderSpuSourcesCatalogHtml() {
     const inner = spuSourcesInnerTab === "timesheet" || spuSourcesInnerTab === "finance" ? spuSourcesInnerTab : "metrics";
-    let html = '<p class="spu-ind-note">Каталог существующих данных. Источники не копируются: СПУ читает те же ID. Для Метрик сначала отметьте «Участвует в СПУ».</p>';
+    let html = '<p class="spu-ind-note">Справочник <b>источников</b> для показателей СПУ. Это не список показателей: метрики Work Time сами по себе в СПУ не отображаются. Чтобы показать значение в СПУ, создайте показатель в разделе «Показатели СПУ» и укажите источник.</p>';
     html += '<div class="metrics-tabs" style="margin:0 0 12px">'
-        + '<button type="button" class="metrics-tab' + (inner === "metrics" ? " active" : "") + '" onclick="setSpuSourcesInnerTab(\'metrics\')">Метрики Work Time</button>'
+        + '<button type="button" class="metrics-tab' + (inner === "metrics" ? " active" : "") + '" onclick="setSpuSourcesInnerTab(\'metrics\')">Метрики Work Time (источники)</button>'
         + '<button type="button" class="metrics-tab' + (inner === "timesheet" ? " active" : "") + '" onclick="setSpuSourcesInnerTab(\'timesheet\')">Work Time / Табель</button>'
         + '<button type="button" class="metrics-tab' + (inner === "finance" ? " active" : "") + '" onclick="setSpuSourcesInnerTab(\'finance\')">Финансовые показатели</button>'
         + "</div>";
@@ -29964,40 +30071,42 @@ function renderSpuFinanceSourcesHtml() {
 
 function renderSpuIndicatorsConstructorHtml() {
     const canEdit = canEditSpuStructure() || canEditMgmtIndicators();
-    const tab = spuIndListTab === "archive" ? "archive" : "active";
+    const tab = spuIndListTab || "all";
     const filt = spuIndListFilter || { q: "", dept: "", kind: "" };
     const q = String(filt.q || "").trim().toLowerCase();
-    let list = spuManagedIndicators(false).filter(function (x) {
-        if (tab === "archive") return spuIndicatorIsArchived(x);
-        return spuIndicatorIsLive(x);
-    });
+    const allLive = spuManagedIndicators(false).filter(spuIndicatorIsLive);
+    const allArch = spuManagedIndicators(false).filter(spuIndicatorIsArchived);
+    function countUi(k) {
+        return allLive.filter(function (x) { return spuIndicatorUiKind(x) === k; }).length;
+    }
+    let list = tab === "archive" ? allArch.slice() : allLive.slice();
+    if (tab === "manual" || tab === "worktime" || tab === "calculated" || tab === "one_c") {
+        list = list.filter(function (it) { return spuIndicatorUiKind(it) === tab; });
+    }
     list = list.filter(function (it) {
         if (filt.dept && mgmtIndicatorTargetNodeId(it) !== filt.dept) return false;
-        if (filt.kind && spuIndicatorKind(it) !== filt.kind) return false;
+        if (filt.kind && spuIndicatorUiKind(it) !== filt.kind) return false;
         if (q && String(it.name || "").toLowerCase().indexOf(q) === -1) return false;
         return true;
     }).sort(function (a, b) { return Number(a.sort_order || 0) - Number(b.sort_order || 0); });
     const ids = list.map(function (x) { return x.indicator_id; }).join(",");
-    const nActive = spuManagedIndicators(false).filter(spuIndicatorIsLive).length;
-    const nArch = spuManagedIndicators(false).filter(spuIndicatorIsArchived).length;
-    let html = '<p class="spu-ind-note">Все показатели СПУ управляются здесь: источники, расчёт, департамент, План–факт, архив и удаление. Метрики Work Time при удалении показателя не трогаются.</p>';
+    let html = '<p class="spu-ind-note">Здесь только <b>показатели СПУ</b> (собственный ID). Справочник метрик Work Time сюда не выводится — кассиры, водители, склад и т.д. не появляются автоматически.</p>';
     if (canEdit) {
-        html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgIndicatorForm(\'\')">+ Добавить показатель</button></div>';
+        html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgIndicatorForm(\'\')">+ Добавить показатель СПУ</button></div>';
     }
-    html += '<div class="metrics-tabs" style="margin:8px 0">'
-        + '<button type="button" class="metrics-tab' + (tab === "active" ? " active" : "") + '" onclick="setSpuIndListTab(\'active\')">Активные (' + nActive + ")</button>"
-        + '<button type="button" class="metrics-tab' + (tab === "archive" ? " active" : "") + '" onclick="setSpuIndListTab(\'archive\')">Архив (' + nArch + ")</button>"
+    html += '<div class="metrics-tabs" style="margin:8px 0;flex-wrap:wrap">'
+        + '<button type="button" class="metrics-tab' + (tab === "all" ? " active" : "") + '" onclick="setSpuIndListTab(\'all\')">Все показатели СПУ (' + allLive.length + ")</button>"
+        + '<button type="button" class="metrics-tab' + (tab === "manual" ? " active" : "") + '" onclick="setSpuIndListTab(\'manual\')">Ручной ввод (' + countUi("manual") + ")</button>"
+        + '<button type="button" class="metrics-tab' + (tab === "worktime" ? " active" : "") + '" onclick="setSpuIndListTab(\'worktime\')">Из Work Time (' + countUi("worktime") + ")</button>"
+        + '<button type="button" class="metrics-tab' + (tab === "calculated" ? " active" : "") + '" onclick="setSpuIndListTab(\'calculated\')">Расчётные (' + countUi("calculated") + ")</button>"
+        + '<button type="button" class="metrics-tab' + (tab === "one_c" ? " active" : "") + '" onclick="setSpuIndListTab(\'one_c\')">Из 1С (' + countUi("one_c") + ")</button>"
+        + '<button type="button" class="metrics-tab' + (tab === "archive" ? " active" : "") + '" onclick="setSpuIndListTab(\'archive\')">Архив (' + allArch.length + ")</button>"
         + "</div>";
     html += '<div class="cr-filters" style="margin:8px 0">'
         + '<label>Поиск<input id="spuIndQ" type="search" value="' + escapeAttribute(filt.q || "") + '" oninput="setSpuIndListFilter(\'q\',this.value)" placeholder="Название"></label>'
         + '<label>Департамент<select id="spuIndDept" onchange="setSpuIndListFilter(\'dept\',this.value)">'
         + '<option value="">Все</option>' + mgmtSpuOrgOptionsHtml(filt.dept || "", true) + "</select></label>"
-        + '<label>Тип<select id="spuIndKindF" onchange="setSpuIndListFilter(\'kind\',this.value)">'
-        + '<option value="">Все</option>'
-        + '<option value="automatic"' + (filt.kind === "automatic" ? " selected" : "") + ">Автоматический</option>"
-        + '<option value="calculated"' + (filt.kind === "calculated" ? " selected" : "") + ">Расчётный</option>"
-        + '<option value="manual"' + (filt.kind === "manual" ? " selected" : "") + ">Ручной</option>"
-        + "</select></label></div>";
+        + "</div>";
     if (canEdit && list.length) {
         html += '<div class="spu-ind-bulk">'
             + '<label class="check"><input type="checkbox" onchange="spuIndSelectAllVisible(\'' + ids + '\',this.checked)"> Выбрать все на странице</label>'
@@ -30008,18 +30117,18 @@ function renderSpuIndicatorsConstructorHtml() {
             + "</div>";
     }
     if (!list.length) {
-        html += '<div class="empty-row">' + (tab === "archive" ? "Архив пуст." : "Нет активных показателей по фильтру.") + "</div>";
+        html += '<div class="empty-row">' + (tab === "archive" ? "Архив пуст." : "Нет показателей СПУ по фильтру. Добавьте показатель — метрики WT сюда не подтягиваются.") + "</div>";
         return html;
     }
     html += '<div class="spu-ind-list">';
     list.forEach(function (it) {
         ensureSpuIndicatorSources(it);
         const node = spuOrgGetNode(mgmtIndicatorTargetNodeId(it));
-        const kind = spuIndicatorKind(it);
+        const uiKind = spuIndicatorUiKind(it);
         const cfg = spuActiveConfig(it);
-        const srcN = kind === "manual" ? 0 : (cfg.sources || []).length;
-        const calc = kind === "manual" ? "—" : (cfg.calc_mode === "formula" || it.aggregation_type === "formula" ? "Формула" : (cfg.aggregation_type === "average" || cfg.aggregation_type === "avg" ? "Среднее" : (cfg.aggregation_type === "none" ? "Один источник" : "Сумма")));
-        const kindLab = kind === "manual" ? "Ручной" : (kind === "calculated" ? "Расчётный" : "Автоматический");
+        const srcN = (uiKind === "manual" || uiKind === "one_c") ? 0 : (cfg.sources || []).length;
+        const calc = (uiKind === "manual" || uiKind === "one_c") ? "—" : (cfg.calc_mode === "formula" || it.aggregation_type === "formula" ? "Формула" : (cfg.aggregation_type === "average" || cfg.aggregation_type === "avg" ? "Среднее" : (cfg.aggregation_type === "none" ? "Один источник" : "Сумма")));
+        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
         const checked = !!(spuIndSelected && spuIndSelected[it.indicator_id]);
         html += '<div class="spu-ind-card"><div class="spu-ind-card-top">';
         if (canEdit) {
@@ -30027,18 +30136,19 @@ function renderSpuIndicatorsConstructorHtml() {
                 + ' onchange="toggleSpuIndSelected(\'' + it.indicator_id + '\',this.checked)"></label>';
         }
         html += "<div><h4>" + escapeHtml(it.name) + "</h4>"
-            + '<div class="spu-ind-meta">Департамент: ' + escapeHtml(node ? node.name : "—")
+            + '<div class="spu-ind-meta">Тип: ' + escapeHtml(spuIndicatorUiKindLabel(uiKind))
+            + " · Куда: " + escapeHtml(node ? node.name : "—")
+            + " · " + escapeHtml(spuOwnerRoleLabel(uiKind)) + ": " + escapeHtml(emp ? emp.name : "—")
             + " · Источников: " + srcN
             + " · Расчёт: " + escapeHtml(calc)
-            + " · Тип: " + kindLab
+            + " · Откуда: " + escapeHtml(mgmtSourcePath(it) || "—")
             + " · План–факт: " + (it.show_in_planfact === true ? "Да" : "Нет")
+            + " · Статус: " + (spuIndicatorIsArchived(it) ? "Неактивен" : "Активен")
             + "</div>";
         if (canEdit) {
             html += '<div class="spu-ind-actions">'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\')">Редактировать</button>'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\',\'\',\'sources\')">Источники</button>'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\',\'\',\'route\')">Маршрутизация</button>'
-                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\')">Перенести</button>';
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\')">Настроить</button>'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\',\'\',\'sources\')">Источники</button>';
             if (tab === "archive") {
                 html += '<button type="button" class="btn btn-primary btn-small" onclick="restoreSpuIndicator(\'' + it.indicator_id + '\')">Восстановить</button>'
                     + '<button type="button" class="btn btn-secondary btn-small" onclick="confirmSpuIndicatorDelete(\'' + it.indicator_id + '\')">Удалить</button>';
@@ -30075,10 +30185,10 @@ function renderSpuStructureHtml() {
     try { ensureManagement(); } catch (err) { console.error(err); }
     const canEdit = canEditSpuStructure();
     const tab = spuStructureTab === "metrics" ? "sources" : (spuStructureTab || "departments");
-    let html = '<p class="spu-ind-note">Конструктор СПУ: департаменты, источники данных и показатели. Связи задаются в интерфейсе по стабильным ID, без копий Метрик и без правок кода.</p>';
+    let html = '<p class="spu-ind-note">Конструктор СПУ: департаменты, каталог источников и отдельный справочник «Показатели СПУ». Метрики Work Time не являются показателями СПУ.</p>';
     html += '<div class="metrics-tabs" style="margin:8px 0 14px">'
         + '<button type="button" class="metrics-tab' + (tab === "departments" ? " active" : "") + '" onclick="setSpuStructureTab(\'departments\')">Департаменты</button>'
-        + '<button type="button" class="metrics-tab' + (tab === "sources" ? " active" : "") + '" onclick="setSpuStructureTab(\'sources\')">Источники</button>'
+        + '<button type="button" class="metrics-tab' + (tab === "sources" ? " active" : "") + '" onclick="setSpuStructureTab(\'sources\')">Источники (справочник)</button>'
         + '<button type="button" class="metrics-tab' + (tab === "indicators" ? " active" : "") + '" onclick="setSpuStructureTab(\'indicators\')">Показатели СПУ</button>'
         + "</div>";
     if (tab === "sources") return html + renderSpuSourcesCatalogHtml();
@@ -31271,7 +31381,11 @@ function mgmtReadIndicator(it, stack) {
     }
     const days = mgmtDaysInPeriod();
     const type = it.source_type;
-    if (type === "one_c_future") return { value: null, status: "one_c" };
+    if (type === "one_c_future") {
+        const mf = mgmtManualFact(it.indicator_id);
+        if (mf != null && mf !== "") return { value: mf, status: "manual" };
+        return { value: null, status: "one_c" };
+    }
     if (type === "manual") return { value: mgmtManualFact(it.indicator_id), status: "manual" };
     if (type === "METRIC") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days, it), status: "auto" };
     if (type === "timesheet") return { value: mgmtTimesheetFact(it.department_id, it.source_timesheet_agg, days), status: "auto" };
@@ -31405,7 +31519,7 @@ function renderManagement() {
             { id: "meetings", label: "Протокол встреч", show: userHasPerm("managementMeetings", "view") || isAppAdmin() || canOpenManagement() },
             { id: "tasks", label: "Ежедневные задачи", show: userHasPerm("managementTasks", "view") || isAppAdmin() || canOpenManagement() },
             { id: "events", label: "График мероприятий", show: canOpenManagement() },
-            { id: "finance", label: "Ввод финансовых показателей", show: userHasPerm("management", "view") || canOpenManagement() },
+            { id: "finance", label: "Ввод показателей", show: userHasPerm("management", "view") || canOpenManagement() },
             { id: "settings", label: "Настройка показателей", show: canEditMgmtIndicators() || isAppAdmin() || canOpenManagement() },
             { id: "structure", label: "Структура СПУ", show: canOpenManagement() || canEditSpuStructure() || isAppAdmin() }
         ].filter(function (t) { return t.show; });
@@ -31422,7 +31536,7 @@ function renderManagement() {
         const titles = {
             dashboard: "Панель управления",
             planfact: "План–факт компании",
-            finance: "Ввод финансовых показателей",
+            finance: "Ввод показателей",
             meetings: "Протокол встреч",
             tasks: "Ежедневные задачи",
             events: "График мероприятий",
@@ -32348,44 +32462,109 @@ function mgmtIsFinanceIndicator(it) {
     return !!(it && (it.group === "finance" || it.source_type === "one_c_future" || it.source_future === "one_c"));
 }
 
+function mgmtIsManualInputIndicator(it) {
+    if (!it || it.is_deleted || it.is_active === false) return false;
+    const ui = spuIndicatorUiKind(it);
+    return ui === "manual" || ui === "one_c" || it.source_type === "manual" || it.source_type === "one_c_future";
+}
+
+function setSpuInputFilter(field, value) {
+    if (!spuInputFilter) spuInputFilter = { owner: "", status: "" };
+    spuInputFilter[field] = value;
+    renderManagement();
+}
+
 function renderMgmtFinanceHtml() {
-    const canPlan = canEditMgmtIndicators();
+    return renderMgmtIndicatorInputHtml();
+}
+
+function renderMgmtIndicatorInputHtml() {
     const canManual = canEditMgmtIndicators();
-    const list = mgmtVisibleIndicators().filter(mgmtIsFinanceIndicator);
-    let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
-    html += '<div class="note" style="margin:6px 0">Ручной ввод только если нет Метрик / Табеля / Плана продаж / KPI. ONE_C_FUTURE — тот же показатель, позже источник меняется на 1С.</div>';
-    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Показатель</th><th>Департамент СПУ</th><th>Период</th><th>План</th><th>Факт</th><th>Источник</th><th>Ответственный</th>"
-        + "</tr></thead><tbody>";
-    if (!list.length) html += '<tr><td colspan="7"><div class="empty-row">Нет финансовых показателей.</div></td></tr>';
-    list.forEach(function (it) {
-        const read = mgmtReadIndicator(it);
-        const plan = typeof mgmtIndicatorPlan === "function" ? mgmtIndicatorPlan(it) : mgmtPlanValue(it.indicator_id);
-        const fact = read.value;
-        const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
-        const canAssign = canEditMgmtIndicators() || canEditSpuStructure();
-        html += "<tr>"
-            + "<td>" + escapeHtml(it.name) + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div></td>"
-            + "<td>" + (canAssign
-                ? "<select onchange=\"setMgmtIndicatorOrgNode('" + it.indicator_id + "',this.value)\">"
-                    + mgmtSpuOrgOptionsHtml(mgmtIndicatorTargetNodeId(it), false) + "</select>"
-                : escapeHtml((spuOrgGetNode(mgmtIndicatorTargetNodeId(it)) || {}).name || "—"))
-            + "</td>"
-            + "<td>" + escapeHtml(mgmtPeriodKey()) + "</td>"
-            + "<td>" + (canPlan
-                ? '<input class="mgmt-manual" value="' + escapeAttribute(plan == null ? "" : String(plan)) + '" onchange="setMgmtPlanValue(\'' + it.indicator_id + "',this.value);renderManagement()\">"
-                : escapeHtml(plan == null ? "—" : mgmtFormatValue(it, plan)))
-            + "</td><td>";
-        if (it.source_type === "manual" && canManual) {
-            html += '<input class="mgmt-manual" value="' + escapeAttribute(fact == null ? "" : String(fact)) + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
-        } else {
-            html += escapeHtml(mgmtFormatValue(it, fact, read.status));
-        }
-        html += "</td><td>" + escapeHtml(mgmtSourceLabel(it.source_type))
-            + "</td><td>" + escapeHtml(emp ? emp.name : "—") + "</td></tr>";
+    const filt = spuInputFilter || { owner: "", status: "" };
+    let list = mgmtVisibleIndicators().filter(mgmtIsManualInputIndicator);
+    if (filt.owner) list = list.filter(function (it) { return String(it.owner_employee_id || "") === String(filt.owner); });
+    const period = mgmtPeriodKey();
+    function fillStatus(it) {
+        const v = mgmtManualFact(it.indicator_id);
+        return v != null && v !== "" ? "filled" : "empty";
+    }
+    if (filt.status === "filled") list = list.filter(function (it) { return fillStatus(it) === "filled"; });
+    if (filt.status === "empty") list = list.filter(function (it) { return fillStatus(it) === "empty"; });
+    list = list.slice().sort(function (a, b) {
+        const na = (spuOrgGetNode(mgmtIndicatorTargetNodeId(a)) || {}).name || "";
+        const nb = (spuOrgGetNode(mgmtIndicatorTargetNodeId(b)) || {}).name || "";
+        const c = String(na).localeCompare(String(nb), "ru");
+        if (c) return c;
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0);
     });
-    html += "</tbody></table></div>";
+    const filledN = list.filter(function (it) { return fillStatus(it) === "filled"; }).length;
+    let html = mgmtPeriodToolbarHtml() + mgmtDeptChipsHtml();
+    html += '<div class="note" style="margin:6px 0">Ввод только для показателей СПУ с ручным заполнением (и «Из 1С» до подключения). Расчётные и «Из Work Time» здесь не требуют ввода.</div>';
+    html += '<div class="mgmt-src" style="margin:6px 0;font-weight:600">Заполнено ' + filledN + " из " + list.length + " · период " + escapeHtml(period) + "</div>";
+    html += '<div class="cr-filters" style="margin:8px 0">'
+        + '<label>Ответственный<select onchange="setSpuInputFilter(\'owner\',this.value)">'
+        + mgmtEmployeeFilterOptions(filt.owner || "") + "</select></label>"
+        + '<label>Статус<select onchange="setSpuInputFilter(\'status\',this.value)">'
+        + '<option value=""' + (!filt.status ? " selected" : "") + ">Все</option>"
+        + '<option value="empty"' + (filt.status === "empty" ? " selected" : "") + ">Не заполнено</option>"
+        + '<option value="filled"' + (filt.status === "filled" ? " selected" : "") + ">Заполнено</option>"
+        + "</select></label></div>";
+    const byNode = {};
+    const order = [];
+    list.forEach(function (it) {
+        const nid = mgmtIndicatorTargetNodeId(it) || "_";
+        if (!byNode[nid]) {
+            byNode[nid] = [];
+            order.push(nid);
+        }
+        byNode[nid].push(it);
+    });
+    if (!list.length) {
+        html += '<div class="empty-row">Нет показателей для ручного ввода за выбранный период.</div>';
+        return html;
+    }
+    order.forEach(function (nid) {
+        const node = spuOrgGetNode(nid);
+        html += '<h4 style="margin:16px 0 8px">' + escapeHtml(node ? node.name : "Без департамента") + "</h4>";
+        html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
+            + "<th>Показатель</th><th>Значение</th><th>Статус</th><th>Ответственный</th>"
+            + "</tr></thead><tbody>";
+        byNode[nid].forEach(function (it) {
+            const fact = mgmtManualFact(it.indicator_id);
+            const st = fillStatus(it);
+            const emp = it.owner_employee_id ? getEmployee(it.owner_employee_id) : null;
+            const canAssign = canEditMgmtIndicators() || canEditSpuStructure();
+            html += "<tr>"
+                + "<td>" + escapeHtml(it.name)
+                + '<div class="mgmt-src">' + escapeHtml(spuIndicatorUiKindLabel(spuIndicatorUiKind(it))) + "</div></td>"
+                + "<td>";
+            if (canManual && (it.source_type === "manual" || it.source_type === "one_c_future" || spuIndicatorUiKind(it) === "manual" || spuIndicatorUiKind(it) === "one_c")) {
+                html += '<input class="mgmt-manual" value="' + escapeAttribute(fact == null ? "" : String(fact)) + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
+            } else {
+                html += escapeHtml(fact == null ? "—" : mgmtFormatValue(it, fact));
+            }
+            html += "</td><td>" + (st === "filled" ? "Заполнено" : "Не заполнено") + "</td><td>";
+            if (canAssign) {
+                html += "<select onchange=\"setMgmtIndicatorOwner('" + it.indicator_id + "',this.value)\">"
+                    + mgmtEmployeeOptions(it.owner_employee_id || "") + "</select>";
+            } else {
+                html += escapeHtml(emp ? emp.name : "—");
+            }
+            html += "</td></tr>";
+        });
+        html += "</tbody></table></div>";
+    });
     return html;
+}
+
+function setMgmtIndicatorOwner(indicatorId, employeeId) {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    ensureManagement();
+    const it = spuFindIndicator(indicatorId);
+    if (!it) return;
+    spuCommitOwnerHistory(it, employeeId || "");
+    saveApp();
+    renderManagement();
 }
 
 function mgmtEmployeeOptionsForDept(deptCode, selected) {
