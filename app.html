@@ -464,6 +464,15 @@
         .spu-fx-chip input[type="number"] { width: 88px; min-width: 72px; }
         .spu-fx-human { font-size: 13px; color: var(--text); margin: 8px 0 4px; line-height: 1.45; }
         .spu-fx-check { margin-top: 8px; padding: 8px 10px; background: #fff; border: 1px dashed var(--border); border-radius: 8px; font-size: 13px; line-height: 1.5; }
+        .spu-set-card { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:flex-start; border:1px solid var(--border); border-radius:10px; padding:10px 12px; margin:8px 0; background:#fff; }
+        .spu-set-card-title { font-weight:600; font-size:14px; margin:0 0 4px; }
+        .spu-set-card-meta { font-size:12px; color:var(--muted); line-height:1.4; }
+        .spu-set-card-status { font-size:12px; margin-top:6px; }
+        .spu-set-card-status.ok { color:#15803d; }
+        .spu-set-card-status.warn { color:#b45309; }
+        .spu-set-card-actions { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+        .spu-set-block { margin:14px 0; padding:10px; border:1px dashed #dbe3ef; border-radius:10px; background:#f8fafc; }
+        .spu-set-block-head { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
         .mi-add-origin { display: grid; gap: 8px; margin: 8px 0 12px; }
         .mi-add-origin label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
         .mi-add-origin span { line-height: 1.35; }
@@ -28013,6 +28022,7 @@ let mgmtDashPanel = "opt";
 let mgmtDashWeek = "";
 let mgmtPanelSetupSection = "all";
 let mgmtSettingsHub = "";
+let mgmtSettingsLayerTab = "key";
 let spuStructureTab = "indicators";
 let spuSourcesInnerTab = "metrics";
 let spuMetricsInnerTab = "in_spu";
@@ -30525,9 +30535,14 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
     const sources = it
         ? ((cfg && cfg.sources && cfg.sources.length) ? cfg.sources : spuNormalizeSources(it))
         : (presetMetric ? [spuNewSourceRow({ source_metric_id: presetMetric.id })] : []);
-    const uiKind = it ? spuIndicatorUiKind(it) : (presetMetric ? "worktime" : "manual");
+    let uiKind = it ? spuIndicatorUiKind(it) : (presetMetric ? "worktime" : "manual");
+    if (!it && focus === "totals") uiKind = "worktime";
+    if (!it && focus === "key") uiKind = "calculated";
     const kind = uiKind === "worktime" ? "worktime" : uiKind;
     spuIndFormKind = kind;
+    if (focus === "totals" || focus === "key") window._spuLayerPreset = focus;
+    else if (it && it.spu_layer) window._spuLayerPreset = it.spu_layer;
+    else window._spuLayerPreset = "";
     spuIndFormCalc = (cfg && cfg.calc_mode) || (it && (it.calc_mode || it.aggregation_type)) || "sum";
     if (kind === "calculated") spuIndFormCalc = "formula";
     spuIndFormFormula = (cfg && Array.isArray(cfg.formula_expr) && cfg.formula_expr.length)
@@ -30574,6 +30589,16 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + '<div id="spuIndExtraNodes" style="display:flex;flex-direction:column;gap:4px;max-height:160px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px">'
         + spuIndExtraNodesCheckboxesHtml(it, nodeId || (it && it.target_org_node_id) || "")
         + "</div></div>"
+        + '<div class="form-group"><label>Тип использования в СПУ</label><select id="spuIndLayer">'
+        + [["", "— не выбран (попадёт в «Не настроено»)"], ["totals", "Итоговые данные"], ["key", "Ключевой показатель"]].map(function (p) {
+            const cur = (it && it.spu_layer) || window._spuLayerPreset || "";
+            return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+        }).join("") + "</select></div>"
+        + '<div class="form-group"><label>Блок (для ключевых)</label><select id="spuIndKeyBlock"><option value="">Без блока</option>'
+        + (typeof spuKeyBlocksList === "function" ? spuKeyBlocksList(true) : []).map(function (b) {
+            return '<option value="' + escapeAttribute(b.block_id) + '"' + ((it && it.key_block_id) === b.block_id ? " selected" : "") + ">"
+                + escapeHtml(b.name) + "</option>";
+        }).join("") + "</select></div>"
         + '<div class="form-group"><label id="spuIndOwnerLab">' + escapeHtml(spuOwnerRoleLabel(kind)) + '</label><select id="spuIndOwner">'
         + mgmtEmployeeOptions(ownerId) + "</select></div>"
         + '<div class="form-group"><label>Тип результата</label><select id="spuIndUnit">'
@@ -30582,8 +30607,8 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
         + '<div class="form-group"><label>Периодичность</label><select id="spuIndPeriodicity">'
-        + [["month", "Месяц"], ["week", "Неделя"]].map(function (p) {
-            const cur = (it && it.periodicity) || "month";
+        + [["day", "День"], ["week", "Неделя"], ["month", "Месяц"]].map(function (p) {
+            const cur = (it && it.periodicity) || "week";
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
         + '<div class="form-group"><label>Основной цвет</label>'
@@ -30703,14 +30728,21 @@ function spuFormulaOperandIndicators(excludeId) {
     (spuIndFormFormula || []).forEach(function (tok) {
         if (tok && tok.t === "ind" && tok.id) keepIds[tok.id] = true;
     });
+    const layerRank = function (x) {
+        const L = typeof spuIndicatorLayer === "function" ? spuIndicatorLayer(x) : "";
+        if (L === "totals") return 0;
+        if (L === "key") return 1;
+        return 2;
+    };
     return ((appData.management && appData.management.indicators) || []).filter(function (x) {
         if (!x || !x.indicator_id || x.is_deleted) return false;
         if (selfId && x.indicator_id === selfId) return false;
         if (keepIds[x.indicator_id]) return true;
-        if (typeof spuIndicatorIsLive === "function") return spuIndicatorIsLive(x);
+        if (typeof spuIndicatorIsLive === "function" && !spuIndicatorIsLive(x)) return false;
         return x.is_active !== false;
     }).sort(function (a, b) {
-        return Number(a.sort_order || 0) - Number(b.sort_order || 0)
+        return layerRank(a) - layerRank(b)
+            || Number(a.sort_order || 0) - Number(b.sort_order || 0)
             || String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
 }
@@ -31330,6 +31362,9 @@ function saveSpuOrgIndicator() {
     it.name = name;
     spuSetIndicatorDisplayNodes(it, target, spuIndReadExtraNodeIdsFromDom());
     it.show_in_planfact = !!(document.getElementById("spuIndPf") && document.getElementById("spuIndPf").checked);
+    it.show_plan = it.show_in_planfact !== false;
+    it.show_completion = it.show_in_planfact !== false;
+    it.compare_prev_period = it.compare_prev_period !== false;
     it.show_breakdown = !!(document.getElementById("spuIndBreak") && document.getElementById("spuIndBreak").checked);
     it.sort_order = Number((document.getElementById("spuIndOrder") || {}).value || 10);
     it.periodicity = ((document.getElementById("spuIndPeriodicity") || {}).value || it.periodicity || "month");
@@ -31343,6 +31378,10 @@ function saveSpuOrgIndicator() {
         it.is_deleted = false;
     }
     it.unit = ((document.getElementById("spuIndUnit") || {}).value || it.unit || "number");
+    const layerVal = ((document.getElementById("spuIndLayer") || {}).value || "");
+    it.spu_layer = (layerVal === "totals" || layerVal === "key") ? layerVal : ((window._spuLayerPreset === "totals" || window._spuLayerPreset === "key") ? window._spuLayerPreset : (it.spu_layer || ""));
+    it.key_block_id = ((document.getElementById("spuIndKeyBlock") || {}).value || it.key_block_id || "");
+    window._spuLayerPreset = "";
     // unit: number | count | money | percent | days | hours — count = «Количество»
     it.display_color = mgmtNormalizeDisplayColor(((document.getElementById("spuIndDisplayColor") || {}).value || it.display_color || MGMT_DISPLAY_COLORS[0]));
     it.dynamics_eval = mgmtNormalizeDynamicsEval(((document.getElementById("spuIndDynamics") || {}).value || it.dynamics_eval), it);
@@ -32150,6 +32189,7 @@ function ensureManagement() {
     if (!Array.isArray(root.retired_spu_codes)) root.retired_spu_codes = [];
     if (!root.input_order || typeof root.input_order !== "object") root.input_order = {};
     if (!Array.isArray(root.panel_blocks)) root.panel_blocks = [];
+    if (!Array.isArray(root.key_blocks)) root.key_blocks = [];
     if (root.reporting_week_start_day == null || root.reporting_week_start_day === "") {
         root.reporting_week_start_day = 4; /* Четверг → Среда по умолчанию */
     } else {
@@ -36942,15 +36982,300 @@ function saveMgmtIndicatorFromWizard() {
     }
 }
 
+/* ==== SPU settings layers (injected) ==== */
+function spuEnsureKeyBlocks() {
+    ensureManagement();
+    if (!Array.isArray(appData.management.key_blocks)) appData.management.key_blocks = [];
+    appData.management.key_blocks.forEach(function (b, i) {
+        if (!b || typeof b !== "object") return;
+        if (!b.block_id) b.block_id = nextPrefixedId("kblk", appData.management.key_blocks.map(function (x) { return x && x.block_id; }));
+        if (b.name == null) b.name = "Блок";
+        if (b.sort_order == null) b.sort_order = (i + 1) * 10;
+        if (b.is_active == null) b.is_active = true;
+    });
+    return appData.management.key_blocks;
+}
+
+function spuKeyBlocksList(includeInactive) {
+    return spuEnsureKeyBlocks().filter(function (b) {
+        if (!b || !b.block_id) return false;
+        if (!includeInactive && b.is_active === false) return false;
+        return true;
+    }).sort(function (a, b) {
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0)
+            || String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+}
+
+function spuIndicatorLayer(it) {
+    if (!it) return "";
+    const v = String(it.spu_layer || "");
+    if (v === "totals" || v === "key") return v;
+    return "";
+}
+
+function spuIndicatorLayerLabel(layer) {
+    if (layer === "totals") return "Итоговые данные";
+    if (layer === "key") return "Ключевой показатель";
+    return "Не настроено";
+}
+
+function setSpuIndicatorLayer(id, layer) {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    const it = spuFindIndicator(id);
+    if (!it) return;
+    const v = String(layer || "");
+    it.spu_layer = (v === "totals" || v === "key") ? v : "";
+    saveApp();
+    renderManagement();
+}
+
+function setSpuIndicatorKeyBlock(id, blockId) {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    const it = spuFindIndicator(id);
+    if (!it) return;
+    it.key_block_id = String(blockId || "");
+    saveApp();
+    renderManagement();
+}
+
+function spuIndicatorNeedsSetup(it) {
+    if (!it || it.is_deleted) return false;
+    ensureSpuIndicatorSources(it);
+    const layer = spuIndicatorLayer(it);
+    if (!layer) return true;
+    const kind = spuIndicatorUiKind(it);
+    if (layer === "totals") {
+        if (kind === "manual" || kind === "one_c") return false;
+        if (kind === "calculated") return true;
+        const cfg = spuActiveConfig(it);
+        const sources = (cfg && cfg.sources) || spuNormalizeSources(it) || [];
+        if (!sources.length && it.source_type === "timesheet" && it.source_timesheet_agg) return false;
+        if (!sources.length && it.source_type === "worktime_metric" && it.source_metric_id) return false;
+        if (!sources.length) return true;
+        return sources.some(function (s) {
+            if (!s) return true;
+            if (s.source_type === "worktime_metric") return !s.source_metric_id;
+            if (s.source_type === "timesheet") return !s.source_timesheet_agg;
+            if (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual") return !s.source_indicator_id;
+            if (s.source_type === "one_c_future") return false;
+            return false;
+        });
+    }
+    if (layer === "key") {
+        if (kind === "calculated" || it.aggregation_type === "formula" || it.calc_mode === "formula") {
+            const fx = (spuActiveConfig(it).formula_expr || it.formula_expr || []);
+            if (!fx.length) return true;
+            return fx.some(function (t) { return t && t.t === "ind" && !t.id; });
+        }
+        const cfg = spuActiveConfig(it);
+        const sources = (cfg && cfg.sources) || [];
+        if (kind === "manual" || kind === "one_c") return false;
+        if (!sources.length && !(it.source_metric_id || it.source_timesheet_agg)) return true;
+        return false;
+    }
+    return true;
+}
+
+function spuSettingsBucket(it) {
+    if (!it || it.is_deleted) return "";
+    if (spuIndicatorIsArchived(it)) return "archive";
+    if (!spuIndicatorLayer(it) || spuIndicatorNeedsSetup(it)) return "unset";
+    return spuIndicatorLayer(it);
+}
+
+function spuSettingsLayerTabs() {
+    return [
+        { id: "key", label: "Ключевые показатели" },
+        { id: "totals", label: "Итоговые данные" },
+        { id: "unset", label: "Не настроено" },
+        { id: "archive", label: "Архив" }
+    ];
+}
+
+function setMgmtSettingsLayerTab(id) {
+    const ok = { key: 1, totals: 1, unset: 1, archive: 1 };
+    mgmtSettingsLayerTab = ok[id] ? id : "key";
+    renderManagement();
+}
+
+function spuSettingsSourceShort(it) {
+    if (!it) return "—";
+    const kind = spuIndicatorUiKind(it);
+    if (kind === "calculated") return "Расчётный";
+    if (kind === "manual") return "Ручной ввод";
+    if (kind === "one_c") return "1С (позже)";
+    if (it.source_type === "timesheet") return "Work Time · Табель";
+    if (it.source_type === "worktime_metric") return "Work Time";
+    if (it.source_type === "sales_plan") return "План продаж";
+    return spuIndicatorUiKindLabel(kind);
+}
+
+function spuSettingsAggShort(it) {
+    const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : {};
+    const a = cfg.aggregation_type || it.aggregation_type || "";
+    if (a === "formula" || cfg.calc_mode === "formula") return "Формула";
+    if (a === "average" || a === "avg") return "Среднее";
+    if (a === "count") return "Количество";
+    if (a === "none") return "Один источник";
+    return "Сумма";
+}
+
+function spuSettingsPeriodShort(it) {
+    if (it && it.periodicity === "day") return "День";
+    if (it && it.periodicity === "week") return "Неделя";
+    return "Месяц";
+}
+
+function openSpuTotalsForm(indicatorId) {
+    openSpuOrgIndicatorForm("", indicatorId || "", "", "totals");
+}
+
+function openSpuKeyForm(indicatorId) {
+    openSpuOrgIndicatorForm("", indicatorId || "", "", "key");
+}
+
+function openSpuKeyBlockForm(blockId) {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    spuEnsureKeyBlocks();
+    const b = blockId ? spuKeyBlocksList(true).find(function (x) { return x.block_id === blockId; }) : null;
+    let html = "<h3>" + (b ? "Блок ключевых показателей" : "Новый блок") + "</h3>";
+    html += '<div class="form-group"><label>Название *</label><input id="spuKeyBlkName" value="'
+        + escapeAttribute(b ? b.name : "") + '"></div>';
+    html += '<div class="form-group"><label>Порядок</label><input id="spuKeyBlkOrder" type="number" value="'
+        + escapeAttribute(String(b ? b.sort_order : (spuKeyBlocksList(true).length + 1) * 10)) + '"></div>';
+    html += '<div class="form-group"><label>Статус</label><select id="spuKeyBlkActive">'
+        + '<option value="1"' + (!b || b.is_active !== false ? " selected" : "") + ">Активен</option>"
+        + '<option value="0"' + (b && b.is_active === false ? " selected" : "") + ">Неактивен</option></select></div>";
+    html += '<input type="hidden" id="spuKeyBlkId" value="' + escapeAttribute(b ? b.block_id : "") + '">';
+    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="saveSpuKeyBlock()">Сохранить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    openMgmtModal(html);
+}
+
+function saveSpuKeyBlock() {
+    const name = String((document.getElementById("spuKeyBlkName") || {}).value || "").replace(/\s+/g, " ").trim();
+    if (!name) {
+        toast("Укажите название блока", "error");
+        return;
+    }
+    const id = ((document.getElementById("spuKeyBlkId") || {}).value || "");
+    const list = spuEnsureKeyBlocks();
+    let b = id ? list.find(function (x) { return x.block_id === id; }) : null;
+    if (!b) {
+        b = { block_id: nextPrefixedId("kblk", list.map(function (x) { return x && x.block_id; })) };
+        list.push(b);
+    }
+    b.name = name;
+    b.sort_order = Number((document.getElementById("spuKeyBlkOrder") || {}).value || 10);
+    b.is_active = ((document.getElementById("spuKeyBlkActive") || {}).value || "1") !== "0";
+    saveApp();
+    closeMgmtModal();
+    renderManagement();
+    toast("Блок сохранён.");
+}
+
+function openSpuIndicatorDataOrigin(indicatorId) {
+    const it = spuFindIndicator(indicatorId);
+    if (!it) return;
+    ensureSpuIndicatorSources(it);
+    const kind = spuIndicatorUiKind(it);
+    let periodNote = "";
+    try {
+        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+        if (r && r.from && r.to) periodNote = r.from + " — " + r.to;
+    } catch (err) {}
+    let html = "<h3>Откуда данные?</h3>";
+    html += '<div class="note" style="margin-bottom:8px"><b>' + escapeHtml(it.name || "") + "</b></div>";
+    if (kind === "calculated" || it.aggregation_type === "formula" || it.calc_mode === "formula") {
+        const fx = (spuActiveConfig(it).formula_expr || it.formula_expr || []);
+        html += "<p><b>Источник:</b> Расчётный показатель СПУ</p>";
+        html += "<p><b>Формула:</b><br>" + escapeHtml(typeof spuFormulaHumanText === "function" ? spuFormulaHumanText(fx) : "—") + "</p>";
+    } else {
+        html += "<p><b>Источник:</b> " + escapeHtml(spuSettingsSourceShort(it)) + "</p>";
+        const cfg = spuActiveConfig(it);
+        const sources = (cfg && cfg.sources && cfg.sources.length) ? cfg.sources : spuNormalizeSources(it);
+        if (sources.length) {
+            html += "<p><b>Путь:</b></p><ul style=\"margin:0 0 8px 18px;padding:0\">";
+            sources.forEach(function (s) {
+                html += "<li>" + escapeHtml(typeof spuSourceShortLabel === "function" ? spuSourceShortLabel(s) : (s.source_type || "")) + "</li>";
+            });
+            html += "</ul>";
+        } else if (it.source_type === "worktime_metric" && it.source_metric_id) {
+            const m = shopMetricCatalogById(it.source_metric_id);
+            html += "<p><b>Путь:</b> Work Time → " + escapeHtml((m && m.name) || it.source_metric_id) + "</p>";
+        } else if (it.source_type === "timesheet") {
+            html += "<p><b>Путь:</b> Work Time → Табель"
+                + (it.department_id ? " → " + escapeHtml(it.department_id) : "")
+                + " → " + escapeHtml(it.source_timesheet_agg || "headcount") + "</p>";
+        }
+        html += "<p><b>Агрегация:</b> " + escapeHtml(spuSettingsAggShort(it)) + "</p>";
+    }
+    if (periodNote) html += "<p><b>Период:</b> " + escapeHtml(periodNote) + "</p>";
+    try {
+        const read = typeof mgmtReadIndicator === "function" ? mgmtReadIndicator(it, []) : { value: null };
+        html += "<p><b>Получено:</b> " + escapeHtml(typeof mgmtFormatValue === "function" ? mgmtFormatValue(it, read.value, read.status) : "—") + "</p>";
+    } catch (err2) {
+        html += "<p><b>Получено:</b> —</p>";
+    }
+    html += '<div class="toolbar"><button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Закрыть</button></div>';
+    openMgmtModal(html);
+}
+
+function spuSettingsCardHtml(it) {
+    const layer = spuIndicatorLayer(it);
+    const bucket = spuSettingsBucket(it);
+    const setupOk = !spuIndicatorNeedsSetup(it) && !!layer;
+    const canEdit = canEditMgmtIndicators() || canEditSpuStructure();
+    let meta = spuSettingsSourceShort(it)
+        + " · " + spuSettingsPeriodShort(it)
+        + " · " + spuSettingsAggShort(it);
+    if (layer === "key" && it.show_plan !== false && it.plan_mode !== "none") {
+        meta += " · План: используется";
+    }
+    let html = '<div class="spu-set-card">';
+    html += '<div class="spu-set-card-main"><div class="spu-set-card-title">' + escapeHtml(it.name || "Без названия") + "</div>";
+    html += '<div class="spu-set-card-meta">' + escapeHtml(meta) + "</div>";
+    html += '<div class="spu-set-card-status' + (setupOk ? " ok" : " warn") + '">'
+        + (setupOk ? "✓ Настроено" : (layer ? "⚠ Нужна настройка" : "○ Выберите тип использования"))
+        + "</div></div>";
+    html += '<div class="spu-set-card-actions">';
+    if (canEdit && (!layer || bucket === "unset")) {
+        html += '<select onchange="setSpuIndicatorLayer(\'' + it.indicator_id + '\',this.value)" title="Тип использования">'
+            + '<option value="">Тип использования…</option>'
+            + '<option value="totals"' + (layer === "totals" ? " selected" : "") + ">Итоговые данные</option>"
+            + '<option value="key"' + (layer === "key" ? " selected" : "") + ">Ключевой показатель</option>"
+            + "</select>";
+    }
+    if (canEdit && layer === "key") {
+        html += '<select onchange="setSpuIndicatorKeyBlock(\'' + it.indicator_id + '\',this.value)" title="Блок">'
+            + '<option value="">Без блока</option>';
+        spuKeyBlocksList(true).forEach(function (b) {
+            html += '<option value="' + escapeAttribute(b.block_id) + '"'
+                + (it.key_block_id === b.block_id ? " selected" : "") + ">"
+                + escapeHtml(b.name) + (b.is_active === false ? " (выкл.)" : "") + "</option>";
+        });
+        html += "</select>";
+    }
+    html += '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuIndicatorDataOrigin(\''
+        + it.indicator_id + '\')">Откуда данные?</button>';
+    html += '<button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\''
+        + it.indicator_id + '\')">Настроить</button>';
+    html += "</div></div>";
+    return html;
+}
+
 function renderMgmtSettingsHtml() {
     try { ensureManagement(); } catch (err) { console.error(err); }
-    const all = (((appData && appData.management && appData.management.indicators) || [])).slice().sort(function (a, b) {
-        return Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    try { spuEnsureKeyBlocks(); } catch (err2) { console.error(err2); }
+    if (!mgmtSettingsLayerTab) mgmtSettingsLayerTab = "key";
+    const tab = mgmtSettingsLayerTab;
+    const all = spuManagedIndicators(false).slice().sort(function (a, b) {
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0)
+            || String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
     const filtered = all.filter(function (it) {
-        if (!it || it.is_deleted) return false;
-        if (!mgmtSettingsHub) return true;
-        return mgmtIndicatorHubKey(it) === mgmtSettingsHub;
+        return spuSettingsBucket(it) === tab;
     });
     const startDay = mgmtSpuWeekStartDay();
     const endDay = (startDay + 6) % 7;
@@ -36965,46 +37290,80 @@ function renderMgmtSettingsHtml() {
     html += "</select></label>"
         + '<div class="note" style="margin:8px 0 0">Конец определяется автоматически: <b>'
         + escapeHtml(mgmtSpuWeekdayLabel(startDay)) + " → " + escapeHtml(mgmtSpuWeekdayLabel(endDay))
-        + "</b>. Одна настройка для Ввода показателей, План–факта, Панели управления и графиков СПУ.</div>"
+        + "</b>. Work Time → Итоговые данные → Ключевые показатели → План–факт / Панель. Метрики Work Time здесь не перечисляются.</div>"
         + "</div>";
-    html += '<p class="spu-ind-note">Настройка связей: существующая метрика (по ID) → подразделения → место на панели СПУ. Новые метрики создаются только в Территория → Метрики или в Метриках магазина. СПУ копию не создаёт и факты не вводит.</p>'
-        + '<div class="spu-ind-hubs metrics-tabs">';
-    mgmtSettingsHubs().forEach(function (h) {
-        html += '<button type="button" class="metrics-tab' + (String(mgmtSettingsHub) === String(h.id) ? " active" : "") + '"'
-            + " onclick=\"setMgmtSettingsHub('" + h.id + "')\">" + escapeHtml(h.label) + "</button>";
+    html += '<p class="spu-ind-note">СПУ работает через собственные Показатели. Операционные Метрики Work Time остаются в Work Time и центральном Справочнике метрик; в СПУ они подключаются только как источник Итоговых данных.</p>';
+    html += '<div class="spu-ind-hubs metrics-tabs">';
+    spuSettingsLayerTabs().forEach(function (h) {
+        const count = all.filter(function (it) { return spuSettingsBucket(it) === h.id; }).length;
+        html += '<button type="button" class="metrics-tab' + (tab === h.id ? " active" : "") + '"'
+            + " onclick=\"setMgmtSettingsLayerTab('" + h.id + "')\">"
+            + escapeHtml(h.label) + " (" + count + ")</button>";
     });
     html += "</div>";
-    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="openSpuOrgIndicatorForm(\'\')">+ Добавить показатель</button></div>';
-    html += '<div class="table-wrapper" style="max-height:none"><table class="mgmt-table"><thead><tr>'
-        + "<th>Показатель</th><th>Источник</th><th>Относится к</th><th>Раздел панели</th><th>Панель</th><th></th></tr></thead><tbody>";
+    html += '<div class="toolbar" style="flex-wrap:wrap;gap:8px">';
+    if (tab === "totals") {
+        html += '<button type="button" class="btn btn-primary" onclick="openSpuTotalsForm()">+ Добавить итоговые данные</button>';
+    } else if (tab === "key") {
+        html += '<button type="button" class="btn btn-primary" onclick="openSpuKeyForm()">+ Добавить ключевой показатель</button>';
+        html += '<button type="button" class="btn btn-secondary" onclick="openSpuKeyBlockForm()">+ Добавить блок</button>';
+    } else if (tab === "unset") {
+        html += '<span class="note">Назначьте тип использования существующим Показателям СПУ. Метрики Work Time сюда не попадают — только spu_indicator_id.</span>';
+    } else {
+        html += '<span class="note">Архив: неактивные Показатели СПУ. История, планы и факты сохранены.</span>';
+    }
+    html += "</div>";
+
+    if (tab === "key") {
+        const blocks = spuKeyBlocksList(true);
+        const used = {};
+        blocks.forEach(function (b) {
+            const items = filtered.filter(function (it) { return it.key_block_id === b.block_id; });
+            if (!items.length && b.is_active === false) return;
+            html += '<div class="spu-set-block">';
+            html += '<div class="spu-set-block-head"><b>' + escapeHtml(b.name) + "</b>"
+                + (b.is_active === false ? ' <span class="mgmt-src">(неактивен)</span>' : "")
+                + ' <button type="button" class="btn btn-secondary btn-small" onclick="openSpuKeyBlockForm(\''
+                + b.block_id + '\')">Переименовать</button></div>';
+            if (!items.length) {
+                html += '<div class="note">В блоке пока нет показателей.</div>';
+            } else {
+                items.forEach(function (it) {
+                    used[it.indicator_id] = true;
+                    html += spuSettingsCardHtml(it);
+                });
+            }
+            html += "</div>";
+        });
+        const orphan = filtered.filter(function (it) { return !used[it.indicator_id]; });
+        if (orphan.length) {
+            html += '<div class="spu-set-block"><div class="spu-set-block-head"><b>Без блока</b></div>';
+            orphan.forEach(function (it) { html += spuSettingsCardHtml(it); });
+            html += "</div>";
+        }
+        if (!filtered.length) {
+            html += '<div class="empty-row">Пока нет ключевых показателей. Создайте новый или назначьте тип существующему во вкладке «Не настроено».</div>';
+        }
+        return html;
+    }
+
     if (!filtered.length) {
-        html += '<tr><td colspan="6"><div class="empty-row">В этом разделе пока нет показателей.</div></td></tr>';
+        if (tab === "totals") {
+            html += '<div class="empty-row">Пока нет итоговых данных. Нажмите «+ Добавить итоговые данные» или классифицируйте существующий Показатель СПУ.</div>';
+        } else if (tab === "unset") {
+            html += '<div class="empty-row">Все Показатели СПУ классифицированы и настроены.</div>';
+        } else {
+            html += '<div class="empty-row">Архив пуст.</div>';
+        }
+        return html;
     }
     filtered.forEach(function (it) {
-        try {
-        if (!it) return;
-        const canAssign = canEditMgmtIndicators() || canEditSpuStructure();
-        html += "<tr><td class=\"wrap\">" + escapeHtml(it.name)
-            + (it.is_active === false ? ' <span class="mgmt-src">(архив)</span>' : "")
-            + '<div class="mgmt-src">' + escapeHtml(it.source_type === "manual" ? "Источник: Ручной ввод" : (it.source_type === "worktime_metric" ? "Источник: Метрики Work Time" : mgmtIndicatorOriginLabel(it))) + "</div>"
-            + "</td>"
-            + '<td class="wrap">' + escapeHtml(mgmtIndicatorOriginLabel(it)) + "</td>"
-            + "<td>" + (canAssign
-                ? "<select onchange=\"setMgmtIndicatorOrgNode('" + it.indicator_id + "',this.value)\">"
-                    + mgmtSpuOrgOptionsHtml(mgmtIndicatorTargetNodeId(it), false) + "</select>"
-                : escapeHtml((spuOrgGetNode(mgmtIndicatorTargetNodeId(it)) || {}).name || "—"))
-            + "</td>"
-            + "<td><select onchange=\"setMgmtIndicatorHubFromList('" + it.indicator_id + "',this.value)\">"
-            + mgmtSpuDisplaySectionOptions(mgmtIndicatorHubKey(it)) + "</select></td>"
-            + '<td><label class="check"><input type="checkbox"' + (it.show_on_dashboard ? " checked" : "")
-            + " onchange=\"setMgmtIndicatorDash('" + it.indicator_id + "',this.checked)\"> Да</label></td>"
-            + '<td><button type="button" class="btn btn-secondary btn-small" onclick="openSpuOrgIndicatorForm(\'\',\'' + it.indicator_id + '\')">Редактировать</button></td></tr>';
-        } catch (rowErr) {
+        try { html += spuSettingsCardHtml(it); }
+        catch (rowErr) {
             console.error(rowErr);
-            html += '<tr><td colspan="6"><div class="note">Ошибка загрузки конкретного элемента</div></td></tr>';
+            html += '<div class="note">Ошибка карточки показателя</div>';
         }
     });
-    html += "</tbody></table></div>";
     return html;
 }
 
