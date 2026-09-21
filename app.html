@@ -10260,7 +10260,11 @@ function summaryMonthMoney(monthValue) {
 function renderLogin(view) {
     try {
         console.log("[WorkTime login click]", view);
-        if (view === "home" || view === "shop" || view === "territory" || view === "territoryMetrics" || view === "summary" || view === "spu" || view === "org" || view === "admin" || view === "financeRec") loginView = view;
+        if (view === "home") {
+            window.location.href = "index.html";
+            return;
+        }
+        if (view === "shop" || view === "territory" || view === "territoryMetrics" || view === "summary" || view === "spu" || view === "org" || view === "admin" || view === "financeRec") loginView = view;
         ensureLoginData();
         try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
@@ -10287,7 +10291,7 @@ function renderLogin(view) {
 
         const backHome = function () {
             if (homeLink) {
-                homeLink.innerHTML = '<button type="button" onclick="renderLogin(\'home\')">← Назад на главную</button>';
+                homeLink.innerHTML = '<a href="index.html">← На главную</a>';
             }
         };
 
@@ -10304,7 +10308,7 @@ function renderLogin(view) {
             backHome();
             if (title) title.textContent = "ТЕРРИТОРИЯ";
             if (subtitle) {
-                subtitle.innerHTML = "Офис, Склад, Логистика + Торговые и Метрики территории. Выберите пользователя или откройте метрики."
+                subtitle.innerHTML = "Внутри Территории: Офис, Склад, Логистика + Торговые и Метрики. Выберите пользователя или откройте метрики."
                     + ' <span id="defaultPinHint"></span>';
             }
             grid.className = "login-grid territory-view";
@@ -10373,16 +10377,8 @@ function renderLogin(view) {
             grid.className = "login-grid single-view";
             grid.innerHTML = adminLoginCardHtml();
         } else {
-            if (homeLink) {
-                homeLink.innerHTML = '<a href="index.html">← На главную</a>';
-            }
-            if (title) title.textContent = "⏱ Табель сотрудников";
-            if (subtitle) {
-                subtitle.innerHTML = "Выберите раздел или вход администратора."
-                    + ' <span id="defaultPinHint"></span>';
-            }
-            grid.className = "login-grid home-seven";
-            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + spuFolderCardHtml() + financeRecFolderCardHtml() + orgFolderCardHtml() + adminFolderCardHtml();
+            window.location.href = "index.html";
+            return;
         }
 
         restoreAllLoginCardState(grid);
@@ -10390,19 +10386,19 @@ function renderLogin(view) {
         const hint = document.getElementById("defaultPinHint");
         if (hint) {
             hint.textContent = showHint
-                ? (loginView === "home"
-                    ? " PIN: магазин 1111 · офис 2222 · склад 3333 · логистика 4444 · админ 5555 · Ольга 6666 · Наталья 7777."
-                    : loginView === "summary"
-                        ? " Общее: 5555 / 6666 / 7777."
-                        : loginView === "spu"
-                            ? " СПУ: 5555 / 6666."
-                            : loginView === "org"
-                            ? " Оргструктура: 5555 / 6666."
-                            : loginView === "admin"
-                            ? " Админ: 5555."
-                            : loginView === "territoryMetrics"
-                            ? " Введите PIN пользователя Офиса, Склада или Логистики + Торговых."
-                            : " Введите личный PIN пользователя этого раздела.")
+                ? (loginView === "summary"
+                    ? " Общее: 5555 / 6666 / 7777."
+                    : loginView === "spu"
+                        ? " СПУ: 5555 / 6666."
+                        : loginView === "org"
+                        ? " Оргструктура: 5555 / 6666."
+                        : loginView === "financeRec"
+                        ? " Финконтроль: PIN пользователя с доступом."
+                        : loginView === "admin"
+                        ? " Админ: 5555."
+                        : loginView === "territoryMetrics"
+                        ? " Введите PIN пользователя Офиса, Склада или Логистики + Торговых."
+                        : " Введите личный PIN пользователя этого раздела.")
                 : "";
         }
     } catch (err) {
@@ -10884,7 +10880,7 @@ function logout() {
     else if (entry === "territoryMetrics" || isTerritoryCode(code)) renderLogin("territory");
     else if (code === "shop") renderLogin("shop");
     else if (code === "summary") renderLogin("summary");
-    else renderLogin("home");
+    else window.location.href = "index.html";
 }
 
 function backToTerritory() {
@@ -43728,7 +43724,8 @@ function verifyCrSignedFinance() {
 function requestedLoginView() {
     try {
         var hash = String(location.hash || "").replace("#", "");
-        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "spu" || hash === "org" || hash === "admin") return hash;
+        if (hash === "fincontrol") hash = "financeRec";
+        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "spu" || hash === "org" || hash === "admin" || hash === "financeRec") return hash;
         var search = location.search || "";
         if (/(?:^|[?&])view=shop(?:&|$)/.test(search)) return "shop";
         if (/(?:^|[?&])view=territory(?:&|$)/.test(search)) return "territory";
@@ -43736,8 +43733,25 @@ function requestedLoginView() {
         if (/(?:^|[?&])view=spu(?:&|$)/.test(search)) return "spu";
         if (/(?:^|[?&])view=org(?:&|$)/.test(search)) return "org";
         if (/(?:^|[?&])view=admin(?:&|$)/.test(search)) return "admin";
+        if (/(?:^|[?&])view=financeRec(?:&|$)/.test(search) || /(?:^|[?&])view=fincontrol(?:&|$)/.test(search)) return "financeRec";
     } catch (err) {}
     return "home";
+}
+
+function ensureLoginRouteFromHash() {
+    try {
+        const appEl = document.getElementById("app");
+        const inApp = !!(appEl && appEl.style.display === "flex" && typeof workspace === "function" && workspace());
+        if (inApp) return;
+        const view = requestedLoginView();
+        if (view === "home") {
+            window.location.replace("index.html");
+            return;
+        }
+        if (loginView !== view) renderLogin(view);
+    } catch (err) {
+        console.error(err);
+    }
 }
 
 function init() {
@@ -43756,6 +43770,7 @@ function init() {
         }
     }
     try { ensureLoginData(); } catch (err) { console.error(err); }
+    try { ensureLoginRouteFromHash(); } catch (err) { console.error(err); }
     try { ensureManagement(); } catch (err) { console.error(err); }
     try { ensureCustomerReturns(appData); } catch (err) { console.error(err); }
     try { ensureOrgStructure(appData); } catch (err) { console.error(err); }
@@ -43764,7 +43779,6 @@ function init() {
         orgSelfTestLast = orgRunSelfTests();
         console.log("[WorkTime org tests]", orgSelfTestLast);
     } catch (err) { console.error(err); }
-    try { renderLogin(requestedLoginView()); } catch (err) { console.error(err); }
     try { updateClock(); } catch (err) { console.error(err); }
     setInterval(function () { try { updateClock(); } catch (err) {} }, 1000);
     document.addEventListener("keydown", function (event) {
@@ -43774,6 +43788,12 @@ function init() {
         }
     });
     try { tryRestoreSession(); } catch (err) { console.error(err); }
+    try { ensureLoginRouteFromHash(); } catch (err) { console.error(err); }
+    try {
+        window.addEventListener("hashchange", function () {
+            try { ensureLoginRouteFromHash(); } catch (hashErr) { console.error(hashErr); }
+        });
+    } catch (err) { console.error(err); }
     } catch (bootErr) {
         console.error(bootErr);
         const subtitle = document.getElementById("loginSubtitle");
@@ -43783,8 +43803,8 @@ function init() {
 </script>
 <script src="fr-mod.js"></script>
 <script>
-init();
-
-
+try { init(); } catch (bootErr) { console.error("[WorkTime boot]", bootErr); }
+try { ensureLoginRouteFromHash(); } catch (routeErr) { console.error("[WorkTime route]", routeErr); }
+</script>
 </body>
 </html>
