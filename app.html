@@ -28023,6 +28023,7 @@ let mgmtDashWeek = "";
 let mgmtPanelSetupSection = "all";
 let mgmtSettingsHub = "";
 let mgmtSettingsLayerTab = "key";
+let spuPlansUiPeriodId = "";
 let spuStructureTab = "indicators";
 let spuSourcesInnerTab = "metrics";
 let spuMetricsInnerTab = "in_spu";
@@ -29855,24 +29856,18 @@ function mgmtReadFromSources(it, stack) {
 
 function mgmtIndicatorPlan(it) {
     if (!it) return null;
+    // 1) План управленческого периода (новая модель) — всегда главнее источника факта и старых week-записей.
+    if (typeof spuComputedPeriodWeekPlan === "function") {
+        const per = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
+        const weekIso = (per && (per.start_date || per.from)) || "";
+        const fromPeriod = spuComputedPeriodWeekPlan(it.indicator_id, weekIso);
+        if (fromPeriod != null && Number.isFinite(Number(fromPeriod))) return Number(fromPeriod);
+    }
+    // 2) Старый недельный fallback — только если нового плана периода нет.
     const own = mgmtPlanStoredValue(it.indicator_id);
-    const mode = it.plan_mode || "spu";
-    if ((mode === "spu" || mode === "manual") && own != null) return own;
-    if (it.source_type === "manual" && mode !== "sources") return own;
-    const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: spuNormalizeSources(it), aggregation_type: it.aggregation_type, formula_expr: it.formula_expr, calc_mode: it.aggregation_type };
-    const wantSources = mode === "sources" || mode === "calculated" || own == null;
-    if (wantSources && (cfg.calc_mode === "formula" || cfg.aggregation_type === "formula") && (cfg.formula_expr || []).length) {
-        const fv = spuEvalFormula(it, cfg.formula_expr, [], true);
-        if (fv != null) return fv;
-    }
-    if (wantSources && (cfg.sources || []).length) {
-        const fromSrc = mgmtAggregateNumbers(
-            cfg.sources.map(function (s) { return mgmtReadSourcePlan(s, it); }),
-            it.plan_aggregation_type || cfg.aggregation_type || "sum"
-        );
-        if (fromSrc != null) return fromSrc;
-    }
-    return own;
+    if (own != null) return own;
+    // plan_mode / источник факта план не подставляют и не обнуляют.
+    return null;
 }
 
 function mgmtSpuOrgOptionsHtml(selected, includeInactive, excludeId) {
@@ -30524,6 +30519,25 @@ function openSpuOrgNodeForm(orgNodeId, parentPreset, startTab) {
     openMgmtModal(html);
 }
 
+
+function spuIndRefreshPlanPeriodNote() {
+    const el = document.getElementById("spuIndPlanPeriodNote");
+    if (!el) return;
+    try {
+        const p = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
+        if (!p) {
+            el.textContent = "Период не определён.";
+            return;
+        }
+        const a = p.start_date || p.from || "";
+        const b = p.end_date || p.to || "";
+        el.textContent = "Отчётная неделя: " + a + " — " + b + " · ключ " + (p.period_key || "")
+            + ". Основной План задаётся во вкладке «Планы СПУ».";
+    } catch (err) {
+        el.textContent = "";
+    }
+}
+
 function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
     if (!canEditSpuStructure() && !canEditMgmtIndicators()) return;
     ensureManagement();
@@ -30564,8 +30578,9 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
     });
     const pfOn = it ? it.show_in_planfact === true : false;
     const brOn = !it || it.show_breakdown !== false;
-    const planMode = (it && it.plan_mode) || "spu";
-    const planVal = it ? mgmtPlanStoredValue(it.indicator_id) : null;
+    const planVal = it
+        ? (typeof mgmtIndicatorPlan === "function" ? mgmtIndicatorPlan(it) : mgmtPlanStoredValue(it.indicator_id))
+        : null;
     const factVal = it && (kind === "manual" || kind === "one_c") ? mgmtManualFact(it.indicator_id) : null;
     const archived = !!(it && spuIndicatorIsArchived(it));
     const activeOn = !it || (!archived && it.is_active !== false);
@@ -30642,12 +30657,14 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + '<div id="spuIndOneCWrap" style="display:none">'
         + '<div class="note">Тип «Из 1С» зарезервирован под будущую интеграцию. Сейчас значение можно вводить вручную. Позже источник переключается на 1С без смены ID и без потери истории.</div>'
         + "</div>"
-        + "<div class=\"form-group\"><label>Источник плана</label>"
-        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="spu"' + (planMode !== "sources" && planMode !== "calculated" ? " checked" : "") + "> Вводить вручную в СПУ</label>"
-        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="sources"' + (planMode === "sources" ? " checked" : "") + "> Получать из источника</label>"
-        + '<label class="check"><input type="radio" name="spuIndPlanMode" value="calculated"' + (planMode === "calculated" ? " checked" : "") + "> Рассчитывать из источников</label>"
-        + '<input id="spuIndPlan" placeholder="План" value="'
-        + escapeAttribute(planVal == null ? "" : String(planVal)) + '"></div>'
+        + "<div class=\"form-group\"><label>План</label>"
+        + '<div class="note" id="spuIndPlanPeriodNote" style="margin:0 0 6px"></div>'
+        + '<input type="hidden" name="spuIndPlanMode" id="spuIndPlanModeHidden" value="spu">'
+        + '<div class="note" style="margin:0 0 8px"><b>План</b> задаётся во вкладке <b>Настройка показателей → Планы СПУ</b> на управленческий период (накопительный или целевое значение). '
+        + "Здесь показывается только план текущей отчётной недели (после раздачи). <b>Факт</b> и источник факта настраиваются выше — они не зависят от плана.</div>"
+        + '<input id="spuIndPlan" placeholder="План текущей недели (только просмотр / точечная правка)" value="'
+        + escapeAttribute(planVal == null ? "" : String(planVal)) + '">'
+        + '<div class="note" style="margin:4px 0 0">Точечная правка недели не заменяет план управленческого периода. Основной ввод — во вкладке «Планы СПУ».</div></div>'
         + '<div class="form-group" id="spuIndFactWrap"><label>Факт текущего периода</label><input id="spuIndFact" placeholder="Факт" value="'
         + escapeAttribute(factVal == null ? "" : String(factVal)) + '"></div>'
         + '<label class="check"><input id="spuIndPf" type="checkbox"' + (pfOn ? " checked" : "") + "> Показывать в План–факте</label>"
@@ -30663,6 +30680,7 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal();renderManagement()">Закрыть</button></div>';
     openMgmtModal(html);
     onSpuIndKindChange();
+    try { spuIndRefreshPlanPeriodNote(); } catch (errPlanNote) { console.error(errPlanNote); }
     if (focus === "sources" || focus === "route") {
         const box = document.getElementById("spuIndSourceBox") || document.getElementById("spuIndMetricWrap");
         if (box && box.scrollIntoView) box.scrollIntoView({ block: "start" });
@@ -31367,7 +31385,7 @@ function saveSpuOrgIndicator() {
     it.compare_prev_period = it.compare_prev_period !== false;
     it.show_breakdown = !!(document.getElementById("spuIndBreak") && document.getElementById("spuIndBreak").checked);
     it.sort_order = Number((document.getElementById("spuIndOrder") || {}).value || 10);
-    it.periodicity = ((document.getElementById("spuIndPeriodicity") || {}).value || it.periodicity || "month");
+    it.periodicity = ((document.getElementById("spuIndPeriodicity") || {}).value || it.periodicity || "week");
     const stVal = ((document.getElementById("spuIndActive") || {}).value || "1");
     it.user_status_set = true;
     if (stVal === "archive") {
@@ -31385,10 +31403,31 @@ function saveSpuOrgIndicator() {
     // unit: number | count | money | percent | days | hours — count = «Количество»
     it.display_color = mgmtNormalizeDisplayColor(((document.getElementById("spuIndDisplayColor") || {}).value || it.display_color || MGMT_DISPLAY_COLORS[0]));
     it.dynamics_eval = mgmtNormalizeDynamicsEval(((document.getElementById("spuIndDynamics") || {}).value || it.dynamics_eval), it);
-    const planModeEl = document.querySelector("input[name=\"spuIndPlanMode\"]:checked");
-    it.plan_mode = planModeEl ? planModeEl.value : "spu";
-    const planVal = ((document.getElementById("spuIndPlan") || {}).value || "");
-    if (it.plan_mode === "spu" && planVal !== "") setMgmtPlanValue(it.indicator_id, planVal);
+    if (!it.plan_mode || it.plan_mode === "sources" || it.plan_mode === "calculated") it.plan_mode = "spu";
+    const planVal = String(((document.getElementById("spuIndPlan") || {}).value || "")).trim();
+    // План независим от источника факта. Карточка пишет только недельный fallback,
+    // и только если нет Плана управленческого периода на эту неделю.
+    if (planVal !== "") {
+        it.plan_mode = "spu";
+        const per = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
+        const weekIso = (per && (per.start_date || per.from))
+            || mgmtAnchorIso
+            || (typeof mgmtIsoFromDate === "function" ? mgmtIsoFromDate(new Date()) : "");
+        const covered = typeof spuComputedPeriodWeekPlan === "function"
+            ? spuComputedPeriodWeekPlan(it.indicator_id, weekIso)
+            : null;
+        if (covered == null) {
+            if ((it.periodicity || "week") === "week" && typeof mgmtRunInThuWeek === "function") {
+                mgmtRunInThuWeek(weekIso, function () {
+                    setMgmtPlanValue(it.indicator_id, planVal, { origin: "indicator_spot" });
+                });
+            } else {
+                setMgmtPlanValue(it.indicator_id, planVal, { origin: "indicator_spot" });
+            }
+        }
+    }
+    // Пустое поле Плана в карточке НЕ очищает недельный план из «Планы СПУ».
+    // Очистка периода — только во вкладке «Планы СПУ».
     const newOwner = ((document.getElementById("spuIndOwner") || {}).value || "");
     spuCommitOwnerHistory(it, newOwner);
     it.indicator_kind = kind === "automatic" ? "worktime" : kind;
@@ -32190,6 +32229,8 @@ function ensureManagement() {
     if (!root.input_order || typeof root.input_order !== "object") root.input_order = {};
     if (!Array.isArray(root.panel_blocks)) root.panel_blocks = [];
     if (!Array.isArray(root.key_blocks)) root.key_blocks = [];
+    if (!Array.isArray(root.mgmt_periods)) root.mgmt_periods = [];
+    if (!Array.isArray(root.period_plans)) root.period_plans = [];
     if (root.reporting_week_start_day == null || root.reporting_week_start_day === "") {
         root.reporting_week_start_day = 4; /* Четверг → Среда по умолчанию */
     } else {
@@ -33556,9 +33597,21 @@ function mgmtPlanStoredValue(indicatorId) {
     if (!appData || !appData.management || !appData.management.plans) return null;
     const plans = appData.management.plans;
     const keys = typeof mgmtPeriodCandidateKeys === "function" ? mgmtPeriodCandidateKeys() : [mgmtPeriodKey()];
+    function readRec(rec) {
+        if (!rec) return null;
+        if (rec.plan_value != null && rec.plan_value !== "") {
+            const n = Number(rec.plan_value);
+            if (Number.isFinite(n)) return n;
+        }
+        if (rec.value != null && rec.value !== "") {
+            const n = Number(rec.value);
+            if (Number.isFinite(n)) return n;
+        }
+        return null;
+    }
     for (let i = 0; i < keys.length; i++) {
-        const rec = plans[keys[i]] && plans[keys[i]][indicatorId];
-        if (rec && rec.value != null && rec.value !== "") return Number(rec.value);
+        const n = readRec(plans[keys[i]] && plans[keys[i]][indicatorId]);
+        if (n != null) return n;
     }
     return null;
 }
@@ -33586,22 +33639,499 @@ function setMgmtManualFact(indicatorId, value) {
     saveApp();
 }
 
-function setMgmtPlanValue(indicatorId, value) {
+function setMgmtPlanValue(indicatorId, value, meta) {
     ensureManagement();
-    const key = mgmtPeriodKey();
+    const period = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
+    const key = (period && period.period_key) || mgmtPeriodKey();
     if (!appData.management.plans[key]) appData.management.plans[key] = {};
     const raw = String(value == null ? "" : value).trim().replace(/\s/g, "").replace(",", ".");
     if (!raw) delete appData.management.plans[key][indicatorId];
     else {
-        appData.management.plans[key][indicatorId] = {
+        const n = Number(raw);
+        const rec = {
             indicator_id: indicatorId,
             period: key,
+            period_key: key,
+            period_type: (period && period.period_type) || (String(key).indexOf("month:") === 0 ? "month" : (String(key).indexOf("day:") === 0 ? "day" : "week")),
+            start_date: (period && (period.start_date || period.from)) || "",
+            end_date: (period && (period.end_date || period.to)) || "",
             value: String(raw),
+            plan_value: Number.isFinite(n) ? n : String(raw),
             updated_at: new Date().toISOString()
         };
+        if (meta && typeof meta === "object") {
+            Object.keys(meta).forEach(function (k) {
+                if (meta[k] !== undefined) rec[k] = meta[k];
+            });
+        }
+        appData.management.plans[key][indicatorId] = rec;
     }
     saveApp();
 }
+/* ========== Управленческие периоды и Планы СПУ ========== */
+function spuIsoToRu(iso) {
+    const s = String(iso || "");
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    return m ? (m[3] + "." + m[2] + "." + m[1]) : s;
+}
+
+function spuRuToIso(ru) {
+    const s = String(ru || "").trim();
+    const m = /^(\d{1,2})[./](\d{1,2})[./](\d{4})$/.exec(s);
+    if (m) {
+        return m[3] + "-" + mgmtPad(Number(m[2])) + "-" + mgmtPad(Number(m[1]));
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    return "";
+}
+
+function spuEnsureMgmtPeriods() {
+    ensureManagement();
+    if (!Array.isArray(appData.management.mgmt_periods)) appData.management.mgmt_periods = [];
+    if (!Array.isArray(appData.management.period_plans)) appData.management.period_plans = [];
+    appData.management.mgmt_periods.forEach(function (p, i) {
+        if (!p || typeof p !== "object") return;
+        if (!p.period_id) p.period_id = nextPrefixedId("mper", appData.management.mgmt_periods.map(function (x) { return x && x.period_id; }));
+        if (p.sort_order == null) p.sort_order = (i + 1) * 10;
+        if (p.is_active == null) p.is_active = true;
+    });
+    return appData.management.mgmt_periods;
+}
+
+function spuMgmtPeriodsList(includeInactive) {
+    return spuEnsureMgmtPeriods().filter(function (p) {
+        return p && p.period_id && (includeInactive || p.is_active !== false);
+    }).slice().sort(function (a, b) {
+        return String(b.start_date || "").localeCompare(String(a.start_date || ""))
+            || Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    });
+}
+
+function spuFindMgmtPeriod(periodId) {
+    return spuEnsureMgmtPeriods().find(function (p) { return p && p.period_id === periodId; }) || null;
+}
+
+function spuMgmtPeriodWeeks(period) {
+    if (!period || !period.start_date || !period.end_date) return [];
+    const rangeFrom = mgmtParseIso(period.start_date);
+    const rangeTo = mgmtParseIso(period.end_date);
+    if (!(rangeFrom instanceof Date) || !(rangeTo instanceof Date) || rangeTo < rangeFrom) return [];
+    let cur = mgmtSpuReportingWeek(period.start_date);
+    const weeks = [];
+    let guard = 0;
+    while (guard++ < 80) {
+        const wFrom = mgmtParseIso(cur.start_date);
+        const wTo = mgmtParseIso(cur.end_date);
+        // В период входит неделя, если её начало (чт) лежит внутри дат периода.
+        if (wFrom >= rangeFrom && wFrom <= rangeTo) {
+            weeks.push({
+                start_date: cur.start_date,
+                end_date: cur.end_date,
+                period_key: cur.period_key,
+                from: cur.from,
+                to: cur.to
+            });
+        }
+        if (wFrom > rangeTo) break;
+        const next = mgmtSpuShiftReportingWeek(cur.start_date, 1);
+        if (mgmtParseIso(next.start_date) <= wFrom) break;
+        cur = next;
+    }
+    return weeks;
+}
+
+function spuEvenSplitPlan(total, n) {
+    const out = [];
+    if (!n || n < 1) return out;
+    const t = Number(total);
+    if (!Number.isFinite(t)) {
+        for (let i = 0; i < n; i++) out.push(null);
+        return out;
+    }
+    const isInt = Math.abs(t - Math.round(t)) < 1e-9;
+    if (isInt) {
+        const ti = Math.round(t);
+        const base = Math.trunc(ti / n);
+        let rem = ti - base * n;
+        for (let i = 0; i < n; i++) {
+            let v = base;
+            if (rem > 0) { v += 1; rem -= 1; }
+            else if (rem < 0) { v -= 1; rem += 1; }
+            out.push(v);
+        }
+        return out;
+    }
+    const cents = Math.round(t * 100);
+    const base = Math.trunc(cents / n);
+    let rem = cents - base * n;
+    for (let i = 0; i < n; i++) {
+        let c = base;
+        if (rem > 0) { c += 1; rem -= 1; }
+        else if (rem < 0) { c -= 1; rem += 1; }
+        out.push(c / 100);
+    }
+    return out;
+}
+
+function spuFindPeriodPlan(periodId, indicatorId) {
+    spuEnsureMgmtPeriods();
+    return (appData.management.period_plans || []).find(function (r) {
+        return r && r.period_id === periodId && r.indicator_id === indicatorId;
+    }) || null;
+}
+
+function spuMgmtPeriodCoveringWeek(weekStartIso) {
+    const iso = String(weekStartIso || "").slice(0, 10);
+    if (!iso) return null;
+    const list = spuMgmtPeriodsList(false).filter(function (p) {
+        return p && p.start_date && p.end_date && iso >= p.start_date && iso <= p.end_date;
+    });
+    if (!list.length) return null;
+    list.sort(function (a, b) {
+        return String(b.start_date || "").localeCompare(String(a.start_date || ""));
+    });
+    return list[0];
+}
+
+function spuComputedPeriodWeekPlan(indicatorId, weekStartIso) {
+    if (!indicatorId) return null;
+    const w = typeof mgmtSpuReportingWeek === "function"
+        ? mgmtSpuReportingWeek(weekStartIso || "")
+        : null;
+    const start = (w && w.start_date) || String(weekStartIso || "").slice(0, 10);
+    if (!start) return null;
+    const period = spuMgmtPeriodCoveringWeek(start);
+    if (!period) return null;
+    const row = spuFindPeriodPlan(period.period_id, indicatorId);
+    if (!row || row.plan_value == null || row.plan_value === "") return null;
+    const weeks = spuMgmtPeriodWeeks(period);
+    let idx = -1;
+    for (let i = 0; i < weeks.length; i++) {
+        if (weeks[i].period_key === (w && w.period_key) || weeks[i].start_date === start) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) return null;
+    const n = Number(row.plan_value);
+    if (!Number.isFinite(n)) return null;
+    if (row.plan_type === "target") return n;
+    const vals = spuEvenSplitPlan(n, weeks.length);
+    const v = vals[idx];
+    return v == null ? null : Number(v);
+}
+
+function spuClearPeriodPlanWeeks(periodId, indicatorId) {
+    if (!appData || !appData.management || !appData.management.plans) return;
+    const plans = appData.management.plans;
+    Object.keys(plans).forEach(function (key) {
+        const bucket = plans[key];
+        if (!bucket || typeof bucket !== "object") return;
+        const rec = bucket[indicatorId];
+        if (!rec) return;
+        if (String(rec.mgmt_period_id || "") === String(periodId || "") && rec.origin === "mgmt_period") {
+            delete bucket[indicatorId];
+        }
+    });
+}
+
+function spuUpsertPeriodPlan(periodId, indicatorId, planValue, planType, distribution) {
+    spuEnsureMgmtPeriods();
+    let row = spuFindPeriodPlan(periodId, indicatorId);
+    if (!row) {
+        row = {
+            period_plan_id: nextPrefixedId("pplan", (appData.management.period_plans || []).map(function (x) { return x && x.period_plan_id; })),
+            period_id: periodId,
+            indicator_id: indicatorId
+        };
+        appData.management.period_plans.push(row);
+    }
+    const rawVal = String(planValue == null ? "" : planValue).trim().replace(/\s/g, "").replace(",", ".");
+    if (!rawVal) {
+        appData.management.period_plans = appData.management.period_plans.filter(function (r) {
+            return !(r && r.period_id === periodId && r.indicator_id === indicatorId);
+        });
+        try { spuClearPeriodPlanWeeks(periodId, indicatorId); } catch (errClr) { console.error(errClr); }
+        return null;
+    }
+    const n = Number(rawVal);
+    row.plan_value = Number.isFinite(n) ? n : rawVal;
+    row.plan_type = (planType === "target") ? "target" : "cumulative";
+    row.distribution = distribution || "even";
+    row.updated_at = new Date().toISOString();
+    return row;
+}
+
+/** Раздать план управленческого периода на отчётные недели (чт→ср) в существующее storage plans. */
+function spuApplyPeriodPlanToWeeks(periodId, indicatorId) {
+    const period = spuFindMgmtPeriod(periodId);
+    const row = spuFindPeriodPlan(periodId, indicatorId);
+    if (!period || !row) return { weeks: 0, values: [] };
+    try { spuClearPeriodPlanWeeks(periodId, indicatorId); } catch (errClrW) { console.error(errClrW); }
+    const weeks = spuMgmtPeriodWeeks(period);
+    if (!weeks.length) return { weeks: 0, values: [] };
+    const type = row.plan_type === "target" ? "target" : "cumulative";
+    const total = Number(row.plan_value);
+    let values;
+    if (type === "target") {
+        values = weeks.map(function () { return total; });
+    } else {
+        values = spuEvenSplitPlan(total, weeks.length);
+    }
+    weeks.forEach(function (w, i) {
+        const v = values[i];
+        if (v == null || !Number.isFinite(Number(v))) return;
+        mgmtRunInThuWeek(w.start_date, function () {
+            setMgmtPlanValue(indicatorId, v, {
+                origin: "mgmt_period",
+                mgmt_period_id: periodId,
+                plan_type: type,
+                distribution: row.distribution || "even",
+                period_plan_value: row.plan_value
+            });
+        });
+    });
+    return { weeks: weeks.length, values: values };
+}
+
+function spuApplyAllPeriodPlans(periodId) {
+    spuEnsureMgmtPeriods();
+    const rows = (appData.management.period_plans || []).filter(function (r) {
+        return r && r.period_id === periodId;
+    });
+    rows.forEach(function (r) {
+        spuApplyPeriodPlanToWeeks(periodId, r.indicator_id);
+    });
+    saveApp();
+    return rows.length;
+}
+
+function spuPlansSelectableIndicators() {
+    return spuManagedIndicators(false).filter(function (it) {
+        if (!it || it.is_deleted || spuIndicatorIsArchived(it)) return false;
+        const layer = spuIndicatorLayer(it);
+        return layer === "key" || layer === "totals";
+    }).slice().sort(function (a, b) {
+        const la = spuIndicatorLayer(a) === "key" ? 0 : 1;
+        const lb = spuIndicatorLayer(b) === "key" ? 0 : 1;
+        return la - lb
+            || Number(a.sort_order || 0) - Number(b.sort_order || 0)
+            || String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+}
+
+function openSpuMgmtPeriodForm(periodId) {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    const p = periodId ? spuFindMgmtPeriod(periodId) : null;
+    let html = "<h3>" + (p ? "Управленческий период" : "Новый управленческий период") + "</h3>";
+    html += '<div class="note">Управленческий месяц не обязан совпадать с календарным. Внутри периода недели считаются как отчётные недели СПУ (чт→ср).</div>';
+    html += '<input type="hidden" id="spuMperId" value="' + escapeAttribute(p ? p.period_id : "") + '">';
+    html += '<div class="form-group"><label>Название *</label><input id="spuMperName" value="'
+        + escapeAttribute(p ? p.name : "") + '" placeholder="Например: Сентябрь 2026"></div>';
+    html += '<div class="form-group"><label>Дата начала *</label><input id="spuMperFrom" type="date" value="'
+        + escapeAttribute(p ? (p.start_date || "") : "") + '"></div>';
+    html += '<div class="form-group"><label>Дата окончания *</label><input id="spuMperTo" type="date" value="'
+        + escapeAttribute(p ? (p.end_date || "") : "") + '"></div>';
+    html += '<div class="form-group"><label>Статус</label><select id="spuMperActive">'
+        + '<option value="1"' + (!p || p.is_active !== false ? " selected" : "") + ">Активен</option>"
+        + '<option value="0"' + (p && p.is_active === false ? " selected" : "") + ">Неактивен</option></select></div>";
+    if (p) {
+        const weeks = spuMgmtPeriodWeeks(p);
+        html += '<div class="note"><b>Отчётные недели внутри периода (' + weeks.length + "):</b><br>";
+        html += weeks.map(function (w) {
+            return escapeHtml(spuIsoToRu(w.start_date) + "–" + spuIsoToRu(w.end_date));
+        }).join("<br>") || "—";
+        html += "</div>";
+    }
+    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="saveSpuMgmtPeriod()">Сохранить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    openMgmtModal(html);
+}
+
+function saveSpuMgmtPeriod() {
+    const name = String((document.getElementById("spuMperName") || {}).value || "").replace(/\s+/g, " ").trim();
+    const from = String((document.getElementById("spuMperFrom") || {}).value || "").trim();
+    const to = String((document.getElementById("spuMperTo") || {}).value || "").trim();
+    if (!name) { toast("Укажите название периода", "error"); return; }
+    if (!from || !to) { toast("Укажите даты начала и окончания", "error"); return; }
+    if (mgmtParseIso(to) < mgmtParseIso(from)) { toast("Дата окончания раньше начала", "error"); return; }
+    const id = ((document.getElementById("spuMperId") || {}).value || "");
+    const list = spuEnsureMgmtPeriods();
+    let p = id ? spuFindMgmtPeriod(id) : null;
+    if (!p) {
+        p = { period_id: nextPrefixedId("mper", list.map(function (x) { return x && x.period_id; })) };
+        list.push(p);
+    }
+    p.name = name;
+    p.start_date = from;
+    p.end_date = to;
+    p.is_active = ((document.getElementById("spuMperActive") || {}).value || "1") !== "0";
+    if (p.sort_order == null) p.sort_order = list.length * 10;
+    spuPlansUiPeriodId = p.period_id;
+    let reapplied = 0;
+    try { reapplied = spuApplyAllPeriodPlans(p.period_id); } catch (errRe) { console.error(errRe); }
+    saveApp();
+    closeMgmtModal();
+    renderManagement();
+    toast(reapplied
+        ? ("Период сохранён. Планы переразданы на недели: " + reapplied)
+        : "Период сохранён.");
+}
+
+function setSpuPlansUiPeriod(periodId) {
+    spuPlansUiPeriodId = periodId || "";
+    renderManagement();
+}
+
+function spuPlansOnTypeChange(indicatorId) {
+    const typeEl = document.getElementById("spuPplanType_" + indicatorId);
+    const note = document.getElementById("spuPplanNote_" + indicatorId);
+    if (!note || !typeEl) return;
+    note.textContent = typeEl.value === "target"
+        ? "Целевое значение: на каждую неделю тот же план (без деления)."
+        : "Накопительный: план периода делится равномерно по отчётным неделям.";
+}
+
+function saveSpuPlansTabRow(indicatorId) {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    const periodId = spuPlansUiPeriodId;
+    if (!periodId) { toast("Сначала выберите или создайте управленческий период", "error"); return; }
+    const valEl = document.getElementById("spuPplanVal_" + indicatorId);
+    const typeEl = document.getElementById("spuPplanType_" + indicatorId);
+    const planVal = valEl ? valEl.value : "";
+    const planType = typeEl ? typeEl.value : "cumulative";
+    if (String(planVal).trim() === "") {
+        spuUpsertPeriodPlan(periodId, indicatorId, "", planType, "even");
+        saveApp();
+        renderManagement();
+        toast("План удалён для показателя в этом периоде.");
+        return;
+    }
+    spuUpsertPeriodPlan(periodId, indicatorId, planVal, planType, "even");
+    const res = spuApplyPeriodPlanToWeeks(periodId, indicatorId);
+    saveApp();
+    renderManagement();
+    toast("План сохранён · " + res.weeks + " нед. · тип: "
+        + (planType === "target" ? "целевое" : "накопительный"));
+}
+
+function saveSpuPlansTabAll() {
+    if (!canEditMgmtIndicators() && !canEditSpuStructure()) return;
+    const periodId = spuPlansUiPeriodId;
+    if (!periodId) { toast("Выберите управленческий период", "error"); return; }
+    const inds = spuPlansSelectableIndicators();
+    let n = 0;
+    inds.forEach(function (it) {
+        const valEl = document.getElementById("spuPplanVal_" + it.indicator_id);
+        const typeEl = document.getElementById("spuPplanType_" + it.indicator_id);
+        if (!valEl) return;
+        const planVal = valEl.value;
+        if (String(planVal).trim() === "") return;
+        spuUpsertPeriodPlan(periodId, it.indicator_id, planVal, typeEl ? typeEl.value : "cumulative", "even");
+        spuApplyPeriodPlanToWeeks(periodId, it.indicator_id);
+        n += 1;
+    });
+    saveApp();
+    renderManagement();
+    toast(n ? ("Сохранено планов: " + n) : "Нет заполненных планов");
+}
+
+function renderSpuPlansTabHtml() {
+    spuEnsureMgmtPeriods();
+    const periods = spuMgmtPeriodsList(true);
+    if (!spuPlansUiPeriodId && periods.length) {
+        const active = periods.find(function (p) { return p.is_active !== false; });
+        spuPlansUiPeriodId = (active || periods[0]).period_id;
+    }
+    const period = spuFindMgmtPeriod(spuPlansUiPeriodId);
+    const weeks = period ? spuMgmtPeriodWeeks(period) : [];
+    let html = '<div class="spu-plans-wrap">';
+    html += '<div class="note" style="margin:0 0 12px"><b>План</b> задаётся на управленческий период один раз. '
+        + "<b>Факт</b> и источник факта настраиваются в карточке показателя. "
+        + "Накопительный план делится равномерно по отчётным неделям, у которых дата начала (обычно четверг) входит в период; целевое значение копируется на каждую такую неделю без деления.</div>";
+    html += '<div class="toolbar" style="flex-wrap:wrap;gap:8px;margin-bottom:10px">';
+    html += '<label style="display:inline-flex;align-items:center;gap:6px">Период: <select id="spuPlansPeriodSel" onchange="setSpuPlansUiPeriod(this.value)">';
+    if (!periods.length) html += '<option value="">— нет периодов —</option>';
+    periods.forEach(function (p) {
+        html += '<option value="' + escapeAttribute(p.period_id) + '"'
+            + (p.period_id === spuPlansUiPeriodId ? " selected" : "") + ">"
+            + escapeHtml(p.name || p.period_id)
+            + (p.is_active === false ? " (выкл.)" : "")
+            + "</option>";
+    });
+    html += "</select></label>";
+    html += '<button type="button" class="btn btn-primary" onclick="openSpuMgmtPeriodForm()">+ Период</button>';
+    if (period) {
+        html += '<button type="button" class="btn btn-secondary" onclick="openSpuMgmtPeriodForm(\'' + period.period_id + '\')">Изменить период</button>';
+        html += '<button type="button" class="btn btn-primary" onclick="saveSpuPlansTabAll()">Сохранить все планы</button>';
+    }
+    html += "</div>";
+    if (!period) {
+        html += '<div class="empty-row">Создайте управленческий период (например: Сентябрь 2026, 28.08.2026–01.10.2026).</div></div>';
+        return html;
+    }
+    html += '<div class="spu-report-week-box" style="margin:0 0 14px;padding:12px 14px;border:1px solid #dbe3ef;border-radius:8px;background:#f8fafc">';
+    html += '<div style="font-weight:600;margin-bottom:4px">' + escapeHtml(period.name) + "</div>";
+    html += "<div>" + escapeHtml(spuIsoToRu(period.start_date) + " — " + spuIsoToRu(period.end_date))
+        + " · отчётных недель: <b>" + weeks.length + "</b></div>";
+    if (weeks.length) {
+        html += '<div class="note" style="margin:8px 0 0">' + weeks.map(function (w) {
+            return escapeHtml(spuIsoToRu(w.start_date) + "–" + spuIsoToRu(w.end_date));
+        }).join(" · ") + "</div>";
+    }
+    html += "</div>";
+    const inds = spuPlansSelectableIndicators();
+    if (!inds.length) {
+        html += '<div class="empty-row">Нет ключевых показателей и итоговых данных для планов. Назначьте тип во вкладках выше.</div></div>';
+        return html;
+    }
+    inds.forEach(function (it) {
+        const row = spuFindPeriodPlan(period.period_id, it.indicator_id);
+        const planType = (row && row.plan_type === "target") ? "target" : "cumulative";
+        const planVal = row && row.plan_value != null ? row.plan_value : "";
+        let weekPreview = "";
+        if (row && weeks.length && planVal !== "") {
+            const vals = planType === "target"
+                ? weeks.map(function () { return Number(planVal); })
+                : spuEvenSplitPlan(planVal, weeks.length);
+            weekPreview = vals.map(function (v, i) {
+                return spuIsoToRu(weeks[i].start_date) + "–" + spuIsoToRu(weeks[i].end_date) + ": "
+                    + (Number.isFinite(Number(v)) ? String(v) : "—");
+            }).join(" · ");
+        }
+        html += '<div class="spu-set-card">';
+        html += '<div class="spu-set-card-main" style="flex:1;min-width:220px">';
+        html += '<div class="spu-set-card-title">' + escapeHtml(it.name || it.indicator_id) + "</div>";
+        html += '<div class="spu-set-card-meta">'
+            + escapeHtml(spuIndicatorLayerLabel(spuIndicatorLayer(it)) + " · " + spuSettingsSourceShort(it))
+            + "</div>";
+        html += '<div class="form-group" style="margin:8px 0 0"><label>План на период</label>'
+            + '<input id="spuPplanVal_' + escapeAttribute(it.indicator_id) + '" value="'
+            + escapeAttribute(planVal === "" ? "" : String(planVal)) + '" placeholder="Например: 15000000"></div>';
+        html += '<div class="form-group" style="margin:6px 0 0"><label>Тип плана</label>'
+            + '<select id="spuPplanType_' + escapeAttribute(it.indicator_id) + '" onchange="spuPlansOnTypeChange(\''
+            + it.indicator_id + '\')">'
+            + '<option value="cumulative"' + (planType === "cumulative" ? " selected" : "") + ">Накопительный</option>"
+            + '<option value="target"' + (planType === "target" ? " selected" : "") + ">Целевое значение</option>"
+            + "</select></div>";
+        html += '<div class="note" id="spuPplanNote_' + escapeAttribute(it.indicator_id) + '" style="margin:4px 0 0">'
+            + (planType === "target"
+                ? "Целевое значение: на каждую неделю тот же план (без деления)."
+                : "Накопительный: план периода делится равномерно по отчётным неделям.")
+            + "</div>";
+        if (weekPreview) {
+            html += '<div class="note" style="margin:6px 0 0"><b>По неделям:</b> ' + escapeHtml(weekPreview) + "</div>";
+        }
+        html += "</div>";
+        html += '<div class="spu-set-card-actions">';
+        html += '<button type="button" class="btn btn-primary btn-small" onclick="saveSpuPlansTabRow(\''
+            + it.indicator_id + '\')">Сохранить план</button>';
+        html += "</div></div>";
+    });
+    html += "</div>";
+    return html;
+}
+
 
 function mgmtReadIndicator(it, stack) {
     if (!it || it.is_deleted) return { value: null, status: "missing" };
@@ -37088,13 +37618,14 @@ function spuSettingsLayerTabs() {
     return [
         { id: "key", label: "Ключевые показатели" },
         { id: "totals", label: "Итоговые данные" },
+        { id: "plans", label: "Планы СПУ" },
         { id: "unset", label: "Не настроено" },
         { id: "archive", label: "Архив" }
     ];
 }
 
 function setMgmtSettingsLayerTab(id) {
-    const ok = { key: 1, totals: 1, unset: 1, archive: 1 };
+    const ok = { key: 1, totals: 1, plans: 1, unset: 1, archive: 1 };
     mgmtSettingsLayerTab = ok[id] ? id : "key";
     renderManagement();
 }
@@ -37230,8 +37761,8 @@ function spuSettingsCardHtml(it) {
     let meta = spuSettingsSourceShort(it)
         + " · " + spuSettingsPeriodShort(it)
         + " · " + spuSettingsAggShort(it);
-    if (layer === "key" && it.show_plan !== false && it.plan_mode !== "none") {
-        meta += " · План: используется";
+    if ((layer === "key" || layer === "totals") && it.show_plan !== false && it.plan_mode !== "none") {
+        meta += " · План: во вкладке «Планы СПУ»";
     }
     let html = '<div class="spu-set-card">';
     html += '<div class="spu-set-card-main"><div class="spu-set-card-title">' + escapeHtml(it.name || "Без названия") + "</div>";
@@ -37290,15 +37821,22 @@ function renderMgmtSettingsHtml() {
     html += "</select></label>"
         + '<div class="note" style="margin:8px 0 0">Конец определяется автоматически: <b>'
         + escapeHtml(mgmtSpuWeekdayLabel(startDay)) + " → " + escapeHtml(mgmtSpuWeekdayLabel(endDay))
-        + "</b>. Work Time → Итоговые данные → Ключевые показатели → План–факт / Панель. Метрики Work Time здесь не перечисляются.</div>"
+        + "</b>. Цепочка: Work Time → Итоговые данные → Ключевые показатели → Планы СПУ → План–факт / Панель. Метрики Work Time здесь не перечисляются.</div>"
         + "</div>";
-    html += '<p class="spu-ind-note">СПУ работает через собственные Показатели. Операционные Метрики Work Time остаются в Work Time и центральном Справочнике метрик; в СПУ они подключаются только как источник Итоговых данных.</p>';
+    html += '<p class="spu-ind-note"><b>Показатель</b> — что контролируем. <b>План</b> — вкладка «Планы СПУ» (управленческий период). <b>Факт</b> — источник в карточке (Work Time / ручной / расчёт / 1С). '
+        + "Метрики Work Time не показываются как Показатели СПУ — только как источник факта для Итоговых данных.</p>";
     html += '<div class="spu-ind-hubs metrics-tabs">';
     spuSettingsLayerTabs().forEach(function (h) {
-        const count = all.filter(function (it) { return spuSettingsBucket(it) === h.id; }).length;
+        let count = "";
+        if (h.id === "plans") {
+            try { count = " · " + spuMgmtPeriodsList(true).length + " пер."; }
+            catch (errP) { count = ""; }
+        } else {
+            count = " (" + all.filter(function (it) { return spuSettingsBucket(it) === h.id; }).length + ")";
+        }
         html += '<button type="button" class="metrics-tab' + (tab === h.id ? " active" : "") + '"'
             + " onclick=\"setMgmtSettingsLayerTab('" + h.id + "')\">"
-            + escapeHtml(h.label) + " (" + count + ")</button>";
+            + escapeHtml(h.label) + count + "</button>";
     });
     html += "</div>";
     html += '<div class="toolbar" style="flex-wrap:wrap;gap:8px">';
@@ -37307,12 +37845,22 @@ function renderMgmtSettingsHtml() {
     } else if (tab === "key") {
         html += '<button type="button" class="btn btn-primary" onclick="openSpuKeyForm()">+ Добавить ключевой показатель</button>';
         html += '<button type="button" class="btn btn-secondary" onclick="openSpuKeyBlockForm()">+ Добавить блок</button>';
+    } else if (tab === "plans") {
+        html += '<span class="note">План на управленческий период. Факт и источник — в карточке показателя.</span>';
     } else if (tab === "unset") {
         html += '<span class="note">Назначьте тип использования существующим Показателям СПУ. Метрики Work Time сюда не попадают — только spu_indicator_id.</span>';
     } else {
         html += '<span class="note">Архив: неактивные Показатели СПУ. История, планы и факты сохранены.</span>';
     }
     html += "</div>";
+
+    if (tab === "plans") {
+        try { return html + renderSpuPlansTabHtml(); }
+        catch (errPlans) {
+            console.error(errPlans);
+            return html + '<div class="empty-row">Ошибка вкладки «Планы СПУ»</div>';
+        }
+    }
 
     if (tab === "key") {
         const blocks = spuKeyBlocksList(true);
