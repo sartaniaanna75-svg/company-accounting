@@ -93,7 +93,8 @@
         }
 
         .login-grid.home-five,
-        .login-grid.home-six {
+        .login-grid.home-six,
+        .login-grid.home-seven {
             grid-template-columns: repeat(3, 1fr);
         }
 
@@ -4068,6 +4069,41 @@
         @media (max-width: 1000px) {
             .cr-stats, .cr-queues, .cr-ana, .cr-form { grid-template-columns: 1fr; }
         }
+
+        .fr-wrap { display: flex; flex-direction: column; gap: 12px; }
+        .fr-crumb { font-size: 13px; color: var(--muted); }
+        .fr-crumb b { color: var(--text); }
+        .fr-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+        .fr-weekbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .fr-weekbar .fr-week-label { font-weight: 700; }
+        .fr-status-pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 600; background: #eef2ff; color: #3730a3; }
+        .fr-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+        .fr-card { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+        .fr-card span { display: block; font-size: 12px; color: var(--muted); }
+        .fr-card b { display: block; font-size: 18px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+        .fr-card.fr-ok { border-color: #86efac; background: #f0fdf4; }
+        .fr-card.fr-bad { border-color: #fca5a5; background: #fef2f2; }
+        .fr-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.9fr); gap: 12px; align-items: start; }
+        .fr-box { background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+        .fr-box h3 { margin: 0 0 10px; font-size: 14px; }
+        .fr-table-wrap { overflow: auto; }
+        .fr-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        .fr-table th, .fr-table td { border-bottom: 1px solid #eef2f7; padding: 6px 8px; text-align: left; }
+        .fr-table th { color: var(--muted); font-weight: 600; font-size: 12px; }
+        .fr-table .fr-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .fr-table tfoot td { font-weight: 700; background: #f8fafc; }
+        .fr-in { color: #15803d; }
+        .fr-out { color: #b91c1c; }
+        .fr-ctrl { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: #fff; }
+        .fr-ctrl.fr-ok { background: #f0fdf4; border-color: #86efac; }
+        .fr-ctrl.fr-bad { background: #fef2f2; border-color: #fca5a5; }
+        .fr-ctrl .fr-disc { font-size: 26px; font-weight: 800; margin: 6px 0; font-variant-numeric: tabular-nums; }
+        .fr-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+        .fr-filters input, .fr-filters select { font-size: 12px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; }
+        .fr-muted { color: var(--muted); font-size: 12px; }
+        @media (max-width: 1100px) {
+            .fr-cards, .fr-layout { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 
@@ -4083,7 +4119,7 @@
         </div>
         <div class="login-title" id="loginTitle">⏱ Табель сотрудников</div>
         <div class="login-subtitle" id="loginSubtitle">
-            Выберите раздел: Магазин Володарского, Территория, Общее, СПУ, Оргструктура или Администратор.
+            Выберите раздел: Магазин Володарского, Территория, Общее, СПУ, Финконтроль, Администратор или Оргструктура.
             <span id="defaultPinHint"></span>
         </div>
         <div class="login-grid" id="loginGrid">
@@ -4113,10 +4149,20 @@
                 <div class="note">Система планирования и управления компанией</div>
                 <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('spu')">Открыть</button>
             </div>
+            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('financeRec')">
+                <h3>Финконтроль</h3>
+                <div class="note">Финансовая сверка поступлений, расходов и остатков</div>
+                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('financeRec')">Открыть</button>
+            </div>
             <div class="login-card summary-card" role="button" tabindex="0" onclick="renderLogin('admin')">
                 <h3>Администратор</h3>
                 <div class="note">Отдельный вход. Все подразделения и пользователи.</div>
                 <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('admin')">Войти</button>
+            </div>
+            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('org')">
+                <h3>Оргструктура</h3>
+                <div class="note">Редактируемая модель компании</div>
+                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('org')">Открыть</button>
             </div>
         </div>
     </div>
@@ -4283,6 +4329,13 @@
         </button>
         <button type="button" class="nav-btn" data-for="summary" data-spu="1" data-section="management-structure" onclick="showSection('management-structure', this)">
             Структура СПУ
+        </button>
+        <div class="menu-title" data-for="summary" data-finrec="1">Финконтроль</div>
+        <button type="button" class="nav-btn" data-for="summary" data-finrec="1" data-section="financeRec" onclick="showSection('financeRec', this)">
+            Сверка недели
+        </button>
+        <button type="button" class="nav-btn" data-for="summary" data-finrec="1" data-section="financeRec-settings" onclick="showSection('financeRec-settings', this)">
+            Справочники и настройки
         </button>
         <div class="menu-title" data-for="summary" data-org="1">Оргструктура</div>
         <button type="button" class="nav-btn" data-for="summary" data-org="1" data-section="org-chart" onclick="showSection('org-chart', this)">
@@ -5488,6 +5541,10 @@
                     </div>
                     <div id="spuDeptOrderBox" style="padding:10px 12px;"></div>
                 </div>
+            </section>
+
+            <section id="financeRec" class="section">
+                <div id="financeRecHost"></div>
             </section>
 
         </div>
@@ -7635,6 +7692,8 @@ const ACCESS_PERM_KEYS = [
     { key: "managementTasks", label: "СПУ · ежедневные задачи" },
     { key: "managementMeetings", label: "СПУ · встречи" },
     { key: "orgStructure", label: "Оргструктура" },
+    { key: "financeRec", label: "Финконтроль" },
+    { key: "financeRecSetup", label: "Финконтроль · справочники" },
     { key: "customerReturns", label: "Возвраты" },
     { key: "customerReturnsPicker", label: "Возвраты · товароразборщик" },
     { key: "customerReturnsRecount", label: "Возвраты · пересчёт" },
@@ -7806,6 +7865,16 @@ function userCanAccessDept(user, code) {
         const codes = userAccessDeptCodes(user);
         return TERRITORY_DEPT_CODES.some(function (c) { return codes.indexOf(c) !== -1; });
     }
+    if (code === "financeRec") {
+        if (user.role === "admin" || user.legacy_role === "admin") return true;
+        if (userAccessDeptCodes(user).indexOf("financeRec") !== -1) return true;
+        const lvl = (user.permissions && user.permissions.financeRec) || "none";
+        const setup = (user.permissions && user.permissions.financeRecSetup) || "none";
+        if (typeof frPermRank === "function") {
+            return frPermRank(lvl) > 0 || frPermRank(setup) > 0;
+        }
+        return (lvl && lvl !== "none") || (setup && setup !== "none");
+    }
     if (user.role === "admin" || user.legacy_role === "admin") return true;
     return userAccessDeptCodes(user).indexOf(code) !== -1;
 }
@@ -7837,6 +7906,7 @@ function userSwitchCodes(user) {
     if (userCanAccessDept(user, "org")) add("org");
     if (userCanAccessDept(user, "admin")) add("admin");
     if (userCanAccessDept(user, "territoryMetrics")) add("territoryMetrics");
+    if (userCanAccessDept(user, "financeRec")) add("financeRec");
     return codes;
 }
 
@@ -7844,6 +7914,7 @@ function currentNavCode() {
     if (isTerritoryMetricsMode()) return "territoryMetrics";
     if (isOrgMode()) return "org";
     if (isSpuMode()) return "spu";
+    if (typeof isFinanceRecMode === "function" && isFinanceRecMode()) return "financeRec";
     if (isAdminEntry()) return "admin";
     if (isSummary()) return "summary";
     return (workspace() && workspace().code) || "";
@@ -7855,6 +7926,7 @@ function entryLabel(code) {
     if (code === "spu") return "СПУ";
     if (code === "admin") return "Администратор";
     if (code === "territoryMetrics") return "Метрики территории";
+    if (code === "financeRec") return "Финконтроль";
     const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
     if (d) return d.name;
     const w = findWorkspaceByCode(code);
@@ -7968,7 +8040,7 @@ function enterAsUser(user, code) {
         return true;
     }
     let w = findWorkspaceByCode(code);
-    if (!w && (code === "summary" || code === "spu" || code === "admin" || code === "org")) {
+    if (!w && (code === "summary" || code === "spu" || code === "admin" || code === "org" || code === "financeRec")) {
         w = findWorkspaceByCode("summary");
     }
     if (!w && code === "summary") {
@@ -7976,7 +8048,7 @@ function enterAsUser(user, code) {
         appData.workspaces.push(w);
         ensureSummaryPins(w);
     }
-    const destCode = (code === "spu" || code === "admin" || code === "org") ? "summary" : code;
+    const destCode = (code === "spu" || code === "admin" || code === "org" || code === "financeRec") ? "summary" : code;
     const def = DEPT_DEFAULTS.find(function (d) { return d.code === destCode; });
     if (!w && def) {
         w = createWorkspace(def.name, String(def.pin), "dept", destCode);
@@ -7986,8 +8058,9 @@ function enterAsUser(user, code) {
     if (code === "spu") currentEntry = "spu";
     else if (code === "org") currentEntry = "org";
     else if (code === "admin") currentEntry = "admin";
+    else if (code === "financeRec") currentEntry = "financeRec";
     else if (destCode === "summary") {
-        if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "org") currentEntry = "summary";
+        if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "org" && currentEntry !== "financeRec") currentEntry = "summary";
     } else {
         currentEntry = "dept";
     }
@@ -8000,6 +8073,7 @@ function enterAsUser(user, code) {
     if (want && allowedSections().indexOf(want) !== -1) currentSection = want;
     else if (currentEntry === "spu") currentSection = "management";
     else if (currentEntry === "org") currentSection = "org-chart";
+    else if (currentEntry === "financeRec") currentSection = "financeRec";
     else if (currentEntry === "admin") currentSection = "summaryStaff";
     else if (user.legacy_role === "pay") currentSection = "salary";
     else if (user.legacy_role === "adjust") currentSection = "salary";
@@ -8039,6 +8113,20 @@ function switchUserWorkspace(code) {
         applyLegacyRolesFromUser(user, "summary");
         selectedMonth = keepMonth;
         currentSection = "management";
+        saveSession();
+        loadWorkspace();
+        return;
+    }
+    if (code === "financeRec") {
+        if (!userCanAccessDept(user, "financeRec")) return;
+        const w = findWorkspaceByCode("summary");
+        if (!w) return;
+        currentEntry = "financeRec";
+        currentUserId = user.user_id;
+        setCurrentWorkspace(w);
+        applyLegacyRolesFromUser(user, "summary");
+        selectedMonth = keepMonth;
+        currentSection = "financeRec";
         saveSession();
         loadWorkspace();
         return;
@@ -10172,7 +10260,7 @@ function summaryMonthMoney(monthValue) {
 function renderLogin(view) {
     try {
         console.log("[WorkTime login click]", view);
-        if (view === "home" || view === "shop" || view === "territory" || view === "territoryMetrics" || view === "summary" || view === "spu" || view === "org" || view === "admin") loginView = view;
+        if (view === "home" || view === "shop" || view === "territory" || view === "territoryMetrics" || view === "summary" || view === "spu" || view === "org" || view === "admin" || view === "financeRec") loginView = view;
         ensureLoginData();
         try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
 
@@ -10257,6 +10345,15 @@ function renderLogin(view) {
             }
             grid.className = "login-grid single-view";
             grid.innerHTML = userPinLoginCardHtml("spu", "СПУ");
+        } else if (loginView === "financeRec") {
+            backHome();
+            if (title) title.textContent = "Финконтроль";
+            if (subtitle) {
+                subtitle.innerHTML = "Финансовая сверка поступлений, расходов и остатков. Выберите пользователя и введите его PIN."
+                    + ' <span id="defaultPinHint"></span>';
+            }
+            grid.className = "login-grid single-view";
+            grid.innerHTML = userPinLoginCardHtml("financeRec", "Финконтроль", "Финансовая сверка поступлений, расходов и остатков", "Открыть");
         } else if (loginView === "org") {
             backHome();
             if (title) title.textContent = "Оргструктура";
@@ -10284,8 +10381,8 @@ function renderLogin(view) {
                 subtitle.innerHTML = "Выберите раздел или вход администратора."
                     + ' <span id="defaultPinHint"></span>';
             }
-            grid.className = "login-grid home-six";
-            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + spuFolderCardHtml() + orgFolderCardHtml() + adminFolderCardHtml();
+            grid.className = "login-grid home-seven";
+            grid.innerHTML = shopFolderCardHtml() + territoryFolderCardHtml() + summaryFolderCardHtml() + spuFolderCardHtml() + financeRecFolderCardHtml() + orgFolderCardHtml() + adminFolderCardHtml();
         }
 
         restoreAllLoginCardState(grid);
@@ -10782,6 +10879,7 @@ function logout() {
     leaveWorkspace();
     if (entry === "spu") renderLogin("spu");
     else if (entry === "org") renderLogin("org");
+    else if (entry === "financeRec") renderLogin("financeRec");
     else if (entry === "admin") renderLogin("admin");
     else if (entry === "territoryMetrics" || isTerritoryCode(code)) renderLogin("territory");
     else if (code === "shop") renderLogin("shop");
@@ -10841,9 +10939,10 @@ function tryRestoreSession() {
             }
         }
         if (w.type === "summary" || w.code === "summary") {
-            if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "summary" && currentEntry !== "org") {
+            if (currentEntry !== "spu" && currentEntry !== "admin" && currentEntry !== "summary" && currentEntry !== "org" && currentEntry !== "financeRec") {
                 if (isMgmtNavSection(currentSection)) currentEntry = "spu";
                 else if (typeof isOrgNavSection === "function" && isOrgNavSection(currentSection)) currentEntry = "org";
+                else if (typeof isFrNavSection === "function" && isFrNavSection(currentSection)) currentEntry = "financeRec";
                 else if (currentSection === "users") currentEntry = "admin";
                 else currentEntry = "summary";
             }
@@ -10910,6 +11009,9 @@ function applyModeUI() {
             } else if (isSpuMode()) {
                 show = el.getAttribute("data-spu") === "1" && sec
                     && (allowed.indexOf(sec) !== -1 || sec === "customPage");
+            } else if (typeof isFinanceRecMode === "function" && isFinanceRecMode()) {
+                show = el.getAttribute("data-finrec") === "1" && sec
+                    && (allowed.indexOf(sec) !== -1 || sec === "customPage");
             } else if (isAdminEntry()) {
                 show = (sec === "users" || sec === "settings" || sec === "metricCatalog" || sec === "summaryStaff" || sec === "customPage")
                     && (allowed.indexOf(sec) !== -1 || sec === "customPage");
@@ -10922,6 +11024,7 @@ function applyModeUI() {
                 if (sec === "users") show = false;
                 if (el.getAttribute("data-spu") === "1") show = false;
                 if (el.getAttribute("data-org") === "1") show = false;
+                if (el.getAttribute("data-finrec") === "1") show = false;
             }
         }
         if (isAdminEntry() && el.classList.contains("nav-btn")
@@ -10934,6 +11037,9 @@ function applyModeUI() {
         }
         if (el.getAttribute("data-org") === "1" && !el.classList.contains("nav-btn")) {
             show = isOrgMode();
+        }
+        if (el.getAttribute("data-finrec") === "1" && !el.classList.contains("nav-btn")) {
+            show = typeof isFinanceRecMode === "function" && isFinanceRecMode();
         }
         if (isTerritoryMetricsMode() && el.classList.contains("menu-title")) {
             show = mode === "territoryMetricsHub";
@@ -11818,6 +11924,14 @@ function allowedSections() {
     if (isSpuMode()) {
         return allowedSpuSections();
     }
+    if (typeof isFinanceRecMode === "function" && isFinanceRecMode()) {
+        const list = [];
+        if (typeof frCan === "function" ? frCan("view") : true) {
+            list.push("financeRec");
+            if (typeof frCan === "function" && frCan("setup")) list.push("financeRec-settings");
+        }
+        return list;
+    }
     if (isAdminEntry()) {
         const list = [];
         if (isAppAdmin()) list.push("users");
@@ -11930,6 +12044,8 @@ function sectionTitle(id) {
         "management-events": "График мероприятий",
         "management-settings": "Настройка показателей",
         "management-structure": "Структура СПУ",
+        financeRec: "Финконтроль",
+        "financeRec-settings": "Финконтроль · настройки",
         "org-chart": "Оргструктура — схема",
         "org-settings": "Оргструктура — настройки"
     };
@@ -11982,6 +12098,9 @@ function showSection(id, button) {
                 if (spu.indexOf(requestedSection) !== -1) id = requestedSection;
                 else if (spu.indexOf("management") !== -1) id = "management";
                 else id = defaultSection();
+            } else if (typeof isFinanceRecMode === "function" && isFinanceRecMode()
+                && typeof isFrNavSection === "function" && isFrNavSection(requestedSection)) {
+                id = requestedSection;
             } else {
                 id = defaultSection();
             }
@@ -11993,6 +12112,9 @@ function showSection(id, button) {
     if (id === "metrics-cashiers") shopMetricCategory = "cashiers";
     if (id === "metrics-managers") shopMetricCategory = "managers";
     if (isMgmtNavSection(id)) mgmtTab = mgmtTabFromSection(id);
+    if (typeof isFrNavSection === "function" && isFrNavSection(id)) {
+        frUi.inner = id === "financeRec-settings" ? "settings" : "work";
+    }
     currentSection = id;
     saveSession();
 
@@ -12003,10 +12125,12 @@ function showSection(id, button) {
     if (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers" || isDeptWorkSection(id)) sectionId = "metrics";
     else if (isMgmtNavSection(id)) sectionId = "management";
     else if (isOrgNavSection(id)) sectionId = "orgstructure";
+    else if (typeof isFrNavSection === "function" && isFrNavSection(id)) sectionId = "financeRec";
     const host = document.getElementById(sectionId);
     if (host) host.classList.add("active");
     const monthBar = document.querySelector(".month-bar");
-    if (monthBar) monthBar.style.display = (isMgmtNavSection(id) || isOrgNavSection(id) || id === "territoryReturns") ? "none" : "";
+    if (monthBar) monthBar.style.display = (isMgmtNavSection(id) || isOrgNavSection(id)
+        || (typeof isFrNavSection === "function" && isFrNavSection(id)) || id === "territoryReturns") ? "none" : "";
     if (id === "territoryReturns" && typeof crCanSeeTab === "function") {
         try { if (crUi && crCanSeeTab("all")) crUi.tab = "all"; } catch (err) { console.error(err); }
     }
@@ -12074,6 +12198,9 @@ function showSection(id, button) {
     if (id === "management") runSection(renderManagement);
     if (isMgmtNavSection(id)) runSection(renderManagement);
     if (isOrgNavSection(id)) runSection(renderOrgStructure);
+    if (typeof isFrNavSection === "function" && isFrNavSection(id) && typeof renderFinanceRec === "function") {
+        runSection(renderFinanceRec);
+    }
     if (id === "customPage") runSection(renderCustomPage);
     } catch (err) {
         console.error(err);
@@ -12126,6 +12253,9 @@ function refreshAll() {
     if (isDeptWorkSection(currentSection)) run(renderDeptWorkMetrics);
     if (isMgmtNavSection(currentSection)) run(renderManagement);
     if (isOrgNavSection(currentSection)) run(renderOrgStructure);
+    if (typeof isFrNavSection === "function" && isFrNavSection(currentSection) && typeof renderFinanceRec === "function") {
+        run(renderFinanceRec);
+    }
     if (currentSection === "customPage") run(renderCustomPage);
     if (currentSection === "users") {
         run(renderAccessUsers);
@@ -27689,7 +27819,7 @@ function applyAccessRoleTemplateInForm() {
         if (el) el.checked = permRank(tpl[p.key]) > 0;
     });
     if (role === "admin") {
-        DEPT_DEFAULTS.concat([{ code: "summary" }, { code: "spu" }, { code: "org" }]).forEach(function (d) {
+        DEPT_DEFAULTS.concat([{ code: "summary" }, { code: "spu" }, { code: "org" }, { code: "financeRec" }]).forEach(function (d) {
             const el = document.getElementById("accessDept_" + d.code);
             if (el) el.checked = true;
         });
@@ -27731,6 +27861,9 @@ function openAccessUserEditor(userId) {
     deptHtml += '<label class="check"><input type="checkbox" id="accessDept_org"'
         + (userCanAccessDept(user, "org") ? " checked" : "")
         + "> Оргструктура</label>";
+    deptHtml += '<label class="check"><input type="checkbox" id="accessDept_financeRec"'
+        + (userCanAccessDept(user, "financeRec") ? " checked" : "")
+        + "> Финконтроль</label>";
     let permHtml = "";
     ACCESS_PERM_KEYS.forEach(function (p) {
         const on = permRank((user.permissions && user.permissions[p.key]) || "none") > 0;
@@ -27795,6 +27928,9 @@ function saveAccessUser(userId) {
     if (document.getElementById("accessDept_org") && document.getElementById("accessDept_org").checked) {
         departments.push("org");
     }
+    if (document.getElementById("accessDept_financeRec") && document.getElementById("accessDept_financeRec").checked) {
+        departments.push("financeRec");
+    }
     const permissions = {};
     ACCESS_PERM_KEYS.forEach(function (p) {
         const el = document.getElementById("accessPerm_" + p.key);
@@ -27802,6 +27938,8 @@ function saveAccessUser(userId) {
     });
     if (permissions.salary !== "none" && departments.indexOf("summary") === -1) departments.push("summary");
     if (permissions.orgStructure !== "none" && departments.indexOf("org") === -1) departments.push("org");
+    if ((permissions.financeRec !== "none" || permissions.financeRecSetup !== "none")
+        && departments.indexOf("financeRec") === -1) departments.push("financeRec");
     if (role === "admin") {
         DEPT_DEFAULTS.forEach(function (d) {
             if (departments.indexOf(d.code) === -1) departments.push(d.code);
@@ -27809,6 +27947,7 @@ function saveAccessUser(userId) {
         if (departments.indexOf("summary") === -1) departments.push("summary");
         if (departments.indexOf("spu") === -1) departments.push("spu");
         if (departments.indexOf("org") === -1) departments.push("org");
+        if (departments.indexOf("financeRec") === -1) departments.push("financeRec");
         ACCESS_PERM_KEYS.forEach(function (p) { permissions[p.key] = "edit"; });
     }
     let prev = findAccessUser(id);
@@ -43620,6 +43759,7 @@ function init() {
     try { ensureManagement(); } catch (err) { console.error(err); }
     try { ensureCustomerReturns(appData); } catch (err) { console.error(err); }
     try { ensureOrgStructure(appData); } catch (err) { console.error(err); }
+    try { if (typeof ensureFinanceRec === "function") ensureFinanceRec(); } catch (err) { console.error(err); }
     try {
         orgSelfTestLast = orgRunSelfTests();
         console.log("[WorkTime org tests]", orgSelfTestLast);
@@ -43640,9 +43780,11 @@ function init() {
         if (subtitle) subtitle.textContent = "Ошибка загрузки приложения. Обновите страницу.";
     }
 }
-
-init();
 </script>
+<script src="fr-mod.js"></script>
+<script>
+init();
+
 
 </body>
 </html>
