@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
@@ -456,6 +456,14 @@
         .spu-ind-actions { display: flex; flex-wrap: wrap; gap: 6px; }
         .spu-ind-bulk { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
         .spu-ind-hubs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+        .spu-fx-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: #fafbfc; margin-top: 8px; }
+        .spu-fx-box h4 { margin: 0 0 6px; font-size: 14px; }
+        .spu-fx-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+        .spu-fx-chip { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 4px 6px; }
+        .spu-fx-chip select, .spu-fx-chip input[type="number"] { min-width: 140px; max-width: 260px; font-size: 13px; padding: 4px 6px; }
+        .spu-fx-chip input[type="number"] { width: 88px; min-width: 72px; }
+        .spu-fx-human { font-size: 13px; color: var(--text); margin: 8px 0 4px; line-height: 1.45; }
+        .spu-fx-check { margin-top: 8px; padding: 8px 10px; background: #fff; border: 1px dashed var(--border); border-radius: 8px; font-size: 13px; line-height: 1.5; }
         .mi-add-origin { display: grid; gap: 8px; margin: 8px 0 12px; }
         .mi-add-origin label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
         .mi-add-origin span { line-height: 1.35; }
@@ -30521,9 +30529,19 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
     const kind = uiKind === "worktime" ? "worktime" : uiKind;
     spuIndFormKind = kind;
     spuIndFormCalc = (cfg && cfg.calc_mode) || (it && (it.calc_mode || it.aggregation_type)) || "sum";
+    if (kind === "calculated") spuIndFormCalc = "formula";
     spuIndFormFormula = (cfg && Array.isArray(cfg.formula_expr) && cfg.formula_expr.length)
         ? cfg.formula_expr.slice()
         : ((it && Array.isArray(it.formula_expr)) ? it.formula_expr.slice() : []);
+    if (kind === "calculated" && (!spuIndFormFormula || !spuIndFormFormula.length) && it && it.calc_left_id && it.calc_right_id) {
+        const op = it.calc_op === "sum" ? "+" : (it.calc_op === "difference" ? "-" : "/");
+        spuIndFormFormula = [
+            { t: "ind", id: it.calc_left_id },
+            { t: "op", v: op },
+            { t: "ind", id: it.calc_right_id }
+        ];
+        if (it.calc_op === "percent") spuIndFormFormula.push({ t: "op", v: "*" }, { t: "num", v: 100 });
+    }
     spuIndFormSources = sources.length ? sources : (kind === "manual" || kind === "one_c" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
     spuIndSrcMetricFilters = {};
     (spuIndFormSources || []).forEach(function (s) {
@@ -30558,7 +30576,7 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + "</div></div>"
         + '<div class="form-group"><label id="spuIndOwnerLab">' + escapeHtml(spuOwnerRoleLabel(kind)) + '</label><select id="spuIndOwner">'
         + mgmtEmployeeOptions(ownerId) + "</select></div>"
-        + '<div class="form-group"><label>Тип значения</label><select id="spuIndUnit">'
+        + '<div class="form-group"><label>Тип результата</label><select id="spuIndUnit">'
         + [["number", "Число"], ["count", "Количество"], ["money", "Деньги"], ["percent", "Процент"], ["days", "Дни"], ["hours", "Часы"]].map(function (p) {
             const cur = (it && it.unit) || ((presetMetric && presetMetric.fill_type === "money") ? "money" : "number");
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
@@ -30583,12 +30601,14 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         }).join("") + "</select></div>"
         + '<div id="spuIndMetricWrap">'
         + '<div class="note" id="spuIndSrcHint">Источник → Work Time / Табель / другой показатель. Исходная метрика остаётся в Work Time и не становится показателем СПУ.</div>'
-        + '<div class="form-group"><label>Способ расчёта</label><select id="spuIndAgg" onchange="onSpuIndCalcChange()">'
+        + '<div id="spuIndAggWrap" class="form-group"><label>Способ расчёта</label><select id="spuIndAgg" onchange="onSpuIndCalcChange()">'
         + [["sum", "Сумма"], ["average", "Среднее"], ["none", "Один источник"], ["formula", "Формула"]].map(function (p) {
             return '<option value="' + p[0] + '"' + (spuIndFormCalc === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
+        + '<div id="spuIndSourcesUi">'
         + '<div id="spuIndSourceBox"></div>'
         + '<div class="toolbar"><button type="button" class="btn btn-secondary" onclick="spuIndAddSource()">+ Добавить источник</button></div>'
+        + "</div>"
         + '<div id="spuIndFormulaBox"></div>'
         + "</div>"
         + '<div id="spuIndManualWrap">'
@@ -30633,6 +30653,9 @@ function onSpuIndKindChange() {
     const oneCWrap = document.getElementById("spuIndOneCWrap");
     const factWrap = document.getElementById("spuIndFactWrap");
     const ownerLab = document.getElementById("spuIndOwnerLab");
+    const sourcesUi = document.getElementById("spuIndSourcesUi");
+    const aggWrap = document.getElementById("spuIndAggWrap");
+    const srcHint = document.getElementById("spuIndSrcHint");
     if (ownerLab) ownerLab.textContent = spuOwnerRoleLabel(spuIndFormKind);
     const needsSources = spuIndFormKind === "worktime" || spuIndFormKind === "calculated";
     if (metricWrap) metricWrap.style.display = needsSources ? "" : "none";
@@ -30640,21 +30663,356 @@ function onSpuIndKindChange() {
     if (oneCWrap) oneCWrap.style.display = spuIndFormKind === "one_c" ? "" : "none";
     if (factWrap) factWrap.style.display = (spuIndFormKind === "manual" || spuIndFormKind === "one_c") ? "" : "none";
     if (needsSources) {
-        if (!(spuIndFormSources || []).length) {
-            spuIndFormSources = [spuNewSourceRow({
-                source_type: spuIndFormKind === "calculated" ? "spu_indicator" : "worktime_metric"
-            })];
-        }
         const aggEl = document.getElementById("spuIndAgg");
-        if (spuIndFormKind === "calculated" && aggEl) {
-            if (!aggEl.value || aggEl.value === "sum" || aggEl.value === "none") {
+        if (spuIndFormKind === "calculated") {
+            if (aggEl) {
                 aggEl.value = "formula";
                 spuIndFormCalc = "formula";
             }
+            if (sourcesUi) sourcesUi.style.display = "none";
+            if (aggWrap) aggWrap.style.display = "none";
+            if (srcHint) {
+                srcHint.textContent = "Расчётный показатель: формула из Показателей СПУ (+ − × ÷, скобки, константы). Ссылки по spu_indicator_id. Work Time-метрики сюда напрямую не выбираются.";
+            }
+            if (!(spuIndFormFormula || []).length) {
+                spuIndFormFormula = [
+                    { t: "ind", id: "" },
+                    { t: "op", v: "/" },
+                    { t: "ind", id: "" }
+                ];
+            }
+            spuIndFormSources = spuFormulaSourcesFromExpr(spuIndFormFormula);
+        } else {
+            if (sourcesUi) sourcesUi.style.display = "";
+            if (aggWrap) aggWrap.style.display = "";
+            if (srcHint) {
+                srcHint.textContent = "Источник → Work Time / Табель / другой показатель. Исходная метрика остаётся в Work Time и не становится показателем СПУ.";
+            }
+            if (!(spuIndFormSources || []).length) {
+                spuIndFormSources = [spuNewSourceRow({ source_type: "worktime_metric" })];
+            }
+            renderSpuIndSourcesBox();
         }
-        renderSpuIndSourcesBox();
         renderSpuIndFormulaBox();
     }
+}
+
+function spuFormulaOperandIndicators(excludeId) {
+    const selfId = String(excludeId || ((document.getElementById("spuIndId") || {}).value || ""));
+    const keepIds = {};
+    (spuIndFormFormula || []).forEach(function (tok) {
+        if (tok && tok.t === "ind" && tok.id) keepIds[tok.id] = true;
+    });
+    return ((appData.management && appData.management.indicators) || []).filter(function (x) {
+        if (!x || !x.indicator_id || x.is_deleted) return false;
+        if (selfId && x.indicator_id === selfId) return false;
+        if (keepIds[x.indicator_id]) return true;
+        if (typeof spuIndicatorIsLive === "function") return spuIndicatorIsLive(x);
+        return x.is_active !== false;
+    }).sort(function (a, b) {
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0)
+            || String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+}
+
+function spuFormulaTokenLabel(tok, sources) {
+    if (!tok) return "?";
+    if (tok.t === "op") {
+        if (tok.v === "*") return "×";
+        if (tok.v === "/") return "÷";
+        if (tok.v === "-") return "−";
+        return String(tok.v || "");
+    }
+    if (tok.t === "lp") return "(";
+    if (tok.t === "rp") return ")";
+    if (tok.t === "num") return String(tok.v);
+    if (tok.t === "src") {
+        const s = (sources || spuIndFormSources || []).find(function (x) { return x && x.source_id === tok.id; });
+        return s ? spuSourceShortLabel(s) : (tok.id || "источник");
+    }
+    if (tok.t === "ind") {
+        if (!tok.id) return "— выберите показатель —";
+        const o = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === tok.id;
+        });
+        return o ? o.name : tok.id;
+    }
+    return "?";
+}
+
+function spuFormulaHumanText(tokens, sources) {
+    return (tokens || []).map(function (tok) {
+        return spuFormulaTokenLabel(tok, sources);
+    }).join(" ");
+}
+
+function spuFormulaSourcesFromExpr(tokens) {
+    const out = [];
+    const seen = {};
+    (tokens || []).forEach(function (tok) {
+        if (!tok || tok.t !== "ind" || !tok.id || seen[tok.id]) return;
+        seen[tok.id] = true;
+        out.push(spuNewSourceRow({
+            source_type: "spu_indicator",
+            source_indicator_id: tok.id
+        }));
+    });
+    return out;
+}
+
+function spuFormatFormulaOperand(tok, value, unitHint) {
+    if (tok && tok.t === "num") {
+        return Number(tok.v).toLocaleString("ru-RU");
+    }
+    if (value == null || !Number.isFinite(Number(value))) return "нет данных";
+    const n = Number(value);
+    let unit = unitHint || "number";
+    if (tok && tok.t === "ind") {
+        const o = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === tok.id;
+        });
+        if (o && o.unit) unit = o.unit;
+    }
+    if (unit === "money") return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
+    if (unit === "percent") return (Math.round(n * 10) / 10).toLocaleString("ru-RU") + "%";
+    return (Math.round(n * 100) / 100).toLocaleString("ru-RU");
+}
+
+function spuEvalFormulaExplain(it, tokens, stack, asPlan) {
+    const parts = [];
+    let missing = false;
+    (tokens || []).forEach(function (tok) {
+        if (!tok) return;
+        if (tok.t === "op" || tok.t === "lp" || tok.t === "rp") {
+            parts.push(spuFormulaTokenLabel(tok));
+            return;
+        }
+        if (tok.t === "num") {
+            parts.push(spuFormatFormulaOperand(tok, Number(tok.v)));
+            return;
+        }
+        let val = null;
+        if (tok.t === "src") {
+            const src = (spuActiveConfig(it).sources || []).find(function (s) { return s.source_id === tok.id; });
+            if (src) {
+                if (asPlan) val = mgmtReadSourcePlan(src, it);
+                else {
+                    const read = mgmtReadSourceFact(src, it, stack);
+                    val = read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+                }
+            }
+        } else if (tok.t === "ind") {
+            if (!tok.id || tok.id === (it && it.indicator_id)) {
+                missing = true;
+                parts.push("—");
+                return;
+            }
+            const other = ((appData.management && appData.management.indicators) || []).find(function (x) {
+                return x && x.indicator_id === tok.id;
+            });
+            if (!other) {
+                missing = true;
+                parts.push("—");
+                return;
+            }
+            if (asPlan) val = mgmtIndicatorPlan(other);
+            else {
+                const read = mgmtReadIndicator(other, (stack || []).concat([it && it.indicator_id]));
+                val = read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+            }
+        }
+        if (val == null || !Number.isFinite(Number(val))) missing = true;
+        parts.push(spuFormatFormulaOperand(tok, val));
+    });
+    const result = spuEvalFormula(it, tokens, stack, asPlan);
+    return {
+        parts: parts,
+        expression: parts.join(" "),
+        result: result,
+        missing: missing || result == null || !Number.isFinite(Number(result))
+    };
+}
+
+function renderSpuIndFormulaBox() {
+    const box = document.getElementById("spuIndFormulaBox");
+    if (!box) return;
+    const aggEl = document.getElementById("spuIndAgg");
+    const calc = aggEl ? aggEl.value : spuIndFormCalc;
+    const isCalcKind = spuIndFormKind === "calculated";
+    if (!isCalcKind && calc !== "formula") {
+        box.innerHTML = "";
+        return;
+    }
+    if (isCalcKind) {
+        spuIndFormCalc = "formula";
+        if (aggEl) aggEl.value = "formula";
+    }
+    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
+    const selfId = ((document.getElementById("spuIndId") || {}).value || "");
+    const inds = spuFormulaOperandIndicators(selfId);
+    let html = '<div class="spu-fx-box"><h4>Формула</h4>'
+        + '<div class="note">Составьте формулу из Показателей СПУ, операций, чисел и скобок. '
+        + "Внутри хранятся spu_indicator_id — переименование источника формулу не ломает. "
+        + "Период берётся из текущего отчётного периода СПУ.</div>";
+    html += '<div class="spu-fx-row">';
+    if (!spuIndFormFormula.length) {
+        html += '<span class="note">Формула пуста. Нажмите «+ Добавить элемент».</span>';
+    }
+    spuIndFormFormula.forEach(function (tok, i) {
+        const kind = tok.t === "lp" || tok.t === "rp" ? tok.t : (tok.t || "ind");
+        html += '<div class="spu-fx-chip" data-i="' + i + '">';
+        html += '<select onchange="spuIndFormulaChangeKind(' + i + ',this.value)" title="Тип элемента">'
+            + '<option value="ind"' + (kind === "ind" ? " selected" : "") + ">Показатель СПУ</option>"
+            + '<option value="op"' + (kind === "op" ? " selected" : "") + ">Операция</option>"
+            + '<option value="num"' + (kind === "num" ? " selected" : "") + ">Число</option>"
+            + '<option value="lp"' + (kind === "lp" ? " selected" : "") + ">(</option>"
+            + '<option value="rp"' + (kind === "rp" ? " selected" : "") + ">)</option>"
+            + "</select>";
+        if (kind === "ind") {
+            html += '<select onchange="spuIndFormulaSetInd(' + i + ',this.value)" title="Показатель СПУ">'
+                + '<option value="">— выберите —</option>';
+            inds.forEach(function (x) {
+                html += '<option value="' + escapeAttribute(x.indicator_id) + '"'
+                    + (tok.id === x.indicator_id ? " selected" : "") + ">"
+                    + escapeHtml(x.name || x.indicator_id)
+                    + (x.unit ? " · " + escapeHtml(x.unit) : "")
+                    + "</option>";
+            });
+            html += "</select>";
+        } else if (kind === "op") {
+            const ov = tok.v === "×" ? "*" : (tok.v === "÷" ? "/" : tok.v);
+            html += '<select onchange="spuIndFormulaSetOp(' + i + ',this.value)">'
+                + [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].map(function (p) {
+                    return '<option value="' + p[0] + '"' + (ov === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+                }).join("")
+                + "</select>";
+        } else if (kind === "num") {
+            html += '<input type="number" step="any" value="' + escapeAttribute(String(tok.v != null ? tok.v : 100)) + '"'
+                + ' onchange="spuIndFormulaSetNum(' + i + ',this.value)">';
+        }
+        html += ' <button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaRemove(' + i + ')" title="Удалить">×</button>';
+        html += "</div>";
+    });
+    html += "</div>";
+    html += '<div class="toolbar" style="flex-wrap:wrap;gap:6px;margin-top:6px">'
+        + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaAddElement(\'ind\')">+ Добавить элемент</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'op\')">+ Операция</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'num\')">+ Число</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'lp\')">(</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'rp\')">)</button>'
+        + '<button type="button" class="btn btn-primary" onclick="spuIndFormulaCheck()">Проверить формулу</button>'
+        + "</div>";
+    html += '<div class="spu-fx-human"><b>Запись:</b> '
+        + escapeHtml(spuFormulaHumanText(spuIndFormFormula, spuIndFormSources) || "—")
+        + "</div>";
+    html += '<div id="spuIndFormulaCheck" class="spu-fx-check" style="display:none"></div>';
+    html += "</div>";
+    box.innerHTML = html;
+}
+
+function spuIndFormulaAddElement(kind) {
+    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
+    if (kind === "op") spuIndFormFormula.push({ t: "op", v: "/" });
+    else if (kind === "num") spuIndFormFormula.push({ t: "num", v: 100 });
+    else if (kind === "lp") spuIndFormFormula.push({ t: "lp", v: "(" });
+    else if (kind === "rp") spuIndFormFormula.push({ t: "rp", v: ")" });
+    else spuIndFormFormula.push({ t: "ind", id: "" });
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaChangeKind(i, kind) {
+    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
+    if (kind === "op") spuIndFormFormula[i] = { t: "op", v: "/" };
+    else if (kind === "num") spuIndFormFormula[i] = { t: "num", v: 100 };
+    else if (kind === "lp") spuIndFormFormula[i] = { t: "lp", v: "(" };
+    else if (kind === "rp") spuIndFormFormula[i] = { t: "rp", v: ")" };
+    else spuIndFormFormula[i] = { t: "ind", id: "" };
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaSetInd(i, id) {
+    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
+    spuIndFormFormula[i] = { t: "ind", id: String(id || "") };
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaSetOp(i, op) {
+    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
+    spuIndFormFormula[i] = { t: "op", v: String(op || "/") };
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaSetNum(i, raw) {
+    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
+    const n = Number(String(raw == null ? "" : raw).replace(",", "."));
+    spuIndFormFormula[i] = { t: "num", v: Number.isFinite(n) ? n : 0 };
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaPushNum(preset) {
+    const el = document.getElementById("spuIndFormulaNum");
+    const raw = preset != null ? preset : (el ? el.value : "");
+    const n = Number(String(raw).replace(",", "."));
+    if (!Number.isFinite(n)) {
+        toast("Укажите число для формулы", "error");
+        return;
+    }
+    spuIndFormulaPush({ t: "num", v: n });
+}
+
+function spuIndFormulaPush(tok) {
+    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
+    spuIndFormFormula.push(tok);
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaRemove(i) {
+    if (!Array.isArray(spuIndFormFormula)) return;
+    spuIndFormFormula.splice(i, 1);
+    renderSpuIndFormulaBox();
+}
+
+function spuIndFormulaCheck() {
+    const box = document.getElementById("spuIndFormulaCheck");
+    if (!box) return;
+    const tokens = (spuIndFormFormula || []).slice();
+    if (!tokens.length) {
+        box.style.display = "";
+        box.innerHTML = "Формула пуста.";
+        return;
+    }
+    const emptyInd = tokens.some(function (t) { return t && t.t === "ind" && !t.id; });
+    if (emptyInd) {
+        box.style.display = "";
+        box.innerHTML = "Выберите все Показатели СПУ в формуле.";
+        return;
+    }
+    const selfId = ((document.getElementById("spuIndId") || {}).value || "mind_preview");
+    const unit = ((document.getElementById("spuIndUnit") || {}).value || "number");
+    const draft = {
+        indicator_id: selfId,
+        sources: spuFormulaSourcesFromExpr(tokens),
+        formula_expr: tokens,
+        aggregation_type: "formula",
+        calc_mode: "formula",
+        source_type: "calculated",
+        unit: unit
+    };
+    let periodNote = "";
+    try {
+        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+        if (r && r.from && r.to) periodNote = "Период: " + r.from + " — " + r.to + ". ";
+    } catch (err) {}
+    const expl = spuEvalFormulaExplain(draft, tokens, []);
+    let resultHtml = "<b>Нет данных</b>";
+    if (!expl.missing && expl.result != null && Number.isFinite(Number(expl.result))) {
+        resultHtml = "<b>" + escapeHtml(mgmtFormatValue(draft, expl.result, "auto")) + "</b>";
+    }
+    box.style.display = "";
+    box.innerHTML = periodNote
+        + "Проверка (без сохранения фактов):<br>"
+        + escapeHtml(expl.expression || "—")
+        + " = " + resultHtml;
 }
 
 function spuIndExtraNodesCheckboxesHtml(it, primaryPreset) {
@@ -30883,110 +31241,6 @@ function renderSpuIndSourcesBox() {
     box.innerHTML = html;
 }
 
-function renderSpuIndFormulaBox() {
-    const box = document.getElementById("spuIndFormulaBox");
-    if (!box) return;
-    const aggEl = document.getElementById("spuIndAgg");
-    const calc = aggEl ? aggEl.value : spuIndFormCalc;
-    if (calc !== "formula") { box.innerHTML = ""; return; }
-    let html = "<h4>Формула</h4>"
-        + '<div class="note">Связь по стабильным ID показателей (spu_indicator_id). В интерфейсе — названия. '
-        + "Пример конверсии: Количество чеков ÷ Количество покупателей × 100. Деление на 0 → нет данных.</div>";
-    html += '<div class="wt-people" style="margin:6px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
-    if (!(spuIndFormFormula || []).length) {
-        html += '<span class="note">Формула пуста — добавьте источники и операции ниже.</span>';
-    }
-    (spuIndFormFormula || []).forEach(function (tok, i) {
-        let lab = "";
-        if (tok.t === "op") {
-            lab = tok.v === "*" ? "×" : (tok.v === "/" ? "÷" : (tok.v === "-" ? "−" : tok.v));
-        } else if (tok.t === "lp") lab = "(";
-        else if (tok.t === "rp") lab = ")";
-        else if (tok.t === "num") lab = String(tok.v);
-        else if (tok.t === "src") {
-            const s = (spuIndFormSources || []).find(function (x) { return x.source_id === tok.id; });
-            lab = s ? spuSourceShortLabel(s) : tok.id;
-        } else if (tok.t === "ind") {
-            const o = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === tok.id; });
-            lab = o ? o.name : tok.id;
-        }
-        html += '<span class="mgmt-src" style="border:1px solid var(--border);padding:2px 6px;border-radius:6px">'
-            + escapeHtml(lab)
-            + ' <button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaRemove(' + i + ')">×</button></span>';
-    });
-    html += "</div>";
-    html += '<div class="toolbar" style="flex-wrap:wrap;gap:4px">';
-    (spuIndFormSources || []).forEach(function (s, idx) {
-        const lab = spuSourceShortLabel(s) || ("Источник " + (idx + 1));
-        const useInd = s && s.source_indicator_id
-            && (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual");
-        if (useInd) {
-            html += '<button type="button" class="btn btn-secondary btn-small" title="' + escapeAttribute(lab)
-                + '" onclick="spuIndFormulaPush({t:\'ind\',id:\'' + s.source_indicator_id + '\'})">'
-                + escapeHtml(lab.length > 28 ? lab.slice(0, 26) + "…" : lab) + "</button> ";
-        } else {
-            html += '<button type="button" class="btn btn-secondary btn-small" title="' + escapeAttribute(lab)
-                + '" onclick="spuIndFormulaPush({t:\'src\',id:\'' + s.source_id + '\'})">'
-                + escapeHtml(lab.length > 28 ? lab.slice(0, 26) + "…" : lab) + "</button> ";
-        }
-    });
-    [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].forEach(function (p) {
-        html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'op\',v:\'' + p[0] + '\'})">' + p[1] + "</button> ";
-    });
-    html += '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'lp\',v:\'(\'})">(</button> '
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPush({t:\'rp\',v:\')\'})">)</button> '
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPushNum(100)">100</button> '
-        + '<label style="display:inline-flex;align-items:center;gap:4px;margin:0">Число '
-        + '<input id="spuIndFormulaNum" type="number" step="any" style="width:72px" value="100"> '
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaPushNum()">+</button></label>'
-        + "</div>";
-    // Live preview from current draft sources + formula (does not save)
-    try {
-        const draft = {
-            indicator_id: ((document.getElementById("spuIndId") || {}).value || "mind_preview"),
-            sources: (spuIndFormSources || []).slice(),
-            formula_expr: (spuIndFormFormula || []).slice(),
-            aggregation_type: "formula",
-            calc_mode: "formula",
-            source_type: "calculated"
-        };
-        const preview = spuEvalFormula(draft, draft.formula_expr, []);
-        const unitEl = document.getElementById("spuIndUnit");
-        const unit = unitEl ? unitEl.value : "number";
-        let shown = "—";
-        if (preview != null && Number.isFinite(Number(preview))) {
-            shown = unit === "percent"
-                ? (Math.round(Number(preview) * 10) / 10).toLocaleString("ru-RU") + "%"
-                : Number(preview).toLocaleString("ru-RU");
-        }
-        html += '<div class="note" style="margin-top:8px">Превью факта по формуле: <b>' + escapeHtml(shown) + "</b></div>";
-    } catch (err) {}
-    box.innerHTML = html;
-}
-
-function spuIndFormulaPushNum(preset) {
-    const el = document.getElementById("spuIndFormulaNum");
-    const raw = preset != null ? preset : (el ? el.value : "");
-    const n = Number(String(raw).replace(",", "."));
-    if (!Number.isFinite(n)) {
-        toast("Укажите число для формулы", "error");
-        return;
-    }
-    spuIndFormulaPush({ t: "num", v: n });
-}
-
-function spuIndFormulaPush(tok) {
-    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
-    spuIndFormFormula.push(tok);
-    renderSpuIndFormulaBox();
-}
-
-function spuIndFormulaRemove(i) {
-    if (!Array.isArray(spuIndFormFormula)) return;
-    spuIndFormFormula.splice(i, 1);
-    renderSpuIndFormulaBox();
-}
-
 function spuOrgFillExistingIndicator() {
     const id = ((document.getElementById("spuIndExist") || {}).value || "");
     const nodeId = ((document.getElementById("spuIndNode") || {}).value || "");
@@ -31021,9 +31275,30 @@ function saveSpuOrgIndicator() {
     if (kind !== "manual" && kind !== "calculated" && kind !== "worktime" && kind !== "one_c") {
         kind = kind === "automatic" ? "worktime" : "manual";
     }
-    const calc = ((document.getElementById("spuIndAgg") || {}).value || "sum");
+    let calc = ((document.getElementById("spuIndAgg") || {}).value || "sum");
     let sources = [];
-    if (kind === "worktime" || kind === "calculated") {
+    if (kind === "calculated") {
+        calc = "formula";
+        const tokens = (spuIndFormFormula || []).slice();
+        if (!tokens.length) {
+            toast("Составьте формулу для расчётного показателя.", "error");
+            return;
+        }
+        if (tokens.some(function (t) { return t && t.t === "ind" && !t.id; })) {
+            toast("В формуле выберите все Показатели СПУ.", "error");
+            return;
+        }
+        if (tokens.some(function (t) { return t && t.t === "ind" && t.id === editId; })) {
+            toast("Показатель не может использовать сам себя в формуле.", "error");
+            return;
+        }
+        sources = spuFormulaSourcesFromExpr(tokens);
+        spuIndFormSources = sources;
+        if (spuWouldCycle(editId || "mind_new", { sources: sources, formula_expr: tokens, aggregation_type: "formula", calc_mode: "formula" })) {
+            toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
+            return;
+        }
+    } else if (kind === "worktime") {
         sources = (spuIndFormSources || []).filter(function (s) {
             if (!s) return false;
             if (s.source_type === "timesheet") return !!s.source_timesheet_agg;
@@ -31037,7 +31312,7 @@ function saveSpuOrgIndicator() {
             return;
         }
         if (spuWouldCycle(editId || "mind_new", { sources: sources, formula_expr: spuIndFormFormula, aggregation_type: calc, calc_mode: calc })) {
-            toast("Циклическая формула запрещена.", "error");
+            toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
         if (sources.some(function (s) { return s.source_indicator_id && s.source_indicator_id === editId; })) {
@@ -31045,6 +31320,7 @@ function saveSpuOrgIndicator() {
             return;
         }
     }
+
     let it = editId ? ((appData.management.indicators || []).find(function (x) { return x && x.indicator_id === editId; }) || null) : null;
     if (!it) {
         it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
@@ -31104,7 +31380,7 @@ function saveSpuOrgIndicator() {
         toast("Показатель сохранён.", "success");
         return;
     }
-    const first = sources[0];
+    const first = sources[0] || { source_type: "calculated" };
     it.source_future = "";
     it.source_type = (kind === "calculated" || sources.length > 1 || calc === "formula") ? "calculated" : (first.source_type || "worktime_metric");
     if (kind === "worktime" && it.source_type === "calculated" && sources.length === 1 && calc !== "formula") {
@@ -31122,9 +31398,14 @@ function saveSpuOrgIndicator() {
     it.aggregation_type = calc === "formula" ? "formula" : calc;
     it.calc_mode = calc;
     it.plan_aggregation_type = calc === "formula" ? "sum" : calc;
-    it.formula_expr = calc === "formula"
+    it.formula_expr = (kind === "calculated" || calc === "formula")
         ? spuNormalizeFormulaTokens(it, it.sources, (spuIndFormFormula || []).slice())
         : [];
+    if (kind === "calculated") {
+        it.aggregation_type = "formula";
+        it.calc_mode = "formula";
+        if (!it.sources.length) it.sources = spuFormulaSourcesFromExpr(it.formula_expr);
+    }
     // Для расчётных: зафиксируем calc_left/right по первым двум ind/src показателям (для legacy-читателей).
     if (kind === "calculated" || calc === "formula") {
         const indIds = [];
