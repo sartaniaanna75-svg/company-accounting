@@ -135,6 +135,14 @@ function ensureFinanceRec() {
         }
         if (!o.import_fingerprint) o.import_fingerprint = "";
         if (!o.import_batch_id) o.import_batch_id = "";
+        if (o.payee == null && o.comment) o.payee = "";
+        if (o.operation == null) o.operation = "";
+        const nd = frNormDate(o.date);
+        if (nd) {
+            o.date = nd;
+            const wk = frWeek(nd);
+            if (wk && wk.period_key) o.period_key = wk.period_key;
+        }
     });
     root.areas.forEach(function (a) {
         if (!a) return;
@@ -314,6 +322,14 @@ function frPrevPeriodKey(periodKey) {
     return prev ? prev.period_key : "";
 }
 
+function frNormDate(iso) {
+    const s = String(iso == null ? "" : iso).trim();
+    if (!s) return "";
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const parsed = frParseExpenseDate(s);
+    return parsed || "";
+}
+
 function frOpKind(o) {
     if (!o) return "expense";
     if (o.movement_kind === "transfer" || o.type === "transfer") return "transfer";
@@ -322,14 +338,26 @@ function frOpKind(o) {
 }
 
 function frOps(areaId, periodKey) {
+    ensureFinanceRec();
+    const w = frWeek(String(periodKey || "").replace(/^week:/, ""));
+    const inWeek = {};
+    frWeekDates(w).forEach(function (d) { inWeek[d] = true; });
     return ((appData.financeRec && appData.financeRec.operations) || []).filter(function (o) {
-        return o && !o.is_deleted && o.finance_area_id === areaId && o.period_key === periodKey;
+        if (!o || o.is_deleted || o.finance_area_id !== areaId) return false;
+        const d = frNormDate(o.date);
+        /* Дата внутри недели — операция входит в расчёт, даже если period_key сбился. */
+        if (d && inWeek[d]) return true;
+        return o.period_key === periodKey;
     });
 }
 
 function frOpsForDate(areaId, periodKey, date, kind) {
+    const want = frNormDate(date);
     return frOps(areaId, periodKey).filter(function (o) {
-        if (date && o.date !== date) return false;
+        if (want) {
+            const od = frNormDate(o.date);
+            if (od !== want) return false;
+        }
         if (!kind) return true;
         if (kind === "transfer") return frOpKind(o) === "transfer";
         return frOpKind(o) === kind;
@@ -791,17 +819,132 @@ function renderFrMovementTab(areaId, w, kind, canEdit) {
     return html;
 }
 
+function frExpensePayee(o) {
+    if (!o) return "—";
+    const p = String(o.payee != null && o.payee !== "" ? o.payee : "").trim();
+    if (p) return p;
+    const c = String(o.comment || "").trim();
+    return c || "—";
+}
+
+function frExpenseOperation(o) {
+    if (!o) return "—";
+    const op = String(o.operation || o.hoz_operation || "").trim();
+    return op || "—";
+}
+
 function renderFrExpenseTab(areaId, w, canEdit) {
-    let html = renderFrMovementTab(areaId, w, "expense", canEdit);
-    if (!canEdit) return html;
-    if (!frSources(areaId, false).length) return html;
-    return html.replace(
-        '</h3><div class="fr-muted"',
-        '</h3><div class="fr-toolbar-row">'
+    const sources = frSources(areaId, false);
+    const days = frWeekDates(w);
+    let weekSum = 0;
+    let weekRows = 0;
+    let html = '<div class="fr-box"><h3>Расходы</h3>';
+    if (canEdit && sources.length) {
+        html += '<div class="fr-toolbar-row">'
             + '<button type="button" class="btn btn-primary btn-small" onclick="openFrExcelImport()">Загрузить Excel</button>'
             + '<span class="fr-muted">Перед загрузкой выберите счёт списания. Для наличных — основная касса по умолчанию.</span>'
-            + "</div><div class=\"fr-muted\""
-    );
+            + "</div>";
+    }
+    html += '<div class="fr-muted" style="margin-bottom:10px">'
+        + "Каждая импортированная операция показывается отдельной строкой. "
+        + "Итого за день = сумма видимых строк; этот же итог входит в «Расходы» недели и уменьшает выбранный счёт.</div>";
+    if (!sources.length) {
+        html += '<div class="note">Сначала добавьте счета и кассы во вкладке «Настройки».</div></div>';
+        return html;
+    }
+    days.forEach(function (date) {
+        const ops = frOpsForDate(areaId, w.period_key, date, "expense").slice().sort(function (a, b) {
+            return String(a.finance_operation_id || "").localeCompare(String(b.finance_operation_id || ""));
+        });
+        let daySum = 0;
+        ops.forEach(function (o) { daySum += frNum(o.amount); });
+        daySum = frRound(daySum);
+        weekSum += daySum;
+        weekRows += ops.length;
+        html += '<div class="fr-day-block">';
+        html += '<div class="fr-day-head"><span>' + escapeHtml(frFmtDate(date)) + "</span>";
+        html += '<span class="fr-day-total">Итого за день: ' + frMoney(daySum)
+            + ' <span class="fr-muted">(' + ops.length + " стр.)</span></span></div>";
+        html += '<div class="fr-table-wrap"><table class="fr-table"><thead><tr>';
+        html += "<th>Кому выдано</th><th>Хозяйственная операция</th><th>Счёт / касса</th>"
+            + '<th class="fr-num">Сумма</th>';
+        if (canEdit) html += "<th></th>";
+        html += "</tr></thead><tbody>";
+        if (!ops.length) {
+            html += '<tr><td colspan="' + (canEdit ? 5 : 4) + '"><div class="empty-row">Нет записей</div></td></tr>';
+        }
+        ops.forEach(function (o) {
+            const src = sources.find(function (s) { return s.finance_source_id === o.finance_source_id; })
+                || frSources(areaId, true).find(function (s) { return s.finance_source_id === o.finance_source_id; });
+            html += "<tr>";
+            html += "<td>" + escapeHtml(frExpensePayee(o)) + "</td>";
+            html += "<td>" + escapeHtml(frExpenseOperation(o)) + "</td>";
+            html += "<td>" + escapeHtml((src && src.name) || o.finance_source_id || "—") + "</td>";
+            html += '<td class="fr-num">' + frMoney(o.amount) + "</td>";
+            if (canEdit) {
+                html += '<td><button type="button" class="btn btn-small" onclick="openFrOpForm(\'' + o.finance_operation_id + "')\">✎</button> "
+                    + '<button type="button" class="btn btn-small" onclick="frDeleteOp(\'' + o.finance_operation_id + "')\">✕</button></td>";
+            }
+            html += "</tr>";
+        });
+        html += "</tbody></table></div>";
+        if (canEdit) {
+            html += '<div class="fr-inline-add">';
+            html += '<select id="frAddSrc_expense_' + date + '">'
+                + sources.map(function (s) {
+                    return '<option value="' + escapeAttribute(s.finance_source_id) + '">' + escapeHtml(s.name) + "</option>";
+                }).join("") + "</select>";
+            html += '<input class="fr-amt" id="frAddAmt_expense_' + date + '" placeholder="Сумма" inputmode="decimal">';
+            html += '<input class="fr-com" id="frAddCom_expense_' + date + '" placeholder="Кому выдано / комментарий">';
+            html += '<button type="button" class="btn btn-primary btn-small" onclick="frQuickAddOp(\'expense\',\'' + date + "')\">+ Добавить</button>";
+            html += "</div>";
+        }
+        html += "</div>";
+    });
+    /* Операции недели с датой вне блоков (на случай битой даты) — тоже показываем построчно. */
+    const daySet = {};
+    days.forEach(function (d) { daySet[d] = true; });
+    const orphans = frOps(areaId, w.period_key).filter(function (o) {
+        if (frOpKind(o) !== "expense") return false;
+        const d = frNormDate(o.date);
+        return !d || !daySet[d];
+    });
+    if (orphans.length) {
+        let orphanSum = 0;
+        orphans.forEach(function (o) { orphanSum += frNum(o.amount); });
+        orphanSum = frRound(orphanSum);
+        weekSum = frRound(weekSum + orphanSum);
+        weekRows += orphans.length;
+        html += '<div class="fr-day-block">';
+        html += '<div class="fr-day-head"><span>Прочие / дата вне недели</span>';
+        html += '<span class="fr-day-total">Итого: ' + frMoney(orphanSum)
+            + ' <span class="fr-muted">(' + orphans.length + " стр.)</span></span></div>";
+        html += '<div class="fr-table-wrap"><table class="fr-table"><thead><tr>';
+        html += "<th>Дата</th><th>Кому выдано</th><th>Хозяйственная операция</th><th>Счёт / касса</th>"
+            + '<th class="fr-num">Сумма</th>';
+        if (canEdit) html += "<th></th>";
+        html += "</tr></thead><tbody>";
+        orphans.forEach(function (o) {
+            const src = sources.find(function (s) { return s.finance_source_id === o.finance_source_id; })
+                || frSources(areaId, true).find(function (s) { return s.finance_source_id === o.finance_source_id; });
+            html += "<tr>";
+            html += "<td>" + escapeHtml(o.date || "—") + "</td>";
+            html += "<td>" + escapeHtml(frExpensePayee(o)) + "</td>";
+            html += "<td>" + escapeHtml(frExpenseOperation(o)) + "</td>";
+            html += "<td>" + escapeHtml((src && src.name) || "—") + "</td>";
+            html += '<td class="fr-num">' + frMoney(o.amount) + "</td>";
+            if (canEdit) {
+                html += '<td><button type="button" class="btn btn-small" onclick="openFrOpForm(\'' + o.finance_operation_id + "')\">✎</button> "
+                    + '<button type="button" class="btn btn-small" onclick="frDeleteOp(\'' + o.finance_operation_id + "')\">✕</button></td>";
+            }
+            html += "</tr>";
+        });
+        html += "</tbody></table></div></div>";
+    }
+    html += '<div class="fr-day-head" style="border-radius:10px;margin-top:4px"><span>Итого за неделю</span><span class="fr-day-total">'
+        + frMoney(frRound(weekSum)) + ' <span class="fr-muted">(' + weekRows + " стр.)</span></span></div>";
+    html += "</div>";
+    return html;
 }
 
 function renderFrTransferTab(areaId, w, canEdit) {
@@ -1638,7 +1781,14 @@ function frParseExpenseImportText(text) {
         });
         payee = payeeParts.join(" ").replace(/\s+/g, " ").trim();
         if (!date) date = frEnsureWeek().start_date;
-        rows.push({ date: date, amount: frRound(amount), payee: payee, raw: cells.join(" | ") });
+        rows.push({
+            date: date,
+            amount: frRound(amount),
+            payee: payee,
+            payee_name: payeeParts[0] || "",
+            operation: payeeParts.length > 1 ? payeeParts[1] : "",
+            raw: cells.join(" | ")
+        });
     });
     return rows;
 }
@@ -1666,8 +1816,11 @@ function openFrExcelImport() {
     });
     html += "</select></div>";
     html += '<div class="note">Для обычного наличного расходника выберите основную кассу (подставлена по умолчанию). '
-        + "Файл: CSV / TXT / вставка из Excel. Колонки: Дата | Сумма | Получатель. Строки без суммы игнорируются.</div>";
-    html += '<div class="form-group"><label>Файл</label><input type="file" id="frImportFile" accept=".csv,.txt,.tsv,.xlsx,.xls"></div>';
+        + "Можно выбрать файл .xlsx / CSV или вставить таблицу (Ctrl+V). "
+        + "Если в поле вставки есть данные — импортируется вставка, даже если выбран файл. "
+        + "Колонки: Дата | Сумма | Получатель. Строки без суммы игнорируются.</div>";
+    html += '<div class="form-group"><label>Файл (.xlsx, CSV, TXT)</label>'
+        + '<input type="file" id="frImportFile" accept=".csv,.txt,.tsv,.xlsx,.xls"></div>';
     html += '<div class="form-group"><label>Или вставьте таблицу из Excel (Ctrl+V)</label>'
         + '<textarea id="frImportPaste" rows="8" style="width:100%" placeholder="Дата\tСумма\tПолучатель"></textarea></div>';
     html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="frRunExpenseImport()">Импортировать</button> '
@@ -1675,54 +1828,238 @@ function openFrExcelImport() {
     openMgmtModal(html);
 }
 
+function frInflateRaw(bytes) {
+    if (typeof DecompressionStream === "undefined") {
+        return Promise.reject(new Error("Браузер не поддерживает распаковку ZIP"));
+    }
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return new Response(stream).arrayBuffer().then(function (ab) {
+        return new Uint8Array(ab);
+    });
+}
+
+function frZipReadFiles(arrayBuffer) {
+    const u8 = new Uint8Array(arrayBuffer);
+    const view = new DataView(arrayBuffer);
+    let eocd = -1;
+    const minScan = Math.max(0, u8.length - 65557);
+    for (let i = u8.length - 22; i >= minScan; i--) {
+        if (view.getUint32(i, true) === 0x06054b50) {
+            eocd = i;
+            break;
+        }
+    }
+    if (eocd < 0) return Promise.reject(new Error("Файл не является ZIP/XLSX"));
+    const cdEntries = view.getUint16(eocd + 10, true);
+    let p = view.getUint32(eocd + 16, true);
+    const jobs = [];
+    for (let e = 0; e < cdEntries; e++) {
+        if (p + 46 > u8.length || view.getUint32(p, true) !== 0x02014b50) break;
+        const method = view.getUint16(p + 10, true);
+        const compSize = view.getUint32(p + 20, true);
+        const nameLen = view.getUint16(p + 28, true);
+        const extraLen = view.getUint16(p + 30, true);
+        const commentLen = view.getUint16(p + 32, true);
+        const localOff = view.getUint32(p + 42, true);
+        const name = new TextDecoder("utf-8").decode(u8.subarray(p + 46, p + 46 + nameLen));
+        p += 46 + nameLen + extraLen + commentLen;
+        const lNameLen = view.getUint16(localOff + 26, true);
+        const lExtraLen = view.getUint16(localOff + 28, true);
+        const dataStart = localOff + 30 + lNameLen + lExtraLen;
+        const data = u8.subarray(dataStart, dataStart + compSize);
+        jobs.push(
+            (method === 0
+                ? Promise.resolve(data)
+                : method === 8
+                    ? frInflateRaw(data)
+                    : Promise.reject(new Error("Неподдерживаемое сжатие в XLSX: " + method))
+            ).then(function (raw) {
+                return { name: name, data: raw };
+            })
+        );
+    }
+    return Promise.all(jobs).then(function (list) {
+        const map = {};
+        list.forEach(function (item) {
+            const key = String(item.name || "").replace(/\\/g, "/");
+            map[key] = item.data;
+            /* На случай доступа по исходному имени. */
+            if (key !== item.name) map[item.name] = item.data;
+        });
+        return map;
+    });
+}
+
+function frXmlDecodeEntities(s) {
+    return String(s || "")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&#(\d+);/g, function (_, n) { return String.fromCharCode(Number(n)); })
+        .replace(/&#x([0-9a-fA-F]+);/g, function (_, h) { return String.fromCharCode(parseInt(h, 16)); })
+        .replace(/&amp;/g, "&");
+}
+
+function frBytesToUtf8(bytes) {
+    return new TextDecoder("utf-8").decode(bytes);
+}
+
+function frXlsxSharedStrings(xml) {
+    const out = [];
+    const re = /<si\b[^>]*>([\s\S]*?)<\/si>/gi;
+    let m;
+    while ((m = re.exec(xml))) {
+        const parts = [];
+        const tre = /<t\b[^>]*>([\s\S]*?)<\/t>/gi;
+        let tm;
+        while ((tm = tre.exec(m[1]))) parts.push(frXmlDecodeEntities(tm[1]));
+        out.push(parts.join(""));
+    }
+    return out;
+}
+
+function frXlsxColRow(ref) {
+    const m = String(ref || "").match(/^([A-Z]+)(\d+)$/i);
+    if (!m) return null;
+    let col = 0;
+    const letters = m[1].toUpperCase();
+    for (let i = 0; i < letters.length; i++) col = col * 26 + (letters.charCodeAt(i) - 64);
+    return { col: col - 1, row: Number(m[2]) - 1 };
+}
+
+function frXlsxSheetToMatrix(sheetXml, shared) {
+    const rows = {};
+    const cellRe = /<c\b([^>]*)>([\s\S]*?)<\/c>|<c\b([^>]*)\/>/gi;
+    let m;
+    while ((m = cellRe.exec(sheetXml))) {
+        const attrs = m[1] || m[3] || "";
+        const body = m[2] || "";
+        const refM = attrs.match(/\br="([^"]+)"/i);
+        if (!refM) continue;
+        const pos = frXlsxColRow(refM[1]);
+        if (!pos) continue;
+        const typeM = attrs.match(/\bt="([^"]+)"/i);
+        const type = typeM ? typeM[1] : "";
+        let val = "";
+        if (type === "inlineStr") {
+            const tM = body.match(/<t\b[^>]*>([\s\S]*?)<\/t>/i);
+            val = tM ? frXmlDecodeEntities(tM[1]) : "";
+        } else {
+            const vM = body.match(/<v\b[^>]*>([\s\S]*?)<\/v>/i);
+            const raw = vM ? frXmlDecodeEntities(vM[1]) : "";
+            if (type === "s") {
+                const idx = Number(raw);
+                val = shared && shared[idx] != null ? String(shared[idx]) : raw;
+            } else {
+                val = raw;
+            }
+        }
+        if (!rows[pos.row]) rows[pos.row] = {};
+        rows[pos.row][pos.col] = val;
+    }
+    const rowIdx = Object.keys(rows).map(Number).sort(function (a, b) { return a - b; });
+    return rowIdx.map(function (ri) {
+        const cols = rows[ri];
+        const maxCol = Math.max.apply(null, Object.keys(cols).map(Number).concat([-1]));
+        const line = [];
+        for (let c = 0; c <= maxCol; c++) line.push(cols[c] != null ? String(cols[c]) : "");
+        return line;
+    });
+}
+
+function frXlsxPickSheetPath(files) {
+    const names = Object.keys(files).map(function (n) { return String(n || "").replace(/\\/g, "/"); });
+    const prefer = names.filter(function (n) {
+        return /^xl\/worksheets\/sheet\d+\.xml$/i.test(n);
+    }).sort(function (a, b) {
+        const na = Number((a.match(/sheet(\d+)/i) || [])[1] || 99);
+        const nb = Number((b.match(/sheet(\d+)/i) || [])[1] || 99);
+        return na - nb;
+    });
+    return prefer[0] || "";
+}
+
+function frXlsxArrayBufferToText(arrayBuffer) {
+    return frZipReadFiles(arrayBuffer).then(function (files) {
+        const ssBytes = files["xl/sharedStrings.xml"] || files["xl\\sharedStrings.xml"];
+        const shared = ssBytes ? frXlsxSharedStrings(frBytesToUtf8(ssBytes)) : [];
+        const sheetPath = frXlsxPickSheetPath(files);
+        if (!sheetPath) throw new Error("В книге нет листа worksheet");
+        const sheetBytes = files[sheetPath] || files[sheetPath.replace(/\//g, "\\")];
+        if (!sheetBytes) throw new Error("Не удалось открыть лист " + sheetPath);
+        const matrix = frXlsxSheetToMatrix(frBytesToUtf8(sheetBytes), shared);
+        if (!matrix.length) throw new Error("Лист пустой");
+        return matrix.map(function (row) {
+            return row.map(function (cell) {
+                return String(cell == null ? "" : cell).replace(/\t/g, " ").replace(/\r?\n/g, " ");
+            }).join("\t");
+        }).join("\n");
+    });
+}
+
 function frRunExpenseImport() {
     if (!frCanEditData()) return;
-    const area = frActiveArea();
-    const w = frEnsureWeek();
     const sourceId = ((document.getElementById("frImportSrc") || {}).value || frUi.importSourceId || "");
     if (!sourceId) { toast("Выберите счёт списания", "error"); return; }
     frUi.importSourceId = sourceId;
     const fileInput = document.getElementById("frImportFile");
     const file = fileInput && fileInput.files && fileInput.files[0];
     const paste = String(((document.getElementById("frImportPaste") || {}).value) || "");
-    function finish(text, meta) {
-        frApplyExpenseImport(text, sourceId, meta || {});
-    }
-    if (file) {
-        const name = String(file.name || "").toLowerCase();
-        const reader = new FileReader();
-        reader.onload = function () {
-            try {
-                let text = "";
-                if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
-                    /* Бинарный Excel: пробуем как текст (CSV, сохранённый с расширением) + подсказка. */
-                    text = String(reader.result || "");
-                    if (text.indexOf("PK") === 0 || /[\x00-\x08]/.test(text.slice(0, 200))) {
-                        toast("Для .xlsx сохраните лист как CSV или вставьте таблицу (Ctrl+V).", "error");
-                        return;
-                    }
-                } else {
-                    text = String(reader.result || "");
-                }
-                finish(text, {
-                    file_name: file.name || "",
-                    file_size: file.size || 0,
-                    file_mtime: file.lastModified || 0
-                });
-            } catch (err) {
-                console.error(err);
-                toast("Не удалось прочитать файл", "error");
-            }
-        };
-        reader.onerror = function () { toast("Ошибка чтения файла", "error"); };
-        reader.readAsText(file, "UTF-8");
+
+    /* Приоритет: если есть вставка — импортируем её, выбранный .xlsx не блокирует. */
+    if (paste.trim()) {
+        frApplyExpenseImport(paste, sourceId, {
+            file_name: "paste",
+            file_size: paste.length,
+            file_mtime: Date.now()
+        });
         return;
     }
-    if (!paste.trim()) {
+
+    if (!file) {
         toast("Выберите файл или вставьте данные из Excel", "error");
         return;
     }
-    finish(paste, { file_name: "paste", file_size: paste.length, file_mtime: Date.now() });
+
+    const name = String(file.name || "").toLowerCase();
+    const meta = {
+        file_name: file.name || "",
+        file_size: file.size || 0,
+        file_mtime: file.lastModified || 0
+    };
+
+    if (name.endsWith(".xlsx")) {
+        const reader = new FileReader();
+        reader.onload = function () {
+            frXlsxArrayBufferToText(reader.result).then(function (text) {
+                frApplyExpenseImport(text, sourceId, meta);
+            }).catch(function (err) {
+                console.error(err);
+                toast("Не удалось прочитать .xlsx: " + (err && err.message ? err.message : "ошибка"), "error");
+            });
+        };
+        reader.onerror = function () { toast("Ошибка чтения файла", "error"); };
+        reader.readAsArrayBuffer(file);
+        return;
+    }
+
+    if (name.endsWith(".xls")) {
+        toast("Старый формат .xls не поддерживается. Сохраните файл как .xlsx или вставьте таблицу (Ctrl+V).", "error");
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function () {
+        try {
+            frApplyExpenseImport(String(reader.result || ""), sourceId, meta);
+        } catch (err) {
+            console.error(err);
+            toast("Не удалось прочитать файл", "error");
+        }
+    };
+    reader.onerror = function () { toast("Ошибка чтения файла", "error"); };
+    reader.readAsText(file, "UTF-8");
 }
 
 function frApplyExpenseImport(text, sourceId, meta) {
@@ -1779,6 +2116,8 @@ function frApplyExpenseImport(text, sourceId, meta) {
             finance_source_id: sourceId,
             amount: r.amount,
             comment: r.payee || "",
+            payee: r.payee_name || r.payee || "",
+            operation: r.operation || "",
             import_fingerprint: fp,
             import_batch_id: batchId,
             is_deleted: false,
