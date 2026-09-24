@@ -27,7 +27,8 @@ let frUi = {
     mainCashCalcOpen: {},
     mainCashIncomeOpen: {},
     dividendDetailOpen: {},
-    transitDetailOpen: {}
+    transitDetailOpen: {},
+    expenseDayOpen: {}
 };
 
 const FR_ACCOUNT_TYPES = [
@@ -841,6 +842,13 @@ function frCarryClosingValue(areaId, periodKey, endDate, sourceId) {
     return frDayCalculated(areaId, periodKey, endDate, sourceId).calculated;
 }
 
+function frToggleExpenseDay(areaId, date) {
+    if (!frUi.expenseDayOpen) frUi.expenseDayOpen = {};
+    const key = String(areaId || "") + "|" + String(date || "");
+    frUi.expenseDayOpen[key] = !frUi.expenseDayOpen[key];
+    renderFinanceRec();
+}
+
 function frToggleMainCashCalc(areaId) {
     if (!frUi.mainCashCalcOpen) frUi.mainCashCalcOpen = {};
     frUi.mainCashCalcOpen[areaId] = !frUi.mainCashCalcOpen[areaId];
@@ -980,6 +988,48 @@ function frCashDividendSumForWeek(areaId, periodKey) {
         const src = frSourceByAccountId(areaId, frOpAccountId(o));
         if (!frIsCashSource(src)) return;
         sum += frNum(o.amount);
+    });
+    return frRound(sum);
+}
+
+/** Текст существующей операции, по которому её уже считают дивидендами. */
+function frOpDividendText(o) {
+    return [
+        o && o.comment,
+        o && o.operation,
+        o && o.hoz_operation,
+        o && o.payee
+    ].join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Сумма верхней карточки «Дивиденды»: уже сохранённые операции объекта за неделю.
+ * Тип dividend и те же строки, где дивиденды записаны в комментарии / хоз. операции.
+ */
+function frCardDividendSum(areaId, periodKey) {
+    let sum = 0;
+    frOps(areaId, periodKey).forEach(function (o) {
+        if (!(frNum(o.amount) > 0)) return;
+        const kind = frOpKind(o);
+        if (kind === "transfer") return;
+        if (kind === "dividend" || frOpDividendText(o).indexOf("дивиденд") >= 0) {
+            sum += frNum(o.amount);
+        }
+    });
+    return frRound(sum);
+}
+
+/**
+ * Сумма верхней карточки «Деньги в пути»: тот же расчётный остаток,
+ * что в блоке фактических остатков у счетов «в пути» этого объекта.
+ */
+function frCardTransitSum(areaId, periodKey) {
+    const w = frWeek(String(periodKey || "").replace(/^week:/, ""));
+    let sum = 0;
+    frActualBalanceSources(areaId).forEach(function (s) {
+        const name = String(s.name || "").toLowerCase();
+        if (!frIsTransitSource(s) && name.indexOf("в пути") < 0) return;
+        sum += frWeekEndCalculatedForAccount(areaId, periodKey, w.end_date, s.finance_source_id);
     });
     return frRound(sum);
 }
@@ -2245,6 +2295,26 @@ function frShiftWeek(delta) {
     renderFinanceRec();
 }
 
+function frPickWeek(iso) {
+    const raw = String(iso || "").trim();
+    if (!raw) return;
+    const w = frWeek(raw);
+    if (!w || !w.start_date) return;
+    frUi.weekIso = w.start_date;
+    renderFinanceRec();
+}
+
+function frOpenWeekPicker() {
+    const el = document.getElementById("frWeekPick");
+    if (!el) return;
+    try {
+        if (typeof el.showPicker === "function") el.showPicker();
+        else el.click();
+    } catch (err) {
+        el.focus();
+    }
+}
+
 function setFrInner(tab) {
     if (tab === "settings") {
         frUi.workTab = "accounts";
@@ -2323,18 +2393,27 @@ function renderFinanceRec() {
         let html = '<div class="fr-wrap">';
         html += '<div class="fr-crumb">Финконтроль → <b class="fr-object-name">' + escapeHtml(area.name) + "</b></div>";
         html += '<div class="fr-weekbar">';
-        html += '<span class="fr-week-label">Рабочая неделя: '
-            + escapeHtml(frFmtDate(w.start_date) + " — " + frFmtDate(w.end_date) + " (чт–ср)") + "</span>";
-        html += '<button type="button" class="btn btn-secondary btn-small" onclick="frShiftWeek(-1)">← Пред. неделя</button>';
-        html += '<button type="button" class="btn btn-secondary btn-small" onclick="frShiftWeekToCurrent()">Текущая</button>';
-        html += '<button type="button" class="btn btn-secondary btn-small" onclick="frShiftWeek(1)">След. неделя →</button>';
+        html += '<div class="fr-week-nav">';
+        html += '<button type="button" class="fr-week-arrow" onclick="frShiftWeek(-1)" title="Предыдущая неделя">◀</button>';
+        html += '<button type="button" class="fr-week-range" onclick="frOpenWeekPicker()" title="Выбрать дату">'
+            + escapeHtml(frFmtDate(w.start_date) + " — " + frFmtDate(w.end_date))
+            + ' <span class="fr-week-cal">📅</span></button>';
+        html += '<input type="date" id="frWeekPick" class="fr-week-pick" value="'
+            + escapeAttribute(w.start_date) + '" onchange="frPickWeek(this.value)">';
+        html += '<button type="button" class="fr-week-arrow" onclick="frShiftWeek(1)" title="Следующая неделя">▶</button>';
+        html += "</div>";
+        if (isTerritory || isShop) {
+            html += '<span class="fr-week-flag ' + (balanced ? "fr-week-flag-ok" : "fr-week-flag-bad") + '">'
+                + (balanced ? "🟢 НЕДЕЛЯ СОШЛАСЬ" : "🔴 НЕДЕЛЯ НЕ СОШЛАСЬ")
+                + "</span>";
+        }
         html += '<span class="fr-status-pill">' + escapeHtml(frStatusLabel(st.status)) + "</span>";
         html += "</div>";
 
         html += '<div class="fr-cards fr-cards-5">';
         if (isTerritory || isShop) {
-            const divSum = frDividendSumForWeek(area.finance_area_id, w.period_key);
-            const transitOpen = frTransitOpenSum(area.finance_area_id);
+            const divSum = frCardDividendSum(area.finance_area_id, w.period_key);
+            const transitOpen = frCardTransitSum(area.finance_area_id, w.period_key);
             const factMoney = frWeekFactMoneyTotal(area.finance_area_id, w.period_key);
             html += '<div class="fr-card"><span>Выручка</span><b class="fr-in">' + frMoney(tot.income) + "</b></div>";
             html += '<div class="fr-card"><span>Расходы</span><b class="fr-out">' + frMoney(tot.expense) + "</b></div>";
@@ -2391,9 +2470,9 @@ function renderFinanceRec() {
             ? [
                 ["reconcile", "Сверка"],
                 ["expense", "Расходы"],
+                ["week", "Неделя"],
                 ["transfer", "Перемещения"],
-                ["accounts", "Счета и кассы"],
-                ["week", "Неделя"]
+                ["accounts", "Счета и кассы"]
             ]
             : [
                 ["days", "День"],
@@ -3704,13 +3783,12 @@ function renderFrExpenseTab(areaId, w, canEdit) {
         ops.forEach(function (o) { sum += frNum(o.amount); });
         sum = frRound(sum);
         weekRows += ops.length;
-        let block = '<div class="fr-expense-channel" style="margin:8px 0 4px">';
-        block += '<div class="fr-day-head" style="background:#f8fafc">'
-            + "<span><b>" + escapeHtml(label) + "</b></span>"
-            + '<span class="fr-day-total">'
+        let block = '<div class="fr-expense-channel">';
+        block += '<div class="fr-exp-channel-head">'
+            + "<span>" + escapeHtml(label) + "</span>"
             + '<button type="button" class="fr-exp-link" onclick="frShowExpenseDetail({channel:\''
             + channel + "',date:'" + escapeAttribute(dayIso) + "'})\">" + frMoney(sum) + "</button>"
-            + "</span></div>";
+            + "</div>";
         if (!ops.length) {
             block += '<div class="empty-row" style="padding:6px 10px">Нет записей</div>';
             block += "</div>";
@@ -3728,12 +3806,14 @@ function renderFrExpenseTab(areaId, w, canEdit) {
             const accName = (src && src.name) || sid || "—";
             let accSum = 0;
             byAcc[sid].forEach(function (o) { accSum += frNum(o.amount); });
-            block += '<div style="padding:4px 10px 2px;font-weight:600">'
-                + '<button type="button" class="fr-exp-link" style="font-weight:600" onclick="frShowExpenseDetail({channel:\''
+            block += '<div class="fr-exp-account">'
+                + '<button type="button" class="fr-exp-account-name" onclick="frShowExpenseDetail({channel:\''
                 + channel + "',accountId:'" + escapeAttribute(sid) + "',date:'"
                 + escapeAttribute(dayIso) + "'})\">" + escapeHtml(accName) + "</button>"
-                + ' <span class="fr-muted">(' + escapeHtml(frAccountTypeLabel(src && src.account_type)) + ") · "
-                + frMoney(frRound(accSum)) + "</span></div>";
+                + '<span class="fr-muted">' + escapeHtml(frAccountTypeLabel(src && src.account_type))
+                + ' · <button type="button" class="fr-exp-link" onclick="frShowExpenseDetail({channel:\''
+                + channel + "',accountId:'" + escapeAttribute(sid) + "',date:'"
+                + escapeAttribute(dayIso) + "'})\">" + frMoney(frRound(accSum)) + "</button></span></div>";
             block += '<div class="fr-table-wrap"><table class="fr-table"><thead><tr>';
             block += '<th>Кому выдано</th><th class="fr-num">Сумма</th><th>Хозяйственная операция</th>';
             if (canEdit) block += "<th></th>";
@@ -3741,7 +3821,7 @@ function renderFrExpenseTab(areaId, w, canEdit) {
             byAcc[sid].forEach(function (o) {
                 block += "<tr>";
                 block += "<td>" + escapeHtml(frExpensePayee(o)) + "</td>";
-                block += '<td class="fr-num">' + frMoney(o.amount) + "</td>";
+                block += '<td class="fr-num fr-out">' + frMoney(o.amount) + "</td>";
                 block += "<td>" + escapeHtml(frExpenseOperation(o)) + "</td>";
                 if (canEdit) {
                     block += '<td><button type="button" class="btn btn-small" onclick="openFrOpForm(\''
@@ -3757,6 +3837,7 @@ function renderFrExpenseTab(areaId, w, canEdit) {
         return { html: block, sum: sum };
     }
 
+    html += '<div class="fr-expense-days">';
     days.forEach(function (date) {
         const ops = frOpsForDate(areaId, w.period_key, date, "expense").slice().sort(function (a, b) {
             return String(a.finance_operation_id || "").localeCompare(String(b.finance_operation_id || ""));
@@ -3769,13 +3850,18 @@ function renderFrExpenseTab(areaId, w, canEdit) {
         weekBank += bankPart.sum;
         const dayTotal = frRound(cashPart.sum + bankPart.sum);
 
-        html += '<div class="fr-day-block">';
-        html += '<div class="fr-day-head"><span>' + escapeHtml(frFmtDate(date)) + "</span>";
+        const dayOpen = !!(frUi.expenseDayOpen && frUi.expenseDayOpen[areaId + "|" + date]);
+        html += '<div class="fr-day-block fr-exp-day' + (dayOpen ? " is-open" : "") + '">';
+        html += '<button type="button" class="fr-day-head fr-exp-day-toggle" onclick="frToggleExpenseDay(\''
+            + escapeAttribute(areaId) + "','" + escapeAttribute(date) + "')\">"
+            + "<span>" + (dayOpen ? "▼" : "▶") + " " + escapeHtml(frFmtDate(date)) + "</span>"
+            + '<span class="fr-day-total">Итого: ' + frMoney(dayTotal) + "</span></button>";
+        html += '<div class="fr-exp-day-body"' + (dayOpen ? "" : ' hidden') + ">";
         if (canEdit) {
-            html += '<button type="button" class="btn btn-secondary btn-small" onclick="openFrExcelImport(\''
-                + escapeAttribute(date) + "')\">Загрузить Excel</button>";
+            html += '<div style="padding:8px 10px 0">'
+                + '<button type="button" class="btn btn-secondary btn-small" onclick="openFrExcelImport(\''
+                + escapeAttribute(date) + "')\">Загрузить Excel</button></div>";
         }
-        html += "</div>";
         html += cashPart.html;
         html += bankPart.html;
         html += '<div class="fr-day-head" style="border-top:1px solid #e5e7eb;background:#fff">'
@@ -3799,8 +3885,9 @@ function renderFrExpenseTab(areaId, w, canEdit) {
                 + date + "')\">+ Добавить</button>";
             html += "</div>";
         }
-        html += "</div>";
+        html += "</div></div>";
     });
+    html += "</div>";
 
     weekCash = frRound(weekCash);
     weekBank = frRound(weekBank);
@@ -4203,6 +4290,7 @@ function renderFrTransferTab(areaId, w, canEdit) {
         html += '<div class="note">Для перемещений нужно минимум два активных счёта.</div></div>';
         return html;
     }
+    html += '<div class="fr-transfer-days">';
     days.forEach(function (date) {
         const ops = frOpsForDate(areaId, w.period_key, date, "transfer").slice().sort(function (a, b) {
             return String(a.finance_operation_id || "").localeCompare(String(b.finance_operation_id || ""));
@@ -4256,6 +4344,7 @@ function renderFrTransferTab(areaId, w, canEdit) {
         }
         html += "</div>";
     });
+    html += "</div>";
     html += '<div class="fr-day-head" style="border-radius:10px;margin-top:4px"><span>Итого перемещений за неделю</span><span class="fr-day-total">'
         + frMoney(frRound(weekSum)) + "</span></div>";
     if (canEdit) {
