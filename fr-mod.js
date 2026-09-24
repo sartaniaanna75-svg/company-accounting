@@ -1990,17 +1990,17 @@ function frAreaTotals(areaId, periodKey) {
 }
 
 function frWeekActualClosing(areaId, periodKey) {
-    /* Сумма конечных остатков всех счетов направления (включая неактивные с остатком). */
+    /* Сумма конечных РАСЧЁТНЫХ остатков всех счетов (для таблицы движений, не для факта). */
     const w = frWeek(String(periodKey || "").replace(/^week:/, ""));
     let sum = 0;
     frSources(areaId, true).forEach(function (s) {
         sum += frDayCalculated(areaId, periodKey, w.end_date, s.finance_source_id).calculated;
     });
-    return { value: frRound(sum), hasActual: true };
+    return { value: frRound(sum), hasActual: false };
 }
 
 function frHasWeekFacts(areaId, periodKey) {
-    return frSources(areaId, false).length > 0;
+    return frActualBalanceSources(areaId).length > 0;
 }
 
 function frWeekCalculated(areaId, periodKey) {
@@ -2009,10 +2009,162 @@ function frWeekCalculated(areaId, periodKey) {
     return frRound(tot.opening + tot.income + tot.non_income - tot.expense - tot.dividend);
 }
 
+/**
+ * Контрольная сверка недели: ФАКТ vs РАСЧЁТ по счетам «Участвует в фактическом остатке».
+ * «Неделя сошлась» только если все факты заполнены и нет расхождений ни по одному счёту
+ * (взаимозачёт +8k/−8k на разных счетах НЕ считается сходимостью).
+ */
+function frWeekFactCheck(areaId, periodKey) {
+    const w = frWeek(String(periodKey || "").replace(/^week:/, ""));
+    const endDate = w.end_date;
+    const sources = frActualBalanceSources(areaId);
+    const rows = [];
+    const missing = [];
+    const bad = [];
+    let sumCalc = 0;
+    let sumActual = 0;
+
+    sources.forEach(function (s) {
+        const sid = s.finance_source_id;
+        const calc = frWeekEndCalculatedForAccount(areaId, periodKey, endDate, sid);
+        sumCalc += calc;
+        let actual = null;
+        let filled = false;
+        if (frIsTransitSource(s)) {
+            /* Деньги в пути: один источник — расчёт по незакрытым перемещениям. */
+            actual = calc;
+            filled = true;
+        } else {
+            actual = frDayActual(areaId, endDate, sid);
+            filled = actual != null;
+        }
+        const row = {
+            account_id: sid,
+            name: s.name || sid,
+            calculated: frRound(calc),
+            actual: filled ? frRound(actual) : null,
+            discrepancy: filled ? frRound(actual - calc) : null,
+            filled: filled,
+            is_transit: frIsTransitSource(s)
+        };
+        rows.push(row);
+        if (!filled) {
+            missing.push(row);
+            return;
+        }
+        sumActual += actual;
+        if (Math.abs(row.discrepancy) >= 0.005) bad.push(row);
+    });
+
+    sumCalc = frRound(sumCalc);
+    sumActual = frRound(sumActual);
+    const complete = sources.length > 0 && missing.length === 0;
+    const totalDisc = complete ? frRound(sumActual - sumCalc) : null;
+    const balanced = complete && bad.length === 0;
+
+    let status = "no_accounts";
+    let kind = "none";
+    if (!sources.length) {
+        status = "no_accounts";
+        kind = "none";
+    } else if (!complete) {
+        status = "incomplete";
+        kind = "incomplete";
+    } else if (balanced) {
+        status = "ok";
+        kind = "ok";
+    } else {
+        status = "bad";
+        if (bad.length > 0 && Math.abs(totalDisc) < 0.005) kind = "mixed";
+        else if (totalDisc < -0.005) kind = "shortage";
+        else if (totalDisc > 0.005) kind = "surplus";
+        else kind = "mixed";
+    }
+
+    return {
+        status: status,
+        kind: kind,
+        balanced: balanced,
+        complete: complete,
+        sumCalc: sumCalc,
+        sumActual: complete ? sumActual : null,
+        totalDisc: totalDisc,
+        missingCount: missing.length,
+        missing: missing,
+        badAccounts: bad,
+        rows: rows,
+        hasAccounts: sources.length > 0
+    };
+}
+
+/** Расхождение факт − расчёт (null, если сверка не завершена). */
 function frWeekDiscrepancy(areaId, periodKey) {
-    const calculated = frWeekCalculated(areaId, periodKey);
-    const accountsEnd = frWeekActualClosing(areaId, periodKey).value;
-    return frRound(accountsEnd - calculated);
+    const chk = frWeekFactCheck(areaId, periodKey);
+    return chk.totalDisc;
+}
+
+function frWeekControlStatusHtml(chk) {
+    if (!chk || !chk.hasAccounts) {
+        return '<div class="fr-week-ctrl-status fr-week-ctrl-wait">Добавьте счета с участием в фактическом остатке</div>';
+    }
+    if (chk.kind === "incomplete") {
+        let html = '<div class="fr-week-ctrl-status fr-week-ctrl-wait"><b>СВЕРКА НЕ ЗАВЕРШЕНА</b>'
+            + '<div>Не заполнены фактические остатки: ' + chk.missingCount + "</div>";
+        if (chk.missing.length) {
+            html += '<ul class="fr-week-ctrl-missing">';
+            chk.missing.forEach(function (m) {
+                html += "<li>" + escapeHtml(m.name) + "</li>";
+            });
+            html += "</ul>";
+        }
+        html += "</div>";
+        return html;
+    }
+    if (chk.kind === "ok") {
+        return '<div class="fr-week-ctrl-status fr-week-ctrl-ok"><b>✓ НЕДЕЛЯ СОШЛАСЬ</b>'
+            + "<div>Расхождение: 0 ₽</div></div>";
+    }
+    let html = '<div class="fr-week-ctrl-status fr-week-ctrl-bad"><b>✕ НЕДЕЛЯ НЕ СОШЛАСЬ</b>';
+    if (chk.kind === "shortage") {
+        html += '<div class="fr-week-ctrl-dir">Недостача денег: <b>'
+            + frMoney(Math.abs(chk.totalDisc)) + "</b></div>";
+    } else if (chk.kind === "surplus") {
+        html += '<div class="fr-week-ctrl-dir">Излишек денег: <b>'
+            + frMoney(Math.abs(chk.totalDisc)) + "</b></div>";
+    } else if (chk.kind === "mixed") {
+        html += '<div class="fr-week-ctrl-dir">Есть расхождения по отдельным счетам'
+            + (Math.abs(chk.totalDisc) < 0.005 ? " (общая разница 0 ₽)" : "")
+            + "</div>";
+    }
+    if (chk.badAccounts && chk.badAccounts.length) {
+        html += '<ul class="fr-week-ctrl-bad-list">';
+        chk.badAccounts.forEach(function (r) {
+            const sign = r.discrepancy > 0 ? "+" : "";
+            html += "<li>" + escapeHtml(r.name) + ": <b>" + sign + frMoney(r.discrepancy) + "</b></li>";
+        });
+        html += "</ul>";
+    }
+    html += "</div>";
+    return html;
+}
+
+function renderFrWeekControlBlock(chk) {
+    const cls = chk.balanced ? "fr-ok"
+        : (chk.kind === "incomplete" || chk.kind === "none" ? "" : "fr-bad");
+    let html = '<div class="fr-ctrl fr-week-fact-ctrl ' + cls + '"><h3>Контрольная сверка</h3>';
+    html += '<div class="fr-muted" style="margin-bottom:8px">'
+        + "Сравниваются <b>фактические</b> остатки (ручной ввод) с <b>расчётными</b>. "
+        + "«Неделя сошлась» — только если заполнены все факты и нет расхождений по каждому счёту.</div>";
+    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Расчётный остаток</span><b>'
+        + frMoney(chk.sumCalc) + "</b></div>";
+    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Фактический остаток</span><b>'
+        + (chk.sumActual == null ? "—" : frMoney(chk.sumActual)) + "</b></div>";
+    html += '<div style="margin:6px 0;display:flex;justify-content:space-between;border-top:1px solid #e5e7eb;padding-top:6px">'
+        + "<span>Общее расхождение</span><b>"
+        + (chk.totalDisc == null ? "—" : frMoney(chk.totalDisc)) + "</b></div>";
+    html += frWeekControlStatusHtml(chk);
+    html += "</div>";
+    return html;
 }
 
 function frFirstBadDay(areaId, periodKey) {
@@ -2152,9 +2304,10 @@ function renderFinanceRec() {
         const tot = frAreaTotals(area.finance_area_id, w.period_key);
         const weekCalc = frWeekCalculated(area.finance_area_id, w.period_key);
         const accountsEnd = frWeekActualClosing(area.finance_area_id, w.period_key).value;
-        const disc = frWeekDiscrepancy(area.finance_area_id, w.period_key);
-        const hasFacts = frHasWeekFacts(area.finance_area_id, w.period_key);
-        const balanced = hasFacts && Math.abs(disc) < 0.005;
+        const weekCheck = frWeekFactCheck(area.finance_area_id, w.period_key);
+        const disc = weekCheck.totalDisc;
+        const hasFacts = weekCheck.hasAccounts;
+        const balanced = weekCheck.balanced;
         const st = frPeriodState(area.finance_area_id, w.period_key);
         const closed = st.status === "closed";
         const canFill = frCanEditData();
@@ -2204,9 +2357,14 @@ function renderFinanceRec() {
             html += '<div class="fr-card"><span>Доходы</span><b class="fr-in">' + frMoney(tot.income) + "</b></div>";
             html += '<div class="fr-card"><span>Внедоходовые</span><b class="fr-non">' + frMoney(tot.non_income) + "</b></div>";
             html += '<div class="fr-card"><span>Расходы</span><b class="fr-out">' + frMoney(tot.expense) + "</b></div>";
-            html += '<div class="fr-card ' + (balanced ? "fr-ok" : (hasFacts ? "fr-bad" : "")) + '"><span>Расхождение</span><b>'
-                + (hasFacts ? frMoney(disc) : "—") + "</b><span>"
-                + (hasFacts ? (balanced ? "✓ 0 ₽ — неделя сошлась" : "⚠ Не сошлось") : "Добавьте счета") + "</span></div>";
+            html += '<div class="fr-card ' + (balanced ? "fr-ok" : (weekCheck.status === "bad" ? "fr-bad" : "")) + '"><span>Расхождение</span><b>'
+                + (disc == null ? "—" : frMoney(disc)) + "</b><span>"
+                + (balanced ? "✓ Неделя сошлась"
+                    : (weekCheck.kind === "incomplete" ? "Сверка не завершена"
+                        : (weekCheck.kind === "shortage" ? "Недостача"
+                            : (weekCheck.kind === "surplus" ? "Излишек"
+                                : (weekCheck.status === "bad" ? "Не сошлась" : "Добавьте счета")))))
+                + "</span></div>";
         }
         html += "</div>";
         if (isTerritory || isShop) {
@@ -2256,7 +2414,7 @@ function renderFinanceRec() {
         else if (frUi.workTab === "transfer") html += renderFrTransferTab(area.finance_area_id, w, canFill && !closed);
         else if (frUi.workTab === "days") html += renderFrDaysTab(area.finance_area_id, w, canFill && !closed);
         else if (frUi.workTab === "accounts") html += renderFrSettingsHtml(area);
-        else html += renderFrWeekTab(area.finance_area_id, w, tot, weekCalc, accountsEnd, disc, balanced, st, closed, hasFacts);
+        else html += renderFrWeekTab(area.finance_area_id, w, tot, weekCalc, accountsEnd, weekCheck, st, closed);
 
         html += "</div>";
         host.innerHTML = html;
@@ -2699,21 +2857,26 @@ function renderFrWeekActualBalances(areaId, w, canEdit) {
     sumActual = frRound(sumActual);
     sumDisc = frRound(sumDisc);
 
+    const weekCheck = frWeekFactCheck(areaId, w.period_key);
     const colPad = isTerritory ? 2 : 1;
     html += "</tbody><tfoot>";
     html += "<tr><td colspan=\"" + colPad + "\"><b>ИТОГО РАСЧЁТНЫЙ ОСТАТОК</b></td>"
-        + '<td class="fr-num"><b>' + frMoney(sumCalc) + "</b></td><td></td><td></td></tr>";
+        + '<td class="fr-num"><b>' + frMoney(weekCheck.sumCalc) + "</b></td><td></td><td></td></tr>";
     html += "<tr><td colspan=\"" + colPad + "\"><b>ИТОГО ФАКТИЧЕСКИЙ ОСТАТОК</b></td><td></td>"
-        + '<td class="fr-num"><b>' + (anyFilled ? frMoney(sumActual) : "—") + "</b></td><td></td></tr>";
+        + '<td class="fr-num"><b>'
+        + (weekCheck.sumActual == null ? "—" : frMoney(weekCheck.sumActual))
+        + "</b></td><td></td></tr>";
     html += "<tr><td colspan=\"" + colPad + "\"><b>ОБЩЕЕ РАСХОЖДЕНИЕ</b></td><td></td><td></td>";
-    if (!allFilled) {
+    if (weekCheck.kind === "incomplete") {
         html += '<td class="fr-num fr-disc-cell">—</td></tr>';
-        html += '<tr><td colspan="' + (colPad + 3) + '" class="fr-muted">Заполните фактические остатки по всем счетам из списка, чтобы проверить сходимость недели.</td></tr>';
-    } else if (Math.abs(sumDisc) < 0.005) {
-        html += '<td class="fr-num fr-disc-cell is-ok"><b>✓ Неделя сошлась</b></td></tr>';
+    } else if (weekCheck.balanced) {
+        html += '<td class="fr-num fr-disc-cell is-ok"><b>0,00 ₽</b></td></tr>';
     } else {
-        html += '<td class="fr-num fr-disc-cell is-bad"><b>' + frMoney(sumDisc) + "</b></td></tr>";
+        html += '<td class="fr-num fr-disc-cell is-bad"><b>'
+            + (weekCheck.totalDisc == null ? "—" : frMoney(weekCheck.totalDisc))
+            + "</b></td></tr>";
     }
+    html += '<tr><td colspan="' + (colPad + 3) + '">' + frWeekControlStatusHtml(weekCheck) + "</td></tr>";
     html += "</tfoot></table></div></div>";
     return html;
 }
@@ -4293,14 +4456,16 @@ function frSaveDayActual(sourceId, date, value) {
     renderFinanceRec();
 }
 
-function renderFrWeekTab(areaId, w, tot, weekCalc, accountsEnd, disc, balanced, st, closed, hasFacts) {
+function renderFrWeekTab(areaId, w, tot, weekCalc, accountsEnd, weekCheck, st, closed) {
     const sources = frSources(areaId, false);
     const isTerritory = frIsTerritoryArea(areaId);
+    const chk = weekCheck || frWeekFactCheck(areaId, w.period_key);
+    const balanced = chk.balanced;
     let html = '<div class="fr-layout"><div>';
     html += '<div class="fr-box"><h3>Сверка недели (чт–ср)</h3>';
     html += '<div class="fr-muted" style="margin-bottom:8px">'
-        + "Расчётный остаток = начало недели + поступления − расходы. "
-        + "Сравнивается с суммой конечных остатков всех счетов. Перемещения не доход и не расход.</div>";
+        + "Движение по счетам за неделю. Контроль сходимости — по фактическим остаткам справа / в блоке факта. "
+        + "Перемещения не доход и не расход.</div>";
     html += '<div class="fr-table-wrap"><table class="fr-table"><thead><tr>';
     html += "<th>Счёт / касса</th><th>Тип</th>";
     if (isTerritory) html += "<th>Направление</th>";
@@ -4331,16 +4496,7 @@ function renderFrWeekTab(areaId, w, tot, weekCalc, accountsEnd, disc, balanced, 
     html += '<td class="fr-num">' + frMoney(frRound(tot.transfer_in - tot.transfer_out)) + "</td>";
     html += '<td class="fr-num"><b>' + frMoney(accountsEnd) + "</b></td></tr></tfoot></table></div>";
     html += "</div></div><div>";
-    html += '<div class="fr-ctrl ' + (balanced ? "fr-ok" : (hasFacts ? "fr-bad" : "")) + '"><h3>Контрольная сверка</h3>';
-    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Начало недели</span><b>' + frMoney(tot.opening) + "</b></div>";
-    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>+ Поступления (доходы)</span><b class="fr-in">' + frMoney(tot.income) + "</b></div>";
-    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>+ Внедоходовые</span><b class="fr-non">' + frMoney(tot.non_income) + "</b></div>";
-    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>− Расходы</span><b class="fr-out">' + frMoney(tot.expense) + "</b></div>";
-    html += '<div style="margin:6px 0;display:flex;justify-content:space-between;border-top:1px solid #e5e7eb;padding-top:6px"><span>Расчётный остаток</span><b>' + frMoney(weekCalc) + "</b></div>";
-    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Сумма остатков счетов</span><b>' + frMoney(accountsEnd) + "</b></div>";
-    html += '<div class="fr-muted" style="margin-top:8px">РАСХОЖДЕНИЕ = итог счетов − расчётный</div>';
-    html += '<div class="fr-disc">' + (hasFacts ? frMoney(disc) : "—") + "</div>";
-    html += "<div>" + (hasFacts ? (balanced ? "✓ 0 ₽ — неделя сошлась" : "⚠ Есть расхождение") : "Добавьте счета в настройках") + "</div></div>";
+    html += renderFrWeekControlBlock(chk);
     html += '<div class="fr-box" style="margin-top:12px"><h3>Статус периода</h3>';
     html += "<p>" + escapeHtml(frStatusLabel(st.status)) + (closed ? " · только просмотр" : "") + "</p>";
     if (frCan("fill") && !closed) html += '<button type="button" class="btn btn-secondary btn-small" onclick="frSetStatus(\'filled\')">Отметить заполненным</button> ';
@@ -5138,15 +5294,20 @@ function frSetStatus(status) {
 function frClosePeriod() {
     const area = frActiveArea();
     const w = frEnsureWeek();
-    const disc = frWeekDiscrepancy(area.finance_area_id, w.period_key);
-    if (Math.abs(disc) >= 0.005) {
+    const chk = frWeekFactCheck(area.finance_area_id, w.period_key);
+    if (!chk.balanced) {
         if (!frCan("setup")) {
-            toast("Период не может быть закрыт. Контрольная сверка не равна 0.", "error");
+            toast(
+                chk.kind === "incomplete"
+                    ? "Период не может быть закрыт. Не заполнены фактические остатки."
+                    : "Период не может быть закрыт. Контрольная сверка не сошлась.",
+                "error"
+            );
             return;
         }
         const why = prompt("Принудительное закрытие. Укажите причину:");
         if (!String(why || "").trim()) return;
-        frAudit("force_close", { comment: why, old_value: disc });
+        frAudit("force_close", { comment: why, old_value: chk.totalDisc });
     }
     if (!frCan("close") && !frCan("setup")) return;
     const st = frPeriodState(area.finance_area_id, w.period_key);
