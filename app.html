@@ -1082,6 +1082,30 @@
             border-color: var(--primary);
         }
 
+        .sal-tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            width: 100%;
+            margin: 0 0 12px;
+        }
+        .sal-tabs .metrics-tab {
+            font-size: 14px;
+            padding: 10px 16px;
+        }
+        .vplan-year {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .vplan-year button {
+            min-width: 36px;
+            height: 36px;
+            font-size: 16px;
+        }
+
         .metrics-fill-tabs .metrics-tab {
             padding: 6px 12px;
             font-size: 13px;
@@ -2130,7 +2154,16 @@
             color: var(--muted);
         }
 
-        .salary-table { min-width: 1240px; }
+        .sal-tabs { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; margin: 0 0 10px; }
+        .sal-tabs .metrics-tab { font-size: 13px; padding: 7px 12px; }
+        .sal-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 0 0 10px; }
+        .sal-card { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: #fff; }
+        .sal-card span { display: block; color: var(--muted); font-size: 11px; }
+        .sal-card b { display: block; margin-top: 2px; font-size: 15px; font-variant-numeric: tabular-nums; }
+        .sal-card.sal-svc { background: #f8fafc; }
+        .sal-vac-flag { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); white-space: nowrap; margin-top: 4px; }
+        .sal-group-btn { background: none; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 0; }
+        .salary-table { min-width: 1480px; }
         .salary-table th,
         .salary-table td {
             padding-left: 6px;
@@ -4526,6 +4559,9 @@
         <button type="button" class="nav-btn" data-for="summary" data-section="salary" onclick="showSection('salary', this)">
             💰 Зарплата
         </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="salary-vacation-plan" onclick="showSection('salary-vacation-plan', this)">
+            График отпускных
+        </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="repSalary" onclick="showSection('repSalary', this)">
             📦 Зарплата ТП
         </button>
@@ -4929,31 +4965,31 @@
                  ЗАРПЛАТА — только Общая: штрафы, премии, авансы, продукты
             ================================================== -->
             <section id="salary" class="section">
-                <div class="card">
+                <div class="sal-tabs" id="salaryInnerTabs">
+                    <button type="button" class="metrics-tab active" data-sal-tab="sheet" onclick="setSalaryInner('sheet')">Ведомость</button>
+                    <button type="button" class="metrics-tab" data-sal-tab="vac" onclick="setSalaryInner('vac')">Отпускные</button>
+                    <button type="button" class="metrics-tab" data-sal-tab="plan" onclick="setSalaryInner('plan')">График отпускных</button>
+                </div>
+                <div class="card" id="salaryMainHead">
                     <div class="card-header">
                         <div>
                             <div class="card-title">Зарплата по всем отделам</div>
                             <div class="note" id="salaryFormulaNote">
-                                Начислено = отработанные часы / 8 × стоимость дня, без KPI. KPI подтягивается из расчёта подразделения (для Володарского — из «Зарплаты Володарского»).
-                                Итого = начислено + KPI + премия − штраф (включая опоздания) − аванс. Прогул уже уменьшает дни, отдельным штрафом не вычитается.
-                                У торговых представителей «Начислено» приходит из вкладки «Зарплата ТП».
+                                Оклад считается как раньше (дни × ставка / зарплата ТП). Налог и штраф в итогах удерживаются с тем же знаком, что и сейчас.
+                                «Итого начислено» стоит до продуктов и аванса. Отпускные входят в начисление; отметка «Выплачены ранее» убирает их только из суммы к выдаче.
                             </div>
                         </div>
-                        <div class="toolbar">
+                        <div class="toolbar" id="salaryToolbar">
                             <div class="form-group">
-                                <label for="salaryDeptFilter">Отдел</label>
+                                <label for="salaryDeptFilter">Подразделение</label>
                                 <select id="salaryDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
-                                    <option value="">Все отделы</option>
-                                    <option value="shop">Магазин Володарского</option>
-                                    <option value="office">Офис</option>
-                                    <option value="warehouse">Склад</option>
-                                    <option value="drivers">Логистика + Торговые</option>
+                                    <option value="">Все подразделения</option>
                                 </select>
                             </div>
                             <div class="form-group">
                                 <label for="salarySortMode">Сортировка</label>
                                 <select id="salarySortMode" onchange="changeSummarySortMode(this.value)">
-                                    <option value="dept">По отделам</option>
+                                    <option value="dept">По подразделениям</option>
                                     <option value="name">По ФИО</option>
                                 </select>
                             </div>
@@ -4964,27 +5000,51 @@
                     </div>
                 </div>
 
-                <div class="card">
+                <div id="salaryPayoutCards" class="sal-cards" style="display:none"></div>
+                <div id="salarySumCards" class="sal-cards"></div>
+
+                <div class="card" id="salarySheetCard">
                     <div class="table-wrapper" id="salaryWrap">
+                        <table class="salary-table">
+                            <thead id="salaryHead"></thead>
+                            <tbody id="salaryBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="salaryVacCard" style="display:none">
+                    <div class="toolbar" id="salaryVacFilters" style="padding:8px 12px 0;align-items:end;flex-wrap:wrap;gap:8px"></div>
+                    <div class="table-wrapper">
                         <table class="salary-table">
                             <thead>
                                 <tr>
                                     <th>Сотрудник</th>
-                                    <th class="days-col" title="Часы табеля / 8">Отраб. дней</th>
-                                    <th class="salary-rate" title="Стоимость рабочего дня">Ставка/день</th>
-                                    <th class="salary-accrued" title="Отработано дней × ставка, без KPI">Начислено</th>
-                                    <th title="Бонус по метрикам / KPI">KPI</th>
-                                    <th title="Удержание, ручной ввод за месяц">Продукты</th>
-                                    <th title="Удержание, ручной ввод за месяц">Налог</th>
-                                    <th title="Начисление, ручной ввод за месяц">Отпускные</th>
-                                    <th>Премия</th>
-                                    <th>Штраф</th>
-                                    <th>Аванс</th>
-                                    <th>Итого</th>
-                                    <th>Выдано</th>
+                                    <th>Подразделение</th>
+                                    <th>Расчётный месяц</th>
+                                    <th>Начислено отпускных</th>
+                                    <th>Выплачено ранее</th>
+                                    <th>Выплачено с зарплатой / осталось</th>
+                                    <th>Статус</th>
                                 </tr>
                             </thead>
-                            <tbody id="salaryBody"></tbody>
+                            <tbody id="salaryVacBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="salaryPlanCard" style="display:none">
+                    <div class="toolbar" id="salaryPlanFilters" style="padding:8px 12px 0;align-items:end;flex-wrap:wrap;gap:8px"></div>
+                    <div class="table-wrapper">
+                        <table class="salary-table">
+                            <thead>
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th>Подразделение</th>
+                                    <th>Плановая дата отпускных</th>
+                                    <th>Плановая сумма</th>
+                                    <th>Статус</th>
+                                    <th>Комментарий</th>
+                                </tr>
+                            </thead>
+                            <tbody id="salaryPlanBody"></tbody>
                         </table>
                     </div>
                 </div>
@@ -5998,7 +6058,7 @@ let currentSection = "timesheet";
 let summaryDeptFilter = "";
 let summaryWorkGroupFilter = "";
 let summaryStaffSearch = "";
-let summarySortMode = "dept";
+let salaryUi = { inner: "sheet", vacYear: "", vacMonth: "", vacDept: "", vacEmployee: "", vacStatus: "", planYear: "", collapsed: {} };
 let currentSummaryRole = null;
 let currentDeptRole = null;
 let currentUserId = "";
@@ -7863,6 +7923,9 @@ const ACCESS_PERM_KEYS = [
     { key: "salesPlan", label: "План продаж" },
     { key: "discipline", label: "Дисциплина" },
     { key: "salary", label: "Зарплата" },
+    { key: "salaryCalc", label: "Расчёт зарплаты" },
+    { key: "salaryPay", label: "Выдача зарплаты" },
+    { key: "salary1c", label: "Служебные суммы 1С" },
     { key: "kpi", label: "KPI" },
     { key: "settings", label: "Настройки" },
     { key: "management", label: "СПУ" },
@@ -7893,6 +7956,7 @@ function accessRoleTemplate(role, legacy) {
     if (legacy === "adjust") {
         p.timesheet = "view";
         p.salary = "edit";
+        p.salaryCalc = "edit";
         p.kpi = "view";
         p.management = "view";
         p.managementIndicators = "view";
@@ -7903,6 +7967,7 @@ function accessRoleTemplate(role, legacy) {
     }
     if (legacy === "pay") {
         p.salary = "view";
+        p.salaryPay = "edit";
         return p;
     }
     if (role === "manager") {
@@ -7972,8 +8037,19 @@ function userHasPerm(key, min) {
     const need = min || "view";
     const u = currentAuthUser();
     if (u) {
-        const v = (u.permissions && u.permissions[key]) || "none";
-        return permRank(v) >= permRank(need);
+        if (key === "salary") {
+            const v = (u.permissions && u.permissions.salary) || "none";
+            if (permRank(v) >= permRank(need)) return true;
+            if (need === "view" && (
+                permRank((u.permissions && u.permissions.salaryCalc) || "none") > 0
+                || permRank((u.permissions && u.permissions.salaryPay) || "none") > 0
+                || permRank((u.permissions && u.permissions.salary1c) || "none") > 0
+            )) return true;
+            if (need === "edit" && permRank((u.permissions && u.permissions.salaryCalc) || "none") > 0) return true;
+        } else {
+            const v = (u.permissions && u.permissions[key]) || "none";
+            return permRank(v) >= permRank(need);
+        }
     }
     if (currentSummaryRole === "admin") return true;
     if (key === "salary") {
@@ -8379,6 +8455,15 @@ function normalizeAccessUser(u) {
     ACCESS_PERM_KEYS.forEach(function (p) {
         if (!u.permissions[p.key]) u.permissions[p.key] = "none";
     });
+    if (u.permissions.salaryCalc === "none" && permRank(u.permissions.salary) >= permRank("edit")) {
+        u.permissions.salaryCalc = "edit";
+    }
+    if (u.permissions.salaryPay === "none" && (u.legacy_role === "pay" || (permRank(u.permissions.salary) >= permRank("view") && permRank(u.permissions.salary) < permRank("edit")))) {
+        u.permissions.salaryPay = "edit";
+    }
+    if (u.permissions.salary1c === "none" && (u.role === "admin" || u.legacy_role === "admin")) {
+        u.permissions.salary1c = "edit";
+    }
     if (!hadCustomerReturns && permRank(u.permissions.metrics) > 0) {
         u.permissions.customerReturns = u.permissions.metrics;
     }
@@ -8532,16 +8617,37 @@ function adminPin() {
     return "5555";
 }
 
-function canEditSalaryField(field) {
+function canSalaryCalc() {
     if (isAppAdmin()) return true;
-    if (!userHasPerm("salary", "edit")) return false;
+    if (currentSummaryRole === "adjust" || currentSummaryRole === "admin") return true;
+    return userHasPerm("salaryCalc", "edit") || userHasPerm("salary", "edit");
+}
+
+function canSalaryPay() {
+    if (isAppAdmin()) return true;
+    if (currentSummaryRole === "pay" || currentSummaryRole === "admin") return true;
+    const u = currentAuthUser();
+    if (u && u.legacy_role === "pay") return true;
+    return permRank((u && u.permissions && u.permissions.salaryPay) || "none") > 0;
+}
+
+function canSalary1c() {
+    if (isAppAdmin()) return true;
+    if (currentSummaryRole === "admin") return true;
+    return userHasPerm("salary1c", "edit");
+}
+
+function isSalaryPayOnlyView() {
+    return canSalaryPay() && !canSalaryCalc() && !isAppAdmin() && currentSummaryRole !== "admin";
+}
+
+function canEditSalaryField(field) {
+    if (!canSalaryCalc()) return false;
     return ["fines", "skipFine", "products", "advance", "taxes", "bonus", "vacationPay"].indexOf(field) !== -1;
 }
 
 function canMarkIssued() {
-    if (isAppAdmin()) return true;
-    const u = currentAuthUser();
-    return currentSummaryRole === "pay" || !!(u && u.legacy_role === "pay");
+    return canSalaryPay();
 }
 
 function summaryEmployeeGroups() {
@@ -9004,15 +9110,16 @@ function mergeSalaryRecord(dst, src) {
         dst.skipFine = Number(dst.skipFine || 0) + Number(src.skipFine || 0);
     }
     dst.taxiDaily = Number(dst.taxiDaily || 0) + Number(src.taxiDaily || 0);
-    dst.vacationPay = Number(dst.vacationPay || 0) + Number(src.vacationPay || 0);
-    dst.taxes = Number(dst.taxes || 0) + Number(src.taxes || 0);
+        dst.vacationPay = Number(dst.vacationPay || 0) + Number(src.vacationPay || 0);
+        dst.vacationPaidEarlier = !!(dst.vacationPaidEarlier || src.vacationPaidEarlier);
+        dst.taxes = Number(dst.taxes || 0) + Number(src.taxes || 0);
     dst.issued = !!(dst.issued || src.issued);
 }
 
 function emptySalaryRecord() {
     return {
         fines: 0, bonus: 0, advance: 0, products: 0, skipFine: null,
-        taxiDaily: 0, vacationPay: 0, taxes: 0, issued: false
+        taxiDaily: 0, vacationPay: 0, vacationPaidEarlier: false, taxes: 0, issued: false
     };
 }
 
@@ -9064,6 +9171,7 @@ function normalizeSalaryRecord(rec) {
     next.products = Number(rec.products || 0);
     next.taxiDaily = Number(rec.taxiDaily || 0);
     next.vacationPay = Number(rec.vacationPay || 0);
+    next.vacationPaidEarlier = !!rec.vacationPaidEarlier;
     next.taxes = Number(rec.taxes || 0);
     next.issued = !!rec.issued;
     next.skipFine = rec.skipFine === null || rec.skipFine === undefined || rec.skipFine === ""
@@ -9073,6 +9181,8 @@ function normalizeSalaryRecord(rec) {
     if (sources) next.sources = sources;
     if (rec.updated_at) next.updated_at = rec.updated_at;
     if (rec.external_1c_id) next.external_1c_id = rec.external_1c_id;
+    if (rec.reflect1c != null && rec.reflect1c !== "") next.reflect1c = Number(rec.reflect1c);
+    if (rec.expenseZp != null && rec.expenseZp !== "") next.expenseZp = Number(rec.expenseZp);
     return next;
 }
 
@@ -9439,6 +9549,7 @@ function renderDeptNow() {
 function migrateAppData(data) {
     if (!Array.isArray(data.employees)) data.employees = [];
     if (!data.salary || typeof data.salary !== "object") data.salary = {};
+    if (!data.vacationPlans || typeof data.vacationPlans !== "object") data.vacationPlans = {};
     if (!data.repSales || typeof data.repSales !== "object") data.repSales = {};
     if (!data.shopMetrics || typeof data.shopMetrics !== "object") data.shopMetrics = {};
     if (!data.shopSalesPlan || typeof data.shopSalesPlan !== "object") data.shopSalesPlan = { months: {} };
@@ -10382,7 +10493,12 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         vacationPay: vacationPay,
         taxes: taxes,
         issued: !!adj.issued,
-        pay: pay
+        vacationPaidEarlier: !!adj.vacationPaidEarlier,
+        pay: pay,
+        accruedTotal: pay + products + advance,
+        toHand: pay - (adj.vacationPaidEarlier ? vacationPay : 0),
+        reflect1c: adj.reflect1c,
+        expenseZp: adj.expenseZp
     };
 }
 
@@ -11264,19 +11380,17 @@ function applyModeUI() {
     if (table) table.classList.toggle("month-table", !summary);
 
     const exportBtn = document.getElementById("exportSalaryBtn");
-    if (exportBtn) exportBtn.style.display = currentSummaryRole === "pay" ? "none" : "";
+    if (exportBtn) exportBtn.style.display = isSalaryPayOnlyView() ? "none" : "";
 
     const addStaffBtn = document.getElementById("addSummaryEmployeeBtn");
     if (addStaffBtn) addStaffBtn.style.display = canEditStaff() ? "" : "none";
 
     const salaryNote = document.getElementById("salaryFormulaNote");
     if (salaryNote) {
-        if (currentSummaryRole === "adjust") {
-            salaryNote.textContent = "Можно править премию, штраф, аванс, продукты, налог и отпускные. Начислено, ставка, дни и KPI считаются сами. Суммы те же, что в зарплате подразделения.";
-        } else if (currentSummaryRole === "pay") {
-            salaryNote.textContent = "Можно только поставить галочку «Выдано». Суммы менять нельзя.";
-        } else {
-            salaryNote.textContent = "Начислено = часы / 8 × ставка, без KPI. KPI — отдельно. Продукты и налог удерживаются, отпускные прибавляются. У торговых «Начислено» — из «Зарплата ТП».";
+        if (isSalaryPayOnlyView() || currentSummaryRole === "pay") {
+            salaryNote.textContent = "Можно отметить «Выдано». Суммы не меняются. Отпускные, отмеченные «Выплачены ранее», в выдачу не входят.";
+        } else if (canSalaryCalc()) {
+            salaryNote.textContent = "Итого начислено = текущее начисление (оклад, премия/KPI, налог и штраф с тем же знаком, отпускные). Продукты и аванс вычитаются уже после этой суммы. «Выплачены ранее» убирает отпускные только из «К выдаче».";
         }
     }
     const editBtn = document.getElementById("navLayoutEditBtn");
@@ -12134,13 +12248,13 @@ function allowedSections() {
         return list;
     }
     if (isSummary()) {
-        if (currentSummaryRole === "pay" || (currentAuthUser() && currentAuthUser().legacy_role === "pay")) {
-            return userHasPerm("salary", "view") ? ["salary"] : [];
+        if (isSalaryPayOnlyView()) {
+            return userHasPerm("salary", "view") ? ["salary", "salary-vacation-plan"] : [];
         }
         const list = [];
         if (userHasPerm("timesheet", "view")) list.push("timesheet");
         if (userHasPerm("salary", "view")) {
-            list.push("salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary");
+            list.push("salary", "salary-vacation-plan", "repSalary", "shopSalary", "warehouseSalary", "driversSalary");
         }
         if (userHasPerm("discipline", "view")) list.push("discipline");
         if (userHasPerm("timesheet", "view") || userHasPerm("salary", "view")) list.push("analysis");
@@ -12213,6 +12327,7 @@ function sectionTitle(id) {
             return (v && v.title) || "План продаж";
         })(),
         salary: "Зарплата",
+        "salary-vacation-plan": "График отпускных",
         repSalary: "Зарплата ТП",
         shopSalary: "Зарплата Володарского",
         warehouseSalary: "Зарплата Склада",
@@ -12319,6 +12434,9 @@ function showSection(id, button) {
             }
         }
     }
+    if (id === "salary-vacation-plan") salaryUi.inner = "plan";
+    else if (id === "salary" && salaryUi.inner === "plan") salaryUi.inner = "sheet";
+
     currentSection = id;
     saveSession();
 
@@ -12327,6 +12445,7 @@ function showSection(id, button) {
     });
     let sectionId = id;
     if (id === "metrics-pickers" || id === "metrics-cashiers" || id === "metrics-managers" || isDeptWorkSection(id)) sectionId = "metrics";
+    else if (id === "salary-vacation-plan") sectionId = "salary";
     else if (isMgmtNavSection(id)) sectionId = "management";
     else if (isOrgNavSection(id)) sectionId = "orgstructure";
     else if (typeof isFrNavSection === "function" && isFrNavSection(id)) sectionId = "financeRec";
@@ -12334,7 +12453,8 @@ function showSection(id, button) {
     if (host) host.classList.add("active");
     const monthBar = document.querySelector(".month-bar");
     if (monthBar) monthBar.style.display = (isMgmtNavSection(id) || isOrgNavSection(id)
-        || (typeof isFrNavSection === "function" && isFrNavSection(id)) || id === "territoryReturns") ? "none" : "";
+        || (typeof isFrNavSection === "function" && isFrNavSection(id)) || id === "territoryReturns"
+        || id === "salary-vacation-plan") ? "none" : "";
     if (id === "territoryReturns" && typeof crCanSeeTab === "function") {
         try { if (crUi && crCanSeeTab("all")) crUi.tab = "all"; } catch (err) { console.error(err); }
     }
@@ -12381,7 +12501,7 @@ function showSection(id, button) {
     }
     if (id === "revision") runSection(renderShopRevision);
     if (id === "salesPlan") runSection(renderShopSalesPlan);
-    if (id === "salary") runSection(renderSalary);
+    if (id === "salary" || id === "salary-vacation-plan") runSection(renderSalary);
     if (id === "repSalary") runSection(renderRepSalary);
     if (id === "shopSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.shop); });
     if (id === "warehouseSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.warehouse); });
@@ -22560,26 +22680,288 @@ function openShopBonusBreakdown(employeeId) {
 }
 
 
+function fillSalaryDeptFilter() {
+    const sel = document.getElementById("salaryDeptFilter");
+    if (!sel) return;
+    const cur = summaryDeptFilter || sel.value || "";
+    let html = '<option value="">Все подразделения</option>';
+    orderedDeptWorkspaces().forEach(function (w) {
+        html += '<option value="' + escapeAttribute(w.code) + '"' + (cur === w.code ? " selected" : "") + ">"
+            + escapeHtml(officialName(w)) + "</option>";
+    });
+    sel.innerHTML = html;
+    sel.value = cur;
+}
+
+function salaryMonthYear(month) {
+    return String(month || selectedMonth || "").slice(0, 4);
+}
+
+function ensureVacationPlans() {
+    if (!appData.vacationPlans || typeof appData.vacationPlans !== "object") appData.vacationPlans = {};
+    return appData.vacationPlans;
+}
+
+function vacationPlanYearList(year) {
+    const y = String(year || salaryUi.planYear || salaryMonthYear());
+    const root = ensureVacationPlans();
+    if (!Array.isArray(root[y])) root[y] = [];
+    return root[y];
+}
+
+function vacationPlanStatuses() {
+    return [
+        { id: "planned", label: "Запланировано" },
+        { id: "need_calc", label: "Нужно рассчитать" },
+        { id: "accrued", label: "Начислено" },
+        { id: "paid", label: "Выплачено" },
+        { id: "declined", label: "Отказался" },
+        { id: "moved", label: "Перенесено" }
+    ];
+}
+
+function vacationPlanStatusLabel(id) {
+    const row = vacationPlanStatuses().find(function (s) { return s.id === id; });
+    return row ? row.label : "Запланировано";
+}
+
+function setSalaryInner(tab) {
+    salaryUi.inner = tab === "vac" || tab === "plan" ? tab : "sheet";
+    currentSection = salaryUi.inner === "plan" ? "salary-vacation-plan" : "salary";
+    try { saveSession(); } catch (err) {}
+    document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
+        const sec = btn.getAttribute("data-section");
+        btn.classList.toggle("active", sec === currentSection);
+    });
+    const pageTitleEl = document.getElementById("pageTitle");
+    if (pageTitleEl) pageTitleEl.textContent = sectionTitle(currentSection);
+    const monthBar = document.querySelector(".month-bar");
+    if (monthBar) monthBar.style.display = salaryUi.inner === "plan" ? "none" : "";
+    renderSalary();
+}
+
+function changeVacationPlanYear(delta) {
+    const y = Number(salaryUi.planYear || salaryMonthYear()) || new Date().getFullYear();
+    salaryUi.planYear = String(y + Number(delta || 0));
+    renderSalary();
+}
+
+function vacationPlanDeptId(employeeId) {
+    const home = employeeHome(employeeId);
+    if (home && home.code) return home.code;
+    return employeeHomeDeptCode(employeeId) || "";
+}
+
+function findVacationPlanRec(employeeId, year) {
+    const y = String(year || salaryUi.planYear || salaryMonthYear());
+    const emp = String(employeeId || "");
+    return vacationPlanYearList(y).find(function (x) { return x && String(x.employee_id) === emp; }) || null;
+}
+
+function ensureVacationPlanRec(employeeId) {
+    const y = String(salaryUi.planYear || salaryMonthYear());
+    let rec = findVacationPlanRec(employeeId, y);
+    if (rec) {
+        if (!rec.department_id) rec.department_id = vacationPlanDeptId(employeeId);
+        rec.year = y;
+        return rec;
+    }
+    rec = {
+        vacation_plan_id: nextPrefixedId("vplan", vacationPlanYearList(y).map(function (x) { return x && x.vacation_plan_id; })),
+        employee_id: employeeId,
+        department_id: vacationPlanDeptId(employeeId),
+        year: y,
+        planned_date: "",
+        planned_amount: "",
+        status: "planned",
+        comment: "",
+        history: []
+    };
+    vacationPlanYearList(y).push(rec);
+    return rec;
+}
+
+function toggleSalaryDeptGroup(code) {
+    salaryUi.collapsed[code] = !salaryUi.collapsed[code];
+    renderSalary();
+}
+
+function setVacationPaidEarlier(employeeId, checked) {
+    if (!canEditSalaryField("vacationPay")) return;
+    ensureSalary(employeeId).vacationPaidEarlier = !!checked;
+    saveApp();
+    refreshAll();
+}
+
+function salaryFmtMaybe(v) {
+    if (v == null || v === "" || !Number.isFinite(Number(v))) return "—";
+    return money(v);
+}
+
+function salaryRegistryStatus(data) {
+    if (data.vacationPaidEarlier) return "Выплачено ранее";
+    if (data.issued) return "Выплачено с зарплатой";
+    return "К выплате с зарплатой";
+}
+
+function collectVacationRegistry() {
+    const out = [];
+    const salary = (appData && appData.salary) || {};
+    Object.keys(salary).forEach(function (month) {
+        Object.keys(salary[month] || {}).forEach(function (empId) {
+            const rec = normalizeSalaryRecord(salary[month][empId]);
+            if (!(Number(rec.vacationPay || 0) > 0)) return;
+            const e = getEmployee(empId);
+            if (!e) return;
+            const home = employeeHome(empId);
+            out.push({
+                employee_id: empId,
+                name: e.name || empId,
+                deptCode: home ? home.code : "",
+                deptName: home ? officialName(home) : "—",
+                month: month,
+                vacationPay: Number(rec.vacationPay || 0),
+                vacationPaidEarlier: !!rec.vacationPaidEarlier,
+                issued: !!rec.issued,
+                paidEarlier: rec.vacationPaidEarlier ? Number(rec.vacationPay || 0) : 0,
+                withSalary: rec.vacationPaidEarlier ? 0 : Number(rec.vacationPay || 0),
+                status: salaryRegistryStatus(rec)
+            });
+        });
+    });
+    out.sort(function (a, b) {
+        if (a.month !== b.month) return String(a.month).localeCompare(String(b.month));
+        return String(a.name).localeCompare(String(b.name), "ru");
+    });
+    return out;
+}
+
+function addVacationPlanRow(employeeId) {
+    if (!canSalaryCalc()) return;
+    ensureVacationPlanRec(employeeId);
+    saveApp();
+    renderSalary();
+}
+
+function patchVacationPlanEmp(employeeId, field, value) {
+    if (!canSalaryCalc()) return;
+    const rec = ensureVacationPlanRec(employeeId);
+    if (field === "status") {
+        const next = String(value || "planned");
+        if (next === "moved") {
+            const nd = prompt("Новая плановая дата (ГГГГ-ММ-ДД):", rec.planned_date || "");
+            if (!String(nd || "").trim()) {
+                renderSalary();
+                return;
+            }
+            if (!Array.isArray(rec.history)) rec.history = [];
+            rec.history.push({
+                at: new Date().toISOString(),
+                status: "moved",
+                planned_date: rec.planned_date || "",
+                new_date: String(nd).trim(),
+                comment: rec.comment || ""
+            });
+            rec.planned_date = String(nd).trim();
+            rec.status = "moved";
+        } else {
+            rec.status = next;
+            if (!Array.isArray(rec.history)) rec.history = [];
+            rec.history.push({ at: new Date().toISOString(), status: next, planned_date: rec.planned_date || "" });
+        }
+    } else if (field === "planned_amount") {
+        rec.planned_amount = String(value || "").trim() === "" ? "" : parseMoney(value, 0);
+    } else if (field === "planned_date") {
+        rec.planned_date = value;
+        if (!rec.status) rec.status = "planned";
+    } else {
+        rec[field] = value;
+    }
+    rec.department_id = rec.department_id || vacationPlanDeptId(employeeId);
+    saveApp();
+    renderSalary();
+}
+
+function patchVacationPlan(id, field, value) {
+    const y = String(salaryUi.planYear || salaryMonthYear());
+    const rec = vacationPlanYearList(y).find(function (x) { return x && x.vacation_plan_id === id; });
+    if (!rec) return;
+    patchVacationPlanEmp(rec.employee_id, field, value);
+}
+
+function salaryEmployeePremium(data) {
+    return data.payrollHome ? Number(data.bonus || 0) : Number(data.bonusTotal || 0);
+}
+
 /* ============================================================
    ЗАРПЛАТА ОБЩЕЙ ТАБЛИЦЫ
 ============================================================ */
 function renderSalary() {
     if (currentWorkspaceIndex === null || !isSummary()) return;
 
+    fillSalaryDeptFilter();
+    if (!salaryUi.vacYear) salaryUi.vacYear = salaryMonthYear() || String(new Date().getFullYear());
+    if (!salaryUi.planYear) salaryUi.planYear = salaryMonthYear() || String(new Date().getFullYear());
+    if (currentSection === "salary-vacation-plan") salaryUi.inner = "plan";
+    const inner = salaryUi.inner || "sheet";
+    const show1c = canSalary1c();
+    const payOnly = isSalaryPayOnlyView();
+    const tabs = document.getElementById("salaryInnerTabs");
+    if (tabs) {
+        tabs.style.display = "";
+        tabs.querySelectorAll("[data-sal-tab]").forEach(function (btn) {
+            btn.classList.toggle("active", btn.getAttribute("data-sal-tab") === inner);
+        });
+    }
+    const mainHead = document.getElementById("salaryMainHead");
+    if (mainHead) mainHead.style.display = inner === "sheet" ? "" : "none";
+    const sheetCard = document.getElementById("salarySheetCard");
+    const vacCard = document.getElementById("salaryVacCard");
+    const planCard = document.getElementById("salaryPlanCard");
+    if (sheetCard) sheetCard.style.display = inner === "sheet" ? "" : "none";
+    if (vacCard) vacCard.style.display = inner === "vac" ? "" : "none";
+    if (planCard) planCard.style.display = inner === "plan" ? "" : "none";
+    const toolbar = document.getElementById("salaryToolbar");
+    if (toolbar) toolbar.style.display = inner === "sheet" ? "" : "none";
+    const monthBar = document.querySelector(".month-bar");
+    if (monthBar && inner === "plan") monthBar.style.display = "none";
+
+    if (inner === "vac") {
+        renderSalaryVacationRegistry();
+        return;
+    }
+    if (inner === "plan") {
+        renderSalaryVacationPlan();
+        return;
+    }
+
     const wrap = document.getElementById("salaryWrap");
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
     const groups = summaryEmployeeGroups();
     const byName = summarySortMode === "name";
+    const colCount = 13 + (show1c ? 2 : 0);
+    const head = document.getElementById("salaryHead");
+    if (head) {
+        head.innerHTML = "<tr>"
+            + "<th>№</th><th>Сотрудник</th><th>Должность</th>"
+            + '<th class="salary-accrued">Оклад</th><th>Премия</th><th>Налог</th><th>Штраф</th><th>Отпускные</th>'
+            + "<th>Итого начислено</th><th>Продукты</th><th>Аванс</th><th>К выдаче на руки</th>"
+            + (show1c ? "<th>Для отражения в 1С УТ</th><th>Расходники для ЗП</th>" : "")
+            + "<th>Выдано</th></tr>";
+    }
 
     if (!groups.length) {
         document.getElementById("salaryBody").innerHTML =
-            '<tr><td colspan="13"><div class="empty-row">В отделах никто не выбран в табель — в общую зарплату переносить некого.</div></td></tr>';
+            '<tr><td colspan="' + colCount + '"><div class="empty-row">В подразделениях никто не выбран в табель — в общую зарплату переносить некого.</div></td></tr>';
+        renderSalarySumCards(emptySalarySums(), []);
         return;
     }
 
     let html = "";
     const sums = emptySalarySums();
+    let n = 0;
+    const issuedRows = [];
 
     function moneyCell(employeeId, field, value, extraClass) {
         if (!canEditSalaryField(field)) {
@@ -22590,26 +22972,17 @@ function renderSalary() {
             + blankZeroInt(value) + "\" onchange=\"setAdjustment('" + employeeId + "','" + field + "',this.value)\"></td>";
     }
 
-    function kpiCell(employee, data) {
-        const amount = Number(data.kpiBonus || 0);
-        const label = amount ? ("+" + money(amount)) : money(0);
-        if (data.payrollHome) {
-            return '<td><button type="button" class="shop-pay-bonus salary-kpi-btn" onclick="openShopBonusBreakdown(\''
-                + employee.id + "')\">" + label + "</button></td>";
-        }
-        return "<td class=\"salary-kpi-btn\">" + label + "</td>";
-    }
-
     function premiumCell(employeeId, data) {
-        const hint = (!data.payrollHome && data.earlyPay)
-            ? '<div class="shop-kpi-mini">в т.ч. 7:30: ' + money(data.earlyPay) + "</div>"
-            : "";
+        const hint = [];
+        if (Number(data.kpiBonus || 0)) hint.push('<div class="shop-kpi-mini">KPI +' + money(data.kpiBonus) + "</div>");
+        if (!data.payrollHome && data.earlyPay) hint.push('<div class="shop-kpi-mini">в т.ч. 7:30: ' + money(data.earlyPay) + "</div>");
+        const shown = salaryEmployeePremium(data);
         if (!canEditSalaryField("bonus")) {
-            return "<td>" + money(data.payrollHome ? data.bonus : data.bonusTotal) + hint + "</td>";
+            return "<td>" + money(shown) + hint.join("") + "</td>";
         }
         return "<td><input class=\"money-input no-spin\" type=\"number\" min=\"0\" step=\"1\" inputmode=\"numeric\" value=\""
             + blankZeroInt(data.bonus) + "\" onchange=\"setAdjustment('" + employeeId + "','bonus',this.value)\">"
-            + hint + "</td>";
+            + hint.join("") + "</td>";
     }
 
     function fineCell(employeeId, data) {
@@ -22638,72 +23011,331 @@ function renderSalary() {
         return bits.join("");
     }
 
+    function vacationCell(employeeId, data) {
+        const flag = '<label class="sal-vac-flag"><input type="checkbox"' + (data.vacationPaidEarlier ? " checked" : "")
+            + (canEditSalaryField("vacationPay") ? "" : " disabled")
+            + " onchange=\"setVacationPaidEarlier('" + employeeId + "', this.checked)\"> Выплачены ранее</label>";
+        if (!canEditSalaryField("vacationPay")) {
+            return "<td>" + money(data.vacationPay) + flag + "</td>";
+        }
+        return "<td><input class=\"money-input no-spin\" type=\"number\" min=\"0\" step=\"1\" inputmode=\"numeric\" value=\""
+            + blankZeroInt(data.vacationPay) + "\" onchange=\"setAdjustment('" + employeeId + "','vacationPay',this.value)\">"
+            + flag + "</td>";
+    }
+
     function salaryRow(employee) {
         ensureSalary(employee.id);
         const data = calculateEmployee(employee.id);
         addSalarySums(sums, data);
+        issuedRows.push(data);
+        n += 1;
         const issuedCell = canMarkIssued()
             ? '<td><label class="issued-check"><input type="checkbox"' + (data.issued ? " checked" : "")
                 + " onchange=\"setIssued('" + employee.id + "', this.checked)\"> Выдано</label></td>"
             : "<td>" + (data.issued ? "да" : "") + "</td>";
         return '<tr class="' + (data.issued ? "issued-row" : "") + '">'
+            + "<td>" + n + "</td>"
             + "<td><strong>" + escapeHtml(employee.name) + "</strong></td>"
-            + '<td class="days-col">' + formatShopDays(data.workedDays) + "</td>"
-            + '<td class="salary-rate">' + money(data.rate) + "</td>"
-            + '<td class="salary-accrued">' + moneyFlex(data.accrued) + "</td>"
-            + kpiCell(employee, data)
-            + moneyCell(employee.id, "products", data.products)
-            + moneyCell(employee.id, "taxes", data.taxes)
-            + moneyCell(employee.id, "vacationPay", data.vacationPay)
+            + "<td>" + escapeHtml(employee.position || "—") + "</td>"
+            + '<td class="salary-accrued">' + moneyFlex(data.accrued) + extraPayNote(employee.id, data) + "</td>"
             + premiumCell(employee.id, data)
+            + moneyCell(employee.id, "taxes", data.taxes)
             + fineCell(employee.id, data)
+            + vacationCell(employee.id, data)
+            + '<td class="pay">' + moneyFlex(data.accruedTotal) + "</td>"
+            + moneyCell(employee.id, "products", data.products)
             + moneyCell(employee.id, "advance", data.advance)
-            + '<td class="pay">' + moneyFlex(data.pay) + extraPayNote(employee.id, data) + "</td>"
+            + '<td class="pay">' + moneyFlex(data.toHand) + "</td>"
+            + (show1c ? ("<td>" + salaryFmtMaybe(data.reflect1c) + "</td><td>" + salaryFmtMaybe(data.expenseZp) + "</td>") : "")
             + issuedCell
             + "</tr>";
     }
 
     function subtotalRow(title, s) {
-        return '<tr class="dept-subtotal-row"><td>' + escapeHtml(title) + "</td>"
-            + '<td class="days-col">' + formatShopDays(s.workedDays) + "</td>"
-            + "<td></td><td>" + moneyFlex(s.accrued) + "</td><td class=\"salary-kpi-btn\">"
-            + (s.kpi ? ("+" + money(s.kpi)) : money(0)) + "</td><td>"
-            + money(s.products) + "</td><td>" + money(s.taxes) + "</td><td>"
-            + money(s.vacationPay) + "</td><td>"
-            + money(s.bonus) + "</td><td>" + money(s.fines) + "</td><td>"
-            + money(s.advance) + "</td><td class=\"pay\">" + moneyFlex(s.pay) + "</td><td></td></tr>";
+        return '<tr class="dept-subtotal-row"><td colspan="3">' + escapeHtml(title) + "</td>"
+            + "<td>" + moneyFlex(s.accrued) + "</td><td>" + money(s.bonus) + "</td><td>"
+            + money(s.taxes) + "</td><td>" + money(s.fines) + "</td><td>"
+            + money(s.vacationPay) + "</td><td class=\"pay\">" + moneyFlex(s.accruedTotal) + "</td><td>"
+            + money(s.products) + "</td><td>" + money(s.advance) + "</td><td class=\"pay\">"
+            + moneyFlex(s.toHand) + "</td>"
+            + (show1c ? "<td></td><td></td>" : "")
+            + "<td></td></tr>";
     }
 
     if (byName) {
         visibleEmployees().forEach(function (employee) { html += salaryRow(employee); });
     } else {
         groups.forEach(function (g) {
-            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="13">'
-                + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + " "
-                + (g.employees.length === 1 ? "сотрудник" : "сотрудников")
-                + "</td></tr>";
+            const code = g.dept && g.dept.code;
+            const collapsed = !!(code && salaryUi.collapsed[code]);
             const before = copySalarySums(sums);
-            g.employees.forEach(function (employee) { html += salaryRow(employee); });
-            html += subtotalRow("Итого: " + officialName(g.dept), diffSalarySums(sums, before));
+            const rows = [];
+            g.employees.forEach(function (employee) { rows.push(salaryRow(employee)); });
+            const part = diffSalarySums(sums, before);
+            html += '<tr class="dept-group-row ' + departmentGroupClass(g.dept) + '"><td colspan="' + colCount + '">'
+                + '<button type="button" class="sal-group-btn" onclick="toggleSalaryDeptGroup(\'' + escapeAttribute(code || "") + "')\">"
+                + (collapsed ? "▸ " : "▾ ") + escapeHtml(officialName(g.dept)) + " · " + g.employees.length + " "
+                + (g.employees.length === 1 ? "сотрудник" : "сотрудников")
+                + " · начислено " + moneyFlex(part.accruedTotal)
+                + " · к выдаче " + moneyFlex(part.toHand)
+                + "</button></td></tr>";
+            if (!collapsed) {
+                html += rows.join("");
+                html += subtotalRow("Итого: " + officialName(g.dept), part);
+            }
         });
     }
 
     html += subtotalRow(
-        byName || groups.length === 1 ? "Итого" : "Итого по выбранным отделам",
+        byName || groups.length === 1 ? "Итого" : "Итого по выбранным подразделениям",
         sums
     );
 
     document.getElementById("salaryBody").innerHTML = html;
+    renderSalarySumCards(sums, issuedRows);
     if (wrap) {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
     }
 }
 
+function renderSalarySumCards(sums, rows) {
+    const host = document.getElementById("salarySumCards");
+    const payHost = document.getElementById("salaryPayoutCards");
+    if (!host) return;
+    host.style.display = "";
+    const show1c = canSalary1c();
+    host.innerHTML = [
+        ["Оклад", sums.accrued],
+        ["Премии", sums.bonus],
+        ["Налоги", sums.taxes],
+        ["Штрафы", sums.fines],
+        ["Отпускные", sums.vacationPay],
+        ["Итого начислено", sums.accruedTotal],
+        ["Продукты", sums.products],
+        ["Авансы", sums.advance],
+        ["К выдаче на руки", sums.toHand]
+    ].map(function (c) {
+        return '<div class="sal-card"><span>' + c[0] + "</span><b>" + moneyFlex(c[1] || 0) + "</b></div>";
+    }).join("") + (show1c
+        ? '<div class="sal-card sal-svc"><span>Для отражения в 1С УТ</span><b>—</b></div>'
+            + '<div class="sal-card sal-svc"><span>Расходники для ЗП</span><b>—</b></div>'
+        : "");
+    if (payHost) {
+        if (canSalaryPay()) {
+            let need = 0, done = 0;
+            (rows || []).forEach(function (d) {
+                const v = Number(d.toHand || 0);
+                need += v;
+                if (d.issued) done += v;
+            });
+            payHost.style.display = "";
+            payHost.innerHTML = '<div class="sal-card"><span>Нужно выдать</span><b>' + moneyFlex(need) + "</b></div>"
+                + '<div class="sal-card"><span>Уже выдано</span><b>' + moneyFlex(done) + "</b></div>"
+                + '<div class="sal-card"><span>Осталось выдать</span><b>' + moneyFlex(need - done) + "</b></div>";
+        } else {
+            payHost.style.display = "none";
+            payHost.innerHTML = "";
+        }
+    }
+}
+
+function renderSalaryVacationRegistry() {
+    const sumHost = document.getElementById("salarySumCards");
+    if (sumHost) { sumHost.style.display = "none"; sumHost.innerHTML = ""; }
+    const payHost = document.getElementById("salaryPayoutCards");
+    if (payHost) payHost.style.display = "none";
+    const box = document.getElementById("salaryVacFilters");
+    const body = document.getElementById("salaryVacBody");
+    if (!box || !body) return;
+    const rows = collectVacationRegistry();
+    const years = {};
+    const people = {};
+    const depts = {};
+    rows.forEach(function (r) {
+        years[salaryMonthYear(r.month)] = true;
+        people[r.employee_id] = r.name;
+        if (r.deptCode) depts[r.deptCode] = r.deptName;
+    });
+    if (!salaryUi.vacYear) salaryUi.vacYear = salaryMonthYear();
+    let fh = '<div class="form-group" style="margin:0"><label>Год</label><select onchange="salaryUi.vacYear=this.value;renderSalary()">';
+    Object.keys(years).sort().forEach(function (y) {
+        fh += '<option value="' + y + '"' + (salaryUi.vacYear === y ? " selected" : "") + ">" + y + "</option>";
+    });
+    if (!Object.keys(years).length) fh += '<option value="' + salaryMonthYear() + '">' + salaryMonthYear() + "</option>";
+    fh += "</select></div>";
+    fh += '<div class="form-group" style="margin:0"><label>Месяц</label><select onchange="salaryUi.vacMonth=this.value;renderSalary()">'
+        + '<option value="">Весь год</option>';
+    for (let m = 1; m <= 12; m++) {
+        const mm = (m < 10 ? "0" : "") + m;
+        const val = salaryUi.vacYear + "-" + mm;
+        fh += '<option value="' + val + '"' + (salaryUi.vacMonth === val ? " selected" : "") + ">" + mm + "</option>";
+    }
+    fh += "</select></div>";
+    fh += '<div class="form-group" style="margin:0"><label>Подразделение</label><select onchange="salaryUi.vacDept=this.value;renderSalary()">'
+        + '<option value="">Все</option>';
+    Object.keys(depts).forEach(function (c) {
+        fh += '<option value="' + escapeAttribute(c) + '"' + (salaryUi.vacDept === c ? " selected" : "") + ">"
+            + escapeHtml(depts[c]) + "</option>";
+    });
+    fh += "</select></div>";
+    fh += '<div class="form-group" style="margin:0"><label>Сотрудник</label><select onchange="salaryUi.vacEmployee=this.value;renderSalary()">'
+        + '<option value="">Все</option>';
+    Object.keys(people).sort(function (a, b) {
+        return String(people[a]).localeCompare(String(people[b]), "ru");
+    }).forEach(function (id) {
+        fh += '<option value="' + escapeAttribute(id) + '"' + (salaryUi.vacEmployee === id ? " selected" : "") + ">"
+            + escapeHtml(people[id]) + "</option>";
+    });
+    fh += "</select></div>";
+    fh += '<div class="form-group" style="margin:0"><label>Статус</label><select onchange="salaryUi.vacStatus=this.value;renderSalary()">'
+        + '<option value="">Все</option>'
+        + ["Выплачено ранее", "Выплачено с зарплатой", "К выплате с зарплатой"].map(function (s) {
+            return '<option' + (salaryUi.vacStatus === s ? " selected" : "") + ">" + s + "</option>";
+        }).join("")
+        + "</select></div>";
+    box.innerHTML = fh;
+    const filtered = rows.filter(function (r) {
+        if (salaryUi.vacYear && salaryMonthYear(r.month) !== salaryUi.vacYear) return false;
+        if (salaryUi.vacMonth && r.month !== salaryUi.vacMonth) return false;
+        if (salaryUi.vacDept && r.deptCode !== salaryUi.vacDept) return false;
+        if (salaryUi.vacEmployee && r.employee_id !== salaryUi.vacEmployee) return false;
+        if (salaryUi.vacStatus && r.status !== salaryUi.vacStatus) return false;
+        return true;
+    });
+    if (!filtered.length) {
+        body.innerHTML = '<tr><td colspan="7"><div class="empty-row">Нет начисленных отпускных за выбранный период. Записи берутся только из зарплатной ведомости, не из табеля.</div></td></tr>';
+        return;
+    }
+    body.innerHTML = filtered.map(function (r) {
+        return "<tr><td>" + escapeHtml(r.name) + "</td><td>" + escapeHtml(r.deptName) + "</td><td>"
+            + escapeHtml(r.month) + "</td><td>" + money(r.vacationPay) + "</td><td>"
+            + money(r.paidEarlier) + "</td><td>" + money(r.withSalary) + "</td><td>"
+            + escapeHtml(r.status) + "</td></tr>";
+    }).join("");
+}
+
+function vacationPlanPeople() {
+    const seen = {};
+    const people = [];
+    function addEmp(emp) {
+        if (!emp || !emp.id || seen[emp.id]) return;
+        seen[emp.id] = true;
+        people.push(emp);
+    }
+    deptWorkspaces().forEach(function (w) {
+        (w.employees || []).forEach(addEmp);
+        assignedIds(w).forEach(function (id) {
+            addEmp(findEmployeeIn(w, id) || getEmployee(id));
+        });
+    });
+    uniqueAssignedEmployees().forEach(addEmp);
+    people.sort(compareEmployeesByStatusThenName);
+    return people;
+}
+
+function renderSalaryVacationPlan() {
+    const sumHost = document.getElementById("salarySumCards");
+    if (sumHost) { sumHost.style.display = "none"; sumHost.innerHTML = ""; }
+    const payHost = document.getElementById("salaryPayoutCards");
+    if (payHost) payHost.style.display = "none";
+    const box = document.getElementById("salaryPlanFilters");
+    const body = document.getElementById("salaryPlanBody");
+    if (!box || !body) return;
+    const y = String(salaryUi.planYear || salaryMonthYear() || new Date().getFullYear());
+    salaryUi.planYear = y;
+    const can = canSalaryCalc();
+    const people = vacationPlanPeople();
+    box.innerHTML = '<div class="vplan-year">'
+        + '<button type="button" class="btn btn-secondary" onclick="changeVacationPlanYear(-1)">◀</button>'
+        + "<span>" + escapeHtml(y) + "</span>"
+        + '<button type="button" class="btn btn-secondary" onclick="changeVacationPlanYear(1)">▶</button>'
+        + "</div>"
+        + '<div class="note">Финансовый план отпускных на выбранный год. Дата — напоминание расчётчику, деньги сама не начисляет. Не связано с обозначением «ОТ» в табеле. «Отказался» не удаляет строку; при переносе сохраняется история и новая дата.</div>';
+    if (!people.length) {
+        body.innerHTML = '<tr><td colspan="6"><div class="empty-row">Нет сотрудников для графика отпускных.</div></td></tr>';
+        return;
+    }
+    const stOpts = vacationPlanStatuses().map(function (s) {
+        return '<option value="' + s.id + '">' + s.label + "</option>";
+    }).join("");
+    body.innerHTML = people.map(function (e) {
+        const rec = findVacationPlanRec(e.id, y);
+        const deptId = (rec && rec.department_id) || vacationPlanDeptId(e.id);
+        const home = deptWorkspaces().find(function (w) { return w && w.code === deptId; }) || employeeHome(e.id);
+        const hist = (rec && rec.history && rec.history.length)
+            ? '<div class="shop-kpi-mini">' + rec.history.map(function (h) {
+                return escapeHtml((h.at || "").slice(0, 10) + " · " + vacationPlanStatusLabel(h.status) + (h.new_date ? (" → " + h.new_date) : ""));
+            }).join("<br>") + "</div>"
+            : "";
+        const status = (rec && rec.status) || "planned";
+        const dateVal = rec ? (rec.planned_date || "") : "";
+        const amt = rec && rec.planned_amount !== "" && rec.planned_amount != null ? rec.planned_amount : "";
+        const comment = rec ? (rec.comment || "") : "";
+        const empJs = escapeAttribute(e.id);
+        if (!can) {
+            return "<tr><td>" + escapeHtml(e.name || e.id) + "</td><td>"
+                + escapeHtml(home ? officialName(home) : "—") + "</td><td>" + escapeHtml(dateVal || "—")
+                + "</td><td>" + (amt === "" ? "—" : money(amt))
+                + "</td><td>" + escapeHtml(vacationPlanStatusLabel(status)) + hist + "</td><td>"
+                + escapeHtml(comment) + "</td></tr>";
+        }
+        return "<tr><td>" + escapeHtml(e.name || e.id) + "</td><td>"
+            + escapeHtml(home ? officialName(home) : "—") + "</td><td>"
+            + '<input type="date" value="' + escapeAttribute(dateVal) + '" onchange="patchVacationPlanEmp(\''
+            + empJs + "','planned_date',this.value)\"></td><td>"
+            + '<input class="money-input no-spin" value="' + escapeAttribute(amt === "" ? "" : String(amt))
+            + '" placeholder="пусто" onchange="patchVacationPlanEmp(\'' + empJs + "','planned_amount',this.value)\"></td><td>"
+            + '<select onchange="patchVacationPlanEmp(\'' + empJs + "','status',this.value)\">"
+            + stOpts.replace('value="' + status + '"', 'value="' + status + '" selected') + "</select>"
+            + hist + "</td><td>"
+            + '<input value="' + escapeAttribute(comment) + '" onchange="patchVacationPlanEmp(\''
+            + empJs + "','comment',this.value)\"></td></tr>";
+    }).join("");
+}
+
+function openVacationPlanAdd() {
+    if (!canSalaryCalc()) return;
+    const people = [];
+    const seen = {};
+    summaryEmployeeGroups().forEach(function (g) {
+        g.employees.forEach(function (e) {
+            if (!e || seen[e.id]) return;
+            seen[e.id] = true;
+            people.push(e);
+        });
+    });
+    if (!people.length) {
+        toast("Нет сотрудников в ведомости", "error");
+        return;
+    }
+    let html = "<h3>План отпускных</h3><div class=\"note\">Год: " + escapeHtml(String(salaryUi.planYear || salaryMonthYear())) + "</div>";
+    html += '<div class="form-group"><label>Сотрудник</label><select id="vplanEmp">';
+    people.forEach(function (e) {
+        html += '<option value="' + escapeAttribute(e.id) + '">' + escapeHtml(e.name) + "</option>";
+    });
+    html += "</select></div>";
+    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="confirmVacationPlanAdd()">Добавить</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    if (typeof openMgmtModal === "function") openMgmtModal(html);
+    else {
+        const id = people[0].id;
+        addVacationPlanRow(id);
+    }
+}
+
+function confirmVacationPlanAdd() {
+    const el = document.getElementById("vplanEmp");
+    if (el && el.value) addVacationPlanRow(el.value);
+    if (typeof closeMgmtModal === "function") closeMgmtModal();
+}
+
+
 function emptySalarySums() {
     return {
         hours: 0, accrued: 0, kpi: 0, lateAmount: 0, fines: 0, skipFine: 0, bonus: 0, advance: 0,
-        products: 0, workedDays: 0, taxiTotal: 0, vacationPay: 0, taxes: 0, pay: 0
+        products: 0, workedDays: 0, taxiTotal: 0, vacationPay: 0, taxes: 0, pay: 0,
+        accruedTotal: 0, toHand: 0
     };
 }
 
@@ -22722,6 +23354,8 @@ function addSalarySums(dst, data) {
     dst.vacationPay += data.vacationPay;
     dst.taxes += data.taxes;
     dst.pay += data.pay;
+    dst.accruedTotal += Number(data.accruedTotal != null ? data.accruedTotal : (data.pay + data.products + data.advance));
+    dst.toHand += Number(data.toHand != null ? data.toHand : data.pay);
 }
 
 function copySalarySums(src) {
@@ -27677,6 +28311,7 @@ function accessDeptLabels(user) {
 function accessPermLabels(user) {
     if (!user || !user.permissions) return "—";
     return ACCESS_PERM_KEYS.filter(function (p) {
+        if (p.key === "salary") return false;
         return permRank(user.permissions[p.key]) > 0;
     }).map(function (p) { return p.label; }).join(", ") || "—";
 }
@@ -28070,6 +28705,7 @@ function openAccessUserEditor(userId) {
         + "> Финконтроль</label>";
     let permHtml = "";
     ACCESS_PERM_KEYS.forEach(function (p) {
+        if (p.key === "salary") return;
         const on = permRank((user.permissions && user.permissions[p.key]) || "none") > 0;
         permHtml += '<label class="check"><input type="checkbox" id="accessPerm_' + p.key + '"'
             + (on ? " checked" : "") + "> " + escapeHtml(p.label) + "</label>";
@@ -28138,8 +28774,12 @@ function saveAccessUser(userId) {
     const permissions = {};
     ACCESS_PERM_KEYS.forEach(function (p) {
         const el = document.getElementById("accessPerm_" + p.key);
+        if (p.key === "salary") return;
         permissions[p.key] = el && el.checked ? "edit" : "none";
     });
+    if (permissions.salaryCalc === "edit") permissions.salary = "edit";
+    else if (permissions.salaryPay === "edit" || permissions.salary1c === "edit") permissions.salary = "view";
+    else permissions.salary = "none";
     if (permissions.salary !== "none" && departments.indexOf("summary") === -1) departments.push("summary");
     if (permissions.orgStructure !== "none" && departments.indexOf("org") === -1) departments.push("org");
     if ((permissions.financeRec !== "none" || permissions.financeRecSetup !== "none")
@@ -28288,25 +28928,25 @@ function exportSummaryCsv() {
 
 function exportSalary() {
     const rows = [[
-        "Сотрудник", "Отработано дней", "Ставка в день", "Начислено", "KPI",
-        "Продукты", "Налог", "Отпускные", "Премия", "Штраф",
-        "Аванс", "Итого", "Выдано"
+        "№", "Сотрудник", "Должность", "Оклад", "Премия", "Налог", "Штраф", "Отпускные",
+        "Выплачены ранее", "Итого начислено", "Продукты", "Аванс", "К выдаче на руки", "Выдано"
     ]];
     function pushEmp(employee, deptName) {
         const d = calculateEmployee(employee.id);
         rows.push([
+            "",
             employee.name,
-            formatShopDays(d.workedDays),
-            Math.round(d.rate || 0),
+            employee.position || "",
             d.salesRep ? roundMoney2(d.accrued) : Math.round(d.accrued),
-            Math.round(d.kpiBonus || 0),
-            Math.round(d.products || 0),
+            Math.round(d.payrollHome ? d.bonus : d.bonusTotal),
             Math.round(d.taxes || 0),
-            Math.round(d.vacationPay || 0),
-            Math.round(d.shopHome || d.payrollHome ? d.bonus : d.bonusTotal),
             Math.round(d.fineTotal || 0),
+            Math.round(d.vacationPay || 0),
+            d.vacationPaidEarlier ? "да" : "нет",
+            d.salesRep ? roundMoney2(d.accruedTotal) : Math.round(d.accruedTotal),
+            Math.round(d.products || 0),
             Math.round(d.advance),
-            d.salesRep ? roundMoney2(d.pay) : Math.round(d.pay),
+            d.salesRep ? roundMoney2(d.toHand) : Math.round(d.toHand),
             d.issued ? "да" : "нет"
         ]);
     }
