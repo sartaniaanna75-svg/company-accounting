@@ -10527,8 +10527,8 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         pay: pay,
         accruedTotal: accruedTotal,
         toHand: toHand,
-        reflect1c: accruedTotal,
-        expenseZp: toHand
+        reflect1c: accruedTotal - advance,
+        expenseZp: accruedTotal - advance - (adj.vacationPaidEarlier ? vacationPay : 0)
     };
 }
 
@@ -23722,8 +23722,8 @@ function addSalarySums(dst, data) {
     dst.pay += data.pay;
     dst.accruedTotal += Number(data.accruedTotal != null ? data.accruedTotal : (data.pay + data.products + data.advance));
     dst.toHand += Number(data.toHand != null ? data.toHand : data.pay);
-    dst.reflect1c += Number(data.reflect1c != null ? data.reflect1c : (data.pay + data.products + data.advance));
-    dst.expenseZp += Number(data.expenseZp != null ? data.expenseZp : (data.toHand != null ? data.toHand : data.pay));
+    dst.reflect1c += Number(data.reflect1c != null ? data.reflect1c : (Number(data.accruedTotal || 0) - Number(data.advance || 0)));
+    dst.expenseZp += Number(data.expenseZp != null ? data.expenseZp : (Number(data.accruedTotal || 0) - Number(data.advance || 0) - (data.vacationPaidEarlier ? Number(data.vacationPay || 0) : 0)));
 }
 
 function copySalarySums(src) {
