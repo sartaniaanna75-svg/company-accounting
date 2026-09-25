@@ -22873,6 +22873,40 @@ function vacationPlanAccruedPay(employeeId, rec) {
     return n > 0 ? n : 0;
 }
 
+function plannedVacationAmount(v) {
+    if (v === "" || v == null) return 0;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) return Math.round(v);
+    const n = Number(String(v).replace(/\s/g, "").replace(",", "."));
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+function applyPlannedVacationPayOnce(month) {
+    const ym = String(month || selectedMonth || "");
+    if (!ym || !appData) return false;
+    if (!appData.salary || typeof appData.salary !== "object") appData.salary = {};
+    if (!appData.salary[ym] || typeof appData.salary[ym] !== "object") appData.salary[ym] = {};
+    const bucket = appData.salary[ym];
+    let changed = false;
+    eachVacationPlanRec(function (rec) {
+        if (!rec || rec.status === "declined") return;
+        if (plannedDateMonth(rec.planned_date) !== ym) return;
+        const planAmt = plannedVacationAmount(rec.planned_amount);
+        if (!(planAmt > 0)) return;
+        const empId = rec.employee_id;
+        if (empId == null || empId === "") return;
+        const emp = getEmployeeForVacation(empId);
+        const storeId = emp && emp.id != null ? emp.id : empId;
+        const key = salaryRecordKey(bucket, storeId) || salaryRecordKey(bucket, empId);
+        const cur = normalizeSalaryRecord(key != null ? bucket[key] : null);
+        if (Number(cur.vacationPay || 0) > 0) return;
+        cur.vacationPay = planAmt;
+        bucket[key != null ? key : storeId] = cur;
+        changed = true;
+    });
+    if (changed) saveApp();
+    return changed;
+}
+
 function vacationDateRu(iso) {
     const n = normalizeVacationDate(iso);
     const p = String(n || iso || "").split("-");
@@ -23052,6 +23086,10 @@ function patchVacationPlanEmp(employeeId, field, value) {
     }
     rec.department_id = rec.department_id || vacationPlanDeptId(employeeId);
     saveApp();
+    if (field === "planned_amount" || field === "planned_date") {
+        const ym = plannedDateMonth(rec.planned_date);
+        if (ym) applyPlannedVacationPayOnce(ym);
+    }
     renderSalaryVacationPlan();
 }
 
@@ -23132,6 +23170,7 @@ function salaryEmployeePremium(data) {
 ============================================================ */
 function renderSalary() {
     if (currentWorkspaceIndex === null || !isSummary()) return;
+    applyPlannedVacationPayOnce(selectedMonth);
     if (currentSection === "salary-vacation-plan") {
         renderSalaryVacationPlan();
         return;
@@ -23421,6 +23460,7 @@ function renderSalaryVacationRegistry() {
     salaryUi.vacMonth = ym;
     salaryUi.vacYear = salaryMonthYear(ym);
     const canAmt = canEditSalaryField("vacationPay");
+    applyPlannedVacationPayOnce(ym);
     const rows = collectVacationQueue(ym);
     box.innerHTML = '<div class="note" style="margin:0">Расчётный месяц: <b>'
         + escapeHtml(monthLabel(ym) || ym)
@@ -23439,13 +23479,11 @@ function renderSalaryVacationRegistry() {
         const shown = payEmpty ? "" : String(pay);
         const empJs = escapeAttribute(r.employee_id);
         const dateCell = escapeHtml(vacationDateRu(r.planned_date || (plan && plan.planned_date) || ""));
-        const hint = (payEmpty && r.planned_amount !== "" && r.planned_amount != null)
-            ? '<div class="shop-kpi-mini">план ' + money(r.planned_amount) + "</div>" : "";
         const amtCell = canAmt
             ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
                 + escapeAttribute(shown) + '" placeholder="пусто" onchange="setAdjustment(\'' + empJs
-                + "','vacationPay',this.value)\">" + hint
-            : escapeHtml(payEmpty ? "—" : money(pay)) + hint;
+                + "','vacationPay',this.value)\">"
+            : escapeHtml(payEmpty ? "—" : money(pay));
         const paid = !!(sal && sal.vacationPaidEarlier);
         const chk = '<label class="sal-vac-flag"><input type="checkbox"' + (paid ? " checked" : "")
             + (canAmt ? "" : " disabled")
@@ -23587,6 +23625,10 @@ function renderSalaryVacationPlan() {
     if (!box || !host) return;
     const y = String(salaryUi.planYear || salaryMonthYear() || new Date().getFullYear());
     salaryUi.planYear = y;
+    (vacationPlanYearList(y) || []).forEach(function (rec) {
+        const ym = plannedDateMonth(rec && rec.planned_date);
+        if (ym) applyPlannedVacationPayOnce(ym);
+    });
     const obj = salaryUi.planObject || "";
     const depts = vacationPlanDeptOptions(obj);
     let fh = '<div class="vplan-year">'
