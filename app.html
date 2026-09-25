@@ -5001,9 +5001,13 @@
                             </div>
                         </div>
                         <div class="toolbar" id="salaryToolbar">
-                            <div class="form-group">
+                            <div class="form-group" id="salaryObjectFilterGroup" style="display:none">
+                                <label>Объект</label>
+                                <div class="metrics-tabs" id="salaryObjectTabs"></div>
+                            </div>
+                            <div class="form-group" id="salaryDeptFilterGroup">
                                 <label for="salaryDeptFilter">Подразделение</label>
-                                <select id="salaryDeptFilter" onchange="changeSummaryDeptFilter(this.value)">
+                                <select id="salaryDeptFilter" onchange="setSalaryDeptFilter(this.value)">
                                     <option value="">Все подразделения</option>
                                 </select>
                             </div>
@@ -6072,7 +6076,7 @@ let currentSection = "timesheet";
 let summaryDeptFilter = "";
 let summaryWorkGroupFilter = "";
 let summaryStaffSearch = "";
-let salaryUi = { inner: "sheet", vacYear: "", vacMonth: "", vacDept: "", vacEmployee: "", vacStatus: "", planYear: "", planObject: "", planDept: "", planSearch: "", planNoDate: false, planPayFilter: "", collapsed: {}, planCollapsed: {} };
+let salaryUi = { inner: "sheet", vacYear: "", vacMonth: "", vacDept: "", vacEmployee: "", vacStatus: "", planYear: "", planObject: "", planDept: "", planSearch: "", planNoDate: false, planPayFilter: "", objectFilter: "", deptFilter: "", collapsed: {}, planCollapsed: {} };
 let currentSummaryRole = null;
 let currentDeptRole = null;
 let currentUserId = "";
@@ -8772,7 +8776,7 @@ function changeSummarySortMode(value) {
 }
 
 function syncSummarySortControls() {
-    ["summaryDeptFilter", "salaryDeptFilter", "staffDeptFilter"].forEach(function (id) {
+    ["summaryDeptFilter", "staffDeptFilter"].forEach(function (id) {
         const el = document.getElementById(id);
         if (el) el.value = summaryDeptFilter;
     });
@@ -22714,9 +22718,25 @@ function openShopBonusBreakdown(employeeId) {
 
 
 function fillSalaryDeptFilter() {
+    const objGroup = document.getElementById("salaryObjectFilterGroup");
+    const deptGroup = document.getElementById("salaryDeptFilterGroup");
+    const tabs = document.getElementById("salaryObjectTabs");
     const sel = document.getElementById("salaryDeptFilter");
+    const calcView = salaryUsesObjectFilter();
+    if (objGroup) objGroup.style.display = calcView ? "" : "none";
+    if (deptGroup) deptGroup.style.display = calcView ? "none" : "";
+    if (calcView && tabs) {
+        const obj = salaryUi.objectFilter || "";
+        let html = "";
+        [["", "Все"], ["shop", officialName(findWorkspaceByCode("shop")) || "Магазин Володарского"], ["territory", "Территория"]].forEach(function (t) {
+            html += '<button type="button" class="metrics-tab' + (obj === t[0] ? " active" : "")
+                + '" onclick="setSalaryObjectFilter(\'' + t[0] + "')\">" + escapeHtml(t[1]) + "</button>";
+        });
+        tabs.innerHTML = html;
+        return;
+    }
     if (!sel) return;
-    const cur = summaryDeptFilter || sel.value || "";
+    const cur = salaryUi.deptFilter || "";
     let html = '<option value="">Все подразделения</option>';
     orderedDeptWorkspaces().forEach(function (w) {
         html += '<option value="' + escapeAttribute(w.code) + '"' + (cur === w.code ? " selected" : "") + ">"
@@ -22724,6 +22744,71 @@ function fillSalaryDeptFilter() {
     });
     sel.innerHTML = html;
     sel.value = cur;
+}
+
+function salaryUsesObjectFilter() {
+    return canSalaryCalc() && !isSalaryPayOnlyView();
+}
+
+function salaryWorkspaceMatches(w) {
+    if (!w || !w.code) return false;
+    if (salaryUsesObjectFilter()) {
+        const obj = salaryUi.objectFilter || "";
+        if (!obj) return true;
+        if (obj === "shop") return w.code === "shop";
+        if (obj === "territory") return isTerritoryCode(w.code);
+        return true;
+    }
+    const dept = salaryUi.deptFilter || "";
+    if (dept) return w.code === dept;
+    return true;
+}
+
+function salaryEmployeeGroups() {
+    const groups = [];
+    orderedDeptWorkspaces().forEach(function (w) {
+        if (!salaryWorkspaceMatches(w)) return;
+        const people = [];
+        assignedIds(w).forEach(function (id) {
+            const e = findEmployeeIn(w, id);
+            if (e && includeInMonthPayroll(e)) people.push(e);
+        });
+        if (w.code === "drivers") {
+            (w.employees || []).forEach(function (e) {
+                if (!isSalesRep(e) || !includeInMonthPayroll(e)) return;
+                if (people.some(function (p) { return p.id === e.id; })) return;
+                people.push(e);
+            });
+        }
+        if (summarySortMode === "name") people.sort(compareEmployeesByStatusThenName);
+        if (people.length) groups.push({ dept: w, employees: people });
+    });
+    return groups;
+}
+
+function salaryVisibleEmployees() {
+    const list = [];
+    salaryEmployeeGroups().forEach(function (g) {
+        g.employees.forEach(function (e) { list.push(e); });
+    });
+    if (summarySortMode === "name") list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function salaryTotalRowTitle(byName, groups) {
+    if (byName || (groups && groups.length <= 1)) return "Итого";
+    if (salaryUsesObjectFilter() && (salaryUi.objectFilter || "") === "territory") return "Итого по Территории";
+    return "Итого по выбранным подразделениям";
+}
+
+function setSalaryObjectFilter(value) {
+    salaryUi.objectFilter = value || "";
+    renderSalary();
+}
+
+function setSalaryDeptFilter(value) {
+    salaryUi.deptFilter = value || "";
+    renderSalary();
 }
 
 function salaryMonthYear(month) {
@@ -23210,7 +23295,7 @@ function renderSalary() {
     const wrap = document.getElementById("salaryWrap");
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
-    const groups = summaryEmployeeGroups();
+    const groups = salaryEmployeeGroups();
     const byName = summarySortMode === "name";
     const colCount = 13 + (show1c ? 2 : 0);
     const head = document.getElementById("salaryHead");
@@ -23330,7 +23415,7 @@ function renderSalary() {
     }
 
     if (byName) {
-        visibleEmployees().forEach(function (employee) { html += salaryRow(employee); });
+        salaryVisibleEmployees().forEach(function (employee) { html += salaryRow(employee); });
     } else {
         groups.forEach(function (g) {
             const code = g.dept && g.dept.code;
@@ -23354,7 +23439,7 @@ function renderSalary() {
     }
 
     html += subtotalRow(
-        byName || groups.length === 1 ? "Итого" : "Итого по выбранным подразделениям",
+        salaryTotalRowTitle(byName, groups),
         sums
     );
 
@@ -29319,9 +29404,9 @@ function exportSalary() {
             d.issued ? "да" : "нет"
         ]);
     }
-    const groups = summaryEmployeeGroups();
+    const groups = salaryEmployeeGroups();
     if (summarySortMode === "name") {
-        visibleEmployees().forEach(function (employee) {
+        salaryVisibleEmployees().forEach(function (employee) {
             const home = employeeHome(employee.id);
             pushEmp(employee, home ? officialName(home) : "");
         });
