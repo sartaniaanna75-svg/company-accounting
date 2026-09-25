@@ -10485,6 +10485,9 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
 
     if (monthOverride) selectedMonth = monthKeep;
 
+    const accruedTotal = pay + products + advance;
+    const toHand = pay - (adj.vacationPaidEarlier ? vacationPay : 0);
+
     return {
         hours: acc.hours,
         ya: acc.ya,
@@ -10522,10 +10525,10 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         issued: !!adj.issued,
         vacationPaidEarlier: !!adj.vacationPaidEarlier,
         pay: pay,
-        accruedTotal: pay + products + advance,
-        toHand: pay - (adj.vacationPaidEarlier ? vacationPay : 0),
-        reflect1c: adj.reflect1c,
-        expenseZp: adj.expenseZp
+        accruedTotal: accruedTotal,
+        toHand: toHand,
+        reflect1c: accruedTotal,
+        expenseZp: toHand
     };
 }
 
@@ -23281,15 +23284,10 @@ function renderSalary() {
     }
 
     function vacationCell(employeeId, data) {
-        const flag = '<label class="sal-vac-flag"><input type="checkbox"' + (data.vacationPaidEarlier ? " checked" : "")
-            + (canEditSalaryField("vacationPay") ? "" : " disabled")
-            + " onchange=\"setVacationPaidEarlier('" + employeeId + "', this.checked)\"> Выплачены ранее</label>";
-        if (!canEditSalaryField("vacationPay")) {
-            return "<td>" + money(data.vacationPay) + flag + "</td>";
-        }
-        return "<td><input class=\"money-input no-spin\" type=\"number\" min=\"0\" step=\"1\" inputmode=\"numeric\" value=\""
-            + blankZeroInt(data.vacationPay) + "\" onchange=\"setAdjustment('" + employeeId + "','vacationPay',this.value)\">"
-            + flag + "</td>";
+        const flag = data.vacationPaidEarlier
+            ? '<div class="sal-vac-flag">Выплачены ранее</div>'
+            : "";
+        return "<td>" + money(data.vacationPay) + flag + "</td>";
     }
 
     function salaryRow(employee) {
@@ -23315,7 +23313,7 @@ function renderSalary() {
             + moneyCell(employee.id, "products", data.products)
             + moneyCell(employee.id, "advance", data.advance)
             + '<td class="pay">' + moneyFlex(data.toHand) + "</td>"
-            + (show1c ? ("<td>" + salaryFmtMaybe(data.reflect1c) + "</td><td>" + salaryFmtMaybe(data.expenseZp) + "</td>") : "")
+            + (show1c ? ("<td>" + moneyFlex(data.reflect1c) + "</td><td>" + moneyFlex(data.expenseZp) + "</td>") : "")
             + issuedCell
             + "</tr>";
     }
@@ -23327,7 +23325,7 @@ function renderSalary() {
             + money(s.vacationPay) + "</td><td class=\"pay\">" + moneyFlex(s.accruedTotal) + "</td><td>"
             + money(s.products) + "</td><td>" + money(s.advance) + "</td><td class=\"pay\">"
             + moneyFlex(s.toHand) + "</td>"
-            + (show1c ? "<td></td><td></td>" : "")
+            + (show1c ? ("<td>" + moneyFlex(s.reflect1c) + "</td><td>" + moneyFlex(s.expenseZp) + "</td>") : "")
             + "<td></td></tr>";
     }
 
@@ -23387,8 +23385,8 @@ function renderSalarySumCards(sums, rows) {
     ].map(function (c) {
         return '<div class="sal-card"><span>' + c[0] + "</span><b>" + moneyFlex(c[1] || 0) + "</b></div>";
     }).join("") + (show1c
-        ? '<div class="sal-card sal-svc"><span>Для отражения в 1С УТ</span><b>—</b></div>'
-            + '<div class="sal-card sal-svc"><span>Расходники для ЗП</span><b>—</b></div>'
+        ? '<div class="sal-card sal-svc"><span>Для отражения в 1С УТ</span><b>' + moneyFlex(sums.reflect1c || 0) + "</b></div>"
+            + '<div class="sal-card sal-svc"><span>Расходники для ЗП</span><b>' + moneyFlex(sums.expenseZp || 0) + "</b></div>"
         : "");
     if (payHost) {
         if (canSalaryPay()) {
@@ -23703,7 +23701,7 @@ function emptySalarySums() {
     return {
         hours: 0, accrued: 0, kpi: 0, lateAmount: 0, fines: 0, skipFine: 0, bonus: 0, advance: 0,
         products: 0, workedDays: 0, taxiTotal: 0, vacationPay: 0, taxes: 0, pay: 0,
-        accruedTotal: 0, toHand: 0
+        accruedTotal: 0, toHand: 0, reflect1c: 0, expenseZp: 0
     };
 }
 
@@ -23724,6 +23722,8 @@ function addSalarySums(dst, data) {
     dst.pay += data.pay;
     dst.accruedTotal += Number(data.accruedTotal != null ? data.accruedTotal : (data.pay + data.products + data.advance));
     dst.toHand += Number(data.toHand != null ? data.toHand : data.pay);
+    dst.reflect1c += Number(data.reflect1c != null ? data.reflect1c : (data.pay + data.products + data.advance));
+    dst.expenseZp += Number(data.expenseZp != null ? data.expenseZp : (data.toHand != null ? data.toHand : data.pay));
 }
 
 function copySalarySums(src) {
