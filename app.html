@@ -1114,12 +1114,13 @@
         }
         .vplan-table { width: 100%; table-layout: fixed; }
         .vplan-table th, .vplan-table td { padding: 6px 8px; }
-        .vplan-table col.vplan-col-name { width: 24%; }
-        .vplan-table col.vplan-col-date { width: 16%; }
+        .vplan-table col.vplan-col-name { width: 22%; }
+        .vplan-table col.vplan-col-date { width: 14%; }
         .vplan-table col.vplan-col-sum { width: 12%; }
+        .vplan-table col.vplan-col-accrued { width: 12%; }
         .vplan-table col.vplan-col-pay { width: 12%; }
-        .vplan-table col.vplan-col-comment { width: 22%; }
-        .vplan-table col.vplan-col-act { width: 14%; }
+        .vplan-table col.vplan-col-comment { width: 16%; }
+        .vplan-table col.vplan-col-act { width: 12%; }
         .vplan-actions { display: flex; flex-wrap: wrap; gap: 4px; }
         .vplan-actions .btn { padding: 4px 8px; font-size: 12px; }
         .vplan-badge { font-size: 12px; color: var(--muted); }
@@ -22807,19 +22808,76 @@ function vacationPlanMatchesObject(deptId, objectId) {
 
 function plannedDateMonth(dateStr) {
     const s = String(dateStr || "").trim();
+    if (!s) return "";
+    if (/^\d{4}-\d{2}/.test(s)) return s.slice(0, 7);
+    const ru = s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})/);
+    if (ru) return ru[3] + "-" + ("0" + ru[2]).slice(-2);
     return s.length >= 7 ? s.slice(0, 7) : "";
 }
 
-function vacationDateRu(iso) {
-    const p = String(iso || "").split("-");
-    if (p.length < 3 || !p[0]) return iso ? String(iso) : "—";
-    return p[2] + "." + p[1] + "." + p[0];
+function normalizeVacationDate(value) {
+    const s = String(value || "").trim();
+    if (!s) return "";
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    const ru = s.match(/^(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})$/);
+    if (ru) {
+        return ru[3] + "-" + ("0" + ru[2]).slice(-2) + "-" + ("0" + ru[1]).slice(-2);
+    }
+    return s;
+}
+
+function salaryRecordKey(bucket, employeeId) {
+    if (!bucket || employeeId == null || employeeId === "") return null;
+    if (Object.prototype.hasOwnProperty.call(bucket, employeeId)) return employeeId;
+    const id = String(employeeId);
+    if (Object.prototype.hasOwnProperty.call(bucket, id)) return id;
+    const keys = Object.keys(bucket);
+    for (let i = 0; i < keys.length; i++) {
+        if (String(keys[i]) === id) return keys[i];
+    }
+    return null;
 }
 
 function peekSalaryMonth(employeeId, month) {
     const m = month || selectedMonth;
-    const rec = appData && appData.salary && appData.salary[m] && appData.salary[m][employeeId];
-    return rec ? normalizeSalaryRecord(rec) : null;
+    const bucket = appData && appData.salary && appData.salary[m];
+    if (!bucket) return null;
+    const key = salaryRecordKey(bucket, employeeId);
+    if (key == null) return null;
+    return normalizeSalaryRecord(bucket[key]);
+}
+
+function getEmployeeForVacation(id) {
+    const direct = getEmployee(id);
+    if (direct) return direct;
+    const sid = String(id || "");
+    if (!sid) return null;
+    let found = null;
+    ((appData && appData.workspaces) || []).forEach(function (w) {
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!found && e && String(e.id) === sid) found = e;
+        });
+    });
+    return found;
+}
+
+function vacationPlanSalaryForRec(employeeId, rec) {
+    const ym = plannedDateMonth(rec && rec.planned_date);
+    if (!ym) return null;
+    return peekSalaryMonth(employeeId, ym);
+}
+
+function vacationPlanAccruedPay(employeeId, rec) {
+    const sal = vacationPlanSalaryForRec(employeeId, rec);
+    const n = sal ? Number(sal.vacationPay || 0) : 0;
+    return n > 0 ? n : 0;
+}
+
+function vacationDateRu(iso) {
+    const n = normalizeVacationDate(iso);
+    const p = String(n || iso || "").split("-");
+    if (p.length < 3 || !p[0]) return iso ? String(iso) : "—";
+    return p[2] + "." + p[1] + "." + p[0];
 }
 
 function vacationAutoState(planRec, salRec) {
@@ -22949,11 +23007,11 @@ function vacationPlanPayoutKind(employeeId, rec) {
     if (rec && rec.status === "declined") return "declined";
     const date = rec && rec.planned_date;
     if (!String(date || "").trim()) return "nodate";
-    const ym = plannedDateMonth(date);
-    const sal = peekSalaryMonth(employeeId, ym);
+    const sal = vacationPlanSalaryForRec(employeeId, rec);
     if (sal && sal.vacationPaidEarlier) return "received";
     if (sal && sal.issued) return "received";
-    return "pay";
+    if (vacationPlanAccruedPay(employeeId, rec) > 0) return "pay";
+    return "none";
 }
 
 function vacationPlanPayoutHtml(kind) {
@@ -22987,7 +23045,7 @@ function patchVacationPlanEmp(employeeId, field, value) {
     if (field === "planned_amount") {
         rec.planned_amount = String(value || "").trim() === "" ? "" : parseMoney(value, 0);
     } else if (field === "planned_date") {
-        rec.planned_date = value;
+        rec.planned_date = normalizeVacationDate(value);
         if (rec.status === "declined" && String(value || "").trim()) rec.status = "planned";
     } else if (field === "comment") {
         rec.comment = value;
@@ -23023,7 +23081,7 @@ function rescheduleVacationPlan(employeeId) {
         planned_date: rec.planned_date || "",
         new_date: String(nd).trim()
     });
-    rec.planned_date = String(nd).trim();
+    rec.planned_date = normalizeVacationDate(nd);
     rec.status = "moved";
     rec.department_id = rec.department_id || vacationPlanDeptId(employeeId);
     saveApp();
@@ -23317,15 +23375,15 @@ function collectVacationQueue(month) {
     const seen = {};
     const rows = [];
     function addId(empId, planRec) {
-        if (!empId || seen[empId]) return;
-        const e = getEmployee(empId);
-        if (!e) return;
-        seen[empId] = true;
-        const home = employeeHome(empId);
-        const deptId = (planRec && planRec.department_id) || vacationPlanDeptId(empId);
+        const sid = String(empId || "");
+        if (!sid || seen[sid]) return;
+        const e = getEmployeeForVacation(empId);
+        seen[sid] = true;
+        const home = employeeHome(empId) || (e && employeeHome(e.id));
+        const deptId = (planRec && planRec.department_id) || vacationPlanDeptId(empId) || (e && vacationPlanDeptId(e.id));
         rows.push({
-            employee_id: empId,
-            name: e.name || empId,
+            employee_id: (e && e.id) || empId,
+            name: (e && e.name) || sid,
             deptCode: deptId || (home && home.code) || "",
             planned_date: planRec ? (planRec.planned_date || "") : "",
             planned_amount: planRec && planRec.planned_amount !== "" && planRec.planned_amount != null ? planRec.planned_amount : ""
@@ -23401,17 +23459,21 @@ function vacationPlanPeople() {
     const seen = {};
     const people = [];
     function addEmp(emp) {
-        if (!emp || !emp.id || seen[emp.id]) return;
-        seen[emp.id] = true;
+        if (!emp || !emp.id || seen[String(emp.id)]) return;
+        seen[String(emp.id)] = true;
         people.push(emp);
     }
     deptWorkspaces().forEach(function (w) {
         (w.employees || []).forEach(addEmp);
         assignedIds(w).forEach(function (id) {
-            addEmp(findEmployeeIn(w, id) || getEmployee(id));
+            addEmp(findEmployeeIn(w, id) || getEmployeeForVacation(id));
         });
     });
     uniqueAssignedEmployees().forEach(addEmp);
+    vacationPlanYearList(salaryUi.planYear || salaryMonthYear()).forEach(function (rec) {
+        if (!rec || rec.employee_id == null || rec.employee_id === "") return;
+        addEmp(getEmployeeForVacation(rec.employee_id) || { id: rec.employee_id, name: String(rec.employee_id) });
+    });
     people.sort(compareEmployeesByStatusThenName);
     return people;
 }
@@ -23438,6 +23500,8 @@ function vacationPlanRowHtml(e, y, can) {
     const rec = findVacationPlanRec(e.id, y);
     const dateVal = rec ? (rec.planned_date || "") : "";
     const amt = rec && rec.planned_amount !== "" && rec.planned_amount != null ? rec.planned_amount : "";
+    const accrued = vacationPlanAccruedPay(e.id, rec);
+    const accruedCell = accrued > 0 ? money(accrued) : "—";
     const comment = rec ? (rec.comment || "") : "";
     const empJs = escapeAttribute(e.id);
     const declined = rec && rec.status === "declined";
@@ -23446,7 +23510,7 @@ function vacationPlanRowHtml(e, y, can) {
     if (!can) {
         return "<tr><td>" + escapeHtml(e.name || e.id) + badge + "</td><td>"
             + escapeHtml(vacationDateRu(dateVal)) + "</td><td>"
-            + (amt === "" ? "—" : money(amt)) + "</td><td>" + payCell + "</td><td>"
+            + (amt === "" ? "—" : money(amt)) + "</td><td>" + accruedCell + "</td><td>" + payCell + "</td><td>"
             + escapeHtml(comment) + "</td><td></td></tr>";
     }
     const acts = '<div class="vplan-actions">'
@@ -23458,7 +23522,7 @@ function vacationPlanRowHtml(e, y, can) {
         + empJs + "','planned_date',this.value)\"></td><td>"
         + '<input class="money-input no-spin" value="' + escapeAttribute(amt === "" ? "" : String(amt))
         + '" placeholder="пусто" onchange="patchVacationPlanEmp(\'' + empJs + "','planned_amount',this.value)\"></td><td>"
-        + payCell + "</td><td>"
+        + accruedCell + "</td><td>" + payCell + "</td><td>"
         + '<input value="' + escapeAttribute(comment) + '" onchange="patchVacationPlanEmp(\''
         + empJs + "','comment',this.value)\"></td><td>" + acts + "</td></tr>";
 }
@@ -23466,8 +23530,9 @@ function vacationPlanRowHtml(e, y, can) {
 function vacationPlanTableWrap(rowsHtml) {
     return '<div class="table-wrapper"><table class="salary-table vplan-table"><colgroup>'
         + '<col class="vplan-col-name"><col class="vplan-col-date"><col class="vplan-col-sum">'
-        + '<col class="vplan-col-pay"><col class="vplan-col-comment"><col class="vplan-col-act"></colgroup><thead><tr>'
-        + "<th>Сотрудник</th><th>Плановая дата отпускных</th><th>Плановая сумма</th><th>Выплата</th><th>Комментарий</th><th></th>"
+        + '<col class="vplan-col-accrued"><col class="vplan-col-pay"><col class="vplan-col-comment">'
+        + '<col class="vplan-col-act"></colgroup><thead><tr>'
+        + "<th>Сотрудник</th><th>Плановая дата отпускных</th><th>Плановая сумма</th><th>Начислено</th><th>Выплата</th><th>Комментарий</th><th></th>"
         + "</tr></thead><tbody>" + rowsHtml + "</tbody></table></div>";
 }
 
@@ -23550,7 +23615,7 @@ function renderSalaryVacationPlan() {
     fh += "</select></div>";
     fh += '<input class="vplan-search" id="vplanSearch" type="search" placeholder="🔎 Найти сотрудника по фамилии или имени..." value="'
         + escapeAttribute(salaryUi.planSearch || "") + '" oninput="setVacationPlanSearch(this.value)">';
-    fh += '<div class="note">Финансовый план на год. Плановая дата ставит сотрудника в очередь отпускных того календарного месяца и ничего не начисляет. «Выплата» считается из «Выплачены ранее» и «Выдано» за этот месяц. Не связано с «ОТ» в табеле.</div>';
+    fh += '<div class="note">Плановая дата ставит сотрудника в «Зарплата → Отпускные» того календарного месяца. Фактическая сумма вводится там один раз и здесь показывается в «Начислено». Не связано с «ОТ» в табеле.</div>';
     box.innerHTML = fh;
     fillVacationPlanList();
 }
