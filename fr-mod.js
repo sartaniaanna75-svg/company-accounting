@@ -5569,6 +5569,66 @@ function frExpenseFingerprint(areaId, sourceId, date, amount, payee) {
     ].join("|"));
 }
 
+/** Ключ дубля импорта: объект, счёт, дата, время, сумма, получатель, операция. */
+function frExpenseImportKey(areaId, sourceId, date, amount, payee, operation, opTime) {
+    const norm = function (v) {
+        return String(v || "").replace(/\s+/g, " ").trim().toLowerCase();
+    };
+    return frHashStr([
+        areaId,
+        sourceId,
+        String(date || ""),
+        String(opTime || ""),
+        frRound(amount).toFixed(2),
+        norm(payee),
+        norm(operation)
+    ].join("|"));
+}
+
+function frTodayIso() {
+    if (typeof mgmtIsoFromDate === "function") return mgmtIsoFromDate(new Date());
+    const d = new Date();
+    return d.getFullYear() + "-"
+        + String(d.getMonth() + 1).padStart(2, "0") + "-"
+        + String(d.getDate()).padStart(2, "0");
+}
+
+function frExcelFractionToTime(frac) {
+    const minutes = Math.round((Number(frac) - Math.floor(Number(frac))) * 24 * 60);
+    const dayMin = ((minutes % 1440) + 1440) % 1440;
+    return String(Math.floor(dayMin / 60)).padStart(2, "0") + ":" + String(dayMin % 60).padStart(2, "0");
+}
+
+/** Дата из ячейки импорта. Только время → сегодняшняя дата + время. Полная дата не подменяется. */
+function frReadImportDateCell(raw) {
+    const s = String(raw == null ? "" : raw).trim();
+    const clock = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (clock) {
+        const hh = Number(clock[1]);
+        const mm = Number(clock[2]);
+        if (hh <= 23 && mm <= 59) {
+            return {
+                date: frTodayIso(),
+                time: String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0"),
+                timeOnly: true
+            };
+        }
+    }
+    if (/^\d+(\.\d+)?$/.test(s)) {
+        const n = Number(s);
+        if (n > 0 && n < 1) {
+            return { date: frTodayIso(), time: frExcelFractionToTime(n), timeOnly: true };
+        }
+    }
+    const date = frParseExpenseDate(s);
+    let time = "";
+    if (date && /^\d+(\.\d+)$/.test(s)) {
+        const frac = Number(s) - Math.floor(Number(s));
+        if (frac > 0.0005) time = frExcelFractionToTime(frac);
+    }
+    return { date: date, time: time, timeOnly: false };
+}
+
 function frParseExpenseDate(raw) {
     const s = String(raw == null ? "" : raw).trim();
     if (!s) return "";
@@ -5632,7 +5692,7 @@ function frNormalizeImportHeader(cell) {
 }
 
 function frDetectImportColumns(headerCells) {
-    const map = { date: -1, amount: -1, payee: -1, operation: -1 };
+    const map = { date: -1, amount: -1, payee: -1, operation: -1, credit: -1, format: "" };
     headerCells.forEach(function (cell, i) {
         const h = frNormalizeImportHeader(cell);
         if (!h) return;
@@ -5640,8 +5700,20 @@ function frDetectImportColumns(headerCells) {
             map.date = i;
             return;
         }
-        if (map.amount < 0 && (h.indexOf("сумм") === 0 || h === "amount" || h === "sum" || h === "suma")) {
+        /* Поступление — не сумма расхода. Списание — сумма банковского расхода. */
+        if (map.credit < 0 && h.indexOf("поступлен") >= 0) {
+            map.credit = i;
+            return;
+        }
+        if (map.amount < 0 && (
+            h.indexOf("списан") >= 0
+            || h.indexOf("сумм") === 0
+            || h === "amount"
+            || h === "sum"
+            || h === "suma"
+        )) {
             map.amount = i;
+            if (h.indexOf("списан") >= 0) map.format = "bank";
             return;
         }
         /* «Кому выдано» — до проверки «операция», чтобы не перепутать колонки */
@@ -5669,6 +5741,8 @@ function frDetectImportColumns(headerCells) {
             map.operation = i;
         }
     });
+    if (!map.format && map.credit >= 0) map.format = "bank";
+    else if (!map.format && map.amount >= 0) map.format = "cash";
     const found = map.date >= 0 || map.amount >= 0 || map.payee >= 0 || map.operation >= 0;
     return found ? map : null;
 }
@@ -5693,6 +5767,7 @@ function frImportFallbackPayee(cells, colMap, date, amountIdx) {
         if (colMap.amount >= 0) skip[colMap.amount] = true;
         if (colMap.operation >= 0) skip[colMap.operation] = true;
         if (colMap.payee >= 0) skip[colMap.payee] = true;
+        if (colMap.credit >= 0) skip[colMap.credit] = true;
     }
     if (amountIdx >= 0) skip[amountIdx] = true;
     const parts = [];
@@ -5727,16 +5802,24 @@ function frParseExpenseImportText(text) {
             headerConsumed = true;
         }
         let date = "";
+        let opTime = "";
         let amount = 0;
         let payeeName = "";
         let operation = "";
         let amountIdx = -1;
         if (colMap) {
-            if (colMap.date >= 0) date = frParseExpenseDate(cells[colMap.date] || "");
+            if (colMap.date >= 0) {
+                const parsed = frReadImportDateCell(cells[colMap.date] || "");
+                date = parsed.date || "";
+                opTime = parsed.time || "";
+            }
             if (colMap.amount >= 0) {
-                amount = Math.abs(frNum(cells[colMap.amount]));
+                const rawAmt = frImportCellText(cells[colMap.amount] || "");
+                amount = rawAmt ? Math.abs(frNum(rawAmt)) : 0;
                 amountIdx = colMap.amount;
             }
+            /* Банк: пустое «Списание» — это поступление, в расходы не берём. */
+            if (colMap.format === "bank" && !(amount > 0)) return;
             if (colMap.payee >= 0) payeeName = frImportCellText(cells[colMap.payee] || "");
             if (colMap.operation >= 0) operation = frImportCellText(cells[colMap.operation] || "");
             /* Колонка «Хозяйственная операция» необязательна — отсутствие не ошибка. */
@@ -5766,6 +5849,7 @@ function frParseExpenseImportText(text) {
         if (!date) date = frEnsureWeek().start_date;
         rows.push({
             date: date,
+            op_time: opTime || "",
             amount: frRound(amount),
             payee: payeeName || "",
             payee_name: payeeName || "",
@@ -5831,8 +5915,10 @@ function openFrExcelImport(dayIso) {
     html += '<div class="note">Для обычного наличного расходника выберите основную кассу (подставлена по умолчанию). '
         + "Можно выбрать файл .xlsx / CSV или вставить таблицу (Ctrl+V). "
         + "Если в поле вставки есть данные — импортируется вставка, даже если выбран файл. "
-        + "Колонки распознаются по заголовкам: Дата, Сумма, Кому выдано; Хозяйственная операция — необязательна. "
-        + "Порядок колонок в Excel не важен. "
+        + "Колонки распознаются по заголовкам, порядок не важен. "
+        + "Касса: Дата, Сумма, Кому выдано, Хозяйственная операция. "
+        + "Банк: Дата, Списание, Контрагент, Операция. Поступления не загружаются. "
+        + "Если в дате только время, это расход сегодняшнего дня. "
         + "В программе: Кому выдано | Сумма | Хозяйственная операция. Строки без суммы игнорируются.</div>";
     html += '<div class="form-group"><label>Файл (.xlsx, CSV, TXT)</label>'
         + '<input type="file" id="frImportFile" accept=".csv,.txt,.tsv,.xlsx,.xls"></div>';
@@ -6164,7 +6250,9 @@ function frApplyExpenseImport(text, sourceId, meta) {
         if (o.finance_area_id !== area.finance_area_id) return;
         if (o.import_fingerprint) existingFp[o.import_fingerprint] = true;
         if (frOpKind(o) === "expense") {
-            existingFp[frExpenseFingerprint(o.finance_area_id, o.finance_source_id, o.date, o.amount, o.comment)] = true;
+            const payee = o.payee || o.comment || "";
+            existingFp[frExpenseFingerprint(o.finance_area_id, o.finance_source_id, o.date, o.amount, payee)] = true;
+            existingFp[frExpenseImportKey(o.finance_area_id, o.finance_source_id, o.date, o.amount, payee, o.operation, o.op_time)] = true;
         }
     });
     const batchId = nextPrefixedId("fimp", (appData.financeRec.import_batches || []).map(function (x) { return x && x.import_batch_id; }));
@@ -6173,16 +6261,19 @@ function frApplyExpenseImport(text, sourceId, meta) {
     let skippedNoAmt = 0;
     rows.forEach(function (r) {
         if (!(r.amount > 0)) { skippedNoAmt++; return; }
-        const fp = frExpenseFingerprint(area.finance_area_id, sourceId, r.date, r.amount, r.payee_name || r.payee);
-        if (existingFp[fp]) { skippedDup++; return; }
-        existingFp[fp] = true;
-        const opWeek = frWeek(r.date);
         const payeeText = String(r.payee_name || r.payee || "").trim();
         const operationText = String(r.operation || "").trim();
+        const fpOld = frExpenseFingerprint(area.finance_area_id, sourceId, r.date, r.amount, payeeText);
+        const fp = frExpenseImportKey(area.finance_area_id, sourceId, r.date, r.amount, payeeText, operationText, r.op_time);
+        if (existingFp[fp] || existingFp[fpOld]) { skippedDup++; return; }
+        existingFp[fp] = true;
+        existingFp[fpOld] = true;
+        const opWeek = frWeek(r.date);
         const rec = {
             finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
             period_key: opWeek.period_key || w.period_key,
             date: r.date,
+            op_time: r.op_time || "",
             type: "out",
             finance_category_id: "",
             amount: r.amount,
