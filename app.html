@@ -23145,19 +23145,42 @@ function collectVacationRegistry() {
     return out;
 }
 
+/** Месяц зарплаты, в котором отпускные этого плана уже выплачены. Плановая дата не используется. */
+function vacationPlanPayoutMonth(employeeId, rec) {
+    const year = String((rec && (rec.year || String(rec.planned_date || "").slice(0, 4))) || "");
+    if (!year) return "";
+    const salary = (appData && appData.salary) || {};
+    const months = Object.keys(salary).filter(function (ym) {
+        return String(ym).indexOf(year + "-") === 0;
+    }).sort();
+    let earlier = "";
+    let withSalary = "";
+    months.forEach(function (ym) {
+        const sal = peekSalaryMonth(employeeId, ym);
+        if (!sal) return;
+        if (sal.vacationPaidEarlier) {
+            if (!earlier) earlier = ym;
+            return;
+        }
+        if (sal.issued && Number(sal.vacationPay || 0) > 0 && !withSalary) withSalary = ym;
+    });
+    return earlier || withSalary || "";
+}
+
 function vacationPlanPayoutKind(employeeId, rec) {
     if (rec && rec.status === "declined") return "declined";
     const date = rec && rec.planned_date;
     if (!String(date || "").trim()) return "nodate";
-    const sal = vacationPlanSalaryForRec(employeeId, rec);
-    if (sal && sal.vacationPaidEarlier) return "received";
-    if (sal && sal.issued) return "received";
-    if (vacationPlanAccruedPay(employeeId, rec) > 0) return "pay";
-    return "none";
+    if (vacationPlanPayoutMonth(employeeId, rec)) return "received";
+    return "pay";
 }
 
-function vacationPlanPayoutHtml(kind) {
-    if (kind === "received") return '<span class="vplan-pay-got">✓ Получены</span>';
+function vacationPlanPayoutHtml(kind, payMonth) {
+    if (kind === "received") {
+        const label = monthLabel(payMonth);
+        return '<span class="vplan-pay-got">✓ Выплачено'
+            + (label ? " · " + escapeHtml(label) : "") + "</span>";
+    }
     if (kind === "pay") return '<span class="vplan-pay-wait">К выплате</span>';
     return "—";
 }
@@ -23647,7 +23670,7 @@ function vacationPlanRowHtml(e, y, can) {
     const empJs = escapeAttribute(e.id);
     const declined = rec && rec.status === "declined";
     const badge = declined ? '<div class="vplan-badge">Отказ от отпускных</div>' : "";
-    const payCell = vacationPlanPayoutHtml(vacationPlanPayoutKind(e.id, rec));
+    const payCell = vacationPlanPayoutHtml(vacationPlanPayoutKind(e.id, rec), vacationPlanPayoutMonth(e.id, rec));
     if (!can) {
         return "<tr><td>" + escapeHtml(e.name || e.id) + badge + "</td><td>"
             + escapeHtml(vacationDateRu(dateVal)) + "</td><td>"
