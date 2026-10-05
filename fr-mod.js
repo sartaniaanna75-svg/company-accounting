@@ -2615,8 +2615,7 @@ function renderFrReconcileTab(areaId, w, canEdit) {
     const isTerritory = frIsTerritoryArea(areaId);
     const isShop = frIsShopArea(areaId);
     const weekOpen = frAreaWeekOpening(areaId, w.period_key);
-    let html = renderFrMainCashDaysBlock(areaId, w);
-    html += '<div class="fr-box fr-reconcile-box">';
+    let html = '<div class="fr-box fr-reconcile-box">';
     if (isTerritory) {
         html += "<h3>Поступления · ОПТ / Розница / Склад</h3>";
         html += '<div class="fr-muted" style="margin-bottom:8px">'
@@ -2724,6 +2723,7 @@ function renderFrReconcileTab(areaId, w, canEdit) {
     html += renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit);
 
     html += "</div>";
+    html += renderFrMainCashDaysBlock(areaId, w);
     frUi._reconcileCells = editableCells;
     return html;
 }
