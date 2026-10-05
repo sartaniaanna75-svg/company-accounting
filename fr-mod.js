@@ -272,7 +272,7 @@ function frStampOperation(o, opts) {
             : frLookupRevenueDirection(frOpAccountId(o), oid);
         o.revenue_direction = FR_REVENUE_DIRS.some(function (d) { return d.id === dir; }) ? dir : "none";
         o.direction = FR_DIR_TO_1C[o.revenue_direction] || "";
-    } else if (kind === "non_income" || kind === "transfer" || kind === "expense" || kind === "dividend") {
+    } else if (kind === "non_income" || kind === "transfer" || kind === "expense" || kind === "dividend" || kind === "expense_refund") {
         o.revenue_direction = "none";
         o.direction = "";
     }
@@ -517,6 +517,10 @@ function ensureFinanceRec() {
             o.type = "out";
             o.movement_kind = "dividend";
             o.op_type = "dividend";
+        } else if (o.movement_kind === "expense_refund" || o.op_type === "expense_refund") {
+            o.type = "expense_refund";
+            o.movement_kind = "expense_refund";
+            o.op_type = "expense_refund";
         } else {
             o.type = "out";
             o.movement_kind = "expense";
@@ -529,7 +533,7 @@ function ensureFinanceRec() {
             if (k === "income" && frIsTerritoryArea(oid)) {
                 o.revenue_direction = frLookupRevenueDirection(frOpAccountId(o), oid);
                 o.direction = FR_DIR_TO_1C[o.revenue_direction] || "";
-            } else if (k === "non_income" || k === "transfer" || k === "expense" || k === "dividend") {
+            } else if (k === "non_income" || k === "transfer" || k === "expense" || k === "dividend" || k === "expense_refund") {
                 o.revenue_direction = "none";
                 o.direction = "";
             }
@@ -758,6 +762,7 @@ function frMainCashWeekCalc(areaId, periodKey) {
     let cashIncome = 0;
     let cashNonIncome = 0;
     let cashTransferNetOut = 0;
+    let cashRefund = 0;
 
     frOps(areaId, periodKey).forEach(function (o) {
         const amt = frNum(o.amount);
@@ -770,6 +775,11 @@ function frMainCashWeekCalc(areaId, periodKey) {
             const toCash = frIsCashSource(frSourceByAccountId(areaId, toId));
             if (fromCash && !toCash) cashTransferNetOut += amt;
             else if (toCash && !fromCash) cashTransferNetOut -= amt;
+            return;
+        }
+        if (kind === "expense_refund") {
+            const src = frSourceByAccountId(areaId, frOpAccountId(o));
+            if (frIsCashSource(src)) cashRefund += amt;
             return;
         }
         if (kind === "dividend" || kind === "expense") return;
@@ -792,8 +802,9 @@ function frMainCashWeekCalc(areaId, periodKey) {
     cashIncome = frRound(cashIncome);
     cashNonIncome = frRound(cashNonIncome);
     cashTransferNetOut = frRound(cashTransferNetOut);
+    cashRefund = frRound(cashRefund);
     const calculated = frRound(
-        opening + cashIncome + cashNonIncome - cashExpense - cashDividend - cashTransferNetOut
+        opening + cashIncome + cashNonIncome - cashExpense - cashDividend - cashTransferNetOut + cashRefund
     );
 
     const incomeBySource = Object.keys(incomeMap).map(function (k) {
@@ -813,6 +824,7 @@ function frMainCashWeekCalc(areaId, periodKey) {
         cashNonIncome: cashNonIncome,
         cashExpense: cashExpense,
         cashDividend: cashDividend,
+        cashRefund: cashRefund,
         cashTransferNetOut: cashTransferNetOut,
         calculated: calculated,
         incomeBySource: incomeBySource
@@ -1820,6 +1832,7 @@ function frOpKind(o) {
     if (!o) return "expense";
     if (o.op_type === "transfer" || o.movement_kind === "transfer" || o.type === "transfer") return "transfer";
     if (o.op_type === "dividend" || o.movement_kind === "dividend") return "dividend";
+    if (o.op_type === "expense_refund" || o.movement_kind === "expense_refund") return "expense_refund";
     if (o.op_type === "income" || o.op_type === "non_income" || o.op_type === "expense") return o.op_type;
     if (o.movement_kind === "income" || o.movement_kind === "non_income" || o.movement_kind === "expense") return o.movement_kind;
     return o.type === "in" ? "income" : "expense";
@@ -1875,7 +1888,7 @@ function frDayActual(areaId, date, sourceId) {
 }
 
 function frDayMovements(areaId, periodKey, date, sourceId) {
-    let income = 0, nonIncome = 0, expense = 0, dividend = 0, transferIn = 0, transferOut = 0;
+    let income = 0, nonIncome = 0, expense = 0, expenseRefund = 0, dividend = 0, transferIn = 0, transferOut = 0;
     const want = frNormDate(date) || date;
     frOps(areaId, periodKey).forEach(function (o) {
         if (frNormDate(o.date) !== want) return;
@@ -1892,11 +1905,13 @@ function frDayMovements(areaId, periodKey, date, sourceId) {
         else if (kind === "non_income") nonIncome += amt;
         else if (kind === "dividend") dividend += amt;
         else if (kind === "expense") expense += amt;
+        else if (kind === "expense_refund") expenseRefund += amt;
     });
     return {
         income: frRound(income),
         non_income: frRound(nonIncome),
         expense: frRound(expense),
+        expense_refund: frRound(expenseRefund),
         dividend: frRound(dividend),
         transfer_in: frRound(transferIn),
         transfer_out: frRound(transferOut)
@@ -1924,7 +1939,7 @@ function frDayCalculated(areaId, periodKey, date, sourceId) {
     const mv = frDayMovements(areaId, periodKey, date, sourceId);
     const calculated = frRound(
         opening + mv.income + mv.non_income + mv.transfer_in
-            - mv.expense - mv.dividend - mv.transfer_out
+            - mv.expense - mv.dividend - mv.transfer_out + (mv.expense_refund || 0)
     );
     const actual = frDayActual(areaId, date, sourceId);
     const discrepancy = actual == null ? null : frRound(actual - calculated);
@@ -1979,7 +1994,7 @@ function frCarryIfNeeded(areaId, periodKey) {
 
 function frSourceTotals(areaId, periodKey, sourceId) {
     const opening = frOpeningValue(areaId, periodKey, sourceId);
-    let income = 0, nonIncome = 0, expense = 0, dividend = 0, transferIn = 0, transferOut = 0;
+    let income = 0, nonIncome = 0, expense = 0, expenseRefund = 0, dividend = 0, transferIn = 0, transferOut = 0;
     frOps(areaId, periodKey).forEach(function (o) {
         const amt = frNum(o.amount);
         if (!(amt > 0)) return;
@@ -1994,20 +2009,23 @@ function frSourceTotals(areaId, periodKey, sourceId) {
         else if (kind === "non_income") nonIncome += amt;
         else if (kind === "dividend") dividend += amt;
         else if (kind === "expense") expense += amt;
+        else if (kind === "expense_refund") expenseRefund += amt;
     });
     income = frRound(income);
     nonIncome = frRound(nonIncome);
     expense = frRound(expense);
+    expenseRefund = frRound(expenseRefund);
     dividend = frRound(dividend);
     transferIn = frRound(transferIn);
     transferOut = frRound(transferOut);
     const inflow = frRound(income + nonIncome);
-    const closing = frRound(opening + income + nonIncome + transferIn - expense - dividend - transferOut);
+    const closing = frRound(opening + income + nonIncome + transferIn - expense - dividend - transferOut + expenseRefund);
     return {
         opening: opening,
         income: income,
         non_income: nonIncome,
         expense: expense,
+        expense_refund: expenseRefund,
         dividend: dividend,
         transfer_in: transferIn,
         transfer_out: transferOut,
@@ -2019,7 +2037,7 @@ function frSourceTotals(areaId, periodKey, sourceId) {
 
 function frAreaTotals(areaId, periodKey) {
     const acc = {
-        opening: 0, income: 0, non_income: 0, expense: 0, dividend: 0,
+        opening: 0, income: 0, non_income: 0, expense: 0, expense_refund: 0, dividend: 0,
         transfer_in: 0, transfer_out: 0, inflow: 0, outflow: 0, closing: 0
     };
     frSources(areaId, true).forEach(function (s) {
@@ -2028,6 +2046,7 @@ function frAreaTotals(areaId, periodKey) {
         acc.income += t.income;
         acc.non_income += t.non_income;
         acc.expense += t.expense;
+        acc.expense_refund += t.expense_refund || 0;
         acc.dividend += t.dividend;
         acc.transfer_in += t.transfer_in;
         acc.transfer_out += t.transfer_out;
@@ -2056,7 +2075,7 @@ function frHasWeekFacts(areaId, periodKey) {
 function frWeekCalculated(areaId, periodKey) {
     const tot = frAreaTotals(areaId, periodKey);
     /* Расчётный остаток компании: начало + поступления − расходы − дивиденды (перемещения не доход/расход). */
-    return frRound(tot.opening + tot.income + tot.non_income - tot.expense - tot.dividend);
+    return frRound(tot.opening + tot.income + tot.non_income - tot.expense - tot.dividend + (tot.expense_refund || 0));
 }
 
 /**
@@ -2416,7 +2435,10 @@ function renderFinanceRec() {
             const transitOpen = frCardTransitSum(area.finance_area_id, w.period_key);
             const factMoney = frWeekFactMoneyTotal(area.finance_area_id, w.period_key);
             html += '<div class="fr-card"><span>Выручка</span><b class="fr-in">' + frMoney(tot.income) + "</b></div>";
-            html += '<div class="fr-card"><span>Расходы</span><b class="fr-out">' + frMoney(tot.expense) + "</b></div>";
+            html += '<div class="fr-card"><span>Расходы</span><b class="fr-out">'
+                + frMoney(frRound((tot.expense || 0) - (tot.expense_refund || 0))) + "</b>"
+                + '<span class="fr-muted">Расходы ' + frMoney(tot.expense)
+                + " · Возвраты +" + frMoney(tot.expense_refund || 0) + "</span></div>";
             html += '<div class="fr-card fr-card-clickable' + (divSum > 0 ? " fr-card-dividend" : "") + '"'
                 + ' onclick="frToggleDividendDetail(\'' + escapeAttribute(area.finance_area_id) + '\')" title="Детализация дивидендов">'
                 + "<span>Дивиденды</span><b class=\"fr-out\">" + frMoney(divSum) + "</b></div>";
@@ -2919,6 +2941,10 @@ function renderFrWeekActualBalances(areaId, w, canEdit) {
             if (Math.abs(mainCalc.cashDividend || 0) >= 0.005) {
                 html += '<div class="fr-main-cash-line"><span>− Дивиденды</span>'
                     + '<span class="fr-num">' + frMoney(mainCalc.cashDividend) + "</span></div>";
+            }
+            if (Math.abs(mainCalc.cashRefund || 0) >= 0.005) {
+                html += '<div class="fr-main-cash-line"><span>+ Возвраты расходов наличными</span>'
+                    + '<span class="fr-num">' + frMoney(mainCalc.cashRefund) + "</span></div>";
             }
             if (Math.abs(mainCalc.cashTransferNetOut) >= 0.005) {
                 html += '<div class="fr-main-cash-line"><span>'
@@ -3757,6 +3783,7 @@ function renderFrExpenseTab(areaId, w, canEdit) {
     const days = frWeekDates(w);
     let weekCash = 0;
     let weekBank = 0;
+    let weekRefund = 0;
     let weekRows = 0;
     let html = '<div class="fr-box"><h3>Расходы</h3>';
     if (canEdit && sources.length) {
@@ -3849,13 +3876,21 @@ function renderFrExpenseTab(areaId, w, canEdit) {
         weekCash += cashPart.sum;
         weekBank += bankPart.sum;
         const dayTotal = frRound(cashPart.sum + bankPart.sum);
+        const dayRefunds = frOpsForDate(areaId, w.period_key, date, "expense_refund").slice().sort(function (a, b) {
+            return String(a.finance_operation_id || "").localeCompare(String(b.finance_operation_id || ""));
+        });
+        let dayRefund = 0;
+        dayRefunds.forEach(function (o) { dayRefund += frNum(o.amount); });
+        dayRefund = frRound(dayRefund);
+        weekRefund += dayRefund;
+        const dayNet = frRound(dayTotal - dayRefund);
 
         const dayOpen = !!(frUi.expenseDayOpen && frUi.expenseDayOpen[areaId + "|" + date]);
         html += '<div class="fr-day-block fr-exp-day' + (dayOpen ? " is-open" : "") + '">';
         html += '<button type="button" class="fr-day-head fr-exp-day-toggle" onclick="frToggleExpenseDay(\''
             + escapeAttribute(areaId) + "','" + escapeAttribute(date) + "')\">"
             + "<span>" + (dayOpen ? "▼" : "▶") + " " + escapeHtml(frFmtDate(date)) + "</span>"
-            + '<span class="fr-day-total">Итого: ' + frMoney(dayTotal) + "</span></button>";
+            + '<span class="fr-day-total">Итого: ' + frMoney(dayNet) + "</span></button>";
         html += '<div class="fr-exp-day-body"' + (dayOpen ? "" : ' hidden') + ">";
         if (canEdit) {
             html += '<div style="padding:8px 10px 0">'
@@ -3864,14 +3899,44 @@ function renderFrExpenseTab(areaId, w, canEdit) {
         }
         html += cashPart.html;
         html += bankPart.html;
+        html += '<div class="fr-exp-refunds">';
+        html += '<div class="fr-exp-channel-head"><span>↩ Возвраты расходов</span>'
+            + '<span class="fr-in">+' + frMoney(dayRefund) + "</span></div>";
+        if (!dayRefunds.length) {
+            html += '<div class="empty-row" style="padding:6px 10px">Нет возвратов</div>';
+        } else {
+            dayRefunds.forEach(function (o) {
+                const src = frSourceByAccountId(areaId, frOpAccountId(o));
+                html += '<div class="fr-exp-refund-row"><span>' + escapeHtml(frExpensePayee(o)) + "</span>"
+                    + '<span class="fr-in">+' + frMoney(o.amount) + "</span>"
+                    + "<span>" + escapeHtml((src && src.name) || "—") + "</span>";
+                if (canEdit) {
+                    html += '<button type="button" class="btn btn-small" onclick="frDeleteOp(\''
+                        + escapeAttribute(o.finance_operation_id) + "')\">✕</button>";
+                }
+                html += "</div>";
+            });
+        }
+        if (canEdit) {
+            html += '<div class="fr-inline-add">';
+            html += '<input id="frRefWho_' + date + '" placeholder="От кого" style="min-width:120px">';
+            html += '<input class="fr-amt" id="frRefAmt_' + date + '" placeholder="Сумма" inputmode="decimal">';
+            html += '<select id="frRefSrc_' + date + '">'
+                + sources.map(function (s) {
+                    return '<option value="' + escapeAttribute(s.finance_source_id) + '">'
+                        + escapeHtml(s.name) + "</option>";
+                }).join("") + "</select>";
+            html += '<input class="fr-com" id="frRefOp_' + date + '" placeholder="Комментарий">';
+            html += '<button type="button" class="btn btn-secondary btn-small" onclick="frQuickAddRefund(\''
+                + date + "')\">+ Возврат</button>";
+            html += "</div>";
+        }
+        html += "</div>";
         html += '<div class="fr-day-head" style="border-top:1px solid #e5e7eb;background:#fff">'
-            + "<span><b>Всего расходов за день</b></span>"
-            + '<span class="fr-day-total"><b>'
-            + '<button type="button" class="fr-exp-link" onclick="frShowExpenseDetail({date:\''
-            + escapeAttribute(date) + "'})\"><b>" + frMoney(dayTotal) + "</b></button>"
-            + "</b></span></div>";
-        html += '<div class="fr-muted" style="padding:0 10px 6px">Касса '
-            + frMoney(cashPart.sum) + " + Банк " + frMoney(bankPart.sum) + " = " + frMoney(dayTotal) + "</div>";
+            + "<span><b>Чистые расходы за день</b></span>"
+            + '<span class="fr-day-total"><b>' + frMoney(dayNet) + "</b></span></div>";
+        html += '<div class="fr-muted" style="padding:0 10px 6px">Расходы '
+            + frMoney(dayTotal) + " − возвраты +" + frMoney(dayRefund) + " = " + frMoney(dayNet) + "</div>";
         if (canEdit) {
             html += '<div class="fr-inline-add">';
             html += '<select id="frAddSrc_expense_' + date + '">'
@@ -3892,8 +3957,15 @@ function renderFrExpenseTab(areaId, w, canEdit) {
     weekCash = frRound(weekCash);
     weekBank = frRound(weekBank);
     const weekAll = frRound(weekCash + weekBank);
+    const weekNet = frRound(weekAll - weekRefund);
     html += '<div class="fr-box" style="margin-top:8px">';
     html += "<h3>Итого за неделю</h3>";
+    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Расходы</span><b class="fr-out">'
+        + frMoney(weekAll) + "</b></div>";
+    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Возвраты расходов</span><b class="fr-in">+'
+        + frMoney(weekRefund) + "</b></div>";
+    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span><b>Чистые расходы</b></span><b class="fr-out">'
+        + frMoney(weekNet) + "</b></div>";
     html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Расходы касса</span><b class="fr-out">'
         + '<button type="button" class="fr-exp-link" onclick="frShowExpenseDetail({channel:\'cash\'})">'
         + frMoney(weekCash) + "</button></b></div>";
@@ -4436,6 +4508,50 @@ function frQuickAddOp(kind, date) {
     });
     appData.financeRec.operations.push(rec);
     frAudit("op_add", { finance_source_id: src, new_value: amt, detail: movement_kind + " " + date });
+    saveApp();
+    renderFinanceRec();
+}
+
+function frQuickAddRefund(date) {
+    if (!frCanEditData()) return;
+    const area = frActiveArea();
+    if (!area) return;
+    const areaId = area.object_id || area.finance_area_id;
+    const opWeek = frWeek(date);
+    const st = frPeriodState(areaId, opWeek.period_key);
+    if (st && st.status === "closed") {
+        toast("Неделя закрыта. Возврат записывается только в неделю своей даты и не меняет прошлую.", "error");
+        return;
+    }
+    const who = String(((document.getElementById("frRefWho_" + date) || {}).value) || "").trim();
+    const amt = frNum((document.getElementById("frRefAmt_" + date) || {}).value);
+    const src = (document.getElementById("frRefSrc_" + date) || {}).value || "";
+    const note = String(((document.getElementById("frRefOp_" + date) || {}).value) || "").trim();
+    if (!(amt > 0)) { toast("Укажите сумму возврата", "error"); return; }
+    if (!src) { toast("Выберите счёт, куда вернулись деньги", "error"); return; }
+    ensureFinanceRec();
+    const rec = {
+        finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
+        period_key: opWeek.period_key,
+        date: frNormDate(date) || date,
+        type: "expense_refund",
+        finance_category_id: "",
+        amount: amt,
+        comment: note,
+        payee: who,
+        operation: note,
+        is_deleted: false,
+        created_at: new Date().toISOString()
+    };
+    frStampOperation(rec, {
+        object_id: areaId,
+        account_id: src,
+        op_type: "expense_refund",
+        data_source: FR_DATA_SOURCES.manual,
+        revenue_direction: "none"
+    });
+    appData.financeRec.operations.push(rec);
+    frAudit("expense_refund_add", { finance_source_id: src, new_value: amt, detail: date });
     saveApp();
     renderFinanceRec();
 }
