@@ -4023,7 +4023,8 @@ function renderFrExpenseTab(areaId, w, canEdit) {
         } else {
             dayRefunds.forEach(function (o) {
                 const src = frSourceByAccountId(areaId, frOpAccountId(o));
-                html += '<div class="fr-exp-refund-row"><span>' + escapeHtml(frExpensePayee(o)) + "</span>"
+                html += '<div class="fr-exp-refund-row fr-exp-refund-mark"><span><span class="fr-refund-badge">ВОЗВРАТ</span>'
+                    + escapeHtml(frExpensePayee(o)) + "</span>"
                     + '<span class="fr-in">+' + frMoney(o.amount) + "</span>"
                     + "<span>" + escapeHtml((src && src.name) || "—") + "</span>";
                 if (canEdit) {
@@ -4043,18 +4044,14 @@ function renderFrExpenseTab(areaId, w, canEdit) {
                         + escapeHtml(s.name) + "</option>";
                 }).join("") + "</select>";
             html += '<input class="fr-com" id="frRefOp_' + date + '" placeholder="Комментарий">';
-            html += '<button type="button" class="btn btn-secondary btn-small" onclick="frQuickAddRefund(\''
-                + date + "')\">+ Возврат</button>";
+            html += '<button type="button" class="btn btn-secondary btn-small fr-refund-btn" onclick="frQuickAddRefund(\''
+                + date + "')\">↩ Возврат расхода</button>";
             html += "</div>";
         }
         html += "</div>";
-        html += '<div class="fr-day-head" style="border-top:1px solid #e5e7eb;background:#fff">'
-            + "<span><b>Чистые расходы за день</b></span>"
-            + '<span class="fr-day-total"><b>' + frMoney(dayNet) + "</b></span></div>";
-        html += '<div class="fr-muted" style="padding:0 10px 6px">Расходы '
-            + frMoney(dayTotal) + " − возвраты +" + frMoney(dayRefund) + " = " + frMoney(dayNet) + "</div>";
         if (canEdit) {
             html += '<div class="fr-inline-add">';
+            html += '<span class="fr-muted">Откуда оплачено</span>';
             html += '<select id="frAddSrc_expense_' + date + '">'
                 + sources.map(function (s) {
                     return '<option value="' + escapeAttribute(s.finance_source_id) + '">'
@@ -4078,7 +4075,7 @@ function renderFrExpenseTab(areaId, w, canEdit) {
     html += "<h3>Итого за неделю</h3>";
     html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Расходы</span><b class="fr-out">'
         + frMoney(weekAll) + "</b></div>";
-    html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span>Возвраты расходов</span><b class="fr-in">+'
+    html += '<div class="fr-exp-week-refund" style="margin:6px 0;display:flex;justify-content:space-between"><span>Возвраты расходов</span><b class="fr-in">+'
         + frMoney(weekRefund) + "</b></div>";
     html += '<div style="margin:6px 0;display:flex;justify-content:space-between"><span><b>Чистые расходы</b></span><b class="fr-out">'
         + frMoney(weekNet) + "</b></div>";
@@ -5873,8 +5870,40 @@ function frExcelFractionToTime(frac) {
     return String(Math.floor(dayMin / 60)).padStart(2, "0") + ":" + String(dayMin % 60).padStart(2, "0");
 }
 
+function frValidExpenseIso(iso) {
+    const s = String(iso || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return "";
+    const y = Number(s.slice(0, 4));
+    const m = Number(s.slice(5, 7));
+    const d = Number(s.slice(8, 10));
+    if (m < 1 || m > 12 || d < 1 || d > 31) return "";
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return "";
+    return s;
+}
+
+function frExcelSerialToIso(serial) {
+    const n = Math.floor(Number(serial));
+    if (!Number.isFinite(n) || n < 1 || n > 80000) return "";
+    const epoch = new Date(Date.UTC(1899, 11, 30));
+    epoch.setUTCDate(epoch.getUTCDate() + n);
+    return frValidExpenseIso(epoch.getUTCFullYear() + "-"
+        + String(epoch.getUTCMonth() + 1).padStart(2, "0") + "-"
+        + String(epoch.getUTCDate()).padStart(2, "0"));
+}
+
+function frDateObjectToIso(raw) {
+    if (!(raw instanceof Date) || isNaN(raw.getTime())) return "";
+    return frValidExpenseIso(raw.getFullYear() + "-"
+        + String(raw.getMonth() + 1).padStart(2, "0") + "-"
+        + String(raw.getDate()).padStart(2, "0"));
+}
+
 /** Дата из ячейки импорта. Только время → сегодняшняя дата + время. Полная дата не подменяется. */
 function frReadImportDateCell(raw) {
+    if (raw instanceof Date) {
+        return { date: frDateObjectToIso(raw), time: "", timeOnly: false };
+    }
     const s = String(raw == null ? "" : raw).trim();
     const clock = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
     if (clock) {
@@ -5904,31 +5933,28 @@ function frReadImportDateCell(raw) {
 }
 
 function frParseExpenseDate(raw) {
-    const s = String(raw == null ? "" : raw).trim();
+    if (raw instanceof Date) return frDateObjectToIso(raw);
+    let s = String(raw == null ? "" : raw).replace(/[\u00A0\u202F]/g, " ").trim();
     if (!s) return "";
     let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (m) return m[1] + "-" + m[2] + "-" + m[3];
-    m = s.match(/^(\d{1,2})[./](\d{1,2})[./](\d{2,4})/);
+    if (m) return frValidExpenseIso(m[1] + "-" + m[2] + "-" + m[3]);
+    /* День.месяц.год. 05.10.2026 = 5 октября 2026, не 10 мая. */
+    m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/);
     if (m) {
         let y = Number(m[3]);
         if (y < 100) y += 2000;
-        const dd = String(m[1]).padStart(2, "0");
-        const mm = String(m[2]).padStart(2, "0");
-        return y + "-" + mm + "-" + dd;
+        const dd = String(Number(m[1])).padStart(2, "0");
+        const mm = String(Number(m[2])).padStart(2, "0");
+        return frValidExpenseIso(y + "-" + mm + "-" + dd);
     }
     m = s.match(/^(\d{1,2})[./](\d{1,2})$/);
     if (m) {
         const w = frEnsureWeek();
         const y = String(w.start_date || "").slice(0, 4) || String(new Date().getFullYear());
-        return y + "-" + String(m[2]).padStart(2, "0") + "-" + String(m[1]).padStart(2, "0");
+        return frValidExpenseIso(y + "-" + String(Number(m[2])).padStart(2, "0") + "-" + String(Number(m[1])).padStart(2, "0"));
     }
-    if (/^\d{5}(\.\d+)?$/.test(s)) {
-        /* Excel serial date */
-        const serial = Math.floor(Number(s));
-        const epoch = new Date(Date.UTC(1899, 11, 30));
-        epoch.setUTCDate(epoch.getUTCDate() + serial);
-        return typeof mgmtIsoFromDate === "function" ? mgmtIsoFromDate(epoch) : epoch.toISOString().slice(0, 10);
-    }
+    const serialText = s.replace(",", ".");
+    if (/^\d{5}(\.\d+)?$/.test(serialText)) return frExcelSerialToIso(serialText);
     return "";
 }
 
@@ -6061,9 +6087,10 @@ function frImportFallbackPayee(cells, colMap, date, amountIdx) {
 function frParseExpenseImportText(text) {
     const lines = String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/);
     const rows = [];
+    const dateErrors = [];
     let colMap = null;
     let headerConsumed = false;
-    lines.forEach(function (line) {
+    lines.forEach(function (line, lineIdx) {
         const cells = frSplitImportLine(line).map(function (c) { return frImportCellText(c); });
         if (!cells.length || cells.every(function (c) { return !c; })) return;
         if (!headerConsumed) {
@@ -6076,6 +6103,7 @@ function frParseExpenseImportText(text) {
             headerConsumed = true;
         }
         let date = "";
+        let dateRaw = colMap && colMap.date >= 0 ? (cells[colMap.date] || "") : "";
         let opTime = "";
         let amount = 0;
         let payeeName = "";
@@ -6104,11 +6132,17 @@ function frParseExpenseImportText(text) {
             for (let i = 0; i < cells.length; i++) {
                 const n = frNum(cells[i]);
                 const d = frParseExpenseDate(cells[i]);
-                if (!date && d) { date = d; continue; }
+                if (!date && d) { date = d; dateRaw = cells[i]; continue; }
                 if (amountIdx < 0 && /^-?\d/.test(String(cells[i] || "").replace(/\s/g, "")) && Number.isFinite(n) && Math.abs(n) > 0) {
                     amount = Math.abs(n);
                     amountIdx = i;
                 }
+            }
+            if (!date && !dateRaw) {
+                cells.forEach(function (c, i) {
+                    if (dateRaw || i === amountIdx || !c) return;
+                    dateRaw = c;
+                });
             }
             payeeName = frImportFallbackPayee(cells, null, date, amountIdx);
             const leftovers = [];
@@ -6120,7 +6154,10 @@ function frParseExpenseImportText(text) {
             operation = leftovers[0] || "";
         }
         if (!(amount > 0)) return;
-        if (!date) date = frEnsureWeek().start_date;
+        if (!date) {
+            dateErrors.push({ line: lineIdx + 1, raw: dateRaw });
+            return;
+        }
         rows.push({
             date: date,
             op_time: opTime || "",
@@ -6131,6 +6168,7 @@ function frParseExpenseImportText(text) {
             raw: cells.join(" | ")
         });
     });
+    rows.dateErrors = dateErrors;
     return rows;
 }
 
@@ -6175,9 +6213,9 @@ function openFrExcelImport(dayIso) {
     html += '<div class="form-group"><label>Дата расходов</label>'
         + '<input type="text" id="frImportExpenseDate" placeholder="дд.мм.гггг" inputmode="numeric" '
         + 'value="' + escapeAttribute(frIsoToRuDate(preset)) + '" style="max-width:160px">'
-        + '<div class="fr-muted" style="margin-top:4px">Дата из Excel не меняется — поле нужно для контроля. '
-        + "Если в файле есть другие даты, загрузка будет остановлена.</div></div>";
-    html += '<div class="form-group"><label>С какого счёта оплачены расходы</label><select id="frImportSrc" onchange="frUi.importSourceId=this.value">';
+        + '<div class="fr-muted" style="margin-top:4px">Дата каждой операции берётся из файла Excel. '
+        + "Если в файле есть даты не из открытой недели, программа спросит подтверждение.</div></div>";
+    html += '<div class="form-group"><label>Откуда оплачено</label><select id="frImportSrc" onchange="frUi.importSourceId=this.value">';
     sources.forEach(function (s) {
         const mark = (primary === s.finance_source_id ? " — основная касса" : "");
         html += '<option value="' + s.finance_source_id + '"'
@@ -6476,6 +6514,14 @@ function frApplyExpenseImport(text, sourceId, meta) {
     ensureFinanceRec();
     meta = meta || {};
     const rows = frParseExpenseImportText(text);
+    if (rows.dateErrors && rows.dateErrors.length) {
+        const shown = rows.dateErrors.slice(0, 5).map(function (e) {
+            const raw = String(e.raw == null ? "" : e.raw).trim();
+            return "строка " + e.line + " — «" + (raw || "пусто") + "»";
+        }).join("; ");
+        toast("Не удалось распознать дату: " + shown, "error");
+        return;
+    }
     if (!rows.length) {
         toast("Не найдено строк с суммой", "error");
         return;
@@ -6485,7 +6531,6 @@ function frApplyExpenseImport(text, sourceId, meta) {
         toast("Укажите дату расходов (дд.мм.гггг)", "error");
         return;
     }
-    /* Контроль даты: даты из Excel не подменяем, но чужие даты блокируют загрузку. */
     const dateSet = {};
     rows.forEach(function (r) {
         if (!(r.amount > 0)) return;
@@ -6497,10 +6542,12 @@ function frApplyExpenseImport(text, sourceId, meta) {
         toast("В файле не найдены даты операций", "error");
         return;
     }
-    const hasForeign = datesInFile.some(function (d) { return d !== expectedDate; });
-    if (hasForeign) {
-        frShowImportDateMismatch(expectedDate, datesInFile);
-        return;
+    const openDays = {};
+    frWeekDates(w).forEach(function (d) { openDays[d] = true; });
+    const outside = datesInFile.filter(function (d) { return !openDays[d]; });
+    if (outside.length) {
+        const ok = window.confirm("В файле есть операции за дату/даты, которые не входят в открытую неделю.\nЗагрузить операции на даты из Excel?");
+        if (!ok) return;
     }
     const batchKey = frHashStr([
         area.finance_area_id,
