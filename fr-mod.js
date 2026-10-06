@@ -737,9 +737,8 @@ function frIsCashSource(src) {
 }
 
 /**
- * Движения именно Основной кассы (её стабильный id).
- * Чужие кассы, расчётный счёт, карта и депозит сюда не входят.
- * onlyDate — срез одного дня; без даты — вся неделя. Та же формула, что у расчётного остатка в недельной сверке.
+ * Дневной контроль физически Основной кассы. В недельную сверку не входит.
+ * onlyDate — срез одного дня.
  */
 function frMainCashMovements(areaId, periodKey, onlyDate) {
     const primaryId = frPrimaryCashId(areaId);
@@ -817,6 +816,12 @@ function frMainCashMovements(areaId, periodKey, onlyDate) {
     };
 }
 
+/**
+ * Недельный расчёт Основной кассы объекта (без создания перемещений).
+ * opening(осн.) + наличные income всех касс объекта + наличный внедоход − расходы «Касса»
+ * (− чистый уход наличности в безнал через реальные перемещения).
+ * Каждая операция учитывается один раз; безнал не входит.
+ */
 function frMainCashWeekCalc(areaId, periodKey) {
     const primaryId = frPrimaryCashId(areaId);
     if (!primaryId) {
@@ -828,22 +833,69 @@ function frMainCashWeekCalc(areaId, periodKey) {
             cashExpense: 0,
             cashDividend: 0,
             cashTransferNetOut: 0,
-            cashRefund: 0,
             calculated: 0,
             incomeBySource: []
         };
     }
     const opening = frOpeningValue(areaId, periodKey, primaryId);
-    const mv = frMainCashMovements(areaId, periodKey);
-    const cashIncome = mv.cashIncome;
-    const cashNonIncome = mv.cashNonIncome;
-    const cashExpense = mv.cashExpense;
-    const cashDividend = mv.cashDividend;
-    const cashTransferNetOut = mv.cashTransferNetOut;
-    const cashRefund = mv.cashRefund;
+    const incomeMap = {};
+    let cashIncome = 0;
+    let cashNonIncome = 0;
+    let cashTransferNetOut = 0;
+    let cashRefund = 0;
+
+    frOps(areaId, periodKey).forEach(function (o) {
+        const amt = frNum(o.amount);
+        if (!(amt > 0)) return;
+        const kind = frOpKind(o);
+        if (kind === "transfer") {
+            const fromId = frOpAccountId(o);
+            const toId = frOpAccountToId(o);
+            const fromCash = frIsCashSource(frSourceByAccountId(areaId, fromId));
+            const toCash = frIsCashSource(frSourceByAccountId(areaId, toId));
+            if (fromCash && !toCash) cashTransferNetOut += amt;
+            else if (toCash && !fromCash) cashTransferNetOut -= amt;
+            return;
+        }
+        if (kind === "expense_refund") {
+            const src = frSourceByAccountId(areaId, frOpAccountId(o));
+            if (frIsCashSource(src)) cashRefund += amt;
+            return;
+        }
+        if (kind === "dividend" || kind === "expense") return;
+        const sid = frOpAccountId(o);
+        const src = frSourceByAccountId(areaId, sid);
+        if (!frIsCashSource(src)) return;
+        if (kind === "income") {
+            cashIncome += amt;
+            if (!incomeMap[sid]) {
+                incomeMap[sid] = { account_id: sid, name: src.name || sid, amount: 0 };
+            }
+            incomeMap[sid].amount += amt;
+        } else if (kind === "non_income") {
+            cashNonIncome += amt;
+        }
+    });
+
+    const cashExpense = frExpenseSumForWeek(areaId, periodKey, "cash");
+    const cashDividend = frCashDividendSumForWeek(areaId, periodKey);
+    cashIncome = frRound(cashIncome);
+    cashNonIncome = frRound(cashNonIncome);
+    cashTransferNetOut = frRound(cashTransferNetOut);
+    cashRefund = frRound(cashRefund);
     const calculated = frRound(
         opening + cashIncome + cashNonIncome - cashExpense - cashDividend - cashTransferNetOut + cashRefund
     );
+
+    const incomeBySource = Object.keys(incomeMap).map(function (k) {
+        incomeMap[k].amount = frRound(incomeMap[k].amount);
+        return incomeMap[k];
+    }).sort(function (a, b) {
+        const sa = frSourceByAccountId(areaId, a.account_id);
+        const sb = frSourceByAccountId(areaId, b.account_id);
+        return Number((sa && sa.sort_order) || 0) - Number((sb && sb.sort_order) || 0)
+            || String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
 
     return {
         primaryId: primaryId,
@@ -855,16 +907,16 @@ function frMainCashWeekCalc(areaId, periodKey) {
         cashRefund: cashRefund,
         cashTransferNetOut: cashTransferNetOut,
         calculated: calculated,
-        incomeBySource: mv.incomeBySource
+        incomeBySource: incomeBySource
     };
 }
 
-/** Движение Основной кассы по дням недели: те же слагаемые, конец дня = начало следующего. */
+/** Дневной остаток физически в Основной кассе. Недельную сверку не меняет. */
 function frMainCashDayRows(areaId, periodKey) {
-    const week = frMainCashWeekCalc(areaId, periodKey);
+    const primaryId = frPrimaryCashId(areaId);
     const w = frWeek(String(periodKey || "").replace(/^week:/, ""));
     const dates = frWeekDates(w);
-    let opening = week.opening;
+    let opening = primaryId ? frRound(frOpeningValue(areaId, periodKey, primaryId)) : 0;
     const rows = dates.map(function (date) {
         const mv = frMainCashMovements(areaId, periodKey, date);
         const handed = frRound(mv.cashIncome + mv.cashNonIncome + mv.cashRefund + (mv.transferIn || 0));
@@ -885,14 +937,20 @@ function frMainCashDayRows(areaId, periodKey) {
         opening = end;
         return row;
     });
-    return { primaryId: week.primaryId, rows: rows, weekEnd: week.calculated };
+    const last = rows.length ? rows[rows.length - 1].end : opening;
+    return { primaryId: primaryId, rows: rows, weekEnd: last };
 }
 
-/** Расчётный остаток на конец среды: Основная касса — её собственная формула, остальные счета — свой дневной расчёт. */
+/** Расчётный остаток для строки в блоке факт. остатков (осн. касса — сводная формула). */
 function frWeekEndCalculatedForAccount(areaId, periodKey, endDate, sourceId) {
     const primaryId = frPrimaryCashId(areaId);
     if (primaryId && sourceId === primaryId) {
         return frMainCashWeekCalc(areaId, periodKey).calculated;
+    }
+    /* Прочие наличные кассы объекта: в недельном факте наличность уже в Основной кассе. */
+    if (primaryId) {
+        const src = frSourceByAccountId(areaId, sourceId);
+        if (frIsCashSource(src)) return 0;
     }
     return frDayCalculated(areaId, periodKey, endDate, sourceId).calculated;
 }
@@ -2832,8 +2890,8 @@ function renderFrWeekActualBalances(areaId, w, canEdit) {
         + "Показаны только счета/кассы с настройкой «Участвует в фактическом остатке». "
         + "Контрольные ежедневные кассы (без галочки) остаются в таблице поступлений, но сюда не входят. "
         + "Фактический остаток сотрудник вводит вручную — расчётный <b>не подставляется</b>. "
-        + "Расхождение = фактический остаток − расчётный. "
-        + "Расчётный остаток Основной кассы — тот же, что остаток на конец среды в ежедневной сверке этой кассы.</div>";
+        + "Расчётный остаток Основной кассы = начало + все наличные поступления объекта + наличный внедоход − наличные расходы "
+        + "(без двойного учёта и без безнала).</div>";
 
     if (!sources.length) {
         html += '<div class="note">Нет счетов с включённым участием в фактическом остатке. '
@@ -2933,7 +2991,7 @@ function renderFrWeekActualBalances(areaId, w, canEdit) {
             html += '<div class="fr-main-cash-line"><span>Остаток на начало недели</span>'
                 + '<span class="fr-num">' + frMoney(mainCalc.opening) + "</span></div>";
             html += '<div class="fr-main-cash-line">'
-                + '<span>+ Поступления в Основную кассу '
+                + '<span>+ Наличные поступления '
                 + '<button type="button" class="fr-link-btn" onclick="frToggleMainCashIncome(\''
                 + escapeAttribute(areaId) + '\')">'
                 + (incomeOpen ? "▲" : "▼")
@@ -2954,22 +3012,22 @@ function renderFrWeekActualBalances(areaId, w, canEdit) {
                 }
                 html += "</div>";
             }
-            html += '<div class="fr-main-cash-line"><span>+ Внедоходовые поступления в Основную кассу</span>'
+            html += '<div class="fr-main-cash-line"><span>+ Внедоходовые поступления наличными</span>'
                 + '<span class="fr-num">' + frMoney(mainCalc.cashNonIncome) + "</span></div>";
-            html += '<div class="fr-main-cash-line"><span>− Расходы из Основной кассы</span>'
+            html += '<div class="fr-main-cash-line"><span>− Наличные расходы</span>'
                 + '<span class="fr-num">' + frMoney(mainCalc.cashExpense) + "</span></div>";
             if (Math.abs(mainCalc.cashDividend || 0) >= 0.005) {
                 html += '<div class="fr-main-cash-line"><span>− Дивиденды</span>'
                     + '<span class="fr-num">' + frMoney(mainCalc.cashDividend) + "</span></div>";
             }
             if (Math.abs(mainCalc.cashRefund || 0) >= 0.005) {
-                html += '<div class="fr-main-cash-line"><span>+ Возвраты расходов в Основную кассу</span>'
+                html += '<div class="fr-main-cash-line"><span>+ Возвраты расходов наличными</span>'
                     + '<span class="fr-num">' + frMoney(mainCalc.cashRefund) + "</span></div>";
             }
             if (Math.abs(mainCalc.cashTransferNetOut) >= 0.005) {
                 html += '<div class="fr-main-cash-line"><span>'
                     + (mainCalc.cashTransferNetOut >= 0 ? "−" : "+")
-                    + " Перемещения Основной кассы</span>"
+                    + " Перемещения наличность ↔ безнал / в пути</span>"
                     + '<span class="fr-num">' + frMoney(Math.abs(mainCalc.cashTransferNetOut)) + "</span></div>";
             }
             html += '<div class="fr-main-cash-line fr-main-cash-total"><span><b>Расчётный остаток Основной кассы</b></span>'
@@ -4690,9 +4748,8 @@ function renderFrMainCashDaysBlock(areaId, w) {
         return html;
     }
     html += '<div class="fr-muted" style="margin-bottom:8px">'
-        + "Только движения этой кассы: поступления, внедоход, возвраты и перемещения в неё минус расходы и уход из неё. "
-        + "Деньги других счетов и касс сюда не входят. "
-        + "Конец дня становится началом следующего. Конец среды — расчётный остаток этой кассы в недельной сверке.</div>";
+        + "Только деньги, которые физически прошли через Основную кассу: поступления, внедоход, возвраты и перемещения в неё минус расходы, дивиденды и уход из неё. "
+        + "Конец дня становится началом следующего. Недельная сверка этим блоком не меняется.</div>";
     html += '<div class="fr-table-wrap"><table class="fr-table fr-main-cash-day-table"><thead><tr>';
     html += "<th>День</th><th class=\"fr-num\">Начало</th><th class=\"fr-num\">Сдано</th>"
         + "<th class=\"fr-num\">Оплачено</th><th class=\"fr-num\">Остаток на конец дня</th>"
