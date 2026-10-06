@@ -5017,7 +5017,7 @@
                             <div class="card-title">Зарплата по всем отделам</div>
                             <div class="note" id="salaryFormulaNote">
                                 Оклад считается как раньше (дни × ставка / зарплата ТП). Налог и штраф в итогах удерживаются с тем же знаком, что и сейчас.
-                                «Итого начислено» стоит до продуктов и аванса. Отпускные входят в начисление; отметка «Выплачены ранее» убирает их только из суммы к выдаче.
+                                «Итого начислено» стоит до продуктов и аванса. Отпускные входят в начисление. Галочка «Выданы ранее» ставится в зарплате Володарского, Склада или Водителей и убирает отпускные только из суммы к выдаче.
                             </div>
                         </div>
                         <div class="toolbar" id="salaryToolbar">
@@ -5065,7 +5065,7 @@
                                     <th>Сотрудник</th>
                                     <th>Плановая дата отпускных</th>
                                     <th>Отпускные</th>
-                                    <th>Выплачены ранее</th>
+                                    <th>Выдача</th>
                                     <th>Состояние</th>
                                 </tr>
                             </thead>
@@ -11442,9 +11442,9 @@ function applyModeUI() {
     const salaryNote = document.getElementById("salaryFormulaNote");
     if (salaryNote) {
         if (isSalaryPayOnlyView() || currentSummaryRole === "pay") {
-            salaryNote.textContent = "Можно отметить «Выдано». Суммы не меняются. Отпускные, отмеченные «Выплачены ранее», в выдачу не входят.";
+            salaryNote.textContent = "Можно отметить «Выдано». Суммы не меняются. Отпускные, отмеченные «Выданы ранее», в выдачу не входят.";
         } else if (canSalaryCalc()) {
-            salaryNote.textContent = "Итого начислено = текущее начисление (оклад, премия/KPI, налог и штраф с тем же знаком, отпускные). Продукты и аванс вычитаются уже после этой суммы. «Выплачены ранее» убирает отпускные только из «К выдаче».";
+            salaryNote.textContent = "Итого начислено = текущее начисление (оклад, премия/KPI, налог и штраф с тем же знаком, отпускные). Продукты и аванс вычитаются уже после этой суммы. «Выданы ранее» убирает отпускные только из «К выдаче».";
         }
     }
     const editBtn = document.getElementById("navLayoutEditBtn");
@@ -21480,7 +21480,8 @@ function shopSalaryRowData(employee) {
         products: data.products,
         taxes: data.taxes,
         vacationPay: data.vacationPay,
-        total: data.pay
+        vacationPaidEarlier: !!data.vacationPaidEarlier,
+        total: data.toHand
     };
 }
 
@@ -21611,7 +21612,7 @@ function renderPayrollView(view) {
             + moneyFlex(row.metricBonus) + "</button></td>"
             + payrollAdjMoneyCell(employee.id, "products", row.products, canAdj)
             + payrollAdjMoneyCell(employee.id, "taxes", row.taxes, canAdj)
-            + payrollAdjMoneyCell(employee.id, "vacationPay", row.vacationPay, canAdj)
+            + payrollVacationCell(employee.id, row, canAdj)
             + "<td>" + (canAdj
                 ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
                     + blankZeroInt(row.premium) + "\" onchange=\"setShopSalaryAdj('" + employee.id + "','bonus',this.value)\">"
@@ -21924,6 +21925,18 @@ function shopKpiEditorHtml(employeeId, rule) {
         + "</td>"
         + '<td><button type="button" class="btn btn-danger btn-small" onclick="removeShopKpi(\''
         + employeeId + "','" + metricId + "')\">×</button></td></tr>";
+}
+
+function payrollVacationCell(employeeId, row, canEdit) {
+    const amount = canEdit
+        ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+            + blankZeroInt(row.vacationPay) + "\" onchange=\"setShopSalaryAdj('" + employeeId + "','vacationPay',this.value)\">"
+        : money(row.vacationPay);
+    const box = '<label class="sal-vac-flag"><input type="checkbox"'
+        + (row.vacationPaidEarlier ? " checked" : "")
+        + (canEdit ? "" : " disabled")
+        + " onchange=\"setVacationPaidEarlier('" + employeeId + "', this.checked)\"> Выданы ранее</label>";
+    return "<td>" + amount + box + "</td>";
 }
 
 function payrollAdjMoneyCell(employeeId, field, value, canEdit) {
@@ -22726,6 +22739,7 @@ function openShopBonusBreakdown(employeeId) {
         + "<br>Продукты: −" + money(row.products || 0)
         + "<br>Налог: −" + money(row.taxes || 0)
         + "<br>Отпускные: +" + money(row.vacationPay || 0)
+        + (row.vacationPaidEarlier ? "<br>Выданы ранее: в сумму к выплате не входят" : "")
         + "<br>Опоздания: −" + money(row.lateAmount || 0) + " (ставка × минуты / 480)"
         + "<br>Прочий штраф: −" + money(row.fineManual || 0)
         + "<br>Аванс: −" + money(row.advance)
@@ -23034,9 +23048,9 @@ function vacationAutoState(planRec, salRec) {
 function vacationAutoStateLabel(state) {
     if (state === "declined") return "Отказ от отпускных";
     if (state === "need_calc") return "Ожидает расчёта";
-    if (state === "paid_earlier") return "Выплачены ранее";
-    if (state === "paid_with_salary") return "Выплачены с зарплатой";
-    if (state === "with_salary") return "В выдаче с зарплатой";
+    if (state === "paid_earlier") return "Выданы ранее";
+    if (state === "paid_with_salary") return "С зарплатой";
+    if (state === "with_salary") return "С зарплатой";
     return "";
 }
 
@@ -23096,7 +23110,7 @@ function toggleSalaryDeptGroup(code) {
 }
 
 function setVacationPaidEarlier(employeeId, checked) {
-    if (!canEditSalaryField("vacationPay")) return;
+    if (!canEditShopSalaryAdj() && !canEditSalaryField("vacationPay")) return;
     ensureSalary(employeeId).vacationPaidEarlier = !!checked;
     saveApp();
     refreshAll();
@@ -23412,10 +23426,12 @@ function renderSalary() {
     }
 
     function vacationCell(employeeId, data) {
-        const flag = data.vacationPaidEarlier
-            ? '<div class="sal-vac-flag">Выплачены ранее</div>'
-            : "";
-        return "<td>" + money(data.vacationPay) + flag + "</td>";
+        let status = "";
+        if (Number(data.vacationPay || 0) > 0) {
+            status = '<div class="sal-vac-flag">'
+                + (data.vacationPaidEarlier ? "Выданы ранее" : "С зарплатой") + "</div>";
+        }
+        return "<td>" + money(data.vacationPay) + status + "</td>";
     }
 
     function salaryRow(employee) {
@@ -23611,11 +23627,11 @@ function renderSalaryVacationRegistry() {
                 + "','vacationPay',this.value)\">"
             : escapeHtml(payEmpty ? "—" : money(pay));
         const paid = !!(sal && sal.vacationPaidEarlier);
-        const chk = '<label class="sal-vac-flag"><input type="checkbox"' + (paid ? " checked" : "")
-            + (canAmt ? "" : " disabled")
-            + " onchange=\"setVacationPaidEarlier('" + empJs + "', this.checked)\"> Выплачены ранее</label>";
+        const status = !(Number(pay) > 0)
+            ? "—"
+            : (paid ? "Выданы ранее" : "С зарплатой");
         return "<tr><td>" + escapeHtml(r.name) + "</td><td>" + dateCell + "</td><td>" + amtCell
-            + "</td><td>" + chk + "</td><td>" + escapeHtml(vacationAutoStateLabel(state)) + "</td></tr>";
+            + "</td><td>" + escapeHtml(status) + "</td><td>" + escapeHtml(vacationAutoStateLabel(state)) + "</td></tr>";
     }).join("");
 }
 
@@ -29426,7 +29442,7 @@ function exportSummaryCsv() {
 function exportSalary() {
     const rows = [[
         "№", "Сотрудник", "Должность", "Оклад", "Премия", "Налог", "Штраф", "Отпускные",
-        "Выплачены ранее", "Итого начислено", "Продукты", "Аванс", "К выдаче на руки", "Выдано"
+        "Выданы ранее", "Итого начислено", "Продукты", "Аванс", "К выдаче на руки", "Выдано"
     ]];
     function pushEmp(employee, deptName) {
         const d = calculateEmployee(employee.id);
