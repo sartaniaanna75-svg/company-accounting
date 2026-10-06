@@ -465,9 +465,6 @@ function ensureFinanceRec() {
         /* Участие в фактическом остатке недели: по умолчанию да (совместимость). */
         if (s.in_actual_balance == null) s.in_actual_balance = true;
         if (s.storage_account_id == null) s.storage_account_id = "";
-        if (s.storage_account_id === s.account_id || s.storage_account_id === s.finance_source_id) {
-            s.storage_account_id = "";
-        }
         if (frIsTerritoryArea(s.object_id || s.finance_area_id)) {
             if (!s.revenue_direction || !FR_REVENUE_DIRS.some(function (d) { return d.id === s.revenue_direction; })) {
                 s.revenue_direction = "none";
@@ -631,7 +628,7 @@ function frActualBalanceSources(areaId) {
     return frSources(areaId, false).filter(frInActualBalance);
 }
 
-/** Подпись «основного места хранения» (инфо, без операций). */
+/** Куда поступают деньги источника: заданный счёт или пусто, если ещё не указано. */
 function frStorageAccountLabel(areaId, src) {
     if (!src || !src.storage_account_id) return "";
     const host = frSourceByAccountId(areaId, src.storage_account_id);
@@ -654,6 +651,21 @@ function frSourceByAccountId(areaId, accountId) {
     return frSources(areaId, true).find(function (s) {
         return s && (s.finance_source_id === accountId || s.account_id === accountId);
     }) || null;
+}
+
+/** Поступление источника относится к Основной кассе по ID назначения, не по названию. */
+function frReceiptGoesToPrimary(areaId, sourceId, primaryId) {
+    if (!sourceId || !primaryId) return false;
+    const src = frSourceByAccountId(areaId, sourceId);
+    const primary = frSourceByAccountId(areaId, primaryId);
+    const srcKey = src ? (src.finance_source_id || src.account_id) : sourceId;
+    const primaryKey = primary ? (primary.finance_source_id || primary.account_id) : primaryId;
+    if (srcKey === primaryKey) return true;
+    const raw = src && src.storage_account_id;
+    if (!raw) return false;
+    if (raw === primaryKey || raw === primaryId) return true;
+    const host = frSourceByAccountId(areaId, raw);
+    return !!(host && (host.finance_source_id === primaryKey || host.account_id === primaryKey));
 }
 
 function frExpenseChannel(o, areaId) {
@@ -763,19 +775,23 @@ function frMainCashMovements(areaId, periodKey, onlyDate) {
                 if (frOpAccountToId(o) === primaryId) transferIn += amt;
                 return;
             }
-            if (frOpAccountId(o) !== primaryId) return;
             if (kind === "income") {
+                const sid = frOpAccountId(o);
+                if (!frReceiptGoesToPrimary(areaId, sid, primaryId)) return;
                 cashIncome += amt;
-                if (!incomeMap[primaryId]) {
-                    const src = frSourceByAccountId(areaId, primaryId);
-                    incomeMap[primaryId] = {
-                        account_id: primaryId,
-                        name: (src && src.name) || primaryId,
+                if (!incomeMap[sid]) {
+                    const src = frSourceByAccountId(areaId, sid);
+                    incomeMap[sid] = {
+                        account_id: sid,
+                        name: (src && src.name) || sid,
                         amount: 0
                     };
                 }
-                incomeMap[primaryId].amount += amt;
-            } else if (kind === "non_income") {
+                incomeMap[sid].amount += amt;
+                return;
+            }
+            if (frOpAccountId(o) !== primaryId) return;
+            if (kind === "non_income") {
                 cashNonIncome += amt;
             } else if (kind === "expense") {
                 cashExpense += amt;
@@ -4748,11 +4764,11 @@ function renderFrMainCashDaysBlock(areaId, w) {
         return html;
     }
     html += '<div class="fr-muted" style="margin-bottom:8px">'
-        + "Только деньги, которые физически прошли через Основную кассу: поступления, внедоход, возвраты и перемещения в неё минус расходы, дивиденды и уход из неё. "
-        + "Конец дня становится началом следующего. Недельная сверка этим блоком не меняется.</div>";
+        + "Поступило в Основную — поступления источников, у которых «Куда поступают деньги» указывает на основную кассу, плюс внедоход, возвраты и перемещения именно в неё. "
+        + "Начало + поступило − ушло = остаток. Конец дня становится началом следующего. Недельная сверка этим блоком не меняется.</div>";
     html += '<div class="fr-table-wrap"><table class="fr-table fr-main-cash-day-table"><thead><tr>';
-    html += "<th>День</th><th class=\"fr-num\">Начало</th><th class=\"fr-num\">Сдано</th>"
-        + "<th class=\"fr-num\">Оплачено</th><th class=\"fr-num\">Остаток на конец дня</th>"
+    html += "<th>День</th><th class=\"fr-num\">Начало</th><th class=\"fr-num\">Поступило в Основную</th>"
+        + "<th class=\"fr-num\">Ушло из Основной</th><th class=\"fr-num\">Остаток на конец дня</th>"
         + "</tr></thead><tbody>";
     chain.rows.forEach(function (row) {
         html += "<tr><td>" + escapeHtml(frShortDayHead(row.date)) + "</td>";
@@ -4844,7 +4860,9 @@ function renderFrSettingsHtml(area) {
         + "<b>Участвует в фактическом остатке</b> — счёт попадает в сверку остатков на конец недели. "
         + "Контрольные ежедневные кассы (Торг и т.п.) можно оставить без галочки: они остаются в таблице поступлений, "
         + "но не требуют отдельных «сдач»-перемещений. "
-        + "<b>Основное место хранения</b> — справочная привязка (например Торг 1 → Основная касса), без создания операций.</div>";
+        + "<b>Куда поступают деньги</b> — один раз для источника: основная касса или другой счёт этого объекта. "
+        + "От этого зависит только колонка «Поступило в Основную» в дневной сверке основной кассы. "
+        + "Операции, недельная сверка и выручка не меняются.</div>";
     if (!canManage) {
         html += '<div class="note" style="margin-bottom:8px">Просмотр справочника. Создавать, изменять, менять порядок, деактивировать и удалять счета может только Администратор.</div>';
     }
@@ -4856,7 +4874,7 @@ function renderFrSettingsHtml(area) {
     if (canManage) html += '<th class="fr-drag-col" title="Перетащить"></th>';
     html += "<th>Название</th><th>Тип</th>";
     if (isTerritory) html += "<th>Направление выручки</th>";
-    html += "<th>Факт. остаток</th><th>Место хранения</th>";
+    html += "<th>Факт. остаток</th><th>Куда поступают деньги</th>";
     html += "<th>Статус</th><th>Основная касса</th>";
     if (canManage) html += "<th></th>";
     html += "</tr></thead><tbody>";
@@ -5422,17 +5440,19 @@ function openFrDictForm(kind, id) {
             + "Контрольные ежедневные кассы обычно выключают.</div></div>";
         const selfId = rec ? (rec.account_id || rec.finance_source_id) : "";
         const curStorage = (rec && rec.storage_account_id) || "";
-        html += '<div class="form-group"><label>Основное место хранения (необязательно)</label><select id="frDictStorage">';
+        const primaryPick = frPrimaryCashId(area.finance_area_id);
+        html += '<div class="form-group"><label>Куда поступают деньги</label><select id="frDictStorage">';
         html += '<option value="">— не задано —</option>';
         frSources(area.finance_area_id, false).forEach(function (s) {
             const sid = s.finance_source_id;
-            if (sid === selfId) return;
+            const mark = sid === primaryPick ? " — основная касса" : "";
             html += '<option value="' + escapeAttribute(sid) + '"'
-                + (curStorage === sid ? " selected" : "") + ">"
-                + escapeHtml(s.name) + " (" + escapeHtml(frAccountTypeLabel(s.account_type)) + ")</option>";
+                + (curStorage === sid || curStorage === s.account_id ? " selected" : "") + ">"
+                + escapeHtml(s.name) + mark + " (" + escapeHtml(frAccountTypeLabel(s.account_type)) + ")</option>";
         });
         html += "</select>";
-        html += '<div class="fr-muted" style="margin-top:4px">Справочно: куда фактически сдаются деньги (например Торг 1 → Основная касса). '
+        html += '<div class="fr-muted" style="margin-top:4px">Куда физически приходят поступления этого источника. '
+            + "Если выбрать основную кассу, они войдут в «Поступило в Основную». "
             + "Операции перемещения автоматически <b>не создаются</b>.</div></div>";
     }
     html += '<div class="form-group"><label>Порядок</label><input id="frDictOrder" type="number" value="' + escapeAttribute(String(rec ? rec.sort_order : 10)) + '"></div>';
@@ -5517,10 +5537,10 @@ function saveFrDict() {
         const inActualEl = document.getElementById("frDictInActual");
         rec.in_actual_balance = !!(inActualEl && inActualEl.checked);
         let storageId = String(((document.getElementById("frDictStorage") || {}).value) || "").trim();
-        if (storageId === rec.finance_source_id || storageId === rec.account_id) storageId = "";
         if (storageId) {
             const host = frSourceByAccountId(areaId, storageId);
             if (!host || (host.object_id || host.finance_area_id) !== areaId) storageId = "";
+            else storageId = host.finance_source_id || host.account_id || storageId;
         }
         rec.storage_account_id = storageId;
         if (rec.account_type === "cash" && !area.primary_cash_source_id) {
