@@ -390,6 +390,12 @@ function frMoney(n) {
     return (typeof money2 === "function" ? money2(x) : x.toFixed(2) + " ₽");
 }
 
+function frSignedMoney(n) {
+    const x = frRound(n);
+    if (x > 0) return "+" + frMoney(x);
+    return frMoney(x);
+}
+
 function frNum(v) {
     const n = Number(String(v == null ? "" : v).replace(/\s/g, "").replace(",", "."));
     return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
@@ -760,6 +766,7 @@ function frMainCashMovements(areaId, periodKey, onlyDate) {
     let cashNonIncome = 0;
     let transferIn = 0;
     let transferOut = 0;
+    let transitOut = 0;
     let cashRefund = 0;
     let cashExpense = 0;
     let cashDividend = 0;
@@ -771,7 +778,10 @@ function frMainCashMovements(areaId, periodKey, onlyDate) {
             if (!(amt > 0)) return;
             const kind = frOpKind(o);
             if (kind === "transfer") {
-                if (frOpAccountId(o) === primaryId) transferOut += amt;
+                if (frOpAccountId(o) === primaryId) {
+                    transferOut += amt;
+                    if (frIsTransitSource(frSourceByAccountId(areaId, frOpAccountToId(o)))) transitOut += amt;
+                }
                 if (frOpAccountToId(o) === primaryId) transferIn += amt;
                 return;
             }
@@ -806,6 +816,7 @@ function frMainCashMovements(areaId, periodKey, onlyDate) {
     cashNonIncome = frRound(cashNonIncome);
     transferIn = frRound(transferIn);
     transferOut = frRound(transferOut);
+    transitOut = frRound(transitOut);
     cashRefund = frRound(cashRefund);
     cashExpense = frRound(cashExpense);
     cashDividend = frRound(cashDividend);
@@ -827,6 +838,7 @@ function frMainCashMovements(areaId, periodKey, onlyDate) {
         cashTransferNetOut: cashTransferNetOut,
         transferIn: transferIn,
         transferOut: transferOut,
+        transitOut: transitOut,
         cashRefund: cashRefund,
         incomeBySource: incomeBySource
     };
@@ -935,19 +947,29 @@ function frMainCashDayRows(areaId, periodKey) {
     let opening = primaryId ? frRound(frOpeningValue(areaId, periodKey, primaryId)) : 0;
     const rows = dates.map(function (date) {
         const mv = frMainCashMovements(areaId, periodKey, date);
-        const handed = frRound(mv.cashIncome + mv.cashNonIncome + mv.cashRefund + (mv.transferIn || 0));
-        const paid = frRound(mv.cashExpense + mv.cashDividend + (mv.transferOut || 0));
+        const fromCash = mv.cashIncome;
+        const nonIncome = mv.cashNonIncome;
+        const refund = mv.cashRefund;
+        const transferIn = mv.transferIn || 0;
+        const expense = mv.cashExpense;
+        const dividend = mv.cashDividend;
+        const transferOut = mv.transferOut || 0;
+        const transitOut = mv.transitOut || 0;
+        const handed = frRound(fromCash + nonIncome + refund + transferIn);
+        const paid = frRound(expense + dividend + transferOut);
         const end = frRound(opening + handed - paid);
         const row = {
             date: date,
             opening: opening,
             handed: handed,
             paid: paid,
-            income: mv.cashIncome,
-            nonIncome: mv.cashNonIncome,
-            expense: frRound(mv.cashExpense + mv.cashDividend),
-            transfer: frRound((mv.transferIn || 0) - (mv.transferOut || 0)),
-            refund: mv.cashRefund,
+            fromCash: fromCash,
+            nonIncome: nonIncome,
+            refund: refund,
+            expense: expense,
+            dividend: dividend,
+            transitOut: transitOut,
+            moveNet: frRound(transferIn - (transferOut - transitOut)),
             end: end
         };
         opening = end;
@@ -4763,19 +4785,30 @@ function renderFrMainCashDaysBlock(areaId, w) {
         html += '<div class="fr-muted">Нет основной кассы.</div></div>';
         return html;
     }
+    const showDividends = chain.rows.some(function (row) { return row.dividend > 0; });
     html += '<div class="fr-muted" style="margin-bottom:8px">'
-        + "Поступило в Основную — поступления источников, у которых «Куда поступают деньги» указывает на основную кассу, плюс внедоход, возвраты и перемещения именно в неё. "
-        + "Начало + поступило − ушло = остаток. Конец дня становится началом следующего. Недельная сверка этим блоком не меняется.</div>";
+        + "Касса в пути — перевод из основной на счёт типа «в пути», в «Перемещения» он повторно не входит. "
+        + "Остаток считается как раньше. Конец дня становится началом следующего. Недельная сверка этим блоком не меняется.</div>";
     html += '<div class="fr-table-wrap"><table class="fr-table fr-main-cash-day-table"><thead><tr>';
-    html += "<th>День</th><th class=\"fr-num\">Начало</th><th class=\"fr-num\">Поступило в Основную</th>"
-        + "<th class=\"fr-num\">Ушло из Основной</th><th class=\"fr-num\">Остаток на конец дня</th>"
+    html += "<th>День</th><th class=\"fr-num fr-main-cash-edge\">Начало</th>"
+        + "<th class=\"fr-num fr-main-cash-part\">С касс</th>"
+        + "<th class=\"fr-num fr-main-cash-part\">Внедоход</th>"
+        + "<th class=\"fr-num fr-main-cash-part\">Расходы</th>";
+    if (showDividends) html += "<th class=\"fr-num fr-main-cash-part\">Дивиденды</th>";
+    html += "<th class=\"fr-num fr-main-cash-part\">Касса в пути</th>"
+        + "<th class=\"fr-num fr-main-cash-part\">Перемещения</th>"
+        + "<th class=\"fr-num fr-main-cash-edge\">Остаток</th>"
         + "</tr></thead><tbody>";
     chain.rows.forEach(function (row) {
         html += "<tr><td>" + escapeHtml(frShortDayHead(row.date)) + "</td>";
-        html += '<td class="fr-num">' + frMoney(row.opening) + "</td>";
-        html += '<td class="fr-num">' + frMoney(row.handed) + "</td>";
-        html += '<td class="fr-num">' + frMoney(row.paid) + "</td>";
-        html += '<td class="fr-num fr-main-cash-end"><b>' + frMoney(row.end) + "</b></td></tr>";
+        html += '<td class="fr-num fr-main-cash-edge">' + frMoney(row.opening) + "</td>";
+        html += '<td class="fr-num fr-main-cash-part">' + frMoney(row.fromCash) + "</td>";
+        html += '<td class="fr-num fr-main-cash-part">' + frMoney(row.nonIncome) + "</td>";
+        html += '<td class="fr-num fr-main-cash-part">' + frMoney(row.expense) + "</td>";
+        if (showDividends) html += '<td class="fr-num fr-main-cash-part">' + frMoney(row.dividend) + "</td>";
+        html += '<td class="fr-num fr-main-cash-part">' + frMoney(row.transitOut) + "</td>";
+        html += '<td class="fr-num fr-main-cash-part">' + frSignedMoney(row.moveNet) + "</td>";
+        html += '<td class="fr-num fr-main-cash-edge fr-main-cash-end"><b>' + frMoney(row.end) + "</b></td></tr>";
     });
     html += "</tbody></table></div></div>";
     return html;
