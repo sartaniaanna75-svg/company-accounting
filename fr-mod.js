@@ -1127,6 +1127,94 @@ function frTransitPrevWeekSum(areaId, weekStart) {
     return frRound(sum);
 }
 
+/** Журнал «Деньги в пути»: все недели, по ID счёта in_transit, без фильтра открытой недели. */
+function frTransitJournalRows(areaId) {
+    ensureFinanceRec();
+    const open = [];
+    const closed = [];
+    const seenOps = {};
+    frTransits(areaId).forEach(function (t) {
+        frNormalizeTransitRecord(t);
+        if (t.send_operation_id) seenOps[t.send_operation_id] = true;
+        if (t.status === "closed" || frNum(t.amount_open) < 0.005) closed.push(t);
+        else open.push(t);
+    });
+    const transitAcc = frTransitAccountId(areaId);
+    if (transitAcc) {
+        (appData.financeRec.operations || []).forEach(function (o) {
+            if (!o || o.is_deleted) return;
+            if ((o.object_id || o.finance_area_id) !== areaId) return;
+            if (frOpKind(o) !== "transfer") return;
+            if (frOpAccountToId(o) !== transitAcc) return;
+            if (frOpAccountId(o) === transitAcc) return;
+            if (o.transit_role === "close") return;
+            if (seenOps[o.finance_operation_id]) return;
+            if (o.transit_id && frTransitById(o.transit_id)) return;
+            open.push({
+                transit_id: "op:" + o.finance_operation_id,
+                send_operation_id: o.finance_operation_id,
+                send_date: frNormDate(o.date) || o.date,
+                from_account_id: frOpAccountId(o),
+                transit_account_id: transitAcc,
+                amount_sent: frRound(frNum(o.amount)),
+                amount_open: frRound(frNum(o.amount)),
+                amount_closed: 0,
+                status: "open",
+                closes: [],
+                comment: o.comment || "",
+                virtual: true
+            });
+        });
+    }
+    function bySend(a, b) {
+        return String(a.send_date || "").localeCompare(String(b.send_date || ""))
+            || String(a.transit_id || "").localeCompare(String(b.transit_id || ""));
+    }
+    open.sort(bySend);
+    closed.sort(function (a, b) { return bySend(b, a); });
+    return { open: open, closed: closed };
+}
+
+function frTransitWarnKey(areaId) {
+    return frTransitJournalRows(areaId).open.map(function (t) { return t.transit_id; }).join("|");
+}
+
+function frTransitImportantWarnHtml(areaId) {
+    const key = frTransitWarnKey(areaId);
+    if (!key) return "";
+    if (!frUi.transitWarnAck) frUi.transitWarnAck = {};
+    if (frUi.transitWarnAck[areaId] === key) return "";
+    return '<div class="fr-important-warn">'
+        + "<div><b>Есть незакрытые деньги в пути.</b><br>"
+        + "Откройте журнал «Деньги в пути» и подтвердите поступление.</div>"
+        + '<button type="button" class="btn btn-primary btn-small" onclick="frAckTransitWarn(\''
+        + escapeAttribute(areaId) + "')\">Понятно</button></div>";
+}
+
+function frAckTransitWarn(areaId) {
+    if (!frUi.transitWarnAck) frUi.transitWarnAck = {};
+    frUi.transitWarnAck[areaId] = frTransitWarnKey(areaId);
+    renderFinanceRec();
+}
+
+function frOpenTransitJournal(areaId) {
+    frUi.workTab = "transfer";
+    if (!frUi.transitDetailOpen) frUi.transitDetailOpen = {};
+    frUi.transitDetailOpen[areaId] = true;
+    if (!frUi.transitView) frUi.transitView = {};
+    if (!frUi.transitView[areaId]) frUi.transitView[areaId] = "open";
+    renderFinanceRec();
+}
+
+function frSetTransitView(areaId, view) {
+    if (!frUi.transitView) frUi.transitView = {};
+    frUi.transitView[areaId] = view === "closed" ? "closed" : "open";
+    if (!frUi.transitDetailOpen) frUi.transitDetailOpen = {};
+    frUi.transitDetailOpen[areaId] = true;
+    frUi.workTab = "transfer";
+    renderFinanceRec();
+}
+
 function frDividendOps(areaId, periodKey) {
     return frOps(areaId, periodKey).filter(function (o) {
         return frOpKind(o) === "dividend";
@@ -1305,8 +1393,11 @@ function frToggleDividendDetail(areaId) {
 function frToggleTransitDetail(areaId) {
     if (!frUi.transitDetailOpen) frUi.transitDetailOpen = {};
     frUi.transitDetailOpen[areaId] = !frUi.transitDetailOpen[areaId];
-    if (frUi.transitDetailOpen[areaId] && frUi.dividendDetailOpen) {
-        frUi.dividendDetailOpen[areaId] = false;
+    if (frUi.transitDetailOpen[areaId]) {
+        frUi.workTab = "transfer";
+        if (frUi.dividendDetailOpen) frUi.dividendDetailOpen[areaId] = false;
+        if (!frUi.transitView) frUi.transitView = {};
+        if (!frUi.transitView[areaId]) frUi.transitView[areaId] = "open";
     }
     renderFinanceRec();
 }
@@ -2581,6 +2672,7 @@ function renderFinanceRec() {
         if (isTerritory || isShop) {
             const divSum = frCardDividendSum(area.finance_area_id, w.period_key);
             const transitOpen = frCardTransitSum(area.finance_area_id, w.period_key);
+            const transitOpenN = frTransitJournalRows(area.finance_area_id).open.length;
             const factMoney = frWeekFactMoneyTotal(area.finance_area_id, w.period_key);
             html += '<div class="fr-card"><span>Выручка</span><b class="fr-in">' + frMoney(tot.income) + "</b></div>";
             html += '<div class="fr-card"><span>Расходы</span><b class="fr-out">'
@@ -2590,12 +2682,12 @@ function renderFinanceRec() {
             html += '<div class="fr-card fr-card-clickable' + (divSum > 0 ? " fr-card-dividend" : "") + '"'
                 + ' onclick="frToggleDividendDetail(\'' + escapeAttribute(area.finance_area_id) + '\')" title="Детализация дивидендов">'
                 + "<span>Дивиденды</span><b class=\"fr-out\">" + frMoney(divSum) + "</b></div>";
-            html += '<div class="fr-card fr-card-clickable' + (transitOpen > 0 ? " fr-card-transit-warn" : " fr-card-transit-ok") + '"'
-                + ' onclick="frToggleTransitDetail(\'' + escapeAttribute(area.finance_area_id) + '\')" title="Контроль денег в пути">'
-                + "<span>Деньги в пути</span><b>" + frMoney(transitOpen) + "</b>"
-                + (transitOpen < 0.005
-                    ? '<span class="fr-transit-ok-mark">✓</span>'
-                    : '<span class="fr-transit-warn-mark">есть незакрытые</span>')
+            html += '<div class="fr-card fr-card-clickable' + ((transitOpenN > 0 || transitOpen > 0) ? " fr-card-transit-warn" : " fr-card-transit-ok") + '"'
+                + ' onclick="frOpenTransitJournal(\'' + escapeAttribute(area.finance_area_id) + '\')" title="Журнал денег в пути">'
+                + "<span>Деньги в пути" + (transitOpenN ? " (" + transitOpenN + ")" : "") + "</span><b>" + frMoney(transitOpen) + "</b>"
+                + ((transitOpenN > 0 || transitOpen >= 0.005)
+                    ? '<span class="fr-transit-warn-mark">есть незакрытые</span>'
+                    : '<span class="fr-transit-ok-mark">✓</span>')
                 + "</div>";
             html += '<div class="fr-card"><span>Фактический остаток денег</span><b>'
                 + (factMoney.value == null ? "—" : frMoney(factMoney.value)) + "</b>"
@@ -2617,20 +2709,11 @@ function renderFinanceRec() {
         }
         html += "</div>";
         if (isTerritory || isShop) {
-            const prevTransitBanner = frTransitPrevWeekSum(area.finance_area_id, w.start_date);
-            if (prevTransitBanner >= 0.005) {
-                html += '<div class="fr-transit-carry-banner" onclick="frToggleTransitDetail(\''
-                    + escapeAttribute(area.finance_area_id) + '\')">'
-                    + "🔴 В пути с прошлой недели: " + frMoney(prevTransitBanner) + "</div>";
-            }
+            html += frTransitImportantWarnHtml(area.finance_area_id);
         }
         if ((isTerritory || isShop) && frUi.dividendDetailOpen && frUi.dividendDetailOpen[area.finance_area_id]) {
             html += renderFrDividendDetailPanel(area.finance_area_id, w, canFill && !closed);
         }
-        if ((isTerritory || isShop) && frUi.transitDetailOpen && frUi.transitDetailOpen[area.finance_area_id]) {
-            html += renderFrTransitDetailPanel(area.finance_area_id, w, canFill && !closed);
-        }
-
         if (isTerritory && frUi.workTab !== "reconcile") {
             html += renderFrTerritoryRevenueStrip(area.finance_area_id, w.period_key);
         }
@@ -4137,15 +4220,11 @@ function renderFrDividendDetailPanel(areaId, w, canEdit) {
 }
 
 function renderFrTransitDetailPanel(areaId, w, canEdit) {
-    const openList = frTransitOpenList(areaId);
-    const all = frTransits(areaId).slice().sort(function (a, b) {
-        const ao = a.status === "closed" ? 1 : 0;
-        const bo = b.status === "closed" ? 1 : 0;
-        if (ao !== bo) return ao - bo;
-        return String(b.send_date || "").localeCompare(String(a.send_date || ""))
-            || String(b.transit_id || "").localeCompare(String(a.transit_id || ""));
-    });
-    const openSum = frTransitOpenSum(areaId);
+    const journal = frTransitJournalRows(areaId);
+    const view = (frUi.transitView && frUi.transitView[areaId]) || "open";
+    const transitAcc = frTransitAccountId(areaId);
+    const transitSrc = transitAcc ? frSourceByAccountId(areaId, transitAcc) : null;
+    const transitName = (transitSrc && transitSrc.name) || "Касса в пути";
     let html = '<div class="fr-box fr-transit-panel">';
     html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">';
     html += "<h3 style=\"margin:0\">Деньги в пути</h3>";
@@ -4156,61 +4235,62 @@ function renderFrTransitDetailPanel(areaId, w, canEdit) {
     html += '<button type="button" class="btn btn-secondary btn-small" onclick="frToggleTransitDetail(\''
         + escapeAttribute(areaId) + '\')">Скрыть</button>';
     html += "</div></div>";
-    html += '<div class="fr-muted" style="margin:8px 0">Деньги уже вышли из одного места хранения, но ещё не поступили в конечное. '
-        + "Это не расход и не выручка. Незакрытый остаток переносится между неделями с тем же transit_id.</div>";
-    if (openSum >= 0.005) {
-        html += '<div class="fr-transit-open-sum">Незакрыто сейчас: <b>' + frMoney(openSum) + "</b></div>";
-    } else {
-        html += '<div class="fr-transit-open-sum is-ok">Незакрытых денег в пути нет ✓</div>';
-    }
-    if (!frTransitAccountId(areaId)) {
+    html += '<div class="fr-muted" style="margin:8px 0">Незакрытые отправки видны независимо от выбранной недели, '
+        + "пока деньги не поступили на конечный счёт. Это не расход и не выручка.</div>";
+    html += '<div class="fr-transit-views">';
+    html += '<button type="button" class="btn btn-small' + (view !== "closed" ? " btn-primary" : " btn-secondary")
+        + '" onclick="frSetTransitView(\'' + escapeAttribute(areaId) + "','open')\">В пути"
+        + (journal.open.length ? " (" + journal.open.length + ")" : "") + "</button>";
+    html += '<button type="button" class="btn btn-small' + (view === "closed" ? " btn-primary" : " btn-secondary")
+        + '" onclick="frSetTransitView(\'' + escapeAttribute(areaId) + "','closed')\">Закрытые"
+        + (journal.closed.length ? " (" + journal.closed.length + ")" : "") + "</button>";
+    html += "</div>";
+    if (!transitAcc) {
         html += '<div class="note">Добавьте счёт типа «Деньги в пути» во вкладке «Счета и кассы».</div></div>';
         return html;
     }
-    if (canEdit && openList.length) {
-        html += '<div style="margin:8px 0 4px"><b>Незакрытые — закрыть / деньги поступили</b></div>';
-        openList.forEach(function (t) {
+    if (view === "closed") {
+        if (!journal.closed.length) {
+            html += '<div class="empty-row">Закрытых операций нет</div></div>';
+            return html;
+        }
+        journal.closed.forEach(function (t) {
             const from = frSourceByAccountId(areaId, t.from_account_id);
-            html += '<div class="fr-transit-open-row">'
-                + "<span>" + escapeHtml(frFmtDate(t.send_date)) + " · "
-                + escapeHtml((from && from.name) || "—") + " · осталось "
-                + frMoney(t.amount_open) + "</span>"
-                + '<button type="button" class="btn btn-primary btn-small" onclick="openFrTransitCloseForm(\''
-                + escapeAttribute(t.transit_id) + '\')">Закрыть / Деньги поступили</button>'
+            const closes = t.closes || [];
+            const last = closes.length ? closes[closes.length - 1] : null;
+            const dests = closes.map(function (c) {
+                const to = frSourceByAccountId(areaId, c.to_account_id);
+                return escapeHtml(frFmtDate(c.date)) + " → " + escapeHtml((to && to.name) || "—");
+            });
+            html += '<div class="fr-transit-closed-row">'
+                + "<div><b>" + escapeHtml(frFmtDate(t.send_date)) + "</b> · "
+                + escapeHtml((from && from.name) || "—") + " → " + escapeHtml(transitName) + "</div>"
+                + "<div>" + frMoney(t.amount_sent) + "</div>"
+                + "<div>Поступило: " + (dests.length ? dests.join("; ") : escapeHtml(frFmtDate(last && last.date))) + "</div>"
+                + '<div class="fr-transit-status-closed">Закрыто</div>'
                 + "</div>";
         });
+        html += "</div>";
+        return html;
     }
-    html += '<div class="fr-table-wrap" style="margin-top:10px"><table class="fr-table"><thead><tr>'
-        + "<th>Дата</th><th>Откуда</th><th class=\"fr-num\">Отправлено</th>"
-        + "<th class=\"fr-num\">Закрыто</th><th class=\"fr-num\">Осталось</th>"
-        + "<th>Куда поступило</th><th>Статус</th></tr></thead><tbody>";
-    if (!all.length) {
-        html += '<tr><td colspan="7"><div class="empty-row">История пуста</div></td></tr>';
+    if (!journal.open.length) {
+        html += '<div class="fr-transit-open-sum is-ok">Незакрытых денег в пути нет ✓</div></div>';
+        return html;
     }
-    all.forEach(function (t) {
-        frNormalizeTransitRecord(t);
+    journal.open.forEach(function (t) {
         const from = frSourceByAccountId(areaId, t.from_account_id);
-        const destNames = [];
-        (t.closes || []).forEach(function (c) {
-            const to = frSourceByAccountId(areaId, c.to_account_id);
-            destNames.push((to && to.name) || "—");
-        });
-        const rowCls = t.status === "closed" ? "" : " fr-transit-row-open";
-        html += '<tr class="' + rowCls + '">';
-        html += "<td>" + escapeHtml(frFmtDate(t.send_date)) + "</td>";
-        html += "<td>" + escapeHtml((from && from.name) || "—") + "</td>";
-        html += '<td class="fr-num">' + frMoney(t.amount_sent) + "</td>";
-        html += '<td class="fr-num">' + frMoney(t.amount_closed) + "</td>";
-        html += '<td class="fr-num">' + frMoney(t.amount_open) + "</td>";
-        html += "<td>" + escapeHtml(destNames.length ? destNames.join(", ") : "—") + "</td>";
-        html += "<td>" + escapeHtml(frTransitStatusLabel(t.status));
-        if (canEdit && t.status !== "closed") {
-            html += ' <button type="button" class="fr-link-btn" onclick="openFrTransitCloseForm(\''
-                + escapeAttribute(t.transit_id) + '\')">закрыть</button>';
+        html += '<div class="fr-transit-open-row">'
+            + "<div><b>" + escapeHtml(frFmtDate(t.send_date)) + "</b><br>"
+            + escapeHtml((from && from.name) || "—") + " → " + escapeHtml(transitName) + "</div>"
+            + "<div><b>" + frMoney(t.amount_open) + "</b></div>"
+            + '<div class="fr-transit-status-open">В пути</div>';
+        if (canEdit) {
+            html += '<button type="button" class="btn btn-small fr-transit-arrived-btn" onclick="openFrTransitCloseForm(\''
+                + escapeAttribute(t.transit_id) + "')\">✓ Деньги поступили</button>";
         }
-        html += "</td></tr>";
+        html += "</div>";
     });
-    html += "</tbody></table></div></div>";
+    html += "</div>";
     return html;
 }
 
@@ -4360,45 +4440,90 @@ function saveFrTransitSend() {
     renderFinanceRec();
 }
 
-function openFrTransitCloseForm(transitId) {
-    if (!frCanEditData()) return;
-    const area = frActiveArea();
+function frJournalTransitRow(areaId, transitId) {
+    if (String(transitId || "").indexOf("op:") === 0) {
+        const rows = frTransitJournalRows(areaId);
+        return rows.open.concat(rows.closed).find(function (t) {
+            return t && t.transit_id === transitId;
+        }) || null;
+    }
     const t = frTransitById(transitId);
-    if (!t || (t.object_id || t.finance_area_id) !== (area.object_id || area.finance_area_id)) {
+    if (t) frNormalizeTransitRecord(t);
+    return t;
+}
+
+function frEnsureTransitForClose(areaId, transitId) {
+    if (String(transitId || "").indexOf("op:") !== 0) return frTransitById(transitId);
+    const opId = String(transitId).slice(3);
+    const linked = frTransits(areaId).find(function (t) {
+        return t && t.send_operation_id === opId;
+    });
+    if (linked) return linked;
+    const op = (appData.financeRec.operations || []).find(function (o) {
+        return o && o.finance_operation_id === opId && !o.is_deleted;
+    });
+    if (!op || (op.object_id || op.finance_area_id) !== areaId) return null;
+    const transitAcc = frOpAccountToId(op) || frTransitAccountId(areaId);
+    const t = {
+        transit_id: nextPrefixedId("ftr", appData.financeRec.money_transits.map(function (x) {
+            return x && x.transit_id;
+        })),
+        object_id: areaId,
+        finance_area_id: areaId,
+        send_date: frNormDate(op.date) || op.date,
+        from_account_id: frOpAccountId(op),
+        transit_account_id: transitAcc,
+        amount_sent: frRound(frNum(op.amount)),
+        amount_closed: 0,
+        comment: op.comment || "",
+        status: "open",
+        send_operation_id: op.finance_operation_id,
+        closes: [],
+        created_at: new Date().toISOString()
+    };
+    frNormalizeTransitRecord(t);
+    appData.financeRec.money_transits.push(t);
+    return t;
+}
+
+function openFrTransitCloseForm(transitId) {
+    if (!frCan("fill")) return;
+    const area = frActiveArea();
+    const areaId = area.object_id || area.finance_area_id;
+    const t = frJournalTransitRow(areaId, transitId);
+    if (!t || (t.virtual ? false : (t.object_id || t.finance_area_id) !== areaId)) {
         toast("Запись не найдена", "error");
         return;
     }
-    frNormalizeTransitRecord(t);
+    if (!t.virtual) frNormalizeTransitRecord(t);
     if (t.status === "closed" || frNum(t.amount_open) < 0.005) {
         toast("Уже закрыто", "error");
         return;
     }
-    const sources = frSources(area.finance_area_id, false).filter(function (s) {
+    const sources = frSources(areaId, false).filter(function (s) {
         return !frIsTransitSource(s);
     });
-    const w = frEnsureWeek();
-    let html = "<h3>Закрыть / Деньги поступили</h3>";
+    const today = frTodayIso();
+    let html = "<h3>Деньги поступили</h3>";
     html += '<input type="hidden" id="frTcId" value="' + escapeAttribute(transitId) + '">';
-    html += '<div class="note">Осталось в пути: <b>' + frMoney(t.amount_open) + "</b></div>";
-    html += '<div class="form-group"><label>Дата поступления</label><input id="frTcDate" type="date" value="'
-        + escapeAttribute(w.end_date || w.start_date) + '"></div>';
     html += '<div class="form-group"><label>Куда поступили</label><select id="frTcTo">';
     sources.forEach(function (s) {
         html += '<option value="' + escapeAttribute(s.finance_source_id) + '">'
-            + escapeHtml(s.name) + "</option>";
+            + escapeHtml(s.name) + " (" + escapeHtml(frAccountTypeLabel(s.account_type)) + ")</option>";
     });
     html += "</select></div>";
-    html += '<div class="form-group"><label>Сумма поступления</label><input id="frTcAmt" value="'
+    html += '<div class="form-group"><label>Дата поступления</label><input id="frTcDate" type="date" value="'
+        + escapeAttribute(today) + '"></div>';
+    html += '<div class="form-group"><label>Сумма</label><input id="frTcAmt" value="'
         + escapeAttribute(String(t.amount_open).replace(".", ",")) + '"></div>';
     html += '<div class="form-group"><label>Комментарий</label><input id="frTcCom" value=""></div>';
-    html += '<div class="note">Можно закрыть частично. Сумма не больше незакрытого остатка.</div>';
-    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="saveFrTransitClose()">Сохранить</button> '
+    html += '<div class="toolbar"><button type="button" class="btn btn-primary" onclick="saveFrTransitClose()">✓ Деньги поступили</button> '
         + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
     openMgmtModal(html);
 }
 
 function saveFrTransitClose() {
-    if (!frCanEditData()) return;
+    if (!frCan("fill")) return;
     const area = frActiveArea();
     const areaId = area.object_id || area.finance_area_id;
     const transitId = ((document.getElementById("frTcId") || {}).value || "");
@@ -4406,13 +4531,17 @@ function saveFrTransitClose() {
     const amt = frNum((document.getElementById("frTcAmt") || {}).value);
     const date = ((document.getElementById("frTcDate") || {}).value || "");
     const comment = String(((document.getElementById("frTcCom") || {}).value) || "").trim();
-    const t = frTransitById(transitId);
-    if (!t || (t.object_id || t.finance_area_id) !== areaId) {
+    const receiptWeek = frWeek(date);
+    if (receiptWeek && frIsClosed(areaId, receiptWeek.period_key) && !frCan("setup")) {
+        toast("Неделя даты поступления закрыта. Укажите другую дату.", "error");
+        return;
+    }
+    const preview = frJournalTransitRow(areaId, transitId);
+    if (!preview || (!preview.virtual && (preview.object_id || preview.finance_area_id) !== areaId)) {
         toast("Запись не найдена", "error");
         return;
     }
-    frNormalizeTransitRecord(t);
-    const openAmt = frNum(t.amount_open);
+    const openAmt = frNum(preview.amount_open);
     if (!(amt > 0)) { toast("Укажите сумму", "error"); return; }
     if (amt - openAmt > 0.005) {
         toast("Нельзя закрыть больше, чем осталось в пути (" + frMoney(openAmt) + ")", "error");
@@ -4422,6 +4551,12 @@ function saveFrTransitClose() {
         toast("Выберите конечный счёт", "error");
         return;
     }
+    const t = frEnsureTransitForClose(areaId, transitId);
+    if (!t || (t.object_id || t.finance_area_id) !== areaId) {
+        toast("Запись не найдена", "error");
+        return;
+    }
+    frNormalizeTransitRecord(t);
     const transitAcc = t.transit_account_id || frTransitAccountId(areaId);
     const op = frCreateTransferOp(areaId, transitAcc, toId, amt, date, comment, {
         transit_id: t.transit_id,
@@ -4461,15 +4596,21 @@ function renderFrTransferTab(areaId, w, canEdit) {
             ? " Пример: р/с Розница → р/с ОПТ уменьшает Розницу и увеличивает ОПТ по остаткам, но не меняет выручку направлений."
             : "")
         + " Для контроля незакрытых сумм отправляйте на счёт типа «Деньги в пути».</div>";
+    const transitOpenN = frTransitJournalRows(areaId).open.length;
+    const transitLabel = "Деньги в пути" + (transitOpenN ? " (" + transitOpenN + ")" : "");
+    html += '<div style="margin-bottom:10px">';
+    html += '<button type="button" class="btn btn-small ' + (transitOpenN ? "btn-primary" : "btn-secondary")
+        + '" onclick="frToggleTransitDetail(\'' + escapeAttribute(areaId) + "')\">"
+        + escapeHtml(transitLabel) + "</button> ";
     if (canEdit && frTransitAccountId(areaId)) {
-        html += '<div style="margin-bottom:10px">'
-            + '<button type="button" class="btn btn-primary btn-small" onclick="openFrTransitSendForm()">+ Отправить в путь</button> '
-            + '<button type="button" class="btn btn-secondary btn-small" onclick="frToggleTransitDetail(\''
-            + escapeAttribute(areaId) + '\')">Журнал денег в пути</button>'
-            + ' <button type="button" class="btn btn-secondary btn-small" onclick="openFrDividendForm()">+ Дивиденды</button></div>';
-    } else if (canEdit) {
-        html += '<div style="margin-bottom:10px">'
-            + '<button type="button" class="btn btn-secondary btn-small" onclick="openFrDividendForm()">+ Дивиденды</button></div>';
+        html += '<button type="button" class="btn btn-secondary btn-small" onclick="openFrTransitSendForm()">+ Отправить в путь</button> ';
+    }
+    if (canEdit) {
+        html += '<button type="button" class="btn btn-secondary btn-small" onclick="openFrDividendForm()">+ Дивиденды</button>';
+    }
+    html += "</div>";
+    if (frUi.transitDetailOpen && frUi.transitDetailOpen[areaId]) {
+        html += renderFrTransitDetailPanel(areaId, w, !!frCan("fill"));
     }
     if (sources.length < 2) {
         html += '<div class="note">Для перемещений нужно минимум два активных счёта.</div></div>';
