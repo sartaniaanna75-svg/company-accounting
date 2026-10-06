@@ -1105,6 +1105,10 @@
             height: 36px;
             font-size: 16px;
         }
+        .vplan-nav { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; width: 100%; }
+        .vplan-mode, .vplan-months { display: flex; flex-wrap: wrap; gap: 4px; }
+        .vplan-months { width: 100%; }
+        .vplan-mode .metrics-tab, .vplan-months .metrics-tab { padding: 4px 10px; font-size: 13px; }
         .vplan-filters { width: 100%; }
         .vplan-search {
             min-width: 240px;
@@ -1753,11 +1757,28 @@
         .cashier-summary-table th:first-child { text-align: left; }
         .cashier-channel-row td { background: #f3f4f6; }
 
-        .shop-pay-table { min-width: 1360px; }
+        .shop-pay-table { min-width: 1240px; }
         .shop-pay-table th:not(:first-child),
         .shop-pay-table td:not(:first-child) { text-align: right; }
         .shop-pay-table td:first-child,
         .shop-pay-table th:first-child { text-align: left; }
+        .shop-pay-table th.shop-pay-days,
+        .shop-pay-table td.shop-pay-days {
+            width: 1%;
+            text-align: center;
+            padding-left: 4px;
+            padding-right: 4px;
+            white-space: nowrap;
+        }
+        .shop-pay-table th.shop-pay-days { white-space: normal; line-height: 1.15; }
+        .shop-pay-table th.shop-pay-vac,
+        .shop-pay-table td.shop-pay-vac { width: 1%; vertical-align: top; }
+        .shop-pay-vac-box {
+            display: inline-flex; flex-direction: column; align-items: stretch;
+            gap: 4px; width: max-content; max-width: 100%; text-align: left;
+        }
+        .shop-pay-vac-box .sal-vac-flag { margin-top: 0; justify-content: flex-start; }
+        .shop-pay-table .money-input { width: 6.4em; max-width: none; }
         .shop-pay-bonus {
             border: 0;
             background: transparent;
@@ -5167,12 +5188,12 @@
                             <thead>
                                 <tr>
                                     <th>Сотрудник</th>
-                                    <th>Отработано дней</th>
+                                    <th class="shop-pay-days">Отработано<br>дней</th>
                                     <th>Оклад</th>
                                     <th>Бонус по метрикам</th>
                                     <th title="Удержание, ручной ввод за месяц">Продукты</th>
                                     <th title="Удержание, ручной ввод за месяц">Налог</th>
-                                    <th title="Начисление, ручной ввод за месяц">Отпускные</th>
+                                    <th class="shop-pay-vac" title="Начисление, ручной ввод за месяц">Отпускные</th>
                                     <th>Премия</th>
                                     <th>Штраф</th>
                                     <th>Аванс</th>
@@ -5239,12 +5260,12 @@
                             <thead>
                                 <tr>
                                     <th>Сотрудник</th>
-                                    <th>Отработано дней</th>
+                                    <th class="shop-pay-days">Отработано<br>дней</th>
                                     <th>Оклад</th>
                                     <th>Бонус по метрикам</th>
                                     <th title="Удержание, ручной ввод за месяц">Продукты</th>
                                     <th title="Удержание, ручной ввод за месяц">Налог</th>
-                                    <th title="Начисление, ручной ввод за месяц">Отпускные</th>
+                                    <th class="shop-pay-vac" title="Начисление, ручной ввод за месяц">Отпускные</th>
                                     <th>Премия</th>
                                     <th>Штраф</th>
                                     <th>Аванс</th>
@@ -5311,12 +5332,12 @@
                             <thead>
                                 <tr>
                                     <th>Сотрудник</th>
-                                    <th>Отработано дней</th>
+                                    <th class="shop-pay-days">Отработано<br>дней</th>
                                     <th>Оклад</th>
                                     <th>Бонус по метрикам</th>
                                     <th title="Удержание, ручной ввод за месяц">Продукты</th>
                                     <th title="Удержание, ручной ввод за месяц">Налог</th>
-                                    <th title="Начисление, ручной ввод за месяц">Отпускные</th>
+                                    <th class="shop-pay-vac" title="Начисление, ручной ввод за месяц">Отпускные</th>
                                     <th>Премия</th>
                                     <th>Штраф</th>
                                     <th>Аванс</th>
@@ -6096,7 +6117,7 @@ let currentSection = "timesheet";
 let summaryDeptFilter = "";
 let summaryWorkGroupFilter = "";
 let summaryStaffSearch = "";
-let salaryUi = { inner: "sheet", vacYear: "", vacMonth: "", vacDept: "", vacEmployee: "", vacStatus: "", planYear: "", planObject: "", planDept: "", planSearch: "", planNoDate: false, planPayFilter: "", objectFilter: "", deptFilter: "", collapsed: {}, planCollapsed: {} };
+let salaryUi = { inner: "sheet", vacYear: "", vacMonth: "", vacDept: "", vacEmployee: "", vacStatus: "", planYear: "", planView: "year", planMonth: "", planObject: "", planDept: "", planSearch: "", planNoDate: false, planPayFilter: "", objectFilter: "", deptFilter: "", collapsed: {}, planCollapsed: {} };
 let currentSummaryRole = null;
 let currentDeptRole = null;
 let currentUserId = "";
@@ -21606,7 +21627,7 @@ function renderPayrollView(view) {
             + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusCard('" + employee.id + "')\">"
             + escapeHtml(employee.name) + "</button>"
             + (isWorking(employee) ? "" : ' <span class="note">уволен</span>') + "</td>"
-            + "<td>" + formatShopDays(row.workedDays) + "</td>"
+            + '<td class="shop-pay-days">' + formatShopDays(row.workedDays) + "</td>"
             + "<td>" + money(row.oklad) + "</td>"
             + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusBreakdown('" + employee.id + "')\">"
             + moneyFlex(row.metricBonus) + "</button></td>"
@@ -21629,7 +21650,7 @@ function renderPayrollView(view) {
                 : money(row.advance)) + "</td>"
             + '<td class="pay">' + money(row.total) + "</td></tr>";
     });
-    html += '<tr class="totals-row"><td>Итого</td><td>' + formatShopDays(sums.days) + "</td><td>"
+    html += '<tr class="totals-row"><td>Итого</td><td class="shop-pay-days">' + formatShopDays(sums.days) + "</td><td>"
         + money(sums.oklad) + "</td><td>" + money(sums.bonus) + "</td><td>"
         + money(sums.products) + "</td><td>" + money(sums.taxes) + "</td><td>"
         + money(sums.vacationPay) + "</td><td>"
@@ -21935,8 +21956,8 @@ function payrollVacationCell(employeeId, row, canEdit) {
     const box = '<label class="sal-vac-flag"><input type="checkbox"'
         + (row.vacationPaidEarlier ? " checked" : "")
         + (canEdit ? "" : " disabled")
-        + " onchange=\"setVacationPaidEarlier('" + employeeId + "', this.checked)\"> Выданы ранее</label>";
-    return "<td>" + amount + box + "</td>";
+        + " onchange=\"setVacationPaidEarlier('" + employeeId + "', this.checked)\"> Ранее</label>";
+    return '<td class="shop-pay-vac"><div class="shop-pay-vac-box">' + amount + box + "</div></td>";
 }
 
 function payrollAdjMoneyCell(employeeId, field, value, canEdit) {
@@ -22898,6 +22919,50 @@ function changeVacationPlanYear(delta) {
     renderSalaryVacationPlan();
 }
 
+function vacationPlanViewMode() {
+    return salaryUi.planView === "month" ? "month" : "year";
+}
+
+function vacationPlanMonth() {
+    const m = String(salaryUi.planMonth || "");
+    if (/^(0[1-9]|1[0-2])$/.test(m)) return m;
+    return ("0" + (new Date().getMonth() + 1)).slice(-2);
+}
+
+function setVacationPlanView(mode) {
+    salaryUi.planView = mode === "month" ? "month" : "year";
+    renderSalaryVacationPlan();
+}
+
+function setVacationPlanMonth(month) {
+    const n = Number(month);
+    if (!(n >= 1 && n <= 12)) return;
+    salaryUi.planMonth = ("0" + n).slice(-2);
+    salaryUi.planView = "month";
+    renderSalaryVacationPlan();
+}
+
+function vacationPlanStoredYearList(year) {
+    const y = String(year || "");
+    const root = appData && appData.vacationPlans;
+    const list = root && root[y];
+    return Array.isArray(list) ? list : [];
+}
+
+function vacationPlanPeriodEmpty(year) {
+    const y = String(year || "");
+    const list = vacationPlanStoredYearList(y);
+    if (vacationPlanViewMode() !== "month") {
+        return !list.some(function (rec) {
+            return rec && rec.employee_id != null && String(rec.employee_id) !== "";
+        });
+    }
+    const ym = y + "-" + vacationPlanMonth();
+    return !list.some(function (rec) {
+        return rec && plannedDateMonth(rec.planned_date) === ym;
+    });
+}
+
 function vacationPlanDeptId(employeeId) {
     const home = employeeHome(employeeId);
     if (home && home.code) return home.code;
@@ -23672,6 +23737,10 @@ function vacationPlanFilteredPeople() {
         if (payF === "pay" && payKind !== "pay") return false;
         if (payF === "received" && payKind !== "received") return false;
         if (q && String(e.name || "").toLowerCase().indexOf(q) === -1) return false;
+        if (vacationPlanViewMode() === "month") {
+            const ym = y + "-" + vacationPlanMonth();
+            if (plannedDateMonth(rec && rec.planned_date) !== ym) return false;
+        }
         return true;
     });
 }
@@ -23721,6 +23790,10 @@ function fillVacationPlanList() {
     if (!host) return;
     const y = String(salaryUi.planYear || salaryMonthYear() || new Date().getFullYear());
     const can = canEditVacationPlan();
+    if (vacationPlanPeriodEmpty(y)) {
+        host.innerHTML = '<div class="empty-row">На этот период отпускные не запланированы</div>';
+        return;
+    }
     const people = vacationPlanFilteredPeople();
     if (!people.length) {
         host.innerHTML = '<div class="empty-row">Нет сотрудников по выбранным фильтрам.</div>';
@@ -23767,16 +23840,33 @@ function renderSalaryVacationPlan() {
     if (!box || !host) return;
     const y = String(salaryUi.planYear || salaryMonthYear() || new Date().getFullYear());
     salaryUi.planYear = y;
-    (vacationPlanYearList(y) || []).forEach(function (rec) {
+    const view = vacationPlanViewMode();
+    const month = vacationPlanMonth();
+    (vacationPlanStoredYearList(y) || []).forEach(function (rec) {
         const ym = plannedDateMonth(rec && rec.planned_date);
         if (ym) applyPlannedVacationPayOnce(ym);
     });
     const obj = salaryUi.planObject || "";
     const depts = vacationPlanDeptOptions(obj);
-    let fh = '<div class="vplan-year">'
+    const months = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+    let fh = '<div class="vplan-nav"><div class="vplan-mode">';
+    fh += '<button type="button" class="metrics-tab' + (view === "year" ? " active" : "")
+        + '" onclick="setVacationPlanView(\'year\')">Год</button>';
+    fh += '<button type="button" class="metrics-tab' + (view === "month" ? " active" : "")
+        + '" onclick="setVacationPlanView(\'month\')">Месяц</button>';
+    fh += '</div><div class="vplan-year">'
         + '<button type="button" class="btn btn-secondary" onclick="changeVacationPlanYear(-1)">◀</button>'
         + "<span>" + escapeHtml(y) + "</span>"
-        + '<button type="button" class="btn btn-secondary" onclick="changeVacationPlanYear(1)">▶</button></div>';
+        + '<button type="button" class="btn btn-secondary" onclick="changeVacationPlanYear(1)">▶</button></div></div>';
+    if (view === "month") {
+        fh += '<div class="vplan-months">';
+        months.forEach(function (name, i) {
+            const mm = ("0" + (i + 1)).slice(-2);
+            fh += '<button type="button" class="metrics-tab' + (month === mm ? " active" : "")
+                + '" onclick="setVacationPlanMonth(' + (i + 1) + ')">' + name + "</button>";
+        });
+        fh += "</div>";
+    }
     fh += '<div class="metrics-tabs">';
     [["", "Все"], ["territory", "Территория"], ["shop", "Магазин Володарского"]].forEach(function (t) {
         fh += '<button type="button" class="metrics-tab' + (obj === t[0] ? " active" : "")
