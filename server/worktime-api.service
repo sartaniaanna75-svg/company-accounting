@@ -1,0 +1,14 @@
+[Unit]
+Description=WorkTime JSON store API
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/worktime/server
+EnvironmentFile=/etc/worktime.env
+ExecStart=/opt/worktime/.venv/bin/gunicorn --bind 127.0.0.1:8780 --workers 2 wt_api:application
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
