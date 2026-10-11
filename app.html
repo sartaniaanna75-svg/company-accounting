@@ -14992,8 +14992,22 @@ function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
     syncShopExtraAccessFromWork(employeeId, selectedMonth);
 }
 
+function canViewFioWorkMetrics() {
+    return isAppAdmin() || userHasPerm("metrics", "view");
+}
+
+function canEditFioWorkMetrics() {
+    return isAppAdmin() || userHasPerm("metrics", "edit");
+}
+
 function setShopEmployeeExtraMetric(employeeId, metricId, on) {
     if (shopUiQuiet) return;
+    const fioSection = currentSection === "fio" || currentSection === "employees"
+        || currentSection === "summaryStaff" || currentSection === "users";
+    if (fioSection && !canEditFioWorkMetrics()) {
+        toast("Нет права изменять рабочие метрики.", "error");
+        return;
+    }
     applyShopEmployeeWorkMetric(employeeId, metricId, on);
     saveApp();
     if (currentSection === "fio" || currentSection === "employees") renderFio();
@@ -27908,6 +27922,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
 
 function shopExtraFunctionsHtml(employee) {
     try {
+    if (!canViewFioWorkMetrics()) return "";
     if (!employee || !employee.id) return "";
     const homeCode = employeeHomeDeptCode(employee.id);
     let code = workspace() && workspace().code;
