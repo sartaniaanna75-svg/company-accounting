@@ -8013,7 +8013,8 @@ function pinsMatch(entered, stored) {
 
 const ACCESS_PERM_KEYS = [
     { key: "timesheet", label: "Табель" },
-    { key: "metrics", label: "Метрики" },
+    { key: "metricsInput", label: "Метрики — ввод данных" },
+    { key: "metricsSetup", label: "Метрики — настройка" },
     { key: "revision", label: "Ревизия" },
     { key: "salesPlan", label: "План продаж" },
     { key: "discipline", label: "Дисциплина" },
@@ -8069,6 +8070,8 @@ function accessRoleTemplate(role, legacy) {
     if (role === "manager") {
         p.timesheet = "edit";
         p.metrics = "edit";
+        p.metricsInput = "edit";
+        p.metricsSetup = "edit";
         p.revision = "edit";
         p.salesPlan = "edit";
         p.discipline = "edit";
@@ -8077,6 +8080,8 @@ function accessRoleTemplate(role, legacy) {
     }
     p.timesheet = "edit";
     p.metrics = "edit";
+    p.metricsInput = "edit";
+    p.metricsSetup = "edit";
     p.revision = "view";
     p.salesPlan = "view";
     p.discipline = "view";
@@ -8142,6 +8147,10 @@ function userHasPerm(key, min) {
                 || permRank((u.permissions && u.permissions.salary1c) || "none") > 0
             )) return true;
             if (need === "edit" && permRank((u.permissions && u.permissions.salaryCalc) || "none") > 0) return true;
+        } else if (key === "metrics" || key === "metricsInput") {
+            const input = permRank((u.permissions && u.permissions.metricsInput) || "none");
+            const legacy = permRank((u.permissions && u.permissions.metrics) || "none");
+            return Math.max(input, legacy) >= permRank(need);
         } else {
             const v = (u.permissions && u.permissions[key]) || "none";
             return permRank(v) >= permRank(need);
@@ -8163,7 +8172,7 @@ function userHasPerm(key, min) {
         return key !== "salary";
     }
     if (!isSummary()) {
-        return ["timesheet", "metrics", "revision", "salesPlan", "discipline"].indexOf(key) !== -1;
+        return ["timesheet", "metrics", "metricsInput", "revision", "salesPlan", "discipline"].indexOf(key) !== -1;
     }
     return false;
 }
@@ -8546,6 +8555,13 @@ function normalizeAccessUser(u) {
     if (!Array.isArray(u.departments)) u.departments = [];
     if (!u.permissions || typeof u.permissions !== "object") {
         u.permissions = accessRoleTemplate(u.role, u.legacy_role);
+    }
+    const pms = u.permissions;
+    if (pms.metricsInput == null || pms.metricsInput === "") {
+        pms.metricsInput = permRank(pms.metrics) > 0 ? (pms.metrics === "view" ? "view" : "edit") : "none";
+    }
+    if (pms.metricsSetup == null || pms.metricsSetup === "") {
+        pms.metricsSetup = permRank(pms.metrics) > 0 ? (pms.metrics === "view" ? "view" : "edit") : "none";
     }
     const hadCustomerReturns = u.permissions.customerReturns != null && u.permissions.customerReturns !== "";
     ACCESS_PERM_KEYS.forEach(function (p) {
@@ -10228,7 +10244,7 @@ function commitEmployeeCard(employeeId) {
         employee.participates_in_spu_meetings = !!meetBox.checked;
         employee.meeting_participant = employee.participates_in_spu_meetings;
     }
-    assignGroupAllMetricsToEmployee(employee);
+    if (canEditFioWorkMetrics()) assignGroupAllMetricsToEmployee(employee);
     saveApp();
     justAddedEmployeeId = employee.id;
     if (isSummary() || isAdminEntry()) renderSummaryStaff();
@@ -12385,7 +12401,7 @@ function allowedSections() {
         list.push("fio", "employees");
     }
     if (code === "shop") {
-        if (userHasPerm("metrics", "view")) {
+        if (userHasPerm("metricsInput", "view")) {
             list.splice(list.indexOf("timesheet") + 1, 0, "metrics-pickers", "metrics-cashiers", "metrics-managers");
         }
         if (userHasPerm("revision", "view")) list.push("revision");
@@ -14694,6 +14710,7 @@ function getShopStoreValue(day, field, month) {
 }
 
 function setShopStoreValue(day, field, raw) {
+    if (!canSaveShopMetricFactsFor()) return;
     const n = parseShopMetricNumber(raw);
     const store = shopStoreMonth(selectedMonth);
     const dayKey = String(day);
@@ -14720,6 +14737,7 @@ function getShopChannelValue(channelId, day, field, month) {
 }
 
 function setShopChannelValue(channelId, day, field, raw) {
+    if (!canSaveShopMetricFactsFor()) return;
     const n = parseShopMetricNumber(raw);
     const store = shopChannelMonth(channelId, selectedMonth);
     const dayKey = String(day);
@@ -14993,11 +15011,26 @@ function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
 }
 
 function canViewFioWorkMetrics() {
-    return isAppAdmin() || userHasPerm("metrics", "view");
+    return isAppAdmin() || userHasPerm("metricsSetup", "view");
 }
 
 function canEditFioWorkMetrics() {
-    return isAppAdmin() || userHasPerm("metrics", "edit");
+    return isAppAdmin() || userHasPerm("metricsSetup", "edit");
+}
+
+function canEnterShopMetricFacts() {
+    return isAppAdmin() || userHasPerm("metricsInput", "edit");
+}
+
+function canSaveShopMetricFactsFor(employeeId) {
+    if (!canEnterShopMetricFacts()) return false;
+    if (isAppAdmin()) return true;
+    const u = currentAuthUser();
+    if (!u) return true;
+    const home = employeeId ? employeeHomeDeptCode(employeeId) : "shop";
+    const dept = home || "shop";
+    if (dept === "shop") return userCanAccessDept(u, "shop");
+    return userCanAccessDept(u, dept);
 }
 
 function setShopEmployeeExtraMetric(employeeId, metricId, on) {
@@ -15179,6 +15212,7 @@ function shopRecountDayExecutorTotal(day, month) {
 
 function setShopRecountResponsible(day, employeeId) {
     if (shopUiQuiet) return;
+    if (!canSaveShopMetricFactsFor(employeeId)) return;
     const store = shopRecountResponsibleMonth(selectedMonth);
     const dayKey = String(day);
     const id = String(employeeId || "");
@@ -15431,6 +15465,7 @@ function shopInventoryConductorHtml(day) {
 
 function setShopInventoryValue(day, field, raw) {
     if (shopUiQuiet) return;
+    if (!canSaveShopMetricFactsFor()) return;
     const rec = shopInventoryEnsureDay(day);
     if (rec.source === "1c") return;
     const text = String(raw == null ? "" : raw).trim();
@@ -15450,6 +15485,7 @@ function setShopInventoryValue(day, field, raw) {
 
 function setShopInventoryConducted(day, employeeId) {
     if (shopUiQuiet) return;
+    if (!canSaveShopMetricFactsFor(employeeId)) return;
     const rec = shopInventoryEnsureDay(day);
     rec.conducted_by_employee_id = String(employeeId || "");
     shopInventoryPersistDay(day, rec);
@@ -15926,6 +15962,7 @@ function shopWriteoffLossesFact(month) {
 }
 
 function setShopWriteoffLossesFact(raw) {
+    if (!canSaveShopMetricFactsFor()) return;
     const rec = shopWriteoffLossesMonth(selectedMonth, true);
     if (rec.source === "1c") return;
     rec.amount = parseMoney(raw, 0);
@@ -16315,6 +16352,7 @@ function shopMetricDayRecHasKeepable(rec) {
 }
 
 function setShopMetricValue(categoryId, employeeId, day, field, raw) {
+    if (!canSaveShopMetricFactsFor(employeeId)) return;
     if (employeeId === SHOP_SELF_CHECKOUT_ID) {
         setShopChannelValue(employeeId, day, field, raw);
         return;
@@ -16560,6 +16598,7 @@ function syncShopCashierSlotDayRole(slotId, day, actualId) {
 }
 
 function setShopCashierActual(slotId, day, actualId) {
+    if (!canSaveShopMetricFactsFor(slotId)) return;
     if (!slotId || slotId === SHOP_SELF_CHECKOUT_ID) return;
     const store = shopMetricMonthStore("cashiers", selectedMonth);
     if (!store[slotId] || typeof store[slotId] !== "object") store[slotId] = {};
@@ -17563,6 +17602,7 @@ function shopMetricCheckState(categoryId, employeeId, day, field, month) {
 }
 
 function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
+    if (!canSaveShopMetricFactsFor(employeeId)) return;
     if (!shopTimesheetIsWorkDay(employeeId, day) && shopTimesheetLockLabel(employeeId, day)) return;
     const store = shopMetricMonthStore(categoryId, selectedMonth);
     if (!store[employeeId] || typeof store[employeeId] !== "object") store[employeeId] = {};
@@ -17642,6 +17682,7 @@ function getShopShelfValue(employeeId, day, month) {
 }
 
 function setShopShelfValue(employeeId, day, checked) {
+    if (!canSaveShopMetricFactsFor(employeeId)) return;
     const store = shopMetricMonthStore("pickers", selectedMonth);
     if (!store[employeeId] || typeof store[employeeId] !== "object") store[employeeId] = {};
     const dayKey = String(day);
@@ -29644,6 +29685,9 @@ function saveAccessUser(userId) {
         if (departments.indexOf("financeRec") === -1) departments.push("financeRec");
         ACCESS_PERM_KEYS.forEach(function (p) { permissions[p.key] = "edit"; });
     }
+    permissions.metrics = (permissions.metricsInput === "edit" || permissions.metricsInput === "view")
+        ? permissions.metricsInput
+        : "none";
     let prev = findAccessUser(id);
     if (!prev) {
         prev = {
