@@ -53,6 +53,10 @@ def connect():
     return conn
 
 
+def db_unavailable():
+    return json_bytes({"error": "database unavailable"}, "503 Service Unavailable")
+
+
 def json_bytes(data: Any, status: str = "200 OK", extra: list | None = None):
     body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
     headers = [
@@ -110,17 +114,24 @@ def handle_health():
         finally:
             conn.close()
         return json_bytes({"ok": True, "db": True})
-    except Exception as err:
-        return json_bytes({"ok": False, "db": False, "error": str(err)}, "503 Service Unavailable")
+    except Exception:
+        return json_bytes({"ok": False, "db": False, "error": "database unavailable"}, "503 Service Unavailable")
 
 
 def handle_get_state():
-    conn = connect()
+    if not db_configured():
+        return db_unavailable()
+    try:
+        conn = connect()
+    except Exception:
+        return db_unavailable()
     try:
         with conn.cursor() as cur:
             state = fetch_state(cur)
         conn.commit()
         return json_bytes(state)
+    except Exception:
+        return db_unavailable()
     finally:
         conn.close()
 
@@ -146,7 +157,12 @@ def handle_put_state(environ):
         return json_bytes({"error": "payload must be an object (appData)"}, "400 Bad Request")
     updated_by = str(data.get("updated_by") or "")[:120]
 
-    conn = connect()
+    if not db_configured():
+        return db_unavailable()
+    try:
+        conn = connect()
+    except Exception:
+        return db_unavailable()
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -186,6 +202,12 @@ def handle_put_state(environ):
                 },
                 "409 Conflict",
             )
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return db_unavailable()
     finally:
         conn.close()
 
@@ -208,9 +230,13 @@ def application(environ, start_response):
         else:
             status, headers, body = json_bytes({"error": "not found"}, "404 Not Found")
     except ValueError as err:
-        status, headers, body = json_bytes({"error": str(err)}, "400 Bad Request")
-    except Exception as err:
-        status, headers, body = json_bytes({"error": "server error", "detail": str(err)}, "500 Internal Server Error")
+        msg = str(err)
+        if msg == "body too large":
+            status, headers, body = json_bytes({"error": msg}, "400 Bad Request")
+        else:
+            status, headers, body = json_bytes({"error": "bad request"}, "400 Bad Request")
+    except Exception:
+        status, headers, body = json_bytes({"error": "server error"}, "500 Internal Server Error")
 
     start_response(status, headers)
     return [body]
