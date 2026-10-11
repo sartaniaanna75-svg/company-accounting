@@ -7275,6 +7275,30 @@ function employeeBelongsToWorkGroup(employee, dept, workTabId, month) {
     if (!employee) return false;
     return employeeWorkGroupIds(employee, dept, month).indexOf(tab) !== -1;
 }
+function employeeCardWorkGroupId(employee, dept, month) {
+    if (!employee) return "";
+    const code = dept || employeeHomeDeptCode(employee.id) || "";
+    const allowed = allowedWorkTabIdsForDept(code);
+    const m = month || selectedMonth;
+    function take(id) {
+        const s = String(id || "").trim();
+        if (!s) return "";
+        if (allowed.length && allowed.indexOf(s) === -1) return "";
+        return s;
+    }
+    const current = String(employee.work_tab_id || "").trim();
+    if (current && (!employee.work_tab_from || m >= employee.work_tab_from)) {
+        const ok = take(current);
+        if (ok) return ok;
+    }
+    return take(employee.work_group_id);
+}
+function employeeMatchesFioWorkGroupFilter(employee, dept, workTabId, month) {
+    const tab = String(workTabId || "");
+    if (!tab) return true;
+    if (!employee) return false;
+    return employeeCardWorkGroupId(employee, dept, month) === tab;
+}
 function departmentEmployeePool(deptCode) {
     const code = String(deptCode || "");
     if (!code) return [];
@@ -10232,9 +10256,8 @@ function commitEmployeeCard(employeeId) {
     if (tabSel) {
         const home = employeeHome(employeeId);
         const code = home && home.code;
-        let tab = tabSel.value;
-        if (!tab && timesheetGroupFilterTabs(code).length) tab = defaultMetricTabId(code);
-        if (tab && tab !== String(employee.work_tab_id || "")) {
+        const tab = tabSel.value;
+        if (tab !== String(employee.work_tab_id || "")) {
             setEmployeePrimaryWorkTab(employeeId, tab);
         }
     }
@@ -28073,7 +28096,7 @@ function renderFio() {
         if (employee.id === justAddedEmployeeId) return true;
         if (tabs.length) {
             if (!filters.tab) return true;
-            return employeeBelongsToWorkGroup(employee, code, filters.tab, selectedMonth);
+            return employeeMatchesFioWorkGroupFilter(employee, code, filters.tab, selectedMonth);
         }
         if (!filters.position) return true;
         return String(employee.position || "").replace(/\s+/g, " ").trim() === filters.position;
