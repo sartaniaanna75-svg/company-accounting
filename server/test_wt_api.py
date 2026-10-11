@@ -93,7 +93,7 @@ class FakeConn:
         self.store["closed"] = True
 
 
-def call(method, path, body=None):
+def call(method, path, body=None, token=None, as_json=True):
     raw = b""
     if body is not None:
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8") if not isinstance(body, (bytes, bytearray)) else body
@@ -109,15 +109,20 @@ def call(method, path, body=None):
         "CONTENT_LENGTH": str(len(raw)),
         "wsgi.input": BytesIO(raw),
     }
+    use_token = os.environ.get("WT_API_TOKEN") if token is None else token
+    if use_token:
+        environ["HTTP_AUTHORIZATION"] = "Bearer " + use_token
     result = b"".join(wt_api.application(environ, start_response))
-    data = json.loads(result.decode("utf-8")) if result else None
-    return captured["status"], data, result.decode("utf-8")
+    text = result.decode("utf-8", errors="replace")
+    data = json.loads(text) if as_json and result else None
+    return captured["status"], data, text
 
 
 class StoreApiTests(unittest.TestCase):
     def setUp(self):
         self._env_backup = dict(os.environ)
         os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_API_TOKEN"] = "unit-test-token"
         self.store = {
             "payload": {},
             "version": 0,
@@ -244,7 +249,7 @@ class StoreApiTests(unittest.TestCase):
 class UnconfiguredTests(unittest.TestCase):
     def setUp(self):
         self._env_backup = dict(os.environ)
-        for key in ("DATABASE_URL", "PGPASSWORD", "PGUSER", "PGHOST", "PGDATABASE"):
+        for key in ("DATABASE_URL", "PGPASSWORD", "PGUSER", "PGHOST", "PGDATABASE", "WT_API_TOKEN"):
             os.environ.pop(key, None)
 
     def tearDown(self):
@@ -257,11 +262,43 @@ class UnconfiguredTests(unittest.TestCase):
         self.assertEqual(data["ok"], False)
         self.assertEqual(data["db"], False)
 
-    def test_state_without_env(self):
+    def test_state_without_token(self):
+        status, data, raw = call("GET", "/api/state", token="")
+        self.assertTrue(status.startswith("401"))
+        self.assertEqual(data["error"], "unauthorized")
+        self.assertNotIn("password", raw.lower())
+        self.assertNotIn("workspaces", raw)
+
+    def test_state_with_token_without_db(self):
+        os.environ["WT_API_TOKEN"] = "unit-test-token"
         status, data, raw = call("GET", "/api/state")
         self.assertTrue(status.startswith("503"))
         self.assertEqual(data["error"], "database unavailable")
         self.assertNotIn("password", raw.lower())
+
+
+class StaticPagesTests(unittest.TestCase):
+    def test_index_and_app_urls(self):
+        status, _, text = call("GET", "/", as_json=False)
+        self.assertTrue(status.startswith("200"))
+        self.assertIn("WorkTime", text)
+        status, _, text = call("GET", "/index.html", as_json=False)
+        self.assertTrue(status.startswith("200"))
+        self.assertIn("WorkTime", text)
+        status, _, text = call("GET", "/app.html", as_json=False)
+        self.assertTrue(status.startswith("200"))
+        self.assertIn("STORAGE_KEY", text)
+        status, _, text = call("GET", "/css/landing.css", as_json=False)
+        self.assertTrue(status.startswith("200"))
+        self.assertIn("{", text)
+        status, _, text = call("GET", "/fr-mod.js", as_json=False)
+        self.assertTrue(status.startswith("200"))
+        self.assertIn("ensureFinanceRec", text)
+
+    def test_does_not_serve_server_code(self):
+        status, data, _ = call("GET", "/server/wt_api.py")
+        self.assertTrue(status.startswith("404"))
+        self.assertEqual(data["error"], "not found")
 
 
 class SourceAndBindTests(unittest.TestCase):

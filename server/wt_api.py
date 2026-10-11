@@ -3,13 +3,21 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
+from pathlib import Path
 from typing import Any
 from wsgiref.simple_server import make_server
 
 MAX_BODY = 20 * 1024 * 1024
 STATE_ID = 1
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STATIC_MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+}
 
 
 def _env(name: str, default: str = "") -> str:
@@ -44,6 +52,51 @@ def dsn() -> str:
 
 def db_configured() -> bool:
     return bool(_env("DATABASE_URL") or _env("PGPASSWORD") or _env("PGUSER"))
+
+
+def api_token() -> str:
+    return _env("WT_API_TOKEN")
+
+
+def static_root() -> Path:
+    return Path(_env("WT_STATIC_ROOT") or str(REPO_ROOT)).resolve()
+
+
+def authorize_state(environ):
+    expected = api_token()
+    if not expected:
+        return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
+    auth = str(environ.get("HTTP_AUTHORIZATION") or "")
+    prefix = "bearer "
+    got = auth[len(prefix):].strip() if auth.lower().startswith(prefix) else ""
+    if not got or len(got) != len(expected) or not hmac.compare_digest(got, expected):
+        return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
+    return None
+
+
+def handle_static(path: str):
+    rel = "index.html" if path in ("", "/") else path.lstrip("/")
+    if ".." in rel.replace("\\", "/").split("/"):
+        return json_bytes({"error": "not found"}, "404 Not Found")
+    root = static_root()
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return json_bytes({"error": "not found"}, "404 Not Found")
+    suffix = candidate.suffix.lower()
+    if suffix not in STATIC_MIME:
+        return json_bytes({"error": "not found"}, "404 Not Found")
+    allowed_parents = {root, (root / "css").resolve()}
+    if candidate.parent.resolve() not in allowed_parents or not candidate.is_file():
+        return json_bytes({"error": "not found"}, "404 Not Found")
+    body = candidate.read_bytes()
+    headers = [
+        ("Content-Type", STATIC_MIME[suffix]),
+        ("Content-Length", str(len(body))),
+        ("Cache-Control", "no-store"),
+    ]
+    return "200 OK", headers, body
 
 
 def connect():
@@ -222,11 +275,15 @@ def application(environ, start_response):
         if method == "GET" and path == "/api/health":
             status, headers, body = handle_health()
         elif method == "GET" and path == "/api/state":
-            status, headers, body = handle_get_state()
+            denied = authorize_state(environ)
+            status, headers, body = denied if denied else handle_get_state()
         elif method == "PUT" and path == "/api/state":
-            status, headers, body = handle_put_state(environ)
+            denied = authorize_state(environ)
+            status, headers, body = denied if denied else handle_put_state(environ)
         elif method == "OPTIONS" and path.startswith("/api/"):
             status, headers, body = "204 No Content", [("Content-Length", "0")], b""
+        elif method == "GET":
+            status, headers, body = handle_static(path)
         else:
             status, headers, body = json_bytes({"error": "not found"}, "404 Not Found")
     except ValueError as err:
