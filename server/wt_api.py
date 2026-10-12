@@ -90,7 +90,7 @@ def static_root() -> Path:
 def connect():
     import psycopg
 
-    conn = psycopg.connect(dsn(), autocommit=False)
+    conn = psycopg.connect(dsn(), autocommit=False, connect_timeout=5)
     return conn
 
 
@@ -617,19 +617,20 @@ def persist_payload(cur, payload: dict, expected_version: int, updated_by: str):
 
 
 def handle_health():
-    if not db_configured():
-        return json_bytes({"ok": False, "db": False, "error": "database env is not set"}, "503 Service Unavailable")
-    try:
-        conn = connect()
+    db_ok = False
+    if db_configured():
         try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1")
-                cur.fetchone()
-        finally:
-            conn.close()
-        return json_bytes({"ok": True, "db": True})
-    except Exception:
-        return json_bytes({"ok": False, "db": False, "error": "database unavailable"}, "503 Service Unavailable")
+            conn = connect()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+                db_ok = True
+            finally:
+                conn.close()
+        except Exception:
+            db_ok = False
+    return json_bytes({"ok": True, "db": db_ok})
 
 
 def load_state_or_error():
@@ -831,8 +832,10 @@ def application(environ, start_response):
         path = path.rstrip("/")
 
     try:
-        if method == "GET" and path == "/api/health":
+        if method in ("GET", "HEAD") and path == "/api/health":
             status, headers, body = handle_health()
+            if method == "HEAD":
+                body = b""
         elif method == "POST" and path == "/api/login":
             status, headers, body = handle_login(environ)
         elif method == "POST" and path == "/api/logout":

@@ -236,6 +236,9 @@ class StoreApiTests(unittest.TestCase):
         status, data, *_ = call("GET", "/api/health")
         self.assertTrue(status.startswith("200"))
         self.assertEqual(data, {"ok": True, "db": True})
+        status_head, _, text, _ = call("HEAD", "/api/health", as_json=False)
+        self.assertTrue(status_head.startswith("200"))
+        self.assertEqual(text, "")
 
     def test_login_success_and_me(self):
         cookie, data = self.login("usr_001", "1111")
@@ -507,8 +510,11 @@ class StoreApiTests(unittest.TestCase):
     def test_db_error_does_not_leak_password(self):
         cookie, _ = self.login()
         self.store["fail"] = True
+        status_h, data_h, raw_h, _ = call("GET", "/api/health", cookie=cookie)
+        self.assertTrue(status_h.startswith("200"))
+        self.assertEqual(data_h, {"ok": True, "db": False})
+        self.assertNotIn(SECRET, raw_h)
         for method, path, body in (
-            ("GET", "/api/health", None),
             ("GET", "/api/state", None),
             ("PUT", "/api/state", {"version": 0, "payload": SAMPLE_APP}),
         ):
@@ -548,10 +554,11 @@ class UnconfiguredTests(unittest.TestCase):
         os.environ.update(self._env_backup)
 
     def test_health_without_env(self):
-        status, data, *_ = call("GET", "/api/health")
-        self.assertTrue(status.startswith("503"))
-        self.assertEqual(data["ok"], False)
+        status, data, raw, _ = call("GET", "/api/health")
+        self.assertTrue(status.startswith("200"))
+        self.assertEqual(data["ok"], True)
         self.assertEqual(data["db"], False)
+        self.assertNotIn("password", raw.lower())
 
     def test_state_without_session(self):
         status, data, raw, _ = call("GET", "/api/state", token="")
