@@ -123,9 +123,36 @@ class FakeCursor:
             }
             self._row = None
             return
+        if "SELECT COUNT(*) FROM app_sessions" in text:
+            uid, cutoff = params
+            n = 0
+            for rec in (self.store.get("sessions") or {}).values():
+                exp = rec.get("expires_at")
+                if rec.get("user_id") == uid and exp is not None and exp > cutoff:
+                    n += 1
+            self._row = (n,)
+            return
         if "SELECT user_id, expires_at FROM app_sessions" in text:
             rec = (self.store.get("sessions") or {}).get(params[0])
             self._row = (rec["user_id"], rec["expires_at"]) if rec else None
+            return
+        if text.startswith("DELETE FROM app_sessions") and "expires_at" in text and "user_id" in text:
+            uid, cutoff = params
+            sessions = self.store.setdefault("sessions", {})
+            for token_h in list(sessions):
+                rec = sessions[token_h]
+                exp = rec.get("expires_at")
+                if rec.get("user_id") == uid and exp is not None and exp < cutoff:
+                    sessions.pop(token_h, None)
+            self._row = None
+            return
+        if text.startswith("DELETE FROM app_sessions") and "user_id" in text and "token_hash" not in text:
+            uid = params[0]
+            sessions = self.store.setdefault("sessions", {})
+            for token_h in list(sessions):
+                if sessions[token_h].get("user_id") == uid:
+                    sessions.pop(token_h, None)
+            self._row = None
             return
         if text.startswith("DELETE FROM app_sessions") and "token_hash" in text:
             (self.store.setdefault("sessions", {})).pop(params[0], None)
@@ -305,7 +332,10 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(data["error"], "invalid login")
         self.assertNotIn("5555", raw)
         self.assertNotIn("1111", raw)
-        self.assertEqual(self.store.get("sessions"), {})
+        self.assertFalse(any(
+            not str(rec.get("user_id") or "").startswith("wt.login_fail:")
+            for rec in (self.store.get("sessions") or {}).values()
+        ))
 
     def test_login_without_pepper_does_not_change_db(self):
         os.environ.pop("WT_PIN_PEPPER", None)
@@ -372,7 +402,11 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("usr_001", ids)
         self.assertIn("user_admin", ids)
         self.assertNotIn("usr_off", ids)
-        self.assertEqual(set(data["users"][0].keys()), {"user_id", "display_name", "departments"})
+        self.assertEqual(set(data["users"][0].keys()), {"user_id", "display_name", "departments", "login_codes"})
+        shop_user = next(row for row in data["users"] if row["user_id"] == "usr_001")
+        self.assertIn("shop", shop_user["login_codes"])
+        self.assertNotIn("warehouse", shop_user["login_codes"])
+        self.assertNotIn("spu", shop_user["login_codes"])
         self.assertNotIn("pin", raw)
         self.assertNotIn("salary", raw)
         self.assertNotIn("1111", raw)
@@ -417,6 +451,52 @@ class StoreApiTests(unittest.TestCase):
         status, data, *_ = call("GET", "/api/state", cookie=cookie)
         self.assertTrue(status.startswith("200"), status)
         return int(data["version"])
+
+    def test_admin_create_user_rights_persist_after_reload(self):
+        cookie, _ = self.login()
+        version = self.current_version(cookie)
+        payload = json.loads(json.dumps(self.store["payload"]))
+        payload["users"].append({
+            "user_id": "usr_new",
+            "display_name": "Новый сотрудник",
+            "pin": "7777",
+            "role": "user",
+            "legacy_role": "staff",
+            "is_active": True,
+            "departments": ["shop", "summary"],
+            "permissions": {
+                "metricsInput": "edit",
+                "timesheet": "edit",
+                "settings": "none",
+            },
+        })
+        status, data, raw, _ = call(
+            "PUT",
+            "/api/state",
+            {"version": version, "payload": payload},
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(data["version"], version + 1)
+        self.assertNotIn("7777", raw)
+        stored = next(u for u in self.store["payload"]["users"] if u["user_id"] == "usr_new")
+        self.assertTrue(str(stored.get("pin_hash") or "").startswith("scrypt$"))
+        self.assertNotIn("pin", stored)
+        self.assertNotEqual(stored.get("pin_hash"), "7777")
+        self.assertEqual(stored["permissions"]["metricsInput"], "edit")
+        self.assertEqual(stored["permissions"]["timesheet"], "edit")
+        self.assertTrue(wt_api.verify_pin("7777", stored["pin_hash"]))
+        status2, got, raw2, _ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status2.startswith("200"))
+        reloaded = next(u for u in got["payload"]["users"] if u["user_id"] == "usr_new")
+        self.assertEqual(reloaded["display_name"], "Новый сотрудник")
+        self.assertEqual(reloaded["departments"], ["shop", "summary"])
+        self.assertEqual(reloaded["permissions"]["metricsInput"], "edit")
+        self.assertEqual(reloaded["permissions"]["timesheet"], "edit")
+        self.assertNotIn("pin", reloaded)
+        self.assertNotIn("pin_hash", reloaded)
+        self.assertNotIn("7777", raw2)
+        self.assertNotIn("pin_hash", json.dumps(got["payload"]))
 
     def test_put_and_get_appdata(self):
         cookie, _ = self.login()
@@ -472,6 +552,141 @@ class StoreApiTests(unittest.TestCase):
         self.assertTrue(status.startswith("403"))
         self.assertEqual(data["error"], "forbidden")
         self.assertEqual(self.store["payload"]["workspaces"][1]["code"], "warehouse")
+
+    def test_staff_clears_timesheet_cell(self):
+        cookie, _ = self.login("usr_001", "1111")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "workspaces": [{
+                        "code": "shop",
+                        "timesheet": {"2026-10": {"e_shop": {"1": {"status": "", "hours": "", "lateMinutes": 0}}}},
+                    }]
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        cell = shop["timesheet"]["2026-10"]["e_shop"]["1"]
+        self.assertEqual(cell["status"], "")
+        self.assertNotEqual(cell, "Я")
+
+    def test_staff_writes_shop_metrics(self):
+        cookie, _ = self.login("usr_001", "1111")
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"facts": {"ok": 9}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["ok"], 9)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["nested"]["employees"][0]["rate"], 777)
+        self.assertIn("shopMetrics", data["payload"])
+
+    def test_staff_spu_indicators_read_write(self):
+        spu = {
+            "user_id": "usr_spu",
+            "display_name": "СПУ",
+            "pin": "8888",
+            "role": "user",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {"managementIndicators": "edit", "management": "none"},
+        }
+        self.store["payload"]["users"].append(spu)
+        cookie, _ = self.login("usr_spu", "8888")
+        status, data, raw, _ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        self.assertIn("management", data["payload"])
+        self.assertEqual(data["payload"]["management"]["indicators"][0]["finance"], 1)
+        self.assertNotIn("salary", data["payload"])
+        version = int(data["version"])
+        status2, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {"management": {"indicators": [{"finance": 2, "name": "Выручка"}]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status2.startswith("200"), status2)
+        self.assertEqual(self.store["payload"]["management"]["indicators"][0]["finance"], 2)
+        status3, err, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"management": {"meetings": [{"id": "hack"}]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status3.startswith("403"), status3)
+        self.assertEqual(err["error"], "forbidden")
+        self.assertNotIn("meetings", self.store["payload"]["management"])
+
+    def test_salary_editor_reads_and_writes_salary(self):
+        pay = {
+            "user_id": "usr_pay",
+            "display_name": "Расчёт",
+            "pin": "4444",
+            "role": "user",
+            "legacy_role": "adjust",
+            "is_active": True,
+            "departments": ["summary"],
+            "permissions": {"salary": "edit", "salaryCalc": "edit"},
+        }
+        self.store["payload"]["users"].append(pay)
+        cookie, _ = self.login("usr_pay", "4444")
+        status, data, raw, _ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        self.assertIn("salary", data["payload"])
+        self.assertNotIn("1111", raw)
+        status2, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(data["version"]),
+                "payload": {"salary": {"2026-10": {"e_shop": {"issued": True, "rate": 1500}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status2.startswith("200"), status2)
+        self.assertTrue(self.store["payload"]["salary"]["2026-10"]["e_shop"]["issued"])
+
+    def test_admin_duplicate_pin_rejected(self):
+        cookie, _ = self.login()
+        version = self.current_version(cookie)
+        payload = json.loads(json.dumps(self.store["payload"]))
+        payload["users"].append({
+            "user_id": "user_admin2",
+            "display_name": "Второй админ",
+            "pin": "5555",
+            "role": "admin",
+            "legacy_role": "admin",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {},
+        })
+        status, data, raw, _ = call(
+            "PUT",
+            "/api/state",
+            {"version": version, "payload": payload},
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("400"), status)
+        self.assertEqual(data["error"], "duplicate pin")
+        self.assertNotIn("5555", raw)
+        ids = [u["user_id"] for u in self.store["payload"]["users"]]
+        self.assertNotIn("user_admin2", ids)
 
     def test_staff_updates_own_timesheet_only(self):
         cookie, _ = self.login("usr_001", "1111")
@@ -871,6 +1086,136 @@ class StaticPagesTests(unittest.TestCase):
         self.assertTrue(status.startswith("404"))
         self.assertEqual(data["error"], "not found")
 
+    def test_login_admin_uses_server_api(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        start = src.find("function loginAdmin(")
+        end = src.find("function loginById(", start)
+        body = src[start:end]
+        self.assertGreater(start, 0)
+        self.assertGreater(end, start)
+        self.assertIn('fetch("/api/login"', body)
+        self.assertIn("loadServerStateThenOpenAdmin", body)
+        self.assertIn('credentials: "same-origin"', body)
+        self.assertIn("Неверный PIN", body)
+        self.assertNotIn("findActiveUserByPin", body)
+        self.assertNotIn("pinsMatch", body)
+        self.assertNotIn("ensureLoginData", body)
+        self.assertNotIn("migrateAppUsers", body)
+        self.assertNotIn("localStorage", body)
+        self.assertNotIn("PUT /api/state", body)
+        self.assertNotIn('fetch("/api/state"', body)
+
+    def test_server_admin_opens_without_local_storage(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        adopt = src[src.find("function adoptServerPayload("):src.find("function applyServerState(")]
+        self.assertIn('w.pin = ""', adopt)
+        self.assertNotIn("migrateAppUsers", adopt)
+        self.assertNotIn("restoreCanonicalPins", adopt)
+        save = src[src.find("function putServerStateOnce("):src.find("function daysInMonthValue(")]
+        self.assertIn("wtServerMode", save)
+        self.assertIn('method: "PUT"', save)
+        self.assertIn('"/api/state"', save)
+        self.assertIn("version: wtStateVersion", save)
+        self.assertIn('credentials: "same-origin"', save)
+        self.assertNotIn("Сохранение на сервер пока недоступно", save)
+        self.assertIn("localStorage.setItem", save)
+        self.assertLess(save.find("if (wtServerMode)"), save.find("localStorage.setItem"))
+        restore = src[src.find("function restoreServerAdminSession("):src.find("function currentAuthUserId(")]
+        self.assertIn('fetch("/api/me"', restore)
+        self.assertIn('"/api/state"', src[src.find("function loadServerStateThenEnter("):src.find("function restoreServerAdminSession(")])
+        self.assertIn("if (wtServerMode) return;", src[src.find("function migrateAppUsers("):src.find("function generateAccessUserId(")])
+
+    def test_save_app_serializes_put_and_handles_conflict(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        save = src[src.find("function wtCloneJson("):src.find("function daysInMonthValue(")]
+        self.assertIn("wtPutChain", save)
+        self.assertIn("putServerStateOnce", save)
+        self.assertIn("handleWtSaveConflict", save)
+        self.assertIn("handleWtSaveUnauthorized", save)
+        self.assertIn("409", save)
+        self.assertIn("401", save)
+        self.assertIn("wtStateVersion = Number(state.version)", save)
+        self.assertIn("window.confirm", save)
+        self.assertIn("wtThreeWayMerge", save)
+        self.assertIn("payloadForServerPut", save)
+        self.assertIn("buildStaffPutPayload", save)
+        access_start = src.find("function saveAccessUser(")
+        access_end = src.find("function renderSummaryUsers(", access_start)
+        access = src[access_start:access_end]
+        self.assertGreater(access_start, 0)
+        self.assertGreater(access_end, access_start)
+        self.assertIn("done.then", access)
+        self.assertIn("if (ok) afterSaved()", access)
+        self.assertIn("if (pin) prev.pin = pin", access)
+
+    def test_login_admin_function_does_not_put_state(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        start = src.find("function loginAdmin(")
+        end = src.find("function loginById(", start)
+        body = src[start:end]
+        self.assertNotIn("method: \"PUT\"", body)
+
+    def test_login_by_code_uses_server_api(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        start = src.find("function loginByCode(")
+        end = src.find("function loginSummary(", start)
+        body = src[start:end]
+        self.assertGreater(start, 0)
+        self.assertGreater(end, start)
+        self.assertIn('fetch("/api/login"', body)
+        self.assertIn("user_id: userId", body)
+        self.assertIn("loadServerStateThenEnter", body)
+        self.assertIn('credentials: "same-origin"', body)
+        self.assertIn("Неверный PIN", body)
+        self.assertNotIn("pinsMatch", body)
+        self.assertNotIn("ensureLoginData", body)
+        self.assertNotIn("migrateAppUsers", body)
+        self.assertNotIn("localStorage", body)
+        render = src[src.find("function renderLogin("):src.find("function loginPinDigits(")]
+        self.assertIn("fetchDirectory", render)
+        self.assertNotIn("ensureLoginData", render)
+        self.assertIn('fetch("/api/directory"', src[src.find("function fetchDirectory("):src.find("function userPinLoginCardHtml(")])
+
+    def test_hash_opens_login_card_not_section_hub(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        login_html = src[src.find('id="loginScreen"'):src.find('id="app"')]
+        self.assertNotIn("onclick=\"renderLogin('shop')\"", login_html)
+        self.assertNotIn(">Открыть</button>", login_html)
+        self.assertIn('id="loginGrid"', login_html)
+        route = src[src.find("function ensureLoginRouteFromHash("):src.find("function bootLocalAppData(")]
+        self.assertIn("renderLogin(view)", route)
+        self.assertNotIn("loginView !== view", route)
+        requested = src[src.find("function requestedLoginView("):src.find("function ensureLoginRouteFromHash(")]
+        self.assertIn('hash === "shop"', requested)
+        self.assertIn('hash === "territory"', requested)
+        self.assertIn('hash === "summary"', requested)
+        self.assertIn('hash === "spu"', requested)
+        self.assertIn('hash === "org"', requested)
+        self.assertIn('hash === "admin"', requested)
+        self.assertIn('hash === "financeRec"', requested)
+        render = src[src.find("function renderLogin("):src.find("function loginPinDigits(")]
+        self.assertIn('loginView === "shop"', render)
+        self.assertIn('loginView === "territory"', render)
+        self.assertIn('loginView === "admin"', render)
+        self.assertIn("Выберите пользователя и введите его PIN.", render)
+        self.assertIn("Отдельный вход администратора. Все подразделения.", render)
+        self.assertNotIn("Админ: 5555", render)
+        self.assertNotIn("5555 / 6666", render)
+        self.assertNotIn("defaultPinHint", render)
+        migrate = src[src.find("function migrateAppUsers("):src.find("function generateAccessUserId(")]
+        self.assertNotIn("user_dept_", migrate)
+        self.assertNotIn("upsertAccessUser", migrate)
+
+    def test_index_links_go_to_section_hashes(self):
+        src = Path(__file__).resolve().parents[1].joinpath("index.html").read_text(encoding="utf-8")
+        self.assertIn("app.html#shop", src)
+        self.assertIn("app.html#territory", src)
+        self.assertIn("app.html#summary", src)
+        self.assertIn("app.html#spu", src)
+        self.assertIn("app.html#financeRec", src)
+        self.assertIn("app.html#org", src)
+        self.assertIn("app.html#admin", src)
+
 
 class SourceAndBindTests(unittest.TestCase):
     def test_default_bind_is_localhost(self):
@@ -914,6 +1259,7 @@ class BootstrapAdminTests(unittest.TestCase):
         os.environ["WT_BOOTSTRAP_NAME"] = "Первый администратор"
         os.environ["WT_BOOTSTRAP_PIN"] = self.PIN
         os.environ.pop("WT_BOOTSTRAP_USER_ID", None)
+        wt_api.LOGIN_FAILS.clear()
         self.store = {
             "payload": {},
             "version": 0,
@@ -1045,6 +1391,121 @@ class BootstrapAdminTests(unittest.TestCase):
             self.assertTrue(status.startswith("404"), method)
             self.assertEqual(data["error"], "not found")
             self.assertNotIn(self.PIN, raw)
+
+    def test_admin_pin_first_login_creates_one_admin(self):
+        os.environ["WT_BOOTSTRAP_PIN"] = self.PIN
+        os.environ["WT_BOOTSTRAP_NAME"] = "Первый администратор"
+        status, data, raw, cookies = call("POST", "/api/login", {"pin": self.PIN})
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(data["user"]["user_id"], "user_admin")
+        self.assertEqual(data["user"]["role"], "admin")
+        self.assertNotIn("pin", data["user"])
+        self.assertNotIn(self.PIN, raw)
+        self.assertTrue(any(item.startswith("wt_session=") for item in cookies))
+        users = self.store["payload"]["users"]
+        self.assertEqual(len(users), 1)
+        self.assertTrue(str(users[0].get("pin_hash") or "").startswith("scrypt$"))
+        self.assertNotIn("pin", users[0])
+
+    def test_admin_pin_repeat_login(self):
+        os.environ["WT_BOOTSTRAP_PIN"] = self.PIN
+        os.environ["WT_BOOTSTRAP_NAME"] = "Первый администратор"
+        first, *_ = call("POST", "/api/login", {"pin": self.PIN})
+        self.assertTrue(first.startswith("200"))
+        status, data, raw, cookies = call("POST", "/api/login", {"pin": self.PIN})
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(data["user"]["user_id"], "user_admin")
+        self.assertTrue(any(item.startswith("wt_session=") for item in cookies))
+        self.assertEqual(len(self.store["payload"]["users"]), 1)
+        self.assertNotIn(self.PIN, raw)
+
+    def test_admin_pin_wrong_does_not_create_user(self):
+        os.environ["WT_BOOTSTRAP_PIN"] = self.PIN
+        os.environ["WT_BOOTSTRAP_NAME"] = "Первый администратор"
+        status, data, raw, cookies = call("POST", "/api/login", {"pin": "not-bootstrap"})
+        self.assertTrue(status.startswith("401"))
+        self.assertEqual(data["error"], "invalid login")
+        self.assertNotIn("users already", raw.lower())
+        self.assertNotIn("bootstrap", raw.lower())
+        self.assertNotIn(self.PIN, raw)
+        self.assertEqual(cookies, [])
+        self.assertEqual(self.store["payload"].get("users") or [], [])
+
+    def test_admin_pin_missing_bootstrap_secret(self):
+        os.environ.pop("WT_BOOTSTRAP_PIN", None)
+        os.environ["WT_BOOTSTRAP_NAME"] = "Первый администратор"
+        status, data, raw, _ = call("POST", "/api/login", {"pin": self.PIN})
+        self.assertTrue(status.startswith("401"))
+        self.assertEqual(data["error"], "invalid login")
+        self.assertNotIn("WT_BOOTSTRAP", raw)
+        self.assertEqual(self.store["payload"].get("users") or [], [])
+
+    def test_admin_pin_missing_pepper(self):
+        os.environ.pop("WT_PIN_PEPPER", None)
+        status, data, raw, _ = call("POST", "/api/login", {"pin": self.PIN})
+        self.assertTrue(status.startswith("503"))
+        self.assertEqual(data["error"], "authentication unavailable")
+        self.assertNotIn("unit-pepper", raw)
+        self.assertEqual(self.store["payload"].get("users") or [], [])
+
+    def test_admin_pin_concurrent_first_login(self):
+        os.environ["WT_BOOTSTRAP_PIN"] = self.PIN
+        os.environ["WT_BOOTSTRAP_NAME"] = "Первый администратор"
+        user = wt_api.bootstrap_admin_record("A", self.PIN, "user_admin")
+        merged, _ = wt_api.merge_bootstrap_user({}, user)
+        conn = FakeConn(self.store)
+        with conn.cursor() as cur:
+            row1 = wt_api.persist_bootstrap_admin(cur, merged, 0, "user_admin")
+            row2 = wt_api.persist_bootstrap_admin(cur, merged, 0, "user_admin")
+        self.assertIsNotNone(row1)
+        self.assertIsNone(row2)
+        self.assertEqual(len(self.store["payload"]["users"]), 1)
+        status, data, raw, cookies = call("POST", "/api/login", {"pin": self.PIN})
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(len(self.store["payload"]["users"]), 1)
+        self.assertNotIn(self.PIN, raw)
+        self.assertTrue(cookies)
+
+    def test_admin_pin_rate_limit_persists_in_db(self):
+        os.environ["WT_BOOTSTRAP_PIN"] = self.PIN
+        os.environ["WT_BOOTSTRAP_NAME"] = "Первый администратор"
+        for _ in range(5):
+            status, data, raw, _ = call("POST", "/api/login", {"pin": "wrong-pin"})
+            self.assertTrue(status.startswith("401"), status)
+            self.assertEqual(data["error"], "invalid login")
+            self.assertNotIn(self.PIN, raw)
+        wt_api.LOGIN_FAILS.clear()
+        blocked, data, raw, cookies = call("POST", "/api/login", {"pin": self.PIN})
+        self.assertTrue(blocked.startswith("429"), blocked)
+        self.assertEqual(data["error"], "too many attempts")
+        self.assertNotIn(self.PIN, raw)
+        self.assertEqual(cookies, [])
+        self.assertEqual(self.store["payload"].get("users") or [], [])
+
+    def test_staff_pin_only_does_not_login(self):
+        self.store["payload"] = json.loads(json.dumps(SAMPLE_APP))
+        status, data, *_ = call("POST", "/api/login", {"pin": "1111"})
+        self.assertTrue(status.startswith("401"))
+        self.assertEqual(data["error"], "invalid login")
+
+    def test_ambiguous_admin_pin_refused(self):
+        self.store["payload"] = json.loads(json.dumps(SAMPLE_APP))
+        self.store["payload"]["users"].append(
+            {
+                "user_id": "user_admin2",
+                "display_name": "Второй",
+                "pin": "5555",
+                "role": "admin",
+                "legacy_role": "admin",
+                "is_active": True,
+                "departments": ["shop"],
+                "permissions": {},
+            }
+        )
+        status, data, raw, _ = call("POST", "/api/login", {"pin": "5555"})
+        self.assertTrue(status.startswith("401"))
+        self.assertEqual(data["error"], "invalid login")
+        self.assertNotIn("ambiguous", raw.lower())
 
     def test_source_has_no_bootstrap_pin(self):
         src = Path(__file__).with_name("wt_api.py").read_text(encoding="utf-8")

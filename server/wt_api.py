@@ -29,6 +29,7 @@ STATIC_MIME = {
 LOGIN_WINDOW_SEC = 15 * 60
 LOGIN_MAX_FAILS = 5
 LOGIN_FAILS: dict[str, list[float]] = {}
+LOGIN_FAIL_USER_PREFIX = "wt.login_fail:"
 BOOTSTRAP_USER_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 ADMIN_PERM_KEYS = (
     "timesheet",
@@ -214,6 +215,15 @@ def verify_pin(pin: str, stored_hash: str) -> bool:
     return hmac.compare_digest(dk, expected)
 
 
+def pin_secrets_equal(left: str, right: str) -> bool:
+    if not pin_pepper_ready():
+        return False
+    key = pin_pepper()
+    left_d = hmac.new(key, left.encode("utf-8"), hashlib.sha256).digest()
+    right_d = hmac.new(key, right.encode("utf-8"), hashlib.sha256).digest()
+    return hmac.compare_digest(left_d, right_d)
+
+
 def pins_match_user(user: dict, pin: str) -> tuple[bool, bool]:
     if not pin_pepper_ready():
         return False, False
@@ -376,6 +386,65 @@ def user_has_perm(user: dict | None, key: str, minimum: str = "view") -> bool:
             perm_rank(perms.get("metrics")),
         ) >= need
     return perm_rank(perms.get(key)) >= need
+
+
+def user_can_open_management(user: dict | None) -> bool:
+    if is_app_admin(user):
+        return True
+    if not user:
+        return False
+    for key in (
+        "management",
+        "managementIndicators",
+        "managementStructure",
+        "managementTasks",
+        "managementMeetings",
+    ):
+        if user_has_perm(user, key, "view"):
+            return True
+    return False
+
+
+MGMT_KEY_PERMS = {
+    "indicators": "managementIndicators",
+    "plans": "managementIndicators",
+    "manualFacts": "managementIndicators",
+    "input_order": "managementIndicators",
+    "spuOrgNodes": "managementStructure",
+    "spuDepartments": "managementStructure",
+    "tasks": "managementTasks",
+    "meetings": "managementMeetings",
+    "events": "managementMeetings",
+}
+
+
+def _can_write_mgmt_key(user: dict, key: str) -> bool:
+    if user_has_perm(user, "management", "edit"):
+        return True
+    perm = MGMT_KEY_PERMS.get(str(key))
+    if not perm:
+        return False
+    if perm == "managementStructure":
+        return user_has_perm(user, "managementStructure", "edit") or user_has_perm(
+            user, "managementIndicators", "edit"
+        )
+    return user_has_perm(user, perm, "edit")
+
+
+def _can_write_any_management(user: dict | None) -> bool:
+    if not user:
+        return False
+    if user_has_perm(user, "management", "edit"):
+        return True
+    for perm in (
+        "managementIndicators",
+        "managementStructure",
+        "managementTasks",
+        "managementMeetings",
+    ):
+        if user_has_perm(user, perm, "edit"):
+            return True
+    return False
 
 
 def find_user(payload: dict | None, user_id: str) -> dict | None:
@@ -544,10 +613,12 @@ def _can_write_top(user: dict, key: str) -> bool:
         )
     if key == "shopPayroll":
         return "shop" in codes and user_has_perm(user, "salary", "edit")
+    if key == "salary":
+        return user_has_perm(user, "salary", "edit")
     if key == "financeRec":
         return user_has_perm(user, "financeRec", "edit")
     if key == "management":
-        return user_has_perm(user, "management", "edit")
+        return _can_write_any_management(user)
     if key == "orgStructure":
         return user_has_perm(user, "orgStructure", "edit")
     if key == "customerReturns":
@@ -566,6 +637,60 @@ def _can_write_dept_map(user: dict, key: str, dept: str) -> bool:
     if key == "deptSalesPlans":
         return user_has_perm(user, "salesPlan", "edit")
     return False
+
+
+def _is_cleared_timesheet_cell(rec: Any) -> bool:
+    if rec is None or rec == "":
+        return True
+    if isinstance(rec, dict):
+        status = str(rec.get("status") or "").strip()
+        hours = rec.get("hours")
+        late = rec.get("lateMinutes") or rec.get("late") or 0
+        empty_hours = hours in (None, "", 0, "0")
+        try:
+            empty_late = float(late or 0) == 0
+        except (TypeError, ValueError):
+            empty_late = not late
+        return not status and empty_hours and empty_late
+    return False
+
+
+def _overlay_timesheet(current: Any, incoming: Any) -> Any:
+    """День из запроса заменяет ячейку целиком, пустая ячейка не поднимает старое значение."""
+    if not isinstance(incoming, dict):
+        return _clone(incoming)
+    out = _clone(current) if isinstance(current, dict) else {}
+    for month, month_val in incoming.items():
+        month_key = str(month)
+        if month_val is None:
+            out.pop(month_key, None)
+            continue
+        if not isinstance(month_val, dict):
+            out[month_key] = _clone(month_val)
+            continue
+        base_month = out.get(month_key) if isinstance(out.get(month_key), dict) else {}
+        next_month = _clone(base_month)
+        for emp_id, days in month_val.items():
+            emp_key = str(emp_id)
+            if days is None:
+                next_month.pop(emp_key, None)
+                continue
+            if not isinstance(days, dict):
+                next_month[emp_key] = _clone(days)
+                continue
+            base_days = next_month.get(emp_key) if isinstance(next_month.get(emp_key), dict) else {}
+            next_days = _clone(base_days)
+            for day, rec in days.items():
+                day_key = str(day)
+                if rec is None or _is_cleared_timesheet_cell(rec):
+                    next_days[day_key] = {"status": "", "hours": "", "lateMinutes": 0}
+                elif isinstance(rec, dict):
+                    next_days[day_key] = _clone(rec)
+                else:
+                    next_days[day_key] = rec
+            next_month[emp_key] = next_days
+        out[month_key] = next_month
+    return out
 
 
 def _empty_wipe(val: Any, existing: Any) -> bool:
@@ -680,6 +805,19 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
                 if _closed_field_violations(current_map.get(dept_code), branch, allow_sal):
                     return True
             continue
+        if key == "management" and _can_write_any_management(user):
+            if not isinstance(val, dict):
+                return True
+            cur_m = current.get("management") if isinstance(current.get("management"), dict) else {}
+            allow_sal = user_has_perm(user, "salary", "edit")
+            for mkey, mval in val.items():
+                if _can_write_mgmt_key(user, str(mkey)):
+                    if _closed_field_violations(cur_m.get(mkey), mval, allow_sal):
+                        return True
+                    continue
+                if not _same(mval, cur_m.get(mkey)):
+                    return True
+            continue
         if _can_write_top(user, key):
             allow_sal = user_has_perm(user, "salary", "edit") or key == "financeRec"
             if _closed_field_violations(current.get(key), val, allow_sal):
@@ -699,15 +837,27 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
             code = str(in_ws.get("code") or "")
             cur_ws = _find_workspace(stored.get("workspaces"), code)
             if cur_ws is not None:
-                cur_ws["timesheet"] = _overlay_open(cur_ws.get("timesheet"), in_ws.get("timesheet"), False)
+                cur_ws["timesheet"] = _overlay_timesheet(cur_ws.get("timesheet"), in_ws.get("timesheet"))
+    if "management" in incoming and _can_write_any_management(user):
+        incoming_m = incoming.get("management")
+        cur_m = stored.get("management") if isinstance(stored.get("management"), dict) else {}
+        allow_sal = user_has_perm(user, "salary", "edit")
+        if user_has_perm(user, "management", "edit") and isinstance(incoming_m, dict):
+            stored["management"] = _overlay_open(cur_m, incoming_m, allow_sal)
+        elif isinstance(incoming_m, dict):
+            next_m = _clone(cur_m)
+            for mkey, mval in incoming_m.items():
+                if _can_write_mgmt_key(user, str(mkey)):
+                    next_m[mkey] = _overlay_open(cur_m.get(mkey), mval, allow_sal)
+            stored["management"] = next_m
     for key in (
         "shopMetrics",
         "shopRevision",
         "shopSalesPlan",
         "shopMetricCatalog",
         "shopPayroll",
+        "salary",
         "financeRec",
-        "management",
         "orgStructure",
         "customerReturns",
     ):
@@ -726,6 +876,71 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
     return stored
 
 
+def incoming_admin_pin_duplicate(current: dict, incoming: dict) -> bool:
+    incoming_users = incoming.get("users")
+    if not isinstance(incoming_users, list):
+        return False
+    current_users = current.get("users") if isinstance(current.get("users"), list) else []
+    current_by_id = {
+        str(item.get("user_id")): item
+        for item in current_users
+        if isinstance(item, dict) and item.get("user_id")
+    }
+    incoming_by_id = {
+        str(item.get("user_id")): item
+        for item in incoming_users
+        if isinstance(item, dict) and item.get("user_id")
+    }
+
+    def admin_record(uid: str) -> dict | None:
+        inc = incoming_by_id.get(uid)
+        cur = current_by_id.get(uid)
+        rec = inc if inc is not None else cur
+        if not rec or rec.get("is_active") is False:
+            return None
+        if is_app_admin(rec):
+            return rec
+        return None
+
+    admin_ids = [uid for uid in set(current_by_id) | set(incoming_by_id) if admin_record(uid)]
+    raw_pins: dict[str, str] = {}
+    for uid in admin_ids:
+        inc = incoming_by_id.get(uid)
+        if not inc:
+            continue
+        raw = str(inc.get("pin") or inc.get("password") or "").strip()
+        if raw:
+            raw_pins[uid] = raw
+    seen_raw: dict[str, str] = {}
+    for uid, raw in raw_pins.items():
+        if raw in seen_raw:
+            return True
+        seen_raw[raw] = uid
+        for other_uid in admin_ids:
+            if other_uid == uid:
+                continue
+            other_inc = incoming_by_id.get(other_uid)
+            other_cur = current_by_id.get(other_uid)
+            other_raw = ""
+            if other_inc:
+                other_raw = str(other_inc.get("pin") or other_inc.get("password") or "").strip()
+            if other_raw and pin_secrets_equal(raw, other_raw):
+                return True
+            other_hash = ""
+            if other_inc:
+                other_hash = str(other_inc.get("pin_hash") or "")
+            if not other_hash and other_cur:
+                other_hash = str(other_cur.get("pin_hash") or "")
+            if other_hash and verify_pin(raw, other_hash):
+                return True
+            other_plain = ""
+            if other_cur:
+                other_plain = str(other_cur.get("pin") or other_cur.get("password") or "").strip()
+            if other_plain and pin_secrets_equal(raw, other_plain):
+                return True
+    return False
+
+
 def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict | None, str | None]:
     """Пишем поверх снимка в БД. Запрещённое поле — 403, без частичной записи."""
     if not isinstance(current, dict):
@@ -733,6 +948,8 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     if not isinstance(incoming, dict):
         return None, "forbidden"
     if is_app_admin(user):
+        if incoming_admin_pin_duplicate(current, incoming):
+            return None, "duplicate_pin"
         return _merge_admin_payload(current, incoming), None
     if _staff_put_forbidden(current, incoming, user):
         return None, "forbidden"
@@ -895,15 +1112,42 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
             if branch:
                 out["deptSalesPlans"] = branch
 
+    if allow_salary and "salary" in payload:
+        out["salary"] = drop_closed_fields(payload.get("salary"), True, allow_finance)
     if allow_finance and "financeRec" in payload:
         out["financeRec"] = drop_closed_fields(payload.get("financeRec"), allow_salary, True)
-    if user_has_perm(user, "management", "view") and "management" in payload:
+    if user_can_open_management(user) and "management" in payload:
         out["management"] = drop_closed_fields(payload.get("management"), allow_salary, allow_finance)
     if user_has_perm(user, "orgStructure", "view") and "orgStructure" in payload:
         out["orgStructure"] = drop_closed_fields(payload.get("orgStructure"), allow_salary, allow_finance)
     if user_has_perm(user, "customerReturns", "view") and "customerReturns" in payload:
         out["customerReturns"] = drop_closed_fields(payload.get("customerReturns"), allow_salary, allow_finance)
     return out
+
+
+def user_login_codes(user: dict) -> list[str]:
+    codes: list[str] = []
+    depts = user_dept_codes(user)
+    admin = is_app_admin(user)
+    for code in ("shop", "office", "warehouse", "drivers", "summary"):
+        if admin or code in depts:
+            codes.append(code)
+    if admin or "org" in depts or user_has_perm(user, "orgStructure", "view"):
+        codes.append("org")
+    if admin or "spu" in depts or user_can_open_management(user):
+        codes.append("spu")
+    if (
+        admin
+        or "financeRec" in depts
+        or user_has_perm(user, "financeRec", "view")
+        or user_has_perm(user, "financeRecSetup", "view")
+    ):
+        codes.append("financeRec")
+    if admin or bool(depts & TERRITORY_CODES):
+        codes.append("territoryMetrics")
+    if admin:
+        codes.append("admin")
+    return codes
 
 
 def directory_users(payload: dict | None) -> list[dict]:
@@ -922,6 +1166,7 @@ def directory_users(payload: dict | None) -> list[dict]:
                 "user_id": user_id,
                 "display_name": str(user.get("display_name") or user.get("name") or ""),
                 "departments": [str(item) for item in depts],
+                "login_codes": user_login_codes(user),
             }
         )
     return rows
@@ -1065,6 +1310,10 @@ def lookup_session_user_id(raw: str) -> str:
                 conn.commit()
                 return ""
             user_id, expires_at = row
+            user_id = str(user_id or "")
+            if user_id.startswith(LOGIN_FAIL_USER_PREFIX):
+                conn.commit()
+                return ""
             exp = _as_utc(expires_at)
             if not exp or exp <= datetime.now(timezone.utc):
                 cur.execute(
@@ -1074,7 +1323,7 @@ def lookup_session_user_id(raw: str) -> str:
                 conn.commit()
                 return ""
             conn.commit()
-            return str(user_id or "")
+            return user_id
     except Exception:
         try:
             conn.rollback()
@@ -1111,19 +1360,85 @@ def client_key(environ, user_id: str) -> str:
     return ip + "|" + user_id
 
 
+def login_fail_marker(key: str) -> str:
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return LOGIN_FAIL_USER_PREFIX + digest
+
+
 def login_blocked(key: str) -> bool:
     now = time.time()
     hits = [t for t in LOGIN_FAILS.get(key, []) if now - t < LOGIN_WINDOW_SEC]
     LOGIN_FAILS[key] = hits
-    return len(hits) >= LOGIN_MAX_FAILS
+    if len(hits) >= LOGIN_MAX_FAILS:
+        return True
+    if not db_configured():
+        return False
+    marker = login_fail_marker(key)
+    now_dt = datetime.now(timezone.utc)
+    conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM app_sessions WHERE user_id = %s AND expires_at < %s",
+                (marker, now_dt),
+            )
+            cur.execute(
+                "SELECT COUNT(*) FROM app_sessions WHERE user_id = %s AND expires_at > %s",
+                (marker, now_dt),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+    count = int(row[0]) if row else 0
+    return count >= LOGIN_MAX_FAILS
 
 
 def register_login_fail(key: str) -> None:
     LOGIN_FAILS.setdefault(key, []).append(time.time())
+    if not db_configured():
+        return
+    marker = login_fail_marker(key)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=LOGIN_WINDOW_SEC)
+    conn = connect()
+    try:
+        with conn.cursor() as cur:
+            insert_session(cur, token_hash(secrets.token_urlsafe(16)), marker, expires_at)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 def clear_login_fails(key: str) -> None:
     LOGIN_FAILS.pop(key, None)
+    if not db_configured():
+        return
+    marker = login_fail_marker(key)
+    conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM app_sessions WHERE user_id = %s", (marker,))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 def handle_static(path: str):
@@ -1309,6 +1624,128 @@ def current_user_from_state(environ, payload: dict | None, user_id: str | None =
     return user
 
 
+def invalid_login():
+    return json_bytes({"error": "invalid login"}, "401 Unauthorized")
+
+
+def login_too_many():
+    return json_bytes({"error": "too many attempts"}, "429 Too Many Requests")
+
+
+def issue_login_session(user: dict, key: str):
+    try:
+        clear_login_fails(key)
+    except Exception:
+        return db_unavailable()
+    user_id = str(user.get("user_id") or "")
+    try:
+        token, ttl = create_session(user_id)
+    except Exception:
+        return db_unavailable()
+    extra = [("Set-Cookie", cookie_header(token, ttl))]
+    return json_bytes({"user": public_user(user)}, extra=extra)
+
+
+def active_admin_users(payload: dict) -> list[dict]:
+    users = payload.get("users") if isinstance(payload.get("users"), list) else []
+    out = []
+    for item in users:
+        if isinstance(item, dict) and is_app_admin(item):
+            out.append(item)
+    return out
+
+
+def match_admins_by_pin(payload: dict, pin: str) -> list[dict]:
+    hits = []
+    for user in active_admin_users(payload):
+        ok, _ = pins_match_user(user, pin)
+        if ok:
+            hits.append(user)
+    return hits
+
+
+def try_first_admin_bootstrap(payload: dict, state: dict, pin: str, key: str):
+    bootstrap_pin = _env("WT_BOOTSTRAP_PIN").strip()
+    display_name = _env("WT_BOOTSTRAP_NAME").strip()
+    user_id = _env("WT_BOOTSTRAP_USER_ID").strip() or "user_admin"
+    dummy = hash_pin(pin)
+    allowed = bool(bootstrap_pin) and bool(display_name) and BOOTSTRAP_USER_ID_RE.match(user_id)
+    matched = bool(allowed) and pin_secrets_equal(pin, bootstrap_pin)
+    _ = dummy
+    if not matched:
+        try:
+            register_login_fail(key)
+        except Exception:
+            return db_unavailable()
+        return invalid_login()
+    try:
+        user = bootstrap_admin_record(display_name, pin, user_id)
+        merged, reason = merge_bootstrap_user(payload, user)
+        if reason or merged is None:
+            register_login_fail(key)
+            return invalid_login()
+        conn = connect()
+        try:
+            with conn.cursor() as cur:
+                row = persist_bootstrap_admin(
+                    cur, merged, int(state.get("version") or 0), user_id
+                )
+            if not row:
+                conn.rollback()
+                register_login_fail(key)
+                return invalid_login()
+            conn.commit()
+        finally:
+            conn.close()
+    except PinPepperMissing:
+        return auth_unavailable()
+    except Exception:
+        try:
+            register_login_fail(key)
+        except Exception:
+            return db_unavailable()
+        return invalid_login()
+    return issue_login_session(user, key)
+
+
+def handle_admin_pin_login(pin: str, payload: dict, state: dict, key: str):
+    dummy = hash_pin(pin)
+    if not payload_has_users(payload):
+        _ = dummy
+        return try_first_admin_bootstrap(payload, state, pin, key)
+    hits = match_admins_by_pin(payload, pin)
+    _ = dummy
+    if len(hits) != 1:
+        try:
+            register_login_fail(key)
+        except Exception:
+            return db_unavailable()
+        return invalid_login()
+    user = hits[0]
+    ok, needs_hash = pins_match_user(user, pin)
+    if not ok:
+        try:
+            register_login_fail(key)
+        except Exception:
+            return db_unavailable()
+        return invalid_login()
+    if needs_hash:
+        user["pin_hash"] = hash_pin(pin)
+        user.pop("pin", None)
+        user.pop("password", None)
+        try:
+            conn = connect()
+            try:
+                with conn.cursor() as cur:
+                    persist_payload(cur, payload, int(state.get("version") or 0), str(user.get("user_id") or ""))
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    return issue_login_session(user, key)
+
+
 def handle_login(environ):
     raw = read_body(environ)
     try:
@@ -1319,27 +1756,34 @@ def handle_login(environ):
         return json_bytes({"error": "body must be an object"}, "400 Bad Request")
     user_id = str(data.get("user_id") or "").strip()
     pin = str(data.get("pin") or "").strip()
-    if not user_id or not pin:
+    if not pin:
         return json_bytes({"error": "invalid login"}, "400 Bad Request")
     if not pin_pepper_ready():
         return auth_unavailable()
-    key = client_key(environ, user_id)
-    if login_blocked(key):
-        return json_bytes({"error": "too many attempts"}, "429 Too Many Requests")
+    key = client_key(environ, user_id or "admin")
+    try:
+        if login_blocked(key):
+            return login_too_many()
+    except Exception:
+        return db_unavailable()
     state, err = load_state_or_error()
     if err:
         return err
     payload = state.get("payload") if state else None
     if not isinstance(payload, dict):
         payload = {}
+    if not user_id:
+        return handle_admin_pin_login(pin, payload, state, key)
     user = find_user(payload, user_id)
     ok, needs_hash = pins_match_user(user or {}, pin) if user else (False, False)
     dummy = hash_pin(pin)
     if not user or user.get("is_active") is False or not ok:
-        register_login_fail(key)
+        try:
+            register_login_fail(key)
+        except Exception:
+            return db_unavailable()
         _ = dummy
-        return json_bytes({"error": "invalid login"}, "401 Unauthorized")
-    clear_login_fails(key)
+        return invalid_login()
     if needs_hash:
         user["pin_hash"] = hash_pin(pin)
         user.pop("pin", None)
@@ -1354,12 +1798,7 @@ def handle_login(environ):
                 conn.close()
         except Exception:
             pass
-    try:
-        token, ttl = create_session(user_id)
-    except Exception:
-        return db_unavailable()
-    extra = [("Set-Cookie", cookie_header(token, ttl))]
-    return json_bytes({"user": public_user(user)}, extra=extra)
+    return issue_login_session(user, key)
 
 
 def handle_logout(environ):
@@ -1463,6 +1902,8 @@ def handle_put_state(environ):
         stored, denied = prepare_put_payload(current_payload, payload, user)
     except PinPepperMissing:
         return auth_unavailable()
+    if denied == "duplicate_pin":
+        return json_bytes({"error": "duplicate pin"}, "400 Bad Request")
     if denied or stored is None:
         return json_bytes({"error": "forbidden"}, "403 Forbidden")
     updated_by = str(user.get("user_id") or "")[:120]

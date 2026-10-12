@@ -4429,53 +4429,8 @@
             <a href="index.html">← На главную</a>
         </div>
         <div class="login-title" id="loginTitle">⏱ Табель сотрудников</div>
-        <div class="login-subtitle" id="loginSubtitle">
-            Выберите раздел: Магазин Володарского, Территория, Общее, СПУ, Финконтроль, Администратор или Оргструктура.
-            <span id="defaultPinHint"></span>
-        </div>
-        <div class="login-grid" id="loginGrid">
-            <div class="login-card shop-folder" role="button" tabindex="0" onclick="renderLogin('shop')">
-                <h3>Магазин Володарского</h3>
-                <div class="note">Отдельный табель магазина</div>
-                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('shop')">Открыть</button>
-            </div>
-            <div class="login-card territory-folder" role="button" tabindex="0" onclick="renderLogin('territory')">
-                <h3>Территория</h3>
-                <div class="note">Офис, Склад, Логистика + Торговые, Метрики территории</div>
-                <ul class="territory-preview">
-                    <li>Офис</li>
-                    <li>Склад</li>
-                    <li>Логистика + Торговые</li>
-                    <li>Метрики территории</li>
-                </ul>
-                <button type="button" class="btn btn-primary" style="width:100%;" onclick="event.stopPropagation();renderLogin('territory')">Открыть</button>
-            </div>
-            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('summary')">
-                <h3>Общее</h3>
-                <div class="note">Зарплаты, начисления и общий расчёт</div>
-                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('summary')">Открыть</button>
-            </div>
-            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('spu')">
-                <h3>СПУ</h3>
-                <div class="note">Система планирования и управления компанией</div>
-                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('spu')">Открыть</button>
-            </div>
-            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('financeRec')">
-                <h3>Финконтроль</h3>
-                <div class="note">Финансовая сверка поступлений, расходов и остатков</div>
-                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('financeRec')">Открыть</button>
-            </div>
-            <div class="login-card summary-card" role="button" tabindex="0" onclick="renderLogin('admin')">
-                <h3>Администратор</h3>
-                <div class="note">Отдельный вход. Все подразделения и пользователи.</div>
-                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('admin')">Войти</button>
-            </div>
-            <div class="login-card summary-folder" role="button" tabindex="0" onclick="renderLogin('org')">
-                <h3>Оргструктура</h3>
-                <div class="note">Редактируемая модель компании</div>
-                <button type="button" class="btn btn-primary" style="width:100%;margin-top:16px;" onclick="event.stopPropagation();renderLogin('org')">Открыть</button>
-            </div>
-        </div>
+        <div class="login-subtitle" id="loginSubtitle">Загрузка экрана входа…</div>
+        <div class="login-grid" id="loginGrid"></div>
     </div>
 </div>
 
@@ -5934,6 +5889,19 @@ if (!Array.prototype.find) {
 ============================================================ */
 const STORAGE_KEY = "worktime_three_tables_v1";
 const SESSION_KEY = "worktime_session_v4";
+let wtServerUser = null;
+let wtServerMode = false;
+let wtStateVersion = 0;
+let wtPutChain = Promise.resolve();
+let wtPutPaused = false;
+let wtKeepUnsavedDraft = false;
+let wtPauseToastAt = 0;
+let wtAllowConflictRetry = false;
+let wtDirectoryUsers = [];
+let wtDirectoryReady = false;
+let wtDirectoryError = "";
+let wtLastLoadedPayload = null;
+let wtPendingEntryCode = "";
 const WEEKDAYS = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
 const MONTH_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 const MONTH_FULL = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
@@ -8125,7 +8093,171 @@ function findAccessUser(userId, data) {
 }
 
 function currentAuthUser() {
+    if (wtServerUser && wtServerUser.user_id && (!currentUserId || wtServerUser.user_id === currentUserId)) {
+        return wtServerUser;
+    }
     return findAccessUser(currentUserId);
+}
+
+function rememberServerUser(user) {
+    if (!user || typeof user !== "object" || !user.user_id) return null;
+    wtServerUser = {
+        user_id: String(user.user_id || ""),
+        display_name: String(user.display_name || user.name || ""),
+        role: user.role || "user",
+        legacy_role: user.legacy_role || "",
+        departments: Array.isArray(user.departments) ? user.departments.slice() : [],
+        permissions: user.permissions && typeof user.permissions === "object" ? Object.assign({}, user.permissions) : {},
+        is_active: user.is_active !== false,
+        employee_id: String(user.employee_id || "")
+    };
+    currentUserId = wtServerUser.user_id;
+    return wtServerUser;
+}
+
+function adoptServerPayload(payload) {
+    const src = payload && typeof payload === "object" ? payload : {};
+    const base = createDefaultData();
+    (base.workspaces || []).forEach(function (w) {
+        if (!w) return;
+        w.pin = "";
+        w.rolePins = {};
+        w.roleUsers = {};
+        w.employees = [];
+        w.employeeIds = [];
+        w.timesheet = {};
+    });
+    base.users = [];
+    Object.keys(src).forEach(function (key) {
+        if (key === "workspaces") {
+            if (Array.isArray(src.workspaces) && src.workspaces.length) base.workspaces = src.workspaces;
+            return;
+        }
+        if (key === "users") {
+            base.users = Array.isArray(src.users) ? src.users : [];
+            return;
+        }
+        base[key] = src[key];
+    });
+    if (!Array.isArray(base.workspaces)) base.workspaces = [];
+    DEPT_DEFAULTS.forEach(function (def) {
+        const found = base.workspaces.some(function (w) { return w && w.code === def.code; });
+        if (!found) base.workspaces.push(createWorkspace(def.name, "", "dept", def.code));
+    });
+    if (!base.workspaces.some(function (w) { return w && (w.code === "summary" || w.type === "summary"); })) {
+        const summary = createWorkspace(SUMMARY_DEFAULT.name, "", "summary", "summary");
+        summary.rolePins = {};
+        summary.roleUsers = {};
+        base.workspaces.push(summary);
+    }
+    (base.workspaces || []).forEach(function (w) {
+        if (!w || typeof w !== "object") return;
+        if (!w.id) w.id = generateId();
+        if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
+        if (!Array.isArray(w.employees)) w.employees = [];
+        if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
+        if (w.pin == null) w.pin = "";
+    });
+    if (!Array.isArray(base.users)) base.users = [];
+    return base;
+}
+
+function applyServerState(state) {
+    wtServerMode = true;
+    wtStateVersion = state && state.version != null ? Number(state.version) || 0 : 0;
+    appData = adoptServerPayload(state && state.payload);
+    if (wtServerUser && wtServerUser.user_id) {
+        const exists = (appData.users || []).some(function (u) {
+            return u && u.user_id === wtServerUser.user_id;
+        });
+        if (!exists) appData.users.push(Object.assign({}, wtServerUser));
+    }
+    try {
+        wtLastLoadedPayload = JSON.parse(JSON.stringify(appData));
+    } catch (err) {
+        wtLastLoadedPayload = null;
+    }
+}
+
+function openServerAdmin(saved) {
+    const user = wtServerUser;
+    if (!user) return false;
+    currentEntry = "admin";
+    if (saved && saved.month) selectedMonth = saved.month;
+    if (saved && saved.customNavItemId) currentCustomNavItemId = saved.customNavItemId;
+    if (saved && saved.section) pendingOpenSection = saved.section;
+    return enterAsUser(user, "admin");
+}
+
+function loadServerStateThenEnter(entryCode, errorCode, saved) {
+    const code = entryCode || "admin";
+    const errCode = errorCode || code;
+    return fetch("/api/state", { credentials: "same-origin" }).then(function (res) {
+        if (res.status === 401) {
+            showLoginError(errCode, "Сессия истекла. Войдите снова.");
+            return null;
+        }
+        if (!res.ok) {
+            showLoginError(errCode, "Не удалось загрузить данные с сервера.");
+            return null;
+        }
+        return res.json();
+    }).then(function (state) {
+        if (!state) return false;
+        if (wtKeepUnsavedDraft && appData) {
+            const draft = wtCloneJson(appData);
+            const base = wtLastLoadedPayload;
+            applyServerState(state);
+            appData = wtThreeWayMerge(appData, draft, base);
+            wtKeepUnsavedDraft = false;
+            wtPutPaused = false;
+            toast("Сессия восстановлена. Проверьте правки и сохраните, чтобы записать их на сервер.");
+        } else {
+            applyServerState(state);
+        }
+        if (saved && saved.month) selectedMonth = saved.month;
+        if (saved && saved.customNavItemId) currentCustomNavItemId = saved.customNavItemId;
+        if (saved && saved.section) pendingOpenSection = saved.section;
+        if (saved && saved.territoryMetricsHubId) territoryMetricsHubId = saved.territoryMetricsHubId;
+        currentEntry = code;
+        if (!enterAsUser(wtServerUser, code)) {
+            showLoginError(errCode, "Не удалось открыть раздел.");
+            return false;
+        }
+        return true;
+    });
+}
+
+function loadServerStateThenOpenAdmin(errorCode, saved) {
+    return loadServerStateThenEnter("admin", errorCode || "admin", saved);
+}
+
+function restoreServerAdminSession() {
+    return fetch("/api/me", { credentials: "same-origin" }).then(function (res) {
+        if (!res.ok) throw new Error("no-session");
+        return res.json();
+    }).then(function (data) {
+        const user = rememberServerUser(data && data.user);
+        if (!user) throw new Error("no-user");
+        let saved = null;
+        try {
+            const raw = sessionStorage.getItem(SESSION_KEY);
+            if (raw && raw.charAt(0) === "{") saved = JSON.parse(raw);
+        } catch (err) {}
+        let entry = (saved && saved.entry) || "";
+        if (user.role === "admin" || user.legacy_role === "admin") {
+            if (!entry) entry = "admin";
+        } else if (!entry || entry === "admin") {
+            const codes = userSwitchCodes(user);
+            entry = codes[0] || ((user.departments && user.departments[0]) || "shop");
+        }
+        return loadServerStateThenEnter(entry, entry, saved);
+    }).catch(function () {
+        try { sessionStorage.removeItem(SESSION_KEY); } catch (err) {}
+        wtServerMode = false;
+        wtServerUser = null;
+        return false;
+    });
 }
 
 function currentAuthUserId() {
@@ -8264,6 +8396,18 @@ function userCanAccessDept(user, code) {
 }
 
 function usersForDeptLogin(code) {
+    if (wtDirectoryReady) {
+        return (wtDirectoryUsers || []).filter(function (u) {
+            if (!u || !u.user_id) return false;
+            const codes = u.login_codes || [];
+            if (codes.indexOf(code) !== -1) return true;
+            return (u.departments || []).indexOf(code) !== -1;
+        }).sort(function (a, b) {
+            const an = String(a.display_name || a.user_id);
+            const bn = String(b.display_name || b.user_id);
+            return an.localeCompare(bn, "ru");
+        });
+    }
     return appUsers().filter(function (u) {
         if (!u || !u.user_id) return false;
         if (u.is_active === false) return false;
@@ -8399,8 +8543,10 @@ function territoryMetricsHostWorkspace() {
 let pendingOpenSection = "";
 
 function enterAsUser(user, code) {
-    ensureLoginData();
-    migrateAppUsers(appData);
+    if (!wtServerMode) {
+        ensureLoginData();
+        migrateAppUsers(appData);
+    }
     if (code === "territoryMetrics") {
         if (!userCanAccessDept(user, "territoryMetrics")) return false;
         const host = territoryMetricsHostWorkspace();
@@ -8428,14 +8574,14 @@ function enterAsUser(user, code) {
         w = findWorkspaceByCode("summary");
     }
     if (!w && code === "summary") {
-        w = createWorkspace(SUMMARY_DEFAULT.name, "5555", "summary", "summary");
+        w = createWorkspace(SUMMARY_DEFAULT.name, wtServerMode ? "" : "5555", "summary", "summary");
         appData.workspaces.push(w);
-        ensureSummaryPins(w);
+        if (!wtServerMode) ensureSummaryPins(w);
     }
     const destCode = (code === "spu" || code === "admin" || code === "org" || code === "financeRec") ? "summary" : code;
     const def = DEPT_DEFAULTS.find(function (d) { return d.code === destCode; });
     if (!w && def) {
-        w = createWorkspace(def.name, String(def.pin), "dept", destCode);
+        w = createWorkspace(def.name, wtServerMode ? "" : String(def.pin), "dept", destCode);
         appData.workspaces.push(w);
     }
     if (!w) return false;
@@ -8663,51 +8809,10 @@ function syncLegacyPinsFromUsers(data) {
 }
 
 function migrateAppUsers(data) {
+    if (wtServerMode) return;
     if (!data || typeof data !== "object") return;
     if (!Array.isArray(data.users)) data.users = [];
     data.users.forEach(normalizeAccessUser);
-    const summary = (data.workspaces || []).find(function (w) {
-        return w && (w.code === "summary" || w.type === "summary");
-    });
-    if (summary) {
-        ensureSummaryUsers(summary);
-        SUMMARY_ROLES.forEach(function (r) {
-            const stored = summary.roleUsers[r.role] || {};
-            const pin = pinString(stored.pin != null ? stored.pin : ((summary.rolePins && summary.rolePins[r.role]) || r.pin));
-            const role = r.role === "admin" ? "admin" : (r.role === "adjust" ? "manager" : "user");
-            upsertAccessUser(data, {
-                user_id: stored.user_id || ("user_" + r.role),
-                display_name: stored.name || r.name,
-                pin: pin,
-                role: role,
-                legacy_role: r.role,
-                employee_id: stored.employee_id || "",
-                is_active: true,
-                departments: r.role === "admin"
-                    ? DEPT_DEFAULTS.map(function (d) { return d.code; }).concat(["summary"])
-                    : ["summary"],
-                permissions: accessRoleTemplate(role, r.role)
-            });
-        });
-    }
-    DEPT_DEFAULTS.forEach(function (def) {
-        const w = (data.workspaces || []).find(function (x) {
-            return x && x.code === def.code && x.type !== "summary";
-        });
-        const pin = pinString((w && w.pin) || def.pin);
-        upsertAccessUser(data, {
-            user_id: "user_dept_" + def.code,
-            display_name: def.name,
-            pin: pin,
-            role: "user",
-            legacy_role: "staff",
-            employee_id: "",
-            is_active: true,
-            departments: [def.code],
-            permissions: accessRoleTemplate("user", "staff")
-        });
-    });
-    syncLegacyPinsFromUsers(data);
 }
 
 function generateAccessUserId() {
@@ -9129,8 +9234,8 @@ function createDefaultData() {
         orgStructure: { nodes: [], leadership: [] },
         customerReturns: { items: [], vehicles: [], adjustments: [] },
         workspaces: DEPT_DEFAULTS.map(function (d) {
-            return createWorkspace(d.name, d.pin, "dept", d.code);
-        }).concat([createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code)]),
+            return createWorkspace(d.name, "", "dept", d.code);
+        }).concat([createWorkspace(SUMMARY_DEFAULT.name, "", "summary", SUMMARY_DEFAULT.code)]),
         positionCatalog: { items: [], suppressed: [] }
     };
 }
@@ -9182,71 +9287,23 @@ function normalizeWorkspace(w) {
 }
 
 function ensureSummaryPins(w) {
+    if (wtServerMode) return;
     if (!w) return;
-    if (!w.rolePins || typeof w.rolePins !== "object") {
-        w.rolePins = { admin: "5555", adjust: "6666", pay: "7777" };
-    }
-    w.rolePins.admin = pinString(w.rolePins.admin) || (pinString(w.pin) && pinString(w.pin) !== "1111" ? pinString(w.pin) : "5555");
-    w.rolePins.adjust = pinString(w.rolePins.adjust) || "6666";
-    w.rolePins.pay = pinString(w.rolePins.pay) || "7777";
-    w.pin = w.rolePins.admin;
+    if (!w.rolePins || typeof w.rolePins !== "object") w.rolePins = {};
+    if (pinString(w.rolePins.admin)) w.pin = pinString(w.rolePins.admin);
     ensureSummaryUsers(w);
 }
 
 function ensureSummaryUsers(w) {
+    if (wtServerMode) return;
     if (!w) return;
-    if (!w.rolePins || typeof w.rolePins !== "object") {
-        w.rolePins = { admin: "5555", adjust: "6666", pay: "7777" };
-    }
+    if (!w.rolePins || typeof w.rolePins !== "object") w.rolePins = {};
     if (!w.roleUsers || typeof w.roleUsers !== "object") w.roleUsers = {};
-    SUMMARY_ROLES.forEach(function (r) {
-        const prev = w.roleUsers[r.role] && typeof w.roleUsers[r.role] === "object" ? w.roleUsers[r.role] : {};
-        const name = String(prev.name || r.name).replace(/\s+/g, " ").trim() || r.name;
-        const pin = pinString(prev.pin != null ? prev.pin : (prev.password != null ? prev.password : w.rolePins[r.role])) || r.pin;
-        w.roleUsers[r.role] = {
-            id: r.role,
-            user_id: prev.user_id || ("user_" + r.role),
-            role: r.role,
-            name: name,
-            pin: pin
-        };
-        w.rolePins[r.role] = pin;
-    });
-    w.pin = w.rolePins.admin;
 }
 
 function restoreCanonicalPins(data) {
+    if (wtServerMode) return;
     if (!data || !Array.isArray(data.workspaces)) return;
-    DEPT_DEFAULTS.forEach(function (def) {
-        const w = data.workspaces.find(function (x) {
-            return x && x.code === def.code && x.type !== "summary";
-        });
-        if (w && !pinIsSet(w.pin)) w.pin = String(def.pin);
-    });
-    const summary = data.workspaces.find(function (w) {
-        return w && (w.code === "summary" || w.type === "summary");
-    });
-    if (summary) {
-        if (!summary.rolePins || typeof summary.rolePins !== "object") summary.rolePins = {};
-        if (!summary.roleUsers || typeof summary.roleUsers !== "object") summary.roleUsers = {};
-        SUMMARY_ROLES.forEach(function (r) {
-            const prev = summary.roleUsers[r.role] && typeof summary.roleUsers[r.role] === "object"
-                ? summary.roleUsers[r.role]
-                : {};
-            const pin = pinString(prev.pin != null ? prev.pin : (summary.rolePins[r.role] || r.pin)) || r.pin;
-            summary.roleUsers[r.role] = {
-                id: r.role,
-                user_id: prev.user_id || ("user_" + r.role),
-                role: r.role,
-                name: String(prev.name || r.name).replace(/\s+/g, " ").trim() || r.name,
-                pin: pin,
-                employee_id: prev.employee_id || ""
-            };
-            if (!pinIsSet(summary.rolePins[r.role])) summary.rolePins[r.role] = pin;
-            else summary.rolePins[r.role] = pinString(summary.rolePins[r.role]);
-        });
-        summary.pin = pinString(summary.rolePins.admin) || summary.pin;
-    }
 }
 
 function mergeSalaryRecord(dst, src) {
@@ -9587,14 +9644,13 @@ function repairFourDepartments(data) {
             return x.type !== "summary" && x.code === def.code;
         });
         if (!w) {
-            w = createWorkspace(def.name, def.pin, "dept", def.code);
+            w = createWorkspace(def.name, "", "dept", def.code);
             data.workspaces.push(w);
             return;
         }
         w.type = "dept";
         w.code = def.code;
         w.name = def.name;
-        if (!pinString(w.pin) || (def.code !== "shop" && pinString(w.pin) === "1111")) w.pin = def.pin;
         if (!Array.isArray(w.employees)) w.employees = [];
         if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
         if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
@@ -9607,13 +9663,12 @@ function repairFourDepartments(data) {
 
     let summary = data.workspaces.find(function (w) { return w.type === "summary"; });
     if (!summary) {
-        summary = createWorkspace(SUMMARY_DEFAULT.name, SUMMARY_DEFAULT.pin, "summary", SUMMARY_DEFAULT.code);
+        summary = createWorkspace(SUMMARY_DEFAULT.name, "", "summary", SUMMARY_DEFAULT.code);
         data.workspaces.push(summary);
     }
     summary.type = "summary";
     summary.code = SUMMARY_DEFAULT.code;
     summary.name = SUMMARY_DEFAULT.name;
-    if (!pinString(summary.pin) || pinString(summary.pin) === "1111") summary.pin = SUMMARY_DEFAULT.pin;
     ensureSummaryPins(summary);
     summary.employees = [];
     summary.employeeIds = [];
@@ -9921,12 +9976,326 @@ function loadAppData() {
     }
 }
 
+function wtCloneJson(value) {
+    return JSON.parse(JSON.stringify(value));
+}
+
+function wtJsonEqual(left, right) {
+    try {
+        return JSON.stringify(left) === JSON.stringify(right);
+    } catch (err) {
+        return false;
+    }
+}
+
+function wtIsPlainObject(value) {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function wtMergeKeyedList(serverList, draftList, baseList, keyName) {
+    const server = Array.isArray(serverList) ? serverList : [];
+    const draft = Array.isArray(draftList) ? draftList : [];
+    const base = Array.isArray(baseList) ? baseList : [];
+    const index = {};
+    server.forEach(function (item, i) {
+        if (item && item[keyName] != null) index[String(item[keyName])] = { server: item, i: i };
+    });
+    draft.forEach(function (item) {
+        if (!item || item[keyName] == null) return;
+        const id = String(item[keyName]);
+        const slot = index[id];
+        const baseItem = base.filter(function (b) { return b && String(b[keyName]) === id; })[0];
+        if (slot) {
+            index[id].merged = wtThreeWayMerge(slot.server, item, baseItem);
+        } else {
+            index[id] = { merged: wtCloneJson(item) };
+        }
+    });
+    const out = [];
+    const seen = {};
+    server.forEach(function (item) {
+        if (!item || item[keyName] == null) {
+            out.push(wtCloneJson(item));
+            return;
+        }
+        const id = String(item[keyName]);
+        seen[id] = true;
+        out.push(index[id].merged != null ? index[id].merged : wtCloneJson(item));
+    });
+    draft.forEach(function (item) {
+        if (!item || item[keyName] == null) return;
+        const id = String(item[keyName]);
+        if (!seen[id]) out.push(index[id].merged != null ? index[id].merged : wtCloneJson(item));
+    });
+    return out;
+}
+
+function wtThreeWayMerge(server, draft, base) {
+    if (wtJsonEqual(draft, base)) return wtCloneJson(server);
+    if (wtJsonEqual(server, base)) return wtCloneJson(draft);
+    if (wtJsonEqual(draft, server)) return wtCloneJson(server);
+    if (wtIsPlainObject(server) && wtIsPlainObject(draft)) {
+        const out = {};
+        const keys = {};
+        Object.keys(server).forEach(function (k) { keys[k] = true; });
+        Object.keys(draft).forEach(function (k) { keys[k] = true; });
+        if (wtIsPlainObject(base)) Object.keys(base).forEach(function (k) { keys[k] = true; });
+        Object.keys(keys).forEach(function (k) {
+            out[k] = wtThreeWayMerge(
+                server[k],
+                draft[k],
+                base && wtIsPlainObject(base) ? base[k] : undefined
+            );
+        });
+        return out;
+    }
+    if (Array.isArray(server) && Array.isArray(draft)) {
+        if ((server[0] && server[0].code) || (draft[0] && draft[0].code)) {
+            return wtMergeKeyedList(server, draft, base, "code");
+        }
+        if ((server[0] && server[0].user_id) || (draft[0] && draft[0].user_id)) {
+            return wtMergeKeyedList(server, draft, base, "user_id");
+        }
+        return wtCloneJson(draft);
+    }
+    return wtCloneJson(draft);
+}
+
+function buildStaffPutPayload() {
+    const out = {};
+    const u = currentAuthUser();
+    const codes = userAccessDeptCodes(u);
+    if (userHasPerm("timesheet", "edit")) {
+        out.workspaces = ((appData && appData.workspaces) || []).filter(function (w) {
+            return w && codes.indexOf(w.code) !== -1;
+        }).map(function (w) {
+            return { code: w.code, timesheet: w.timesheet || {} };
+        });
+    }
+    if (userHasPerm("metricsInput", "edit") || userHasPerm("metrics", "edit")) {
+        if (codes.indexOf("shop") !== -1 && appData.shopMetrics) out.shopMetrics = appData.shopMetrics;
+        const territory = {};
+        TERRITORY_DEPT_CODES.forEach(function (code) {
+            if (codes.indexOf(code) !== -1 && appData.deptMetrics && appData.deptMetrics[code]) {
+                territory[code] = appData.deptMetrics[code];
+            }
+        });
+        if (Object.keys(territory).length) out.deptMetrics = territory;
+    }
+    if (userHasPerm("revision", "edit")) {
+        if (codes.indexOf("shop") !== -1 && appData.shopRevision) out.shopRevision = appData.shopRevision;
+        const territory = {};
+        TERRITORY_DEPT_CODES.forEach(function (code) {
+            if (codes.indexOf(code) !== -1 && appData.deptRevisions && appData.deptRevisions[code]) {
+                territory[code] = appData.deptRevisions[code];
+            }
+        });
+        if (Object.keys(territory).length) out.deptRevisions = territory;
+    }
+    if (userHasPerm("salesPlan", "edit")) {
+        if (codes.indexOf("shop") !== -1 && appData.shopSalesPlan) out.shopSalesPlan = appData.shopSalesPlan;
+        const territory = {};
+        TERRITORY_DEPT_CODES.forEach(function (code) {
+            if (codes.indexOf(code) !== -1 && appData.deptSalesPlans && appData.deptSalesPlans[code]) {
+                territory[code] = appData.deptSalesPlans[code];
+            }
+        });
+        if (Object.keys(territory).length) out.deptSalesPlans = territory;
+    }
+    if ((userHasPerm("metricsSetup", "edit") || userHasPerm("kpi", "edit")) && appData.shopMetricCatalog) {
+        out.shopMetricCatalog = appData.shopMetricCatalog;
+    }
+    if (userHasPerm("salary", "edit") && appData.shopPayroll) out.shopPayroll = appData.shopPayroll;
+    if (userHasPerm("salary", "edit") && appData.salary) out.salary = appData.salary;
+    if (userHasPerm("financeRec", "edit") && appData.financeRec) out.financeRec = appData.financeRec;
+    if (userHasPerm("orgStructure", "edit") && appData.orgStructure) out.orgStructure = appData.orgStructure;
+    if (userHasPerm("customerReturns", "edit") && appData.customerReturns) out.customerReturns = appData.customerReturns;
+    const mgmt = appData && appData.management;
+    if (mgmt && typeof mgmt === "object") {
+        const slice = {};
+        if (typeof canEditMgmtIndicators === "function" ? canEditMgmtIndicators() : userHasPerm("managementIndicators", "edit")) {
+            slice.indicators = mgmt.indicators;
+            slice.plans = mgmt.plans;
+            slice.manualFacts = mgmt.manualFacts;
+            slice.input_order = mgmt.input_order;
+        }
+        if (typeof canEditSpuStructure === "function" ? canEditSpuStructure() : userHasPerm("managementStructure", "edit")) {
+            slice.spuOrgNodes = mgmt.spuOrgNodes;
+            slice.spuDepartments = mgmt.spuDepartments;
+        }
+        if (typeof canEditMgmtTasks === "function" ? canEditMgmtTasks() : userHasPerm("managementTasks", "edit")) {
+            slice.tasks = mgmt.tasks;
+        }
+        if (typeof canEditMgmtMeetings === "function" ? canEditMgmtMeetings() : userHasPerm("managementMeetings", "edit")) {
+            slice.meetings = mgmt.meetings;
+            slice.events = mgmt.events;
+        }
+        if (userHasPerm("management", "edit")) {
+            out.management = mgmt;
+        } else if (Object.keys(slice).length) {
+            out.management = slice;
+        }
+    }
+    if (!Object.keys(out).length) return null;
+    return out;
+}
+
+function payloadForServerPut() {
+    if (isAppAdmin()) return wtCloneJson(appData);
+    return buildStaffPutPayload();
+}
+
+function stripLocalSecretsAfterSave() {
+    if (!appData || !Array.isArray(appData.users)) return;
+    appData.users.forEach(function (u) {
+        if (!u || typeof u !== "object") return;
+        delete u.pin;
+        delete u.password;
+        delete u.pin_hash;
+    });
+    (appData.workspaces || []).forEach(function (w) {
+        if (!w || typeof w !== "object") return;
+        if (Object.prototype.hasOwnProperty.call(w, "pin")) w.pin = "";
+        delete w.pin_hash;
+        delete w.rolePins;
+    });
+}
+
+function handleWtSaveUnauthorized() {
+    wtPutPaused = true;
+    wtKeepUnsavedDraft = true;
+    toast("Сессия истекла. Войдите снова. Несохранённые изменения на экране сохранятся, пока вы не обновите страницу.", "error");
+    try { sessionStorage.removeItem(SESSION_KEY); } catch (err) {}
+    document.getElementById("app").style.display = "none";
+    document.getElementById("loginScreen").style.display = "flex";
+    const view = currentEntry === "dept" ? ((workspace() && workspace().code) || "shop") : (currentEntry || "admin");
+    renderLogin(view === "dept" ? "shop" : view);
+    return false;
+}
+
+function handleWtSaveConflict(data) {
+    wtPutPaused = true;
+    const draft = wtCloneJson(appData);
+    const base = wtLastLoadedPayload ? wtCloneJson(wtLastLoadedPayload) : null;
+    const msg = "Конфликт: данные уже изменил другой сотрудник. Ваш черновик на экране сохранён.\n\nOK — загрузить свежие данные, наложить ваши правки поверх и сохранить, не затирая чужие разделы.\nОтмена — оставить черновик на экране без записи.";
+    const mergeAndSave = window.confirm(msg);
+    if (!mergeAndSave) {
+        wtAllowConflictRetry = true;
+        toast("Черновик остался на экране и не записан. Сохранение не затирает чужие данные.", "error");
+        return false;
+    }
+    return fetch("/api/state", { credentials: "same-origin" }).then(function (res) {
+        if (res.status === 401) return handleWtSaveUnauthorized();
+        if (!res.ok) {
+            toast("Не удалось обновить данные с сервера. Черновик на экране сохранён.", "error");
+            return false;
+        }
+        return res.json();
+    }).then(function (state) {
+        if (!state || state === false) return false;
+        applyServerState(state);
+        appData = wtThreeWayMerge(appData, draft, base);
+        wtPutPaused = false;
+        wtKeepUnsavedDraft = false;
+        wtAllowConflictRetry = false;
+        toast("Свежие данные загружены, ваши правки наложены. Сохраняем…");
+        try { renderAccessUsers(); } catch (err) {}
+        try { renderDeptNow(); } catch (err) {}
+        return putServerStateOnce();
+    }).catch(function () {
+        toast("Нет соединения с сервером. Черновик на экране сохранён.", "error");
+        return false;
+    });
+}
+
+function putServerStateOnce() {
+    if (!wtServerMode || !appData) return Promise.resolve(false);
+    if (wtPutPaused) return Promise.resolve(false);
+    let payload;
+    try {
+        payload = payloadForServerPut();
+    } catch (err) {
+        toast("Не удалось подготовить данные для сохранения.", "error");
+        return Promise.resolve(false);
+    }
+    if (!payload) return Promise.resolve(true);
+    return fetch("/api/state", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ version: wtStateVersion, payload: payload })
+    }).then(function (res) {
+        if (res.status === 401) return handleWtSaveUnauthorized();
+        if (res.status === 409) {
+            return res.json().then(handleWtSaveConflict, function () {
+                toast("Конфликт версий. Изменения на экране не сброшены и не записаны.", "error");
+                wtPutPaused = true;
+                return false;
+            });
+        }
+        if (res.status === 400) {
+            return res.json().then(function (body) {
+                if (body && body.error === "duplicate pin") {
+                    toast("Этот PIN уже используется другим администратором. Назначьте другой PIN.", "error");
+                } else {
+                    toast("Не удалось сохранить данные на сервере. Изменения не записаны.", "error");
+                }
+                return false;
+            }, function () {
+                toast("Не удалось сохранить данные на сервере. Изменения не записаны.", "error");
+                return false;
+            });
+        }
+        if (res.status === 403) {
+            toast("Недостаточно прав для сохранения.", "error");
+            return false;
+        }
+        if (!res.ok) {
+            toast("Не удалось сохранить данные на сервере. Изменения не записаны.", "error");
+            return false;
+        }
+        return res.json().then(function (state) {
+            if (state && state.version != null) wtStateVersion = Number(state.version) || wtStateVersion;
+            stripLocalSecretsAfterSave();
+            try { wtLastLoadedPayload = wtCloneJson(appData); } catch (err) {}
+            return true;
+        });
+    }).catch(function () {
+        toast("Нет соединения с сервером. Изменения не записаны.", "error");
+        return false;
+    });
+}
+
 function saveApp() {
+    if (wtServerMode) {
+        if (wtPutPaused && wtKeepUnsavedDraft) {
+            toast("Сессия истекла. Войдите снова, чтобы сохранить изменения.", "error");
+            return Promise.resolve(false);
+        }
+        if (wtPutPaused && wtAllowConflictRetry) {
+            wtPutPaused = false;
+            wtAllowConflictRetry = false;
+        }
+        if (wtPutPaused) {
+            if (Date.now() - wtPauseToastAt > 4000) {
+                wtPauseToastAt = Date.now();
+                toast("Сохранение приостановлено из-за конфликта. Загрузите свежие данные с сервера, затем повторите изменения.", "error");
+            }
+            return Promise.resolve(false);
+        }
+        const job = wtPutChain.then(function () {
+            return putServerStateOnce();
+        });
+        wtPutChain = job.then(function () { return true; }, function () { return true; });
+        return job;
+    }
     try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+        return Promise.resolve(true);
     } catch (err) {
         console.error(err);
         toast("Не удалось сохранить данные.", "error");
+        return Promise.resolve(false);
     }
 }
 
@@ -10724,19 +11093,11 @@ function renderLogin(view) {
             return;
         }
         if (view === "shop" || view === "territory" || view === "territoryMetrics" || view === "summary" || view === "spu" || view === "org" || view === "admin" || view === "financeRec") loginView = view;
-        ensureLoginData();
-        try { migrateAppUsers(appData); } catch (migErr) { console.error(migErr); }
+        if (loginView !== "admin" && !wtDirectoryReady) {
+            fetchDirectory().then(function () { renderLogin(loginView); });
+        }
 
         const defs = DEPT_DEFAULTS;
-        const summary = findWorkspaceByCode("summary");
-        if (summary) ensureSummaryPins(summary);
-        const showHint = defs.every(function (d) {
-            const w = findWorkspaceByCode(d.code);
-            const u = findAccessUser("user_dept_" + d.code);
-            return (u && pinsMatch(u.pin, d.pin)) || (w && pinsMatch(w.pin, d.pin));
-        }) && summary && findAccessUser("user_admin") && pinsMatch(findAccessUser("user_admin").pin, "5555")
-            && findAccessUser("user_adjust") && pinsMatch(findAccessUser("user_adjust").pin, "6666")
-            && findAccessUser("user_pay") && pinsMatch(findAccessUser("user_pay").pin, "7777");
 
         const homeLink = document.getElementById("loginHomeLink");
         const title = document.getElementById("loginTitle");
@@ -10757,19 +11118,13 @@ function renderLogin(view) {
         if (loginView === "shop") {
             backHome();
             if (title) title.textContent = "Магазин Володарского";
-            if (subtitle) {
-                subtitle.innerHTML = "Выберите пользователя и введите его PIN."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Выберите пользователя и введите его PIN.";
             grid.className = "login-grid single-view";
             grid.innerHTML = deptLoginCardHtml(defs.find(function (d) { return d.code === "shop"; }));
         } else if (loginView === "territory") {
             backHome();
             if (title) title.textContent = "ТЕРРИТОРИЯ";
-            if (subtitle) {
-                subtitle.innerHTML = "Внутри Территории: Офис, Склад, Логистика + Торговые и Метрики. Выберите пользователя или откройте метрики."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Внутри Территории: Офис, Склад, Логистика + Торговые и Метрики. Выберите пользователя или откройте метрики.";
             grid.className = "login-grid territory-view";
             grid.innerHTML = TERRITORY_DEPT_CODES.map(function (code) {
                 return deptLoginCardHtml(defs.find(function (d) { return d.code === code; }));
@@ -10779,10 +11134,7 @@ function renderLogin(view) {
                 homeLink.innerHTML = '<button type="button" onclick="renderLogin(\'territory\')">← Назад в Территорию</button>';
             }
             if (title) title.textContent = "Метрики территории";
-            if (subtitle) {
-                subtitle.innerHTML = "Метрики сотрудников Офиса, Склада и Логистики + Торговых. Выберите пользователя и введите его PIN."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Метрики сотрудников Офиса, Склада и Логистики + Торговых. Выберите пользователя и введите его PIN.";
             grid.className = "login-grid single-view";
             grid.innerHTML = userPinLoginCardHtml(
                 "territoryMetrics",
@@ -10793,46 +11145,31 @@ function renderLogin(view) {
         } else if (loginView === "summary") {
             backHome();
             if (title) title.textContent = "Общее";
-            if (subtitle) {
-                subtitle.innerHTML = "Зарплаты, начисления и общий расчёт. Выберите пользователя и введите его PIN."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Зарплаты, начисления и общий расчёт. Выберите пользователя и введите его PIN.";
             grid.className = "login-grid single-view";
             grid.innerHTML = userPinLoginCardHtml("summary", "Общее");
         } else if (loginView === "spu") {
             backHome();
             if (title) title.textContent = "СПУ";
-            if (subtitle) {
-                subtitle.innerHTML = "Система планирования и управления компанией. Выберите пользователя и введите его PIN."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Система планирования и управления компанией. Выберите пользователя и введите его PIN.";
             grid.className = "login-grid single-view";
             grid.innerHTML = userPinLoginCardHtml("spu", "СПУ");
         } else if (loginView === "financeRec") {
             backHome();
             if (title) title.textContent = "Финконтроль";
-            if (subtitle) {
-                subtitle.innerHTML = "Финансовая сверка поступлений, расходов и остатков. Выберите пользователя и введите его PIN."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Финансовая сверка поступлений, расходов и остатков. Выберите пользователя и введите его PIN.";
             grid.className = "login-grid single-view";
             grid.innerHTML = userPinLoginCardHtml("financeRec", "Финконтроль", "Финансовая сверка поступлений, расходов и остатков", "Открыть");
         } else if (loginView === "org") {
             backHome();
             if (title) title.textContent = "Оргструктура";
-            if (subtitle) {
-                subtitle.innerHTML = "Организационная модель компании. Выберите пользователя и введите его PIN."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Организационная модель компании. Выберите пользователя и введите его PIN.";
             grid.className = "login-grid single-view";
             grid.innerHTML = userPinLoginCardHtml("org", "Оргструктура");
         } else if (loginView === "admin") {
             backHome();
             if (title) title.textContent = "Администратор";
-            if (subtitle) {
-                subtitle.innerHTML = "Отдельный вход администратора. Все подразделения."
-                    + ' <span id="defaultPinHint"></span>';
-            }
+            if (subtitle) subtitle.textContent = "Отдельный вход администратора. Все подразделения.";
             grid.className = "login-grid single-view";
             grid.innerHTML = adminLoginCardHtml();
         } else {
@@ -10841,25 +11178,6 @@ function renderLogin(view) {
         }
 
         restoreAllLoginCardState(grid);
-
-        const hint = document.getElementById("defaultPinHint");
-        if (hint) {
-            hint.textContent = showHint
-                ? (loginView === "summary"
-                    ? " Общее: 5555 / 6666 / 7777."
-                    : loginView === "spu"
-                        ? " СПУ: 5555 / 6666."
-                        : loginView === "org"
-                        ? " Оргструктура: 5555 / 6666."
-                        : loginView === "financeRec"
-                        ? " Финконтроль: PIN пользователя с доступом."
-                        : loginView === "admin"
-                        ? " Админ: 5555."
-                        : loginView === "territoryMetrics"
-                        ? " Введите PIN пользователя Офиса, Склада или Логистики + Торговых."
-                        : " Введите личный PIN пользователя этого раздела.")
-                : "";
-        }
     } catch (err) {
         console.error(err);
         const subtitle = document.getElementById("loginSubtitle");
@@ -10890,8 +11208,40 @@ function usersForDeptLoginSafe(code) {
     }
 }
 
+function fetchDirectory() {
+    return fetch("/api/directory", { credentials: "same-origin" }).then(function (res) {
+        if (!res.ok) throw new Error("directory");
+        return res.json();
+    }).then(function (data) {
+        wtDirectoryUsers = (data && Array.isArray(data.users)) ? data.users : [];
+        wtDirectoryReady = true;
+        wtDirectoryError = "";
+        return wtDirectoryUsers;
+    }).catch(function () {
+        wtDirectoryUsers = [];
+        wtDirectoryReady = true;
+        wtDirectoryError = "Не удалось загрузить список сотрудников.";
+        return [];
+    });
+}
+
 function userPinLoginCardHtml(code, title, note, buttonLabel) {
     if (!code) return "";
+    if (!wtDirectoryReady) {
+        return ""
+            + '<div class="login-card ' + code + '" id="loginCard_' + code + '" data-login-dept="' + code + '">'
+            +   "<h3>" + escapeHtml(title || code) + "</h3>"
+            +   (note ? '<div class="note">' + escapeHtml(note) + "</div>" : "")
+            +   '<div class="login-empty">Загрузка пользователей…</div>'
+            + "</div>";
+    }
+    if (wtDirectoryError) {
+        return ""
+            + '<div class="login-card ' + code + '" id="loginCard_' + code + '" data-login-dept="' + code + '">'
+            +   "<h3>" + escapeHtml(title || code) + "</h3>"
+            +   '<div class="login-empty">' + escapeHtml(wtDirectoryError) + "</div>"
+            + "</div>";
+    }
     const users = usersForDeptLoginSafe(code);
     let selected = loginSelectedUserByDept[code] || "";
     if (users && users.length === 1) selected = users[0].user_id;
@@ -11132,6 +11482,7 @@ function anyPinMatch(entered, candidates) {
 }
 
 function ensureLoginData() {
+    if (wtServerMode) return;
     if (!appData || typeof appData !== "object") {
         try { appData = loadAppData(); } catch (err) { appData = createDefaultData(); }
     }
@@ -11139,11 +11490,11 @@ function ensureLoginData() {
     try { repairFourDepartments(appData); } catch (err) { console.error(err); }
     DEPT_DEFAULTS.forEach(function (def) {
         if (!findWorkspaceByCode(def.code)) {
-            appData.workspaces.push(createWorkspace(def.name, String(def.pin), "dept", def.code));
+            appData.workspaces.push(createWorkspace(def.name, "", "dept", def.code));
         }
     });
     if (!findWorkspaceByCode("summary")) {
-        const summary = createWorkspace(SUMMARY_DEFAULT.name, String(SUMMARY_DEFAULT.pin), "summary", SUMMARY_DEFAULT.code);
+        const summary = createWorkspace(SUMMARY_DEFAULT.name, "", "summary", SUMMARY_DEFAULT.code);
         appData.workspaces.push(summary);
     }
     const summary = findWorkspaceByCode("summary");
@@ -11167,12 +11518,11 @@ function showLoginError(code, message) {
 function loginByCode(code) {
     try {
         console.log("[WorkTime login submit]", code);
-        ensureLoginData();
-        migrateAppUsers(appData);
         const select = document.getElementById("loginUser_" + code);
         const input = document.getElementById("loginPin_" + code);
         const card = document.getElementById("loginCard_" + code);
         const error = document.getElementById("loginError_" + code);
+        const btn = document.getElementById("loginBtn_" + code);
         if (card) card.classList.remove("error");
         if (error) error.textContent = "";
 
@@ -11189,35 +11539,63 @@ function loginByCode(code) {
             return;
         }
 
-        const user = findAccessUser(userId);
-        if (!user || user.is_active === false) {
+        const listed = usersForDeptLogin(code).some(function (u) { return u && u.user_id === userId; });
+        if (!listed) {
             showLoginError(code, "Для этого раздела не найдено пользователей с доступом");
             return;
         }
-        if (!userCanAccessDept(user, code)) {
-            showLoginError(code, "Нет доступа к этому разделу");
-            return;
-        }
-        if (!pinsMatch(entered, user.pin)) {
-            loginPinByDept[code] = "";
+
+        if (btn) btn.disabled = true;
+        fetch("/api/login", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ user_id: userId, pin: entered })
+        }).then(function (res) {
+            if (res.status === 401) {
+                loginPinByDept[code] = "";
+                if (input) input.value = "";
+                syncLoginCardUi(code);
+                showLoginError(code, "Неверный PIN");
+                return null;
+            }
+            if (res.status === 429) {
+                showLoginError(code, "Слишком много попыток. Подождите и попробуйте снова.");
+                return null;
+            }
+            if (!res.ok) {
+                showLoginError(code, "Сервер временно недоступен. Попробуйте позже.");
+                return null;
+            }
+            return res.json();
+        }).then(function (data) {
+            if (!data) return;
+            const user = rememberServerUser(data.user);
+            if (!user) {
+                showLoginError(code, "Сервер временно недоступен. Попробуйте позже.");
+                return;
+            }
+            if (code === "spu") currentEntry = "spu";
+            else if (code === "org") currentEntry = "org";
+            else if (code === "summary") currentEntry = "summary";
+            else if (code === "financeRec") currentEntry = "financeRec";
+            else if (code === "territoryMetrics") currentEntry = "territoryMetrics";
+            else currentEntry = "dept";
+            clearLoginPinState(code);
             if (input) input.value = "";
-            syncLoginCardUi(code);
-            showLoginError(code, "Неверный PIN");
-            return;
-        }
-        clearLoginPinState(code);
-        if (input) input.value = "";
-        if (code === "spu") currentEntry = "spu";
-        else if (code === "org") currentEntry = "org";
-        else if (code === "summary") currentEntry = "summary";
-        else if (code === "territoryMetrics") currentEntry = "territoryMetrics";
-        else currentEntry = "dept";
-        if (!enterAsUser(user, code)) {
-            showLoginError(code, "Ошибка входа в раздел.");
-        }
+            return loadServerStateThenEnter(code, code, null).then(function (opened) {
+                if (!opened && error && !error.textContent) {
+                    showLoginError(code, "Не удалось загрузить данные с сервера.");
+                }
+            });
+        }).catch(function () {
+            showLoginError(code, "Нет соединения с сервером. Проверьте сеть и попробуйте снова.");
+        }).then(function () {
+            if (btn) btn.disabled = false;
+        });
     } catch (err) {
         console.error(err);
-        showLoginError(code, "Ошибка загрузки пользователей");
+        showLoginError(code, "Нет соединения с сервером. Проверьте сеть и попробуйте снова.");
     }
 }
 
@@ -11227,35 +11605,60 @@ function loginSummary() {
 
 function loginAdmin() {
     try {
-        console.log("[WorkTime login submit]", "admin");
-        ensureLoginData();
-        migrateAppUsers(appData);
         const input = document.getElementById("loginPin_admin");
         const entered = pinString(loginPinDigits(input && input.value));
         const card = document.getElementById("loginCard_admin");
         const error = document.getElementById("loginError_admin");
+        const btn = card ? card.querySelector("button.btn-primary") : null;
         if (card) card.classList.remove("error");
         if (error) error.textContent = "";
         if (!entered) {
             showLoginError("admin", "Введите PIN");
             return;
         }
-        const user = findActiveUserByPin(entered);
-        if (!user || (user.role !== "admin" && user.legacy_role !== "admin")) {
-            if (input) input.value = "";
-            loginPinByDept.admin = "";
-            showLoginError("admin", "Неверный PIN администратора.");
-            return;
-        }
         if (input) input.value = "";
         loginPinByDept.admin = "";
-        currentEntry = "admin";
-        if (!enterAsUser(user, "admin")) {
-            showLoginError("admin", "Ошибка входа администратора.");
-        }
+        if (btn) btn.disabled = true;
+        fetch("/api/login", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin: entered })
+        }).then(function (res) {
+            if (res.status === 401) {
+                showLoginError("admin", "Неверный PIN");
+                return null;
+            }
+            if (res.status === 429) {
+                showLoginError("admin", "Слишком много попыток. Подождите и попробуйте снова.");
+                return null;
+            }
+            if (!res.ok) {
+                showLoginError("admin", "Сервер временно недоступен. Попробуйте позже.");
+                return null;
+            }
+            return res.json();
+        }).then(function (data) {
+            if (!data) return;
+            const user = rememberServerUser(data.user);
+            if (!user) {
+                showLoginError("admin", "Сервер временно недоступен. Попробуйте позже.");
+                return;
+            }
+            currentEntry = "admin";
+            return loadServerStateThenOpenAdmin("admin", null).then(function (opened) {
+                if (!opened && error && !error.textContent) {
+                    showLoginError("admin", "Не удалось загрузить данные с сервера.");
+                }
+            });
+        }).catch(function () {
+            showLoginError("admin", "Нет соединения с сервером. Проверьте сеть и попробуйте снова.");
+        }).then(function () {
+            if (btn) btn.disabled = false;
+        });
     } catch (err) {
         console.error(err);
-        showLoginError("admin", "Ошибка загрузки пользователей");
+        showLoginError("admin", "Нет соединения с сервером. Проверьте сеть и попробуйте снова.");
     }
 }
 
@@ -11307,7 +11710,8 @@ function saveSession() {
             deptRole: currentDeptRole,
             userId: currentUserId,
             territoryMetricsHubId: territoryMetricsHubId,
-            entry: currentEntry
+            entry: currentEntry,
+            serverAuth: !!wtServerMode
         }));
     } catch (err) {}
 }
@@ -11317,6 +11721,14 @@ function leaveWorkspace() {
     currentSummaryRole = null;
     currentDeptRole = null;
     currentUserId = "";
+    wtServerUser = null;
+    wtServerMode = false;
+    wtStateVersion = 0;
+    wtPutPaused = false;
+    wtKeepUnsavedDraft = false;
+    wtAllowConflictRetry = false;
+    wtLastLoadedPayload = null;
+    wtPutChain = Promise.resolve();
     currentSection = "timesheet";
     currentCustomNavItemId = null;
     currentEntry = "dept";
@@ -11331,6 +11743,9 @@ function leaveWorkspace() {
 function logout() {
     const code = currentWorkspaceCode;
     const entry = currentEntry;
+    try {
+        fetch("/api/logout", { method: "POST", credentials: "same-origin" });
+    } catch (err) {}
     leaveWorkspace();
     if (entry === "spu") renderLogin("spu");
     else if (entry === "org") renderLogin("org");
@@ -11351,6 +11766,12 @@ function tryRestoreSession() {
     try {
         const raw = sessionStorage.getItem(SESSION_KEY);
         if (raw === null) return;
+        if (raw.charAt(0) === "{") {
+            try {
+                const preview = JSON.parse(raw);
+                if (preview && preview.serverAuth) return;
+            } catch (skipErr) {}
+        }
         let code = null;
         let id = null;
         if (raw.charAt(0) === "{") {
@@ -29661,8 +30082,9 @@ function saveAccessUser(userId) {
     const role = (document.getElementById("accessUserRole") && document.getElementById("accessUserRole").value) || "user";
     const active = !!(document.getElementById("accessUserActive") && document.getElementById("accessUserActive").checked);
     if (!name) { toast("Введите имя пользователя.", "error"); return; }
-    if (!pin) { toast("Введите PIN.", "error"); return; }
     const id = userId || generateAccessUserId();
+    const existing = findAccessUser(id);
+    if (!pin && !existing) { toast("Введите PIN.", "error"); return; }
     if (active && pinTakenByOther(pin, id)) {
         toast("Этот PIN уже используется другим пользователем.", "error");
         return;
@@ -29711,7 +30133,7 @@ function saveAccessUser(userId) {
     permissions.metrics = (permissions.metricsInput === "edit" || permissions.metricsInput === "view")
         ? permissions.metricsInput
         : "none";
-    let prev = findAccessUser(id);
+    let prev = existing;
     if (!prev) {
         prev = {
             user_id: id,
@@ -29721,7 +30143,11 @@ function saveAccessUser(userId) {
         appUsers().push(prev);
     }
     prev.display_name = name;
-    prev.pin = pin;
+    if (pin) prev.pin = pin;
+    else {
+        delete prev.pin;
+        delete prev.password;
+    }
     prev.role = role;
     prev.is_active = active;
     prev.departments = departments;
@@ -29730,11 +30156,21 @@ function saveAccessUser(userId) {
     else if (prev.legacy_role === "admin") prev.legacy_role = "staff";
     normalizeAccessUser(prev);
     syncLegacyPinsFromUsers(appData);
-    saveApp();
-    closeAccessUserEditor();
-    renderAccessUsers();
-    renderDeptNow();
-    toast("Пользователь сохранён. Вход — по PIN, user_id не изменился.");
+    if (wtPutPaused && !wtKeepUnsavedDraft) wtPutPaused = false;
+    const done = saveApp();
+    function afterSaved() {
+        closeAccessUserEditor();
+        renderAccessUsers();
+        renderDeptNow();
+        toast("Пользователь сохранён. Вход — по PIN, user_id не изменился.");
+    }
+    if (done && typeof done.then === "function") {
+        done.then(function (ok) {
+            if (ok) afterSaved();
+        });
+        return;
+    }
+    afterSaved();
 }
 
 function renderSummaryUsers() {
@@ -45490,7 +45926,7 @@ function requestedLoginView() {
     try {
         var hash = String(location.hash || "").replace("#", "");
         if (hash === "fincontrol") hash = "financeRec";
-        if (hash === "shop" || hash === "territory" || hash === "summary" || hash === "spu" || hash === "org" || hash === "admin" || hash === "financeRec") return hash;
+        if (hash === "shop" || hash === "territory" || hash === "territoryMetrics" || hash === "summary" || hash === "spu" || hash === "org" || hash === "admin" || hash === "financeRec") return hash;
         var search = location.search || "";
         if (/(?:^|[?&])view=shop(?:&|$)/.test(search)) return "shop";
         if (/(?:^|[?&])view=territory(?:&|$)/.test(search)) return "territory";
@@ -45513,16 +45949,13 @@ function ensureLoginRouteFromHash() {
             window.location.replace("index.html");
             return;
         }
-        if (loginView !== view) renderLogin(view);
+        renderLogin(view);
     } catch (err) {
         console.error(err);
     }
 }
 
-function init() {
-    try {
-    try { verifyRepPayExample(); } catch (err) { console.error(err); }
-    try { verifyCrSignedFinance(); } catch (err) { console.error(err); }
+function bootLocalAppData() {
     try {
         appData = loadAppData();
     } catch (err) {
@@ -45535,15 +45968,13 @@ function init() {
         }
     }
     try { ensureLoginData(); } catch (err) { console.error(err); }
-    try { ensureLoginRouteFromHash(); } catch (err) { console.error(err); }
-    try { ensureManagement(); } catch (err) { console.error(err); }
-    try { ensureCustomerReturns(appData); } catch (err) { console.error(err); }
-    try { ensureOrgStructure(appData); } catch (err) { console.error(err); }
-    try { if (typeof ensureFinanceRec === "function") ensureFinanceRec(); } catch (err) { console.error(err); }
+}
+
+function init() {
     try {
-        orgSelfTestLast = orgRunSelfTests();
-        console.log("[WorkTime org tests]", orgSelfTestLast);
-    } catch (err) { console.error(err); }
+    try { verifyRepPayExample(); } catch (err) { console.error(err); }
+    try { verifyCrSignedFinance(); } catch (err) { console.error(err); }
+    try { ensureLoginRouteFromHash(); } catch (err) { console.error(err); }
     try { updateClock(); } catch (err) { console.error(err); }
     setInterval(function () { try { updateClock(); } catch (err) {} }, 1000);
     document.addEventListener("keydown", function (event) {
@@ -45552,13 +45983,17 @@ function init() {
             if (typeof closeCrModal === "function") closeCrModal();
         }
     });
-    try { tryRestoreSession(); } catch (err) { console.error(err); }
-    try { ensureLoginRouteFromHash(); } catch (err) { console.error(err); }
     try {
         window.addEventListener("hashchange", function () {
             try { ensureLoginRouteFromHash(); } catch (hashErr) { console.error(hashErr); }
         });
     } catch (err) { console.error(err); }
+    restoreServerAdminSession().then(function (opened) {
+        if (opened) return;
+        return fetchDirectory().then(function () {
+            try { ensureLoginRouteFromHash(); } catch (err) { console.error(err); }
+        });
+    });
     } catch (bootErr) {
         console.error(bootErr);
         const subtitle = document.getElementById("loginSubtitle");
