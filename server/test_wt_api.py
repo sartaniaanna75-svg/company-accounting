@@ -624,6 +624,15 @@ class SourceAndBindTests(unittest.TestCase):
         self.assertIn("WT_PIN_PEPPER", example)
         self.assertIn("WT_COOKIE_SECURE", example)
 
+    def test_dockerfile_healthcheck_uses_ipv4_and_curl(self):
+        docker = Path(__file__).resolve().parents[1].joinpath("Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("EXPOSE 80", docker)
+        self.assertIn("0.0.0.0:80", docker)
+        self.assertIn("HEALTHCHECK", docker)
+        self.assertIn("curl", docker)
+        self.assertIn("http://127.0.0.1:80/api/health", docker)
+        self.assertNotIn("http://localhost", docker)
+
 
 if __name__ == "__main__":
     unittest.main()
