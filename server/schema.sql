@@ -12,3 +12,12 @@ CREATE TABLE IF NOT EXISTS app_state (
 INSERT INTO app_state (id, payload, version)
 VALUES (1, '{}'::jsonb, 0)
 ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS app_sessions (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS app_sessions_expires_at ON app_sessions (expires_at);
