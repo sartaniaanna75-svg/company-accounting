@@ -617,20 +617,8 @@ def persist_payload(cur, payload: dict, expected_version: int, updated_by: str):
 
 
 def handle_health():
-    db_ok = False
-    if db_configured():
-        try:
-            conn = connect()
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                    cur.fetchone()
-                db_ok = True
-            finally:
-                conn.close()
-        except Exception:
-            db_ok = False
-    return json_bytes({"ok": True, "db": db_ok})
+    # Живость процесса для Timeweb: без PostgreSQL, без авторизации, без редиректов.
+    return json_bytes({"ok": True})
 
 
 def load_state_or_error():

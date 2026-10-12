@@ -235,10 +235,22 @@ class StoreApiTests(unittest.TestCase):
     def test_health_ok(self):
         status, data, *_ = call("GET", "/api/health")
         self.assertTrue(status.startswith("200"))
-        self.assertEqual(data, {"ok": True, "db": True})
+        self.assertEqual(data, {"ok": True})
         status_head, _, text, _ = call("HEAD", "/api/health", as_json=False)
         self.assertTrue(status_head.startswith("200"))
         self.assertEqual(text, "")
+
+    def test_health_does_not_open_database(self):
+        self._patch.stop()
+        try:
+            with patch.object(wt_api, "connect", side_effect=RuntimeError("health must not open db")) as mocked:
+                status, data, raw, _ = call("GET", "/api/health")
+                mocked.assert_not_called()
+            self.assertTrue(status.startswith("200"))
+            self.assertEqual(data, {"ok": True})
+            self.assertNotIn("password", raw.lower())
+        finally:
+            self._patch.start()
 
     def test_login_success_and_me(self):
         cookie, data = self.login("usr_001", "1111")
@@ -512,7 +524,7 @@ class StoreApiTests(unittest.TestCase):
         self.store["fail"] = True
         status_h, data_h, raw_h, _ = call("GET", "/api/health", cookie=cookie)
         self.assertTrue(status_h.startswith("200"))
-        self.assertEqual(data_h, {"ok": True, "db": False})
+        self.assertEqual(data_h, {"ok": True})
         self.assertNotIn(SECRET, raw_h)
         for method, path, body in (
             ("GET", "/api/state", None),
@@ -556,9 +568,12 @@ class UnconfiguredTests(unittest.TestCase):
     def test_health_without_env(self):
         status, data, raw, _ = call("GET", "/api/health")
         self.assertTrue(status.startswith("200"))
-        self.assertEqual(data["ok"], True)
-        self.assertEqual(data["db"], False)
+        self.assertEqual(data, {"ok": True})
         self.assertNotIn("password", raw.lower())
+        with patch.object(wt_api, "connect", side_effect=RuntimeError("health must not open db")) as mocked:
+            status2, data2, *_ = call("HEAD", "/api/health", as_json=False)
+            mocked.assert_not_called()
+        self.assertTrue(status2.startswith("200"))
 
     def test_state_without_session(self):
         status, data, raw, _ = call("GET", "/api/state", token="")
