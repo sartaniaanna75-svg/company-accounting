@@ -469,6 +469,15 @@ def can_write_full_state(user: dict | None) -> bool:
     return user_has_perm(user, "settings", "edit")
 
 
+def can_write_dept_employees(user: dict | None) -> bool:
+    """Руководитель отдела может вести карточки только своего подразделения."""
+    if not user or user.get("is_active") is False or is_app_admin(user):
+        return False
+    if user.get("role") != "manager" and user.get("legacy_role") != "manager":
+        return False
+    return user_has_perm(user, "timesheet", "edit")
+
+
 def json_canon(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -693,6 +702,106 @@ def _overlay_timesheet(current: Any, incoming: Any) -> Any:
     return out
 
 
+def _closed_is_blank(val: Any) -> bool:
+    if val is None or val == "" or val == {} or val == []:
+        return True
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)) and val == 0:
+        return True
+    return False
+
+
+def _dept_employees_forbidden(current: Any, incoming: Any, user: dict) -> bool:
+    if not isinstance(incoming, list):
+        return True
+    current_list = current if isinstance(current, list) else []
+    by_id: dict[str, dict] = {}
+    for row in current_list:
+        if isinstance(row, dict) and row.get("id") not in (None, ""):
+            by_id[str(row.get("id"))] = row
+    allow_salary = user_has_perm(user, "salary", "edit")
+    for item in incoming:
+        if not isinstance(item, dict):
+            return True
+        emp_id = str(item.get("id") or "").strip()
+        if not emp_id:
+            return True
+        existing = by_id.get(emp_id)
+        if existing is None:
+            for key, val in item.items():
+                if _is_closed_key(str(key), allow_salary) and not _closed_is_blank(val):
+                    return True
+            continue
+        stored_eid = str(existing.get("employee_id") or "").strip()
+        if stored_eid and "employee_id" in item and str(item.get("employee_id") or "").strip() != stored_eid:
+            return True
+        if _closed_field_violations(existing, item, allow_salary):
+            return True
+    return False
+
+
+def _merge_dept_employees(current: Any, incoming: Any, allow_salary: bool) -> list:
+    """Добавляет и обновляет карточки по id. Отсутствующие в запросе не удаляет."""
+    current_list = _clone(current) if isinstance(current, list) else []
+    index: dict[str, int] = {}
+    for i, row in enumerate(current_list):
+        if isinstance(row, dict) and row.get("id") not in (None, ""):
+            index[str(row.get("id"))] = i
+    for item in incoming:
+        if not isinstance(item, dict):
+            continue
+        emp_id = str(item.get("id") or "").strip()
+        if not emp_id:
+            continue
+        if emp_id in index:
+            dest = current_list[index[emp_id]]
+            if not isinstance(dest, dict):
+                continue
+            patch = _clone(item)
+            patch["id"] = dest.get("id")
+            if str(dest.get("employee_id") or "").strip():
+                patch["employee_id"] = dest.get("employee_id")
+            current_list[index[emp_id]] = _overlay_open(dest, patch, allow_salary)
+            continue
+        patch = _overlay_open({}, item, allow_salary)
+        if not isinstance(patch, dict):
+            patch = {}
+        patch["id"] = emp_id
+        if not str(patch.get("employee_id") or "").strip():
+            patch["employee_id"] = emp_id
+        current_list.append(patch)
+        index[emp_id] = len(current_list) - 1
+    return current_list
+
+
+def _merge_dept_employee_ids(current_ids: Any, incoming_ids: Any, employees: Any) -> list:
+    known: set[str] = set()
+    if isinstance(employees, list):
+        for row in employees:
+            if isinstance(row, dict) and row.get("id") not in (None, ""):
+                known.add(str(row.get("id")))
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: Any) -> None:
+        if isinstance(raw, bool) or raw is None:
+            return
+        key = str(raw).strip()
+        if not key or key not in known or key in seen:
+            return
+        seen.add(key)
+        out.append(key)
+
+    if isinstance(current_ids, list):
+        for raw in current_ids:
+            add(raw)
+    if isinstance(incoming_ids, list):
+        for raw in incoming_ids:
+            add(raw)
+    return out
+
+
 def _empty_wipe(val: Any, existing: Any) -> bool:
     if val is None:
         return True
@@ -788,6 +897,25 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
                         ):
                             return True
                         continue
+                    if field == "employees":
+                        if not can_write_dept_employees(user):
+                            if not _same(field_val, cur_ws.get(field)):
+                                return True
+                            continue
+                        if _dept_employees_forbidden(cur_ws.get("employees"), field_val, user):
+                            return True
+                        continue
+                    if field == "employeeIds":
+                        if not can_write_dept_employees(user):
+                            if not _same(field_val, cur_ws.get(field)):
+                                return True
+                            continue
+                        if not isinstance(field_val, list) or any(
+                            isinstance(item, bool) or not isinstance(item, (str, int))
+                            for item in field_val
+                        ):
+                            return True
+                        continue
                     if not _same(field_val, cur_ws.get(field)):
                         return True
             continue
@@ -830,14 +958,29 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
 
 def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
     stored = _clone(current)
-    if isinstance(incoming.get("workspaces"), list) and user_has_perm(user, "timesheet", "edit"):
+    if isinstance(incoming.get("workspaces"), list):
+        codes = user_dept_codes(user)
         for in_ws in incoming.get("workspaces") or []:
-            if not isinstance(in_ws, dict) or "timesheet" not in in_ws:
+            if not isinstance(in_ws, dict):
                 continue
             code = str(in_ws.get("code") or "")
+            if code not in codes:
+                continue
             cur_ws = _find_workspace(stored.get("workspaces"), code)
-            if cur_ws is not None:
+            if cur_ws is None:
+                continue
+            if "timesheet" in in_ws and user_has_perm(user, "timesheet", "edit"):
                 cur_ws["timesheet"] = _overlay_timesheet(cur_ws.get("timesheet"), in_ws.get("timesheet"))
+            if can_write_dept_employees(user):
+                allow_sal = user_has_perm(user, "salary", "edit")
+                if isinstance(in_ws.get("employees"), list):
+                    cur_ws["employees"] = _merge_dept_employees(
+                        cur_ws.get("employees"), in_ws.get("employees"), allow_sal
+                    )
+                if isinstance(in_ws.get("employeeIds"), list):
+                    cur_ws["employeeIds"] = _merge_dept_employee_ids(
+                        cur_ws.get("employeeIds"), in_ws.get("employeeIds"), cur_ws.get("employees")
+                    )
     if "management" in incoming and _can_write_any_management(user):
         incoming_m = incoming.get("management")
         cur_m = stored.get("management") if isinstance(stored.get("management"), dict) else {}

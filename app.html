@@ -10041,6 +10041,19 @@ function wtThreeWayMerge(server, draft, base) {
         Object.keys(draft).forEach(function (k) { keys[k] = true; });
         if (wtIsPlainObject(base)) Object.keys(base).forEach(function (k) { keys[k] = true; });
         Object.keys(keys).forEach(function (k) {
+            if (k === "employees") {
+                out[k] = wtMergeKeyedList(
+                    Array.isArray(server[k]) ? server[k] : [],
+                    Array.isArray(draft[k]) ? draft[k] : [],
+                    base && Array.isArray(base[k]) ? base[k] : [],
+                    "id"
+                );
+                return;
+            }
+            if (k === "employeeIds") {
+                out[k] = wtUnionIdList(server[k], draft[k]);
+                return;
+            }
             out[k] = wtThreeWayMerge(
                 server[k],
                 draft[k],
@@ -10061,15 +10074,64 @@ function wtThreeWayMerge(server, draft, base) {
     return wtCloneJson(draft);
 }
 
+function wtUnionIdList(serverList, draftList) {
+    const out = [];
+    const seen = {};
+    function add(id) {
+        const key = id == null ? "" : String(id);
+        if (!key || seen[key]) return;
+        seen[key] = true;
+        out.push(id);
+    }
+    (Array.isArray(serverList) ? serverList : []).forEach(add);
+    (Array.isArray(draftList) ? draftList : []).forEach(add);
+    return out;
+}
+
+const STAFF_CARD_SECRET_KEYS = ["pin", "pin_hash", "password", "rolePins", "roleUsers"];
+const STAFF_CARD_SALARY_KEYS = [
+    "salary", "salaries", "rate", "rates", "taxiDaily", "taxi", "payroll", "shopPayroll",
+    "vacationPlans", "advance", "issued", "payout", "pay", "terms", "salaryCalc", "salaryPay", "salary1c"
+];
+
+function canWriteDeptStaffCards() {
+    const u = currentAuthUser();
+    if (!u || u.is_active === false || isAppAdmin()) return false;
+    if (u.role !== "manager" && u.legacy_role !== "manager") return false;
+    return userHasPerm("timesheet", "edit");
+}
+
+function staffEmployeeCardForPut(emp, allowSalary) {
+    if (!emp || typeof emp !== "object") return null;
+    const out = {};
+    Object.keys(emp).forEach(function (key) {
+        if (STAFF_CARD_SECRET_KEYS.indexOf(key) !== -1) return;
+        if (!allowSalary && STAFF_CARD_SALARY_KEYS.indexOf(key) !== -1) return;
+        out[key] = emp[key];
+    });
+    if (out.id && !out.employee_id) out.employee_id = out.id;
+    return out;
+}
+
 function buildStaffPutPayload() {
     const out = {};
     const u = currentAuthUser();
     const codes = userAccessDeptCodes(u);
-    if (userHasPerm("timesheet", "edit")) {
+    if (userHasPerm("timesheet", "edit") || canWriteDeptStaffCards()) {
+        const allowSalary = userHasPerm("salary", "edit");
+        const writeCards = canWriteDeptStaffCards();
         out.workspaces = ((appData && appData.workspaces) || []).filter(function (w) {
             return w && codes.indexOf(w.code) !== -1;
         }).map(function (w) {
-            return { code: w.code, timesheet: w.timesheet || {} };
+            const row = { code: w.code };
+            if (userHasPerm("timesheet", "edit")) row.timesheet = w.timesheet || {};
+            if (writeCards) {
+                row.employees = (w.employees || []).map(function (emp) {
+                    return staffEmployeeCardForPut(emp, allowSalary);
+                }).filter(Boolean);
+                row.employeeIds = Array.isArray(w.employeeIds) ? w.employeeIds.slice() : [];
+            }
+            return row;
         });
     }
     if (userHasPerm("metricsInput", "edit") || userHasPerm("metrics", "edit")) {
@@ -29100,6 +29162,7 @@ function openEmployeeCreateForm() {
 }
 
 function saveEmployeeCreateForm() {
+    if (saveEmployeeCreateForm.busy) return;
     try {
     if (!canEditStaff()) {
         toast("Нет права добавлять сотрудников.", "error");
@@ -29158,13 +29221,35 @@ function saveEmployeeCreateForm() {
     if (!Array.isArray(w.employees)) w.employees = [];
     if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
     w.employees.push(employee);
+    if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
+        w.employeeIds.push(employee.id);
+    }
     justAddedEmployeeId = employee.id;
     try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
-    saveApp();
-    closeEmployeeCreateForm();
-    try { refreshAfterEmployeeCreate(); } catch (err) { console.error(err); }
-    toast("Сотрудник сохранён.");
+    saveEmployeeCreateForm.busy = true;
+    saveApp().then(function (ok) {
+        saveEmployeeCreateForm.busy = false;
+        if (!ok) {
+            w.employees = (w.employees || []).filter(function (item) { return !item || item.id !== employee.id; });
+            w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employee.id; });
+            if (justAddedEmployeeId === employee.id) justAddedEmployeeId = "";
+            try { refreshAfterEmployeeCreate(); } catch (err) {}
+            return;
+        }
+        closeEmployeeCreateForm();
+        try { refreshAfterEmployeeCreate(); } catch (err) { console.error(err); }
+        toast("Сотрудник сохранён.");
+    }).catch(function (err) {
+        saveEmployeeCreateForm.busy = false;
+        w.employees = (w.employees || []).filter(function (item) { return !item || item.id !== employee.id; });
+        w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employee.id; });
+        if (justAddedEmployeeId === employee.id) justAddedEmployeeId = "";
+        console.error(err);
+        toast("Не удалось сохранить сотрудника. Запись на сервере не подтверждена.", "error");
+        try { refreshAfterEmployeeCreate(); } catch (e) {}
+    });
     } catch (err) {
+        saveEmployeeCreateForm.busy = false;
         console.error(err);
         toast("Не удалось сохранить сотрудника: " + (err && err.message ? err.message : String(err)), "error");
     }

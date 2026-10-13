@@ -297,6 +297,9 @@ class StoreApiTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), status)
         return cookie_from(cookies), data
 
+    def add_user(self, user):
+        self.store["payload"]["users"].append(json.loads(json.dumps(user)))
+
     def test_health_ok(self):
         status, data, *_ = call("GET", "/api/health")
         self.assertTrue(status.startswith("200"))
@@ -723,6 +726,285 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(shop["employees"][0]["name"], "Касса")
         self.assertEqual(shop["employees"][0]["rate"], 1500)
         self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["1"], "Я")
+
+    def test_manager_saves_own_department_employee(self):
+        self.add_user({
+            "user_id": "usr_dir",
+            "display_name": "Директор магазина",
+            "pin": "4444",
+            "role": "manager",
+            "legacy_role": "staff",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"timesheet": "edit"},
+        })
+        cookie, _ = self.login("usr_dir", "4444")
+        version = int(self.store["version"])
+        status, data, raw, _ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "workspaces": [{
+                        "code": "shop",
+                        "employees": [
+                            {"id": "e_shop", "name": "Касса", "employee_id": "e_shop"},
+                            {
+                                "id": "e_new",
+                                "name": "Новый Сотрудник",
+                                "position": "Продавец",
+                                "employee_id": "e_new",
+                                "rate": 0,
+                                "taxiDaily": 0,
+                                "terms": {},
+                            },
+                        ],
+                        "employeeIds": ["e_new", "e_shop"],
+                        "timesheet": {"2026-10": {"e_shop": {"1": "Я"}, "e_new": {"2": "О"}}},
+                    }]
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertNotIn("4444", raw)
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        by_id = {e["id"]: e for e in shop["employees"]}
+        self.assertEqual(list(by_id), ["e_shop", "e_new"])
+        self.assertEqual(by_id["e_shop"]["name"], "Касса")
+        self.assertEqual(by_id["e_shop"]["rate"], 1500)
+        self.assertEqual(by_id["e_shop"]["taxiDaily"], 200)
+        self.assertEqual(by_id["e_new"]["name"], "Новый Сотрудник")
+        self.assertEqual(by_id["e_new"]["employee_id"], "e_new")
+        self.assertEqual(by_id["e_new"]["position"], "Продавец")
+        self.assertNotIn("rate", by_id["e_new"])
+        self.assertEqual(shop["employeeIds"], ["e_new", "e_shop"])
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["1"], "Я")
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_new"]["2"], "О")
+        self.assertEqual(self.store["payload"]["workspaces"][1]["employees"][0]["name"], "Кладовщик")
+        self.assertEqual(self.store["payload"]["salary"]["2026-10"]["e_shop"]["rate"], 1500)
+        visible = data["payload"]["workspaces"]
+        self.assertEqual([w["code"] for w in visible], ["shop"])
+        visible_new = next(e for e in visible[0]["employees"] if e["id"] == "e_new")
+        self.assertEqual(visible_new["name"], "Новый Сотрудник")
+        self.assertNotIn("rate", visible[0]["employees"][0])
+
+        admin_cookie, _ = self.login()
+        status_admin, admin_state, *_ = call("GET", "/api/state", cookie=admin_cookie)
+        self.assertTrue(status_admin.startswith("200"), status_admin)
+        admin_shop = next(w for w in admin_state["payload"]["workspaces"] if w["code"] == "shop")
+        admin_new = next(e for e in admin_shop["employees"] if e["id"] == "e_new")
+        self.assertEqual(admin_new["name"], "Новый Сотрудник")
+        self.assertEqual(admin_new["employee_id"], "e_new")
+        self.assertEqual(admin_shop["employees"][0]["id"], "e_shop")
+        self.assertEqual(admin_shop["employees"][0]["rate"], 1500)
+
+    def test_manager_cannot_edit_other_department_or_salary_or_ids(self):
+        self.add_user({
+            "user_id": "usr_dir",
+            "display_name": "Директор магазина",
+            "pin": "4444",
+            "role": "manager",
+            "legacy_role": "staff",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"timesheet": "edit"},
+        })
+        cookie, _ = self.login("usr_dir", "4444")
+        version = int(self.store["version"])
+        before = json.loads(json.dumps(self.store["payload"]))
+        cases = [
+            {"workspaces": [{"code": "warehouse", "employees": [{"id": "e_wh", "name": "Чужой"}]}]},
+            {"workspaces": [{"code": "shop", "employees": [{"id": "e_shop", "name": "Касса", "rate": 1}]}]},
+            {"workspaces": [{"code": "shop", "employees": [
+                {"id": "e_shop", "name": "Касса", "employee_id": "e_other"},
+                {"id": "e_new", "name": "Не должен появиться", "employee_id": "e_new", "rate": 900},
+            ]}]},
+            {"workspaces": [{"code": "shop", "employees": [{"id": "e_new", "name": "С пин", "pin": "9999"}]}]},
+            {"users": [{"user_id": "usr_dir", "role": "admin", "pin": "0000"}]},
+        ]
+        for body in cases:
+            status, data, *_ = call(
+                "PUT",
+                "/api/state",
+                {"version": version, "payload": body},
+                cookie=cookie,
+            )
+            self.assertTrue(status.startswith("403"), status)
+            self.assertEqual(data["error"], "forbidden")
+            self.assertEqual(self.store["payload"], before)
+
+    def test_manager_cannot_rewrite_existing_employee_id(self):
+        self.add_user({
+            "user_id": "usr_dir",
+            "display_name": "Директор магазина",
+            "pin": "4444",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"timesheet": "edit"},
+        })
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        shop["employees"][0]["employee_id"] = "e_shop"
+        cookie, _ = self.login("usr_dir", "4444")
+        before = json.loads(json.dumps(self.store["payload"]))
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"workspaces": [{"code": "shop", "employees": [
+                    {"id": "e_shop", "name": "Касса", "employee_id": "e_other"},
+                ], "timesheet": {"2026-10": {"e_shop": {"1": "Б"}}}}]},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(data["error"], "forbidden")
+        self.assertEqual(self.store["payload"], before)
+
+    def test_manager_without_timesheet_right_cannot_save_employees(self):
+        self.add_user({
+            "user_id": "usr_dir",
+            "display_name": "Директор без табеля",
+            "pin": "4444",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {},
+        })
+        cookie, _ = self.login("usr_dir", "4444")
+        before = json.loads(json.dumps(self.store["payload"]))
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"workspaces": [{"code": "shop", "employees": [
+                    {"id": "e_shop", "name": "Касса"},
+                    {"id": "e_new", "name": "Новый"},
+                ]}]},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(data["error"], "forbidden")
+        self.assertEqual(self.store["payload"], before)
+
+    def test_manager_with_salary_right_can_change_rate(self):
+        self.add_user({
+            "user_id": "usr_dir",
+            "display_name": "Директор с зарплатой",
+            "pin": "4444",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"timesheet": "edit", "salary": "edit"},
+        })
+        cookie, _ = self.login("usr_dir", "4444")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"workspaces": [{"code": "shop", "employees": [
+                    {"id": "e_shop", "name": "Касса", "rate": 1600},
+                ]}]},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        self.assertEqual(shop["employees"][0]["rate"], 1600)
+        self.assertEqual(shop["employees"][0]["taxiDaily"], 200)
+        self.assertEqual(shop["employees"][0]["id"], "e_shop")
+        self.assertEqual(self.store["payload"]["workspaces"][1]["employees"][0]["rate"], 1800)
+
+    def test_two_users_do_not_drop_employees_or_timesheet(self):
+        self.add_user({
+            "user_id": "usr_dir",
+            "display_name": "Директор магазина",
+            "pin": "4444",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"timesheet": "edit"},
+        })
+        director, _ = self.login("usr_dir", "4444")
+        staff, _ = self.login("usr_001", "1111")
+        version = int(self.store["version"])
+        first, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {"workspaces": [{
+                    "code": "shop",
+                    "employees": [
+                        {"id": "e_shop", "name": "Касса"},
+                        {"id": "e_new", "name": "Новый Сотрудник", "employee_id": "e_new"},
+                    ],
+                    "employeeIds": ["e_new"],
+                    "timesheet": {"2026-10": {"e_shop": {"1": "О"}}},
+                }]},
+            },
+            cookie=director,
+        )
+        self.assertTrue(first.startswith("200"), first)
+        stale, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {"workspaces": [{"code": "shop", "timesheet": {"2026-10": {"e_shop": {"3": "Б"}}}}]},
+            },
+            cookie=staff,
+        )
+        self.assertTrue(stale.startswith("409"), stale)
+        self.assertEqual(data["error"], "conflict")
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        self.assertEqual([e["id"] for e in shop["employees"]], ["e_shop", "e_new"])
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["1"], "О")
+        self.assertNotIn("3", shop["timesheet"]["2026-10"]["e_shop"])
+
+        second, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"workspaces": [{"code": "shop", "timesheet": {"2026-10": {"e_shop": {"3": "Б"}}}}]},
+            },
+            cookie=staff,
+        )
+        self.assertTrue(second.startswith("200"), second)
+        kept, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"workspaces": [{
+                    "code": "shop",
+                    "employees": [
+                        {"id": "e_shop", "name": "Касса обновлена"},
+                        {"id": "e_other", "name": "Второй новый", "employee_id": "e_other"},
+                    ],
+                    "employeeIds": ["e_other"],
+                }]},
+            },
+            cookie=director,
+        )
+        self.assertTrue(kept.startswith("200"), kept)
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        by_id = {e["id"]: e for e in shop["employees"]}
+        self.assertEqual(set(by_id), {"e_shop", "e_new", "e_other"})
+        self.assertEqual(by_id["e_shop"]["name"], "Касса обновлена")
+        self.assertEqual(by_id["e_shop"]["rate"], 1500)
+        self.assertEqual(by_id["e_new"]["name"], "Новый Сотрудник")
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["1"], "О")
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["3"], "Б")
+        self.assertEqual(shop["employeeIds"], ["e_new", "e_other"])
+        self.assertEqual(self.store["payload"]["workspaces"][1]["employees"][0]["id"], "e_wh")
 
     def test_hidden_fields_survive_partial_put(self):
         cookie, _ = self.login("usr_001", "1111")
