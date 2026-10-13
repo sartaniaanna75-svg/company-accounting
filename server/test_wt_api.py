@@ -1316,15 +1316,6 @@ class StoreApiTests(unittest.TestCase):
                             "object_id": "farea_shop",
                             "finance_area_id": "farea_shop",
                         },
-                        {
-                            "finance_source_id": "fsrc_ter",
-                            "account_id": "acc_ter",
-                            "name": "Чужое имя",
-                            "account_type": "bank",
-                            "sort_order": 99,
-                            "is_active": False,
-                            "object_id": "farea_territory",
-                        },
                     ],
                     "areas": [
                         {
@@ -1383,6 +1374,145 @@ class StoreApiTests(unittest.TestCase):
         ]
         self.assertEqual(admin_order, viewed_order)
         self.assertEqual(admin_view["payload"]["financeRec"]["operations"], ops_before)
+
+    def test_setup_right_manages_every_finance_object(self):
+        self._seed_finance_directory()
+        self.add_user({
+            "user_id": "usr_books",
+            "display_name": "Справочники",
+            "pin": "4646",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRecSetup": "edit"},
+        })
+        self.add_user({
+            "user_id": "usr_view2",
+            "display_name": "Просмотр",
+            "pin": "4747",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "view"},
+        })
+        cookie, _ = self.login("usr_books", "4646")
+        ops = json.loads(json.dumps(self.store["payload"]["financeRec"]["operations"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"financeRec": {
+                    "sources": [
+                        {
+                            "finance_source_id": "fsrc_shop_new",
+                            "account_id": "fsrc_shop_new",
+                            "name": "Счёт магазина",
+                            "account_type": "bank",
+                            "sort_order": 40,
+                            "is_active": True,
+                            "in_actual_balance": True,
+                            "object_id": "farea_shop",
+                        },
+                        {
+                            "finance_source_id": "fsrc_ter_new",
+                            "account_id": "fsrc_ter_new",
+                            "name": "Касса территории",
+                            "account_type": "cash",
+                            "sort_order": 15,
+                            "is_active": True,
+                            "object_id": "farea_territory",
+                        },
+                        {
+                            "finance_source_id": "fsrc_unknown",
+                            "name": "Неизвестный объект",
+                            "account_type": "cash",
+                            "object_id": "farea_other",
+                        },
+                    ],
+                    "areas": [{
+                        "object_id": "farea_territory",
+                        "primary_cash_source_id": "fsrc_ter_new",
+                    }],
+                    "operations": [{"id": "op_shop", "amount": 1, "account_id": "acc_shop"}],
+                }},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"], ops)
+        self.assertNotIn("fsrc_shop_new", json.dumps(self.store["payload"]["financeRec"]["sources"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"financeRec": {
+                    "sources": [
+                        {
+                            "finance_source_id": "fsrc_shop_new",
+                            "account_id": "fsrc_shop_new",
+                            "name": "Счёт магазина",
+                            "account_type": "bank",
+                            "sort_order": 40,
+                            "is_active": True,
+                            "in_actual_balance": True,
+                            "object_id": "farea_shop",
+                        },
+                        {
+                            "finance_source_id": "fsrc_ter_new",
+                            "account_id": "fsrc_ter_new",
+                            "name": "Новая касса территории",
+                            "account_type": "cash",
+                            "sort_order": 15,
+                            "is_active": True,
+                            "object_id": "farea_territory",
+                        },
+                        {
+                            "finance_source_id": "fsrc_unknown",
+                            "name": "Неизвестный объект",
+                            "account_type": "cash",
+                            "object_id": "farea_other",
+                        },
+                    ],
+                    "areas": [{
+                        "object_id": "farea_territory",
+                        "primary_cash_source_id": "fsrc_ter_new",
+                    }],
+                }},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        sources = {
+            row["finance_source_id"]: row
+            for row in self.store["payload"]["financeRec"]["sources"]
+        }
+        self.assertEqual(sources["fsrc_shop_new"]["name"], "Счёт магазина")
+        self.assertEqual(sources["fsrc_shop_new"]["object_id"], "farea_shop")
+        self.assertEqual(sources["fsrc_ter_new"]["name"], "Новая касса территории")
+        self.assertEqual(sources["fsrc_ter_new"]["account_type"], "cash")
+        self.assertEqual(sources["fsrc_ter"]["name"], "Касса территории")
+        self.assertNotIn("fsrc_unknown", sources)
+        areas = {row["object_id"]: row for row in self.store["payload"]["financeRec"]["areas"]}
+        self.assertEqual(areas["farea_territory"]["primary_cash_source_id"], "fsrc_ter_new")
+        self.assertEqual(areas["farea_shop"]["primary_cash_source_id"], "fsrc_shop_a")
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"], ops)
+        status, again, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        again_ids = {row["finance_source_id"] for row in again["payload"]["financeRec"]["sources"]}
+        self.assertIn("fsrc_shop_new", again_ids)
+        self.assertIn("fsrc_ter_new", again_ids)
+        view_cookie, _ = self.login("usr_view2", "4747")
+        status, viewed, *_ = call("GET", "/api/state", cookie=view_cookie)
+        self.assertTrue(status.startswith("200"), status)
+        viewed_order = [
+            (row["finance_source_id"], row.get("sort_order"))
+            for row in viewed["payload"]["financeRec"]["sources"]
+            if row.get("object_id") == "farea_territory"
+        ]
+        self.assertIn(("fsrc_ter_new", 15), viewed_order)
+        self.assertEqual(viewed["payload"]["financeRec"]["operations"], ops)
 
     def test_finance_directory_rejected_without_right_and_used_delete(self):
         self._seed_finance_directory()

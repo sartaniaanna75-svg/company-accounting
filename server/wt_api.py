@@ -856,19 +856,31 @@ def _catalog_forbidden(current: Any, incoming: Any, user: dict) -> bool:
     return False
 
 
-def _user_finance_areas(user: dict) -> set[str]:
-    codes = user_dept_codes(user)
-    areas: set[str] = set()
-    if "shop" in codes:
-        areas.add("farea_shop")
-    if codes & (TERRITORY_CODES | {"territory"}):
-        areas.add("farea_territory")
-    spec = str((user.get("permissions") or {}).get("financeRecAreas") or "").strip()
-    if spec == "shop":
-        areas &= {"farea_shop"}
-    elif spec == "territory":
-        areas &= {"farea_territory"}
-    return areas
+def _stored_finance_area_ids(finance: Any) -> set[str]:
+    """Объекты Финконтроля из справочника, без привязки к подразделениям табеля."""
+    found: set[str] = set()
+    if not isinstance(finance, dict):
+        return found
+    for row in finance.get("areas") or []:
+        if not isinstance(row, dict):
+            continue
+        area_id = str(row.get("object_id") or row.get("finance_area_id") or "").strip()
+        if area_id:
+            found.add(area_id)
+    if found:
+        return found
+    for row in finance.get("sources") or []:
+        if isinstance(row, dict):
+            area_id = _source_area(row)
+            if area_id:
+                found.add(area_id)
+    return found
+
+
+def _user_finance_areas(user: dict, finance: Any = None) -> set[str]:
+    if not user_has_perm(user, "financeRecSetup", "edit"):
+        return set()
+    return _stored_finance_area_ids(finance)
 
 
 def _source_area(source: dict) -> str:
@@ -965,7 +977,7 @@ def _finance_directory_forbidden(current: Any, incoming: Any, user: dict) -> boo
             if key in incoming and not _same(incoming.get(key), cur.get(key)):
                 return True
         return False
-    areas = _user_finance_areas(user)
+    areas = _user_finance_areas(user, cur)
     sources = _normalize_finance_sources(cur.get("sources"))
     by_id = {_source_id(row): row for row in sources if _source_id(row)}
     for raw in incoming.get("removed_source_ids") or []:
@@ -987,7 +999,7 @@ def _finance_directory_forbidden(current: Any, incoming: Any, user: dict) -> boo
 
 
 def _apply_finance_directory(base: dict, incoming: dict, user: dict) -> None:
-    areas = _user_finance_areas(user)
+    areas = _user_finance_areas(user, base)
     sources = _normalize_finance_sources(base.get("sources"))
     by_id: dict[str, dict] = {}
     for row in sources:

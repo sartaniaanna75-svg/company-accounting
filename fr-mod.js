@@ -331,19 +331,28 @@ function frCan(min) {
 
 function frSetupAreasForUser() {
     const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
-    const codes = typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(u) : [];
-    const areas = [];
-    if (codes.indexOf("shop") !== -1) areas.push("farea_shop");
-    if (["office", "warehouse", "drivers", "territory"].some(function (code) { return codes.indexOf(code) !== -1; })) {
-        areas.push("farea_territory");
+    if (!u || u.is_active === false) return [];
+    const setup = (u.permissions && u.permissions.financeRecSetup) || "none";
+    if (frPermRank(setup) < frPermRank("edit")) return [];
+    if (typeof ensureFinanceRec === "function") ensureFinanceRec();
+    const ids = [];
+    function add(id) {
+        const key = String(id || "");
+        if (key && ids.indexOf(key) === -1) ids.push(key);
     }
-    const spec = (u && u.permissions && u.permissions.financeRecAreas) || "";
-    if (spec === "shop") return areas.filter(function (id) { return id === "farea_shop"; });
-    if (spec === "territory") return areas.filter(function (id) { return id === "farea_territory"; });
-    return areas;
+    const root = (typeof appData === "object" && appData && appData.financeRec) || {};
+    (root.areas || []).forEach(function (area) {
+        if (!area) return;
+        add(area.object_id || area.finance_area_id);
+    });
+    (root.sources || []).forEach(function (source) {
+        if (!source) return;
+        add(source.object_id || source.finance_area_id);
+    });
+    return ids;
 }
 
-/** Счета и кассы своего объекта: администратор или право «Финконтроль — справочники». */
+/** Счета и кассы всех объектов Финконтроля: администратор или «Финконтроль — справочники». */
 function frCanManageAccounts(areaId) {
     try {
         if (typeof isAppAdmin === "function" && isAppAdmin()) return true;
