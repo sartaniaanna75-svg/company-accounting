@@ -10113,6 +10113,46 @@ function staffEmployeeCardForPut(emp, allowSalary) {
     return out;
 }
 
+const STAFF_METRIC_INPUT_KEYS = [
+    "facts", "channelValues", "store", "channels", "recountResponsible", "inventoryResults", "dayRoles", "entries"
+];
+const STAFF_METRIC_SETUP_KEYS = ["workAccess", "extraAccess"];
+const STAFF_FINANCE_DATA_KEYS = [
+    "operations", "money_transits", "openings", "day_closings", "period_states", "audit", "import_batches", "formulas"
+];
+
+function staffMetricSlice(root, metricInput, metricSetup) {
+    if (!root || typeof root !== "object") return null;
+    const out = {};
+    let any = false;
+    function take(keys) {
+        keys.forEach(function (key) {
+            if (!Object.prototype.hasOwnProperty.call(root, key)) return;
+            out[key] = root[key];
+            any = true;
+        });
+    }
+    if (metricInput) take(STAFF_METRIC_INPUT_KEYS);
+    if (metricSetup) take(STAFF_METRIC_SETUP_KEYS);
+    return any ? out : null;
+}
+
+function staffFinanceSlice(root) {
+    if (!root || typeof root !== "object") return null;
+    const out = {};
+    let any = false;
+    function take(keys) {
+        keys.forEach(function (key) {
+            if (!Object.prototype.hasOwnProperty.call(root, key)) return;
+            out[key] = root[key];
+            any = true;
+        });
+    }
+    if (userHasPerm("financeRec", "edit")) take(STAFF_FINANCE_DATA_KEYS);
+    if (userHasPerm("financeRecSetup", "edit")) take(["sources", "areas", "categories", "removed_source_ids"]);
+    return any ? out : null;
+}
+
 function buildStaffPutPayload() {
     const out = {};
     const u = currentAuthUser();
@@ -10134,13 +10174,16 @@ function buildStaffPutPayload() {
             return row;
         });
     }
-    if (userHasPerm("metricsInput", "edit") || userHasPerm("metrics", "edit")) {
-        if (codes.indexOf("shop") !== -1 && appData.shopMetrics) out.shopMetrics = appData.shopMetrics;
+    const metricInput = userHasPerm("metricsInput", "edit") || userHasPerm("metrics", "edit");
+    const metricSetup = userHasPerm("metricsSetup", "edit") || userHasPerm("kpi", "edit");
+    if (metricInput || metricSetup) {
+        const metricSlice = staffMetricSlice(appData && appData.shopMetrics, metricInput, metricSetup);
+        if (codes.indexOf("shop") !== -1 && metricSlice) out.shopMetrics = metricSlice;
         const territory = {};
         TERRITORY_DEPT_CODES.forEach(function (code) {
-            if (codes.indexOf(code) !== -1 && appData.deptMetrics && appData.deptMetrics[code]) {
-                territory[code] = appData.deptMetrics[code];
-            }
+            if (codes.indexOf(code) === -1 || !appData.deptMetrics || !appData.deptMetrics[code]) return;
+            const branch = staffMetricSlice(appData.deptMetrics[code], metricInput, metricSetup);
+            if (branch) territory[code] = branch;
         });
         if (Object.keys(territory).length) out.deptMetrics = territory;
     }
@@ -10169,7 +10212,10 @@ function buildStaffPutPayload() {
     }
     if (userHasPerm("salary", "edit") && appData.shopPayroll) out.shopPayroll = appData.shopPayroll;
     if (userHasPerm("salary", "edit") && appData.salary) out.salary = appData.salary;
-    if (userHasPerm("financeRec", "edit") && appData.financeRec) out.financeRec = appData.financeRec;
+    if ((userHasPerm("financeRec", "edit") || userHasPerm("financeRecSetup", "edit")) && appData.financeRec) {
+        const financeSlice = staffFinanceSlice(appData.financeRec);
+        if (financeSlice) out.financeRec = financeSlice;
+    }
     if (userHasPerm("orgStructure", "edit") && appData.orgStructure) out.orgStructure = appData.orgStructure;
     if (userHasPerm("customerReturns", "edit") && appData.customerReturns) out.customerReturns = appData.customerReturns;
     const mgmt = appData && appData.management;
@@ -15547,13 +15593,29 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
         toast("Нет права изменять рабочие метрики.", "error");
         return;
     }
-    applyShopEmployeeWorkMetric(employeeId, metricId, on);
-    saveApp();
-    if (currentSection === "fio" || currentSection === "employees") renderFio();
-    if (currentSection === "shopSalary" || currentSection === "warehouseSalary" || currentSection === "driversSalary") {
-        renderPayrollView(payrollViewFromSection());
+    const store = metricsStoreForEmployee(employeeId);
+    let accessSnap = null;
+    if (store) {
+        accessSnap = {
+            workAccess: JSON.parse(JSON.stringify(store.workAccess || {})),
+            extraAccess: JSON.parse(JSON.stringify(store.extraAccess || {}))
+        };
     }
-    refreshMetricsUi();
+    applyShopEmployeeWorkMetric(employeeId, metricId, on);
+    function paintWorkMetrics() {
+        if (currentSection === "fio" || currentSection === "employees") renderFio();
+        if (currentSection === "shopSalary" || currentSection === "warehouseSalary" || currentSection === "driversSalary") {
+            renderPayrollView(payrollViewFromSection());
+        }
+        refreshMetricsUi();
+    }
+    paintWorkMetrics();
+    Promise.resolve(saveApp()).then(function (ok) {
+        if (ok || !accessSnap || !store) return;
+        store.workAccess = accessSnap.workAccess;
+        store.extraAccess = accessSnap.extraAccess;
+        paintWorkMetrics();
+    });
 }
 
 function assignGroupAllMetricsToEmployee(employee) {
@@ -27419,6 +27481,10 @@ function saveMetricCatalogForm(id, dupIgnore) {
             return;
         }
     }
+    const catalogSnap = JSON.parse(JSON.stringify(ensureShopMetricCatalog()));
+    function restoreMetricCatalog() {
+        appData.shopMetricCatalog = catalogSnap;
+    }
     const assignModeEarly = assignmentRows
         ? (assignmentRows.some(function (row) { return row.assign_mode === "specific"; }) ? "specific" : "group_all")
         : collectMetricCatalogAssignMode();
@@ -27528,6 +27594,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (structure === "with_submetrics") {
         const nextSubs = collectMetricCatalogSubmetrics(item.submetrics);
         if (!nextSubs.length) {
+            restoreMetricCatalog();
             formErr(item.kind === "checklist" ? "Добавьте хотя бы один пункт чек-листа." : "Добавьте хотя бы одну подметрику.");
             return;
         }
@@ -27567,18 +27634,38 @@ function saveMetricCatalogForm(id, dupIgnore) {
     else if (item.assign_mode === "specific") applyMetricCatalogSpecificAssignment(item, personIdsEarly);
     else applyMetricCatalogGroupAssignment(item);
     if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
-    saveApp();
+    const savedKind = item.kind;
     const back = metricFormReturnSection;
-    metricFormReturnSection = "";
-    closeMetricCatalogModal();
-    if (workspace() && workspace().code === dept) deptMetricTab = sectionId;
-    if (back && isDeptWorkSection(back)) {
-        showSection(back);
-    } else {
-        renderMetricCatalog();
-        refreshMetricsUi();
-    }
-    toast(item.kind === "checklist" ? "Чек-лист сохранён." : "Метрика сохранена.");
+    Promise.resolve(saveApp()).then(function (ok) {
+        if (!ok) {
+            restoreMetricCatalog();
+            const box = document.getElementById("mcFormError");
+            if (box) {
+                box.style.display = "";
+                box.textContent = "Изменения метрики не записаны.";
+            }
+            try { renderMetricCatalog(); } catch (err) {}
+            try { refreshMetricsUi(); } catch (err) {}
+            return;
+        }
+        metricFormReturnSection = "";
+        closeMetricCatalogModal();
+        if (workspace() && workspace().code === dept) deptMetricTab = sectionId;
+        if (back && isDeptWorkSection(back)) {
+            showSection(back);
+        } else {
+            renderMetricCatalog();
+            refreshMetricsUi();
+        }
+        toast(savedKind === "checklist" ? "Чек-лист сохранён." : "Метрика сохранена.");
+    }).catch(function () {
+        restoreMetricCatalog();
+        const box = document.getElementById("mcFormError");
+        if (box) {
+            box.style.display = "";
+            box.textContent = "Изменения метрики не записаны.";
+        }
+    });
 }
 
 function getDeptMetricStored(deptCode, employeeId, day, metricId, month, submetricId) {

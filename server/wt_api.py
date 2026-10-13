@@ -606,26 +606,560 @@ def _overlay_open(current: Any, incoming: Any, allow_salary: bool = False) -> An
     return _clone(incoming)
 
 
+METRIC_INPUT_KEYS = frozenset(
+    {
+        "facts",
+        "channelValues",
+        "store",
+        "channels",
+        "recountResponsible",
+        "inventoryResults",
+        "dayRoles",
+        "entries",
+    }
+)
+METRIC_SETUP_KEYS = frozenset({"workAccess", "extraAccess"})
+FINANCE_DATA_KEYS = (
+    "operations",
+    "money_transits",
+    "openings",
+    "day_closings",
+    "period_states",
+    "audit",
+    "import_batches",
+    "formulas",
+)
+FINANCE_SOURCE_FIELDS = frozenset(
+    {
+        "name",
+        "account_type",
+        "sort_order",
+        "is_active",
+        "in_actual_balance",
+        "revenue_direction",
+        "storage_account_id",
+        "shop_block",
+        "external_id",
+    }
+)
+FINANCE_ACCOUNT_TYPES = frozenset({"cash", "bank", "card", "in_transit", "other"})
+SHOP_METRIC_FALLBACK = "shop"
+
+
+def _can_edit_metric_input(user: dict) -> bool:
+    return user_has_perm(user, "metricsInput", "edit") or user_has_perm(user, "metrics", "edit")
+
+
+def _can_edit_metric_setup(user: dict) -> bool:
+    return user_has_perm(user, "metricsSetup", "edit") or user_has_perm(user, "kpi", "edit")
+
+
+def _employee_dept_map(payload: dict) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for ws in payload.get("workspaces") or []:
+        if not isinstance(ws, dict):
+            continue
+        code = str(ws.get("code") or "")
+        for emp in ws.get("employees") or []:
+            if isinstance(emp, dict) and emp.get("id") not in (None, ""):
+                found[str(emp.get("id"))] = code
+    return found
+
+
+def _metric_id_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if isinstance(item, bool) or item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _merge_access_map(current: Any, incoming: Any, allowed_ids: set[str], nested: bool) -> Any:
+    """Обновляет списки своих сотрудников и не удаляет ключи, которых нет в запросе."""
+    base = _clone(current) if isinstance(current, dict) else {}
+    if not isinstance(incoming, dict):
+        return base
+    if not nested:
+        for emp_id, metrics in incoming.items():
+            if str(emp_id) not in allowed_ids:
+                continue
+            base[str(emp_id)] = _metric_id_list(metrics)
+        return base
+    for month, emps in incoming.items():
+        if not isinstance(emps, dict):
+            continue
+        slot = _clone(base.get(month)) if isinstance(base.get(month), dict) else {}
+        for emp_id, metrics in emps.items():
+            if str(emp_id) not in allowed_ids:
+                continue
+            slot[str(emp_id)] = _metric_id_list(metrics)
+        base[str(month)] = slot
+    return base
+
+
+def _metric_root_forbidden(current: Any, incoming: Any, user: dict) -> bool:
+    if not isinstance(incoming, dict):
+        return True
+    cur = current if isinstance(current, dict) else {}
+    can_input = _can_edit_metric_input(user)
+    can_setup = _can_edit_metric_setup(user)
+    for key, val in incoming.items():
+        if key in METRIC_SETUP_KEYS:
+            if not can_setup and not _same(val, cur.get(key)):
+                return True
+            continue
+        if key in METRIC_INPUT_KEYS:
+            if not can_input and not _same(val, cur.get(key)):
+                return True
+            if _closed_field_violations(cur.get(key), val, False):
+                return True
+            continue
+        if not _same(val, cur.get(key)):
+            return True
+    return False
+
+
+def _apply_metric_root(current: Any, incoming: Any, user: dict, dept_code: str, emp_dept: dict[str, str]) -> Any:
+    base = _clone(current) if isinstance(current, dict) else {}
+    if not isinstance(incoming, dict):
+        return base
+    allowed = {emp_id for emp_id, code in emp_dept.items() if code == dept_code}
+    if _can_edit_metric_input(user):
+        for key in METRIC_INPUT_KEYS:
+            if key in incoming:
+                base[key] = _overlay_open(base.get(key), incoming.get(key), False)
+    if _can_edit_metric_setup(user):
+        if "workAccess" in incoming:
+            base["workAccess"] = _merge_access_map(base.get("workAccess"), incoming.get("workAccess"), allowed, True)
+        if "extraAccess" in incoming:
+            base["extraAccess"] = _merge_access_map(base.get("extraAccess"), incoming.get("extraAccess"), allowed, False)
+    return base
+
+
+def _metric_item_dept(item: dict) -> str:
+    dept = str(item.get("department_id") or "").strip()
+    if dept:
+        return dept
+    if str(item.get("territory_category") or "").strip():
+        return ""
+    return SHOP_METRIC_FALLBACK
+
+
+def _merge_metric_assignments(
+    current_rows: Any, incoming_rows: Any, codes: set[str], emp_dept: dict[str, str]
+) -> list:
+    result = _clone(current_rows) if isinstance(current_rows, list) else []
+    result = [row for row in result if isinstance(row, dict)]
+    index = {
+        str(row.get("assignment_id")): pos
+        for pos, row in enumerate(result)
+        if row.get("assignment_id") not in (None, "")
+    }
+    if not isinstance(incoming_rows, list):
+        return result
+    for row in incoming_rows:
+        if not isinstance(row, dict):
+            continue
+        dept = str(row.get("department_id") or "").strip()
+        if dept not in codes:
+            continue
+        eids = [
+            str(emp_id)
+            for emp_id in _metric_id_list(row.get("employee_ids"))
+            if emp_dept.get(str(emp_id)) == dept
+        ]
+        aid = str(row.get("assignment_id") or "").strip()
+        if aid and aid in index:
+            dest = result[index[aid]]
+            if str(dest.get("department_id") or "").strip() not in codes:
+                continue
+            dest["employee_ids"] = eids
+            if row.get("assign_mode") in ("specific", "group_all"):
+                dest["assign_mode"] = row.get("assign_mode")
+            continue
+        if not aid:
+            aid = "masg_%d" % (len(result) + 1)
+        created = _clone(row)
+        created["assignment_id"] = aid
+        created["department_id"] = dept
+        created["employee_ids"] = eids
+        result.append(created)
+        index[aid] = len(result) - 1
+    return result
+
+
+def _apply_metric_catalog(current: Any, incoming: Any, user: dict, emp_dept: dict[str, str]) -> Any:
+    base = _clone(current) if isinstance(current, dict) else {}
+    codes = user_dept_codes(user)
+    items = base.get("items") if isinstance(base.get("items"), list) else []
+    items = [row for row in items if isinstance(row, dict)]
+    by_id = {str(row.get("id")): pos for pos, row in enumerate(items) if row.get("id") not in (None, "")}
+    incoming_items = incoming.get("items") if isinstance(incoming, dict) and isinstance(incoming.get("items"), list) else []
+    for item in incoming_items:
+        if not isinstance(item, dict) or item.get("id") in (None, ""):
+            continue
+        dept = _metric_item_dept(item)
+        if dept not in codes:
+            continue
+        iid = str(item.get("id"))
+        patch = _clone(item)
+        patch.pop("assignments", None)
+        if iid in by_id:
+            existing = items[by_id[iid]]
+            if _metric_item_dept(existing) not in codes:
+                continue
+            merged = _overlay_open(existing, patch, False)
+            merged["id"] = existing.get("id")
+            if existing.get("department_id"):
+                merged["department_id"] = existing.get("department_id")
+            merged["assignments"] = _merge_metric_assignments(
+                existing.get("assignments"), item.get("assignments"), codes, emp_dept
+            )
+            items[by_id[iid]] = merged
+            continue
+        created = _overlay_open({}, patch, False)
+        created["id"] = iid
+        created["department_id"] = dept
+        created["assignments"] = _merge_metric_assignments([], item.get("assignments"), codes, emp_dept)
+        items.append(created)
+        by_id[iid] = len(items) - 1
+    base["items"] = items
+    return base
+
+
+def _catalog_forbidden(current: Any, incoming: Any, user: dict) -> bool:
+    if not isinstance(incoming, dict):
+        return True
+    if not _can_edit_metric_setup(user):
+        return not _same(incoming, current)
+    cur_items = current.get("items") if isinstance(current, dict) and isinstance(current.get("items"), list) else []
+    by_id = {
+        str(row.get("id")): row
+        for row in cur_items
+        if isinstance(row, dict) and row.get("id") not in (None, "")
+    }
+    codes = user_dept_codes(user)
+    for item in incoming.get("items") or []:
+        if not isinstance(item, dict) or item.get("id") in (None, ""):
+            continue
+        dept = _metric_item_dept(item)
+        if dept not in codes:
+            continue
+        existing = by_id.get(str(item.get("id")))
+        if _closed_field_violations(existing, item, False):
+            return True
+    return False
+
+
+def _user_finance_areas(user: dict) -> set[str]:
+    codes = user_dept_codes(user)
+    areas: set[str] = set()
+    if "shop" in codes:
+        areas.add("farea_shop")
+    if codes & (TERRITORY_CODES | {"territory"}):
+        areas.add("farea_territory")
+    spec = str((user.get("permissions") or {}).get("financeRecAreas") or "").strip()
+    if spec == "shop":
+        areas &= {"farea_shop"}
+    elif spec == "territory":
+        areas &= {"farea_territory"}
+    return areas
+
+
+def _source_area(source: dict) -> str:
+    return str(source.get("object_id") or source.get("finance_area_id") or "").strip()
+
+
+def _source_id(source: dict) -> str:
+    return str(source.get("finance_source_id") or source.get("account_id") or "").strip()
+
+
+def _normalize_finance_sources(sources: Any) -> list:
+    """Ставит устойчивый id, не меняя account_id, на который уже ссылаются операции."""
+    rows = _clone(sources) if isinstance(sources, list) else []
+    used: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            sid = _source_id(row)
+            if sid:
+                used.add(sid)
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("finance_source_id") or "").strip()
+        aid = str(row.get("account_id") or "").strip()
+        if not sid and aid:
+            sid = aid
+        if not sid:
+            number = index + 1
+            sid = "fsrc_legacy_%d" % number
+            while sid in used:
+                number += 1
+                sid = "fsrc_legacy_%d" % number
+        if not aid:
+            aid = sid
+        row["finance_source_id"] = sid
+        row["account_id"] = aid
+        if not _source_area(row) and row.get("finance_area_id"):
+            row["object_id"] = row.get("finance_area_id")
+        used.add(sid)
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _finance_account_used(finance: dict, area: str, account_id: str) -> bool:
+    aid = str(account_id or "").strip()
+    if not aid:
+        return False
+
+    def hit(row: dict, keys: tuple[str, ...]) -> bool:
+        row_area = str(row.get("object_id") or row.get("finance_area_id") or "")
+        if area and row_area and row_area != area:
+            return False
+        return any(str(row.get(key) or "") == aid for key in keys)
+
+    for row in finance.get("operations") or []:
+        if isinstance(row, dict) and hit(
+            row, ("account_id", "finance_source_id", "source_id", "account_to_id", "finance_source_to_id")
+        ):
+            return True
+    for row in finance.get("openings") or []:
+        if isinstance(row, dict) and hit(row, ("account_id", "finance_source_id")):
+            try:
+                amount = abs(float(row.get("value") or 0))
+            except (TypeError, ValueError):
+                amount = 0
+            if row.get("is_manual") or amount >= 0.005:
+                return True
+    for row in finance.get("day_closings") or []:
+        if isinstance(row, dict) and hit(row, ("account_id", "finance_source_id")):
+            if row.get("value") not in (None, ""):
+                return True
+    for row in finance.get("money_transits") or []:
+        if not isinstance(row, dict):
+            continue
+        if hit(row, ("from_account_id", "transit_account_id")):
+            return True
+        for close in row.get("closes") or []:
+            if isinstance(close, dict) and str(close.get("to_account_id") or "") == aid:
+                return True
+    return False
+
+
+def _finance_directory_forbidden(current: Any, incoming: Any, user: dict) -> bool:
+    if not isinstance(incoming, dict):
+        return True
+    cur = current if isinstance(current, dict) else {}
+    can_data = user_has_perm(user, "financeRec", "edit")
+    can_setup = user_has_perm(user, "financeRecSetup", "edit")
+    if not can_data:
+        for key in FINANCE_DATA_KEYS:
+            if key in incoming and not _same(incoming.get(key), cur.get(key)):
+                return True
+    if not can_setup:
+        for key in ("sources", "areas", "categories", "removed_source_ids"):
+            if key in incoming and not _same(incoming.get(key), cur.get(key)):
+                return True
+        return False
+    areas = _user_finance_areas(user)
+    sources = _normalize_finance_sources(cur.get("sources"))
+    by_id = {_source_id(row): row for row in sources if _source_id(row)}
+    for raw in incoming.get("removed_source_ids") or []:
+        sid = str(raw or "").strip()
+        src = by_id.get(sid)
+        if src is None:
+            for row in sources:
+                if sid and sid in (_source_id(row), str(row.get("account_id") or "")):
+                    src = row
+                    break
+        if src is None:
+            continue
+        area = _source_area(src)
+        if area not in areas:
+            return True
+        if _finance_account_used(cur, area, str(src.get("account_id") or _source_id(src))):
+            return True
+    return False
+
+
+def _apply_finance_directory(base: dict, incoming: dict, user: dict) -> None:
+    areas = _user_finance_areas(user)
+    sources = _normalize_finance_sources(base.get("sources"))
+    by_id: dict[str, dict] = {}
+    for row in sources:
+        sid = _source_id(row)
+        if sid:
+            by_id[sid] = row
+            aid = str(row.get("account_id") or "")
+            if aid:
+                by_id.setdefault(aid, row)
+    for raw_id in incoming.get("removed_source_ids") or []:
+        sid = str(raw_id or "").strip()
+        src = by_id.get(sid)
+        if not isinstance(src, dict):
+            continue
+        area = _source_area(src)
+        if area not in areas:
+            continue
+        if _finance_account_used(base, area, str(src.get("account_id") or _source_id(src))):
+            continue
+        sources = [row for row in sources if row is not src]
+        by_id = {key: row for key, row in by_id.items() if row is not src}
+    for item in incoming.get("sources") or []:
+        if not isinstance(item, dict):
+            continue
+        area = _source_area(item)
+        if area not in areas:
+            continue
+        sid = _source_id(item)
+        dest = by_id.get(sid) if sid else None
+        if dest is None and not sid:
+            named = [
+                row
+                for row in sources
+                if _source_area(row) == area
+                and str(row.get("finance_source_id") or "").startswith("fsrc_legacy_")
+                and str(row.get("account_id") or "") == str(row.get("finance_source_id") or "")
+                and str(row.get("name") or "") == str(item.get("name") or "")
+            ]
+            if len(named) == 1:
+                dest = named[0]
+        if isinstance(dest, dict):
+            if _source_area(dest) != area:
+                continue
+            for key in FINANCE_SOURCE_FIELDS:
+                if key not in item:
+                    continue
+                if key == "account_type" and str(item.get(key) or "") not in FINANCE_ACCOUNT_TYPES:
+                    continue
+                dest[key] = _clone(item.get(key))
+            continue
+        if not sid:
+            number = len(sources) + 1
+            sid = "fsrc_%d" % number
+            while sid in by_id:
+                number += 1
+                sid = "fsrc_%d" % number
+        account_type = str(item.get("account_type") or "cash")
+        if account_type not in FINANCE_ACCOUNT_TYPES:
+            account_type = "cash"
+        created = {key: _clone(item.get(key)) for key in FINANCE_SOURCE_FIELDS if key in item}
+        created["account_type"] = account_type
+        created["finance_source_id"] = sid
+        created["account_id"] = str(item.get("account_id") or sid)
+        created["object_id"] = area
+        created["finance_area_id"] = area
+        if "is_active" not in created:
+            created["is_active"] = True
+        if "in_actual_balance" not in created:
+            created["in_actual_balance"] = True
+        if "sort_order" not in created:
+            created["sort_order"] = (len(sources) + 1) * 10
+        sources.append(created)
+        by_id[sid] = created
+        by_id[created["account_id"]] = created
+    base["sources"] = sources
+    area_rows = base.get("areas") if isinstance(base.get("areas"), list) else []
+    area_index = {
+        str(row.get("object_id") or row.get("finance_area_id") or ""): row
+        for row in area_rows
+        if isinstance(row, dict)
+    }
+    for item in incoming.get("areas") or []:
+        if not isinstance(item, dict):
+            continue
+        area = str(item.get("object_id") or item.get("finance_area_id") or "")
+        dest = area_index.get(area)
+        if area not in areas or not isinstance(dest, dict):
+            continue
+        if "primary_cash_source_id" not in item and "primary_cash_account_id" not in item:
+            continue
+        pid = str(item.get("primary_cash_source_id") or item.get("primary_cash_account_id") or "").strip()
+        if not pid:
+            dest["primary_cash_source_id"] = ""
+            dest["primary_cash_account_id"] = ""
+            continue
+        match = None
+        for row in sources:
+            if _source_area(row) != area:
+                continue
+            if pid in (_source_id(row), str(row.get("account_id") or "")):
+                match = row
+                break
+        if not match or match.get("account_type") != "cash" or match.get("is_active") is False:
+            continue
+        dest["primary_cash_source_id"] = _source_id(match)
+        dest["primary_cash_account_id"] = str(match.get("account_id") or _source_id(match))
+    categories = base.get("categories") if isinstance(base.get("categories"), list) else []
+    categories = [row for row in categories if isinstance(row, dict)]
+    cat_index = {
+        str(row.get("finance_category_id")): row
+        for row in categories
+        if row.get("finance_category_id") not in (None, "")
+    }
+    for item in incoming.get("categories") or []:
+        if not isinstance(item, dict):
+            continue
+        area = _source_area(item)
+        if area and area not in areas:
+            continue
+        cid = str(item.get("finance_category_id") or "").strip()
+        if cid and cid in cat_index:
+            dest = cat_index[cid]
+            for key in ("name", "sort_order", "is_active", "default_type"):
+                if key in item:
+                    dest[key] = _clone(item.get(key))
+            continue
+        if not cid:
+            cid = "fcat_%d" % (len(categories) + 1)
+        created = {
+            "finance_category_id": cid,
+            "name": item.get("name") or "",
+            "sort_order": item.get("sort_order") if item.get("sort_order") is not None else (len(categories) + 1) * 10,
+            "is_active": item.get("is_active") is not False,
+            "default_type": item.get("default_type") or "any",
+            "object_id": area,
+            "finance_area_id": area,
+        }
+        categories.append(created)
+        cat_index[cid] = created
+    base["categories"] = categories
+    base["removed_source_ids"] = []
+
+
+def _apply_finance_rec(current: Any, incoming: Any, user: dict) -> Any:
+    base = _clone(current) if isinstance(current, dict) else {}
+    if not isinstance(incoming, dict):
+        return base
+    if user_has_perm(user, "financeRec", "edit"):
+        for key in FINANCE_DATA_KEYS:
+            if key in incoming:
+                base[key] = _overlay_open(base.get(key), incoming.get(key), True)
+    if user_has_perm(user, "financeRecSetup", "edit"):
+        _apply_finance_directory(base, incoming, user)
+    return base
+
+
 def _can_write_top(user: dict, key: str) -> bool:
     codes = user_dept_codes(user)
     if key == "shopMetrics":
-        return "shop" in codes and (
-            user_has_perm(user, "metricsInput", "edit") or user_has_perm(user, "metrics", "edit")
-        )
+        return "shop" in codes and (_can_edit_metric_input(user) or _can_edit_metric_setup(user))
     if key == "shopRevision":
         return "shop" in codes and user_has_perm(user, "revision", "edit")
     if key == "shopSalesPlan":
         return "shop" in codes and user_has_perm(user, "salesPlan", "edit")
     if key == "shopMetricCatalog":
-        return "shop" in codes and (
-            user_has_perm(user, "metricsSetup", "edit") or user_has_perm(user, "kpi", "edit")
-        )
+        return _can_edit_metric_setup(user)
     if key == "shopPayroll":
         return "shop" in codes and user_has_perm(user, "salary", "edit")
     if key == "salary":
         return user_has_perm(user, "salary", "edit")
     if key == "financeRec":
-        return user_has_perm(user, "financeRec", "edit")
+        return user_has_perm(user, "financeRec", "edit") or user_has_perm(user, "financeRecSetup", "edit")
     if key == "management":
         return _can_write_any_management(user)
     if key == "orgStructure":
@@ -640,7 +1174,7 @@ def _can_write_dept_map(user: dict, key: str, dept: str) -> bool:
     if dept not in codes:
         return False
     if key == "deptMetrics":
-        return user_has_perm(user, "metricsInput", "edit") or user_has_perm(user, "metrics", "edit")
+        return _can_edit_metric_input(user) or _can_edit_metric_setup(user)
     if key == "deptRevisions":
         return user_has_perm(user, "revision", "edit")
     if key == "deptSalesPlans":
@@ -930,6 +1464,10 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
                     if not _same(branch, current_map.get(dept_code)):
                         return True
                     continue
+                if key == "deptMetrics":
+                    if _metric_root_forbidden(current_map.get(dept_code), branch, user):
+                        return True
+                    continue
                 if _closed_field_violations(current_map.get(dept_code), branch, allow_sal):
                     return True
             continue
@@ -945,6 +1483,35 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
                     continue
                 if not _same(mval, cur_m.get(mkey)):
                     return True
+            continue
+        if key == "shopMetrics":
+            if "shop" not in user_dept_codes(user) or not (
+                _can_edit_metric_input(user) or _can_edit_metric_setup(user)
+            ):
+                if not _same(val, current.get(key)):
+                    return True
+                continue
+            if _metric_root_forbidden(current.get(key), val, user):
+                return True
+            continue
+        if key == "shopMetricCatalog":
+            if _catalog_forbidden(current.get(key) if isinstance(current.get(key), dict) else {}, val, user):
+                return True
+            continue
+        if key == "financeRec":
+            if not (
+                user_has_perm(user, "financeRec", "edit") or user_has_perm(user, "financeRecSetup", "edit")
+            ):
+                if not _same(val, current.get(key)):
+                    return True
+                continue
+            if _finance_directory_forbidden(current.get(key), val, user):
+                return True
+            if user_has_perm(user, "financeRec", "edit") and isinstance(val, dict):
+                cur_fin = current.get(key) if isinstance(current.get(key), dict) else {}
+                for data_key in FINANCE_DATA_KEYS:
+                    if data_key in val and _closed_field_violations(cur_fin.get(data_key), val.get(data_key), True):
+                        return True
             continue
         if _can_write_top(user, key):
             allow_sal = user_has_perm(user, "salary", "edit") or key == "financeRec"
@@ -993,6 +1560,7 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
                 if _can_write_mgmt_key(user, str(mkey)):
                     next_m[mkey] = _overlay_open(cur_m.get(mkey), mval, allow_sal)
             stored["management"] = next_m
+    emp_dept = _employee_dept_map(stored)
     for key in (
         "shopMetrics",
         "shopRevision",
@@ -1004,9 +1572,19 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
         "orgStructure",
         "customerReturns",
     ):
-        if key in incoming and _can_write_top(user, key):
-            allow_sal = user_has_perm(user, "salary", "edit") or key == "financeRec"
-            stored[key] = _overlay_open(stored.get(key), incoming.get(key), allow_sal)
+        if key not in incoming or not _can_write_top(user, key):
+            continue
+        if key == "shopMetrics":
+            stored[key] = _apply_metric_root(stored.get(key), incoming.get(key), user, "shop", emp_dept)
+            continue
+        if key == "shopMetricCatalog":
+            stored[key] = _apply_metric_catalog(stored.get(key), incoming.get(key), user, emp_dept)
+            continue
+        if key == "financeRec":
+            stored[key] = _apply_finance_rec(stored.get(key), incoming.get(key), user)
+            continue
+        allow_sal = user_has_perm(user, "salary", "edit") or key == "financeRec"
+        stored[key] = _overlay_open(stored.get(key), incoming.get(key), allow_sal)
     for key in ("deptMetrics", "deptRevisions", "deptSalesPlans"):
         if key not in incoming or not isinstance(incoming.get(key), dict):
             continue
@@ -1014,8 +1592,15 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
             stored[key] = {}
         allow_sal = user_has_perm(user, "salary", "edit")
         for dept, branch in incoming[key].items():
-            if _can_write_dept_map(user, key, str(dept)):
-                stored[key][str(dept)] = _overlay_open(stored[key].get(str(dept)), branch, allow_sal)
+            dept_code = str(dept)
+            if not _can_write_dept_map(user, key, dept_code):
+                continue
+            if key == "deptMetrics":
+                stored[key][dept_code] = _apply_metric_root(
+                    stored[key].get(dept_code), branch, user, dept_code, emp_dept
+                )
+                continue
+            stored[key][dept_code] = _overlay_open(stored[key].get(dept_code), branch, allow_sal)
     return stored
 
 
@@ -1206,7 +1791,7 @@ def pick_dept_branch(value: Any, allowed_codes: set[str], allow_salary: bool, al
 def filter_state_payload(payload: dict, user: dict) -> dict:
     """Сотруднику — только понятные разрешённые ветки. Неизвестное не отдаём."""
     allow_salary = user_has_perm(user, "salary", "view")
-    allow_finance = user_has_perm(user, "financeRec", "view")
+    allow_finance = user_has_perm(user, "financeRec", "view") or user_has_perm(user, "financeRecSetup", "view")
     codes = user_dept_codes(user)
     out: dict[str, Any] = {}
     workspaces = payload.get("workspaces")

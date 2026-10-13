@@ -329,13 +329,80 @@ function frCan(min) {
     }
 }
 
-/** Управление структурой счетов/касс — только Администратор. */
-function frCanManageAccounts() {
+function frSetupAreasForUser() {
+    const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
+    const codes = typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(u) : [];
+    const areas = [];
+    if (codes.indexOf("shop") !== -1) areas.push("farea_shop");
+    if (["office", "warehouse", "drivers", "territory"].some(function (code) { return codes.indexOf(code) !== -1; })) {
+        areas.push("farea_territory");
+    }
+    const spec = (u && u.permissions && u.permissions.financeRecAreas) || "";
+    if (spec === "shop") return areas.filter(function (id) { return id === "farea_shop"; });
+    if (spec === "territory") return areas.filter(function (id) { return id === "farea_territory"; });
+    return areas;
+}
+
+/** Счета и кассы своего объекта: администратор или право «Финконтроль — справочники». */
+function frCanManageAccounts(areaId) {
     try {
-        return typeof isAppAdmin === "function" && isAppAdmin();
+        if (typeof isAppAdmin === "function" && isAppAdmin()) return true;
+        const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
+        if (!u || u.is_active === false) return false;
+        const setup = (u.permissions && u.permissions.financeRecSetup) || "none";
+        if (frPermRank(setup) < frPermRank("edit")) return false;
+        const allowed = frSetupAreasForUser();
+        let area = areaId ? String(areaId) : "";
+        if (!area) {
+            const active = typeof frActiveArea === "function" ? frActiveArea() : null;
+            area = active ? (active.object_id || active.finance_area_id || "") : "";
+        }
+        if (!area) return allowed.length > 0;
+        return allowed.indexOf(area) !== -1;
     } catch (err) {
         return false;
     }
+}
+
+function frDirectorySnap() {
+    ensureFinanceRec();
+    const root = appData.financeRec || {};
+    function copy(value) {
+        return JSON.parse(JSON.stringify(value == null ? [] : value));
+    }
+    return {
+        sources: copy(root.sources),
+        areas: copy(root.areas),
+        categories: copy(root.categories),
+        removed_source_ids: copy(root.removed_source_ids),
+        audit: copy(root.audit)
+    };
+}
+
+function frRestoreDirectory(snap) {
+    if (!snap || !appData || !appData.financeRec) return;
+    appData.financeRec.sources = snap.sources;
+    appData.financeRec.areas = snap.areas;
+    appData.financeRec.categories = snap.categories;
+    appData.financeRec.removed_source_ids = snap.removed_source_ids;
+    appData.financeRec.audit = snap.audit;
+}
+
+function frFinishDirectory(snap, okText) {
+    return Promise.resolve(saveApp()).then(function (ok) {
+        if (!ok) {
+            frRestoreDirectory(snap);
+            try { renderFinanceRec(); } catch (err) {}
+            return false;
+        }
+        try { renderFinanceRec(); } catch (err) {}
+        if (okText) toast(okText, "success");
+        return true;
+    }).catch(function () {
+        frRestoreDirectory(snap);
+        try { renderFinanceRec(); } catch (err) {}
+        return false;
+    });
 }
 
 /**
@@ -1404,7 +1471,7 @@ function frToggleTransitDetail(areaId) {
 
 function frSetPrimaryCash(sourceId) {
     if (!frCanManageAccounts()) {
-        toast("Изменять счета и кассы может только Администратор", "error");
+        toast("Недостаточно прав для изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -1416,12 +1483,11 @@ function frSetPrimaryCash(sourceId) {
         toast("Основной можно назначить только счёт типа «Касса».", "error");
         return;
     }
+    const snap = frDirectorySnap();
     area.primary_cash_source_id = sourceId;
     area.primary_cash_account_id = sourceId;
     frAudit("primary_cash", { finance_source_id: sourceId, detail: src.name || "" });
-    saveApp();
-    renderFinanceRec();
-    toast("Основная касса сохранена", "success");
+    frFinishDirectory(snap, "Основная касса сохранена");
 }
 
 function frAllowedAreaIds() {
@@ -5013,7 +5079,7 @@ function renderFrSettingsHtml(area) {
     const primaryId = frPrimaryCashId(area.finance_area_id);
     const isTerritory = frIsTerritoryArea(area);
     const isShop = frIsShopArea(area);
-    const canManage = frCanManageAccounts();
+    const canManage = frCanManageAccounts(area.object_id || area.finance_area_id);
     let html = '<div class="fr-layout"><div class="fr-box"><h3>Счета и кассы</h3>';
     html += '<div class="fr-muted" style="margin-bottom:8px">Справочник денежных счетов объекта «'
         + escapeHtml(area.name) + "». Данные этого объекта хранятся отдельно. Можно несколько счетов одного типа.</div>";
@@ -5035,7 +5101,7 @@ function renderFrSettingsHtml(area) {
         + "От этого зависит только колонка «Поступило в Основную» в дневной сверке основной кассы. "
         + "Операции, недельная сверка и выручка не меняются.</div>";
     if (!canManage) {
-        html += '<div class="note" style="margin-bottom:8px">Просмотр справочника. Создавать, изменять, менять порядок, деактивировать и удалять счета может только Администратор.</div>';
+        html += '<div class="note" style="margin-bottom:8px">Просмотр справочника. Создавать, изменять, менять порядок, включать и отключать счета может пользователь с правом «Финконтроль — справочники» для этого объекта.</div>';
     }
     if (canManage) {
         html += '<button type="button" class="btn btn-primary btn-small" onclick="openFrDictForm(\'source\')">+ Счёт / касса</button>';
@@ -5376,7 +5442,7 @@ function frOnSourceDrop(e, targetAccountId) {
  */
 function frReorderSources(fromAccountId, toAccountId) {
     if (!frCanManageAccounts()) {
-        toast("Изменять порядок счетов может только Администратор", "error");
+        toast("Недостаточно прав для изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5391,6 +5457,7 @@ function frReorderSources(fromAccountId, toAccountId) {
         return (s.account_id || s.finance_source_id) === toAccountId;
     });
     if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return;
+    const snap = frDirectorySnap();
     const moved = list.splice(fromIdx, 1)[0];
     list.splice(toIdx, 0, moved);
     list.forEach(function (s, i) {
@@ -5401,9 +5468,7 @@ function frReorderSources(fromAccountId, toAccountId) {
         detail: fromAccountId + " → " + toAccountId,
         finance_source_id: fromAccountId
     });
-    saveApp();
-    renderFinanceRec();
-    toast("Порядок счетов сохранён", "success");
+    frFinishDirectory(snap, "Порядок счетов сохранён");
 }
 
 /** Снять назначение основной кассы, если деактивирован/удалён этот счёт. */
@@ -5423,7 +5488,7 @@ function frClearPrimaryIfSource(area, sourceId) {
 
 function frToggleInActualBalance(sourceId, enabled) {
     if (!frCanManageAccounts()) {
-        toast("Изменять счета и кассы может только Администратор", "error");
+        toast("Недостаточно прав для изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5434,20 +5499,19 @@ function frToggleInActualBalance(sourceId, enabled) {
             && (x.object_id || x.finance_area_id) === areaId;
     });
     if (!rec) return;
+    const snap = frDirectorySnap();
     rec.in_actual_balance = !!enabled;
     frAudit("source_actual_flag", {
         finance_area_id: areaId,
         finance_source_id: sourceId,
         detail: rec.name + (enabled ? " → в факт. остатке" : " → только контроль")
     });
-    saveApp();
-    renderFinanceRec();
-    toast(enabled ? "Участвует в фактическом остатке" : "Исключён из фактического остатка", "success");
+    frFinishDirectory(snap, enabled ? "Участвует в фактическом остатке" : "Исключён из фактического остатка");
 }
 
 function frActivateSource(sourceId) {
     if (!frCanManageAccounts()) {
-        toast("Изменять счета и кассы может только Администратор", "error");
+        toast("Недостаточно прав для изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5458,20 +5522,19 @@ function frActivateSource(sourceId) {
             && (x.object_id || x.finance_area_id) === areaId;
     });
     if (!rec) return;
+    const snap = frDirectorySnap();
     rec.is_active = true;
     frAudit("source_activate", {
         finance_area_id: areaId,
         finance_source_id: sourceId,
         detail: rec.name || ""
     });
-    saveApp();
-    renderFinanceRec();
-    toast("Счёт/касса активирован", "success");
+    frFinishDirectory(snap, "Счёт/касса активирован");
 }
 
 function frDeactivateSource(sourceId) {
     if (!frCanManageAccounts()) {
-        toast("Изменять счета и кассы может только Администратор", "error");
+        toast("Недостаточно прав для изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5488,6 +5551,7 @@ function frDeactivateSource(sourceId) {
     }
     const name = rec.name || sourceId;
     if (!confirm("Деактивировать счёт/кассу «" + name + "» ?\n\nИстория сохранится. Для новых операций счёт предлагаться не будет.")) return;
+    const snap = frDirectorySnap();
     rec.is_active = false;
     frClearPrimaryIfSource(area, sourceId);
     frAudit("source_deactivate", {
@@ -5495,9 +5559,7 @@ function frDeactivateSource(sourceId) {
         finance_source_id: sourceId,
         detail: name
     });
-    saveApp();
-    renderFinanceRec();
-    toast("Счёт/касса деактивирован", "success");
+    frFinishDirectory(snap, "Счёт/касса деактивирован");
 }
 
 /**
@@ -5506,7 +5568,7 @@ function frDeactivateSource(sourceId) {
  */
 function frDeleteSource(sourceId) {
     if (!frCanManageAccounts()) {
-        toast("Удалять счета и кассы может только Администратор", "error");
+        toast("Недостаточно прав для удаления счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5527,6 +5589,7 @@ function frDeleteSource(sourceId) {
             "Счёт/касса «" + name + "» уже используется в поступлениях, расходах, остатках, перемещениях или сверках.\n\n"
             + "Физическое удаление невозможно — история должна сохраниться.\n\nДеактивировать?"
         )) {
+            const snap = frDirectorySnap();
             rec.is_active = false;
             frClearPrimaryIfSource(area, sourceId);
             frAudit("source_deactivate", {
@@ -5534,33 +5597,35 @@ function frDeleteSource(sourceId) {
                 finance_source_id: sourceId,
                 detail: name + " (вместо удаления)"
             });
-            saveApp();
-            renderFinanceRec();
-            toast("Счёт/касса деактивирован", "success");
+            frFinishDirectory(snap, "Счёт/касса деактивирован");
         }
         return;
     }
     if (!confirm("Удалить счёт/кассу «" + name + "» ?")) return;
+    const snap = frDirectorySnap();
     list.splice(idx, 1);
     list.forEach(function (s) {
         if (s && s.storage_account_id === aid) s.storage_account_id = "";
     });
     frClearPrimaryIfSource(area, sourceId);
+    if (!Array.isArray(appData.financeRec.removed_source_ids)) appData.financeRec.removed_source_ids = [];
+    appData.financeRec.removed_source_ids.push(rec.finance_source_id || aid);
+    if (aid && appData.financeRec.removed_source_ids.indexOf(aid) === -1) {
+        appData.financeRec.removed_source_ids.push(aid);
+    }
     frAudit("source_delete", {
         finance_area_id: areaId,
         finance_source_id: sourceId,
         detail: name
     });
-    saveApp();
-    renderFinanceRec();
-    toast("Счёт/касса удалён", "success");
+    frFinishDirectory(snap, "Счёт/касса удалён");
 }
 
 function openFrDictForm(kind, id) {
     const isSource = kind === "source";
     if (isSource) {
         if (!frCanManageAccounts()) {
-            toast("Изменять счета и кассы может только Администратор", "error");
+            toast("Недостаточно прав для изменения счетов и касс.", "error");
             return;
         }
     } else if (!frCan("setup")) {
@@ -5650,7 +5715,7 @@ function saveFrDict() {
     const kind = ((document.getElementById("frDictKind") || {}).value || "source");
     if (kind === "source") {
         if (!frCanManageAccounts()) {
-            toast("Изменять счета и кассы может только Администратор", "error");
+            toast("Недостаточно прав для изменения счетов и касс.", "error");
             return;
         }
     } else if (!frCan("setup")) {
@@ -5673,6 +5738,7 @@ function saveFrDict() {
         toast("Запись не найдена в текущем объекте", "error");
         return;
     }
+    const snap = frDirectorySnap();
     if (!rec) {
         rec = { finance_area_id: areaId, object_id: areaId };
         if (kind === "source") {
@@ -5734,10 +5800,9 @@ function saveFrDict() {
         rec.object_id = areaId;
         rec.default_type = ((document.getElementById("frDictType") || {}).value || "any");
     }
-    saveApp();
-    closeMgmtModal();
-    renderFinanceRec();
-    toast("Сохранено", "success");
+    frFinishDirectory(snap, "Сохранено").then(function (ok) {
+        if (ok) closeMgmtModal();
+    });
 }
 
 function frAddFormulaTerm() {

@@ -1006,6 +1006,651 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(shop["employeeIds"], ["e_new", "e_other"])
         self.assertEqual(self.store["payload"]["workspaces"][1]["employees"][0]["id"], "e_wh")
 
+    def _add_shop_manager(self, user_id="usr_dir", permissions=None):
+        self.add_user({
+            "user_id": user_id,
+            "display_name": "Лариса",
+            "pin": "4444",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": permissions or {
+                "metricsSetup": "edit",
+                "metricsInput": "edit",
+                "financeRec": "edit",
+                "financeRecSetup": "edit",
+                "settings": "edit",
+                "timesheet": "edit",
+            },
+        })
+        cookie, _ = self.login(user_id, "4444")
+        return cookie
+
+    def _seed_metric_access(self):
+        metrics = self.store["payload"]["shopMetrics"]
+        metrics["workAccess"] = {
+            "2026-10": {"e_shop": ["m_keep", "m_drop"], "e_wh": ["m_wh"]},
+        }
+        metrics["extraAccess"] = {"e_shop": ["m_keep"], "e_wh": ["m_wh"]}
+        self.store["payload"]["shopMetricCatalog"] = {
+            "items": [
+                {
+                    "id": "m_shop",
+                    "name": "Показатель магазина",
+                    "department_id": "shop",
+                    "assignments": [{
+                        "assignment_id": "a_shop",
+                        "department_id": "shop",
+                        "assign_mode": "specific",
+                        "employee_ids": ["e_shop"],
+                    }],
+                },
+                {
+                    "id": "m_wh",
+                    "name": "Показатель склада",
+                    "department_id": "warehouse",
+                    "assignments": [{
+                        "assignment_id": "a_wh",
+                        "department_id": "warehouse",
+                        "assign_mode": "specific",
+                        "employee_ids": ["e_wh"],
+                    }],
+                },
+            ]
+        }
+        self.store["payload"]["deptMetrics"]["warehouse"]["workAccess"] = {
+            "2026-10": {"e_wh": ["m_wh"]},
+        }
+
+    def test_manager_saves_and_clears_own_metric_checkboxes(self):
+        self._seed_metric_access()
+        cookie = self._add_shop_manager()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"workAccess": {
+                    "2026-10": {"e_shop": ["m_keep"], "e_wh": []},
+                }, "extraAccess": {"e_shop": ["m_keep"], "e_wh": []}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        access = self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_shop"], ["m_keep"])
+        self.assertEqual(access["e_wh"], ["m_wh"])
+        self.assertEqual(self.store["payload"]["shopMetrics"]["extraAccess"]["e_wh"], ["m_wh"])
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["ok"], 1)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["nested"]["employees"][0]["rate"], 777)
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"workAccess": {"2026-10": {"e_shop": []}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        access = self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_shop"], [])
+        self.assertEqual(access["e_wh"], ["m_wh"])
+
+    def test_metric_checkboxes_survive_reread(self):
+        self._seed_metric_access()
+        cookie = self._add_shop_manager()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {"workAccess": {"2026-10": {"e_shop": ["m_keep"]}}},
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_shop",
+                        "name": "Показатель магазина",
+                        "department_id": "shop",
+                        "assignments": [{
+                            "assignment_id": "a_shop",
+                            "department_id": "shop",
+                            "assign_mode": "specific",
+                            "employee_ids": [],
+                        }],
+                    }]},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        access = data["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_shop"], ["m_keep"])
+        self.assertEqual(access["e_wh"], ["m_wh"])
+        items = {row["id"]: row for row in data["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(items["m_shop"]["assignments"][0]["employee_ids"], [])
+
+    def test_other_department_metric_assignments_stay(self):
+        self._seed_metric_access()
+        cookie = self._add_shop_manager()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetricCatalog": {"items": [
+                    {
+                        "id": "m_shop",
+                        "name": "Новое имя магазина",
+                        "department_id": "shop",
+                        "assignments": [{
+                            "assignment_id": "a_shop",
+                            "department_id": "shop",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_shop", "e_wh"],
+                        }],
+                    },
+                    {
+                        "id": "m_wh",
+                        "name": "Чужое имя",
+                        "department_id": "warehouse",
+                        "assignments": [{
+                            "assignment_id": "a_wh",
+                            "department_id": "warehouse",
+                            "assign_mode": "specific",
+                            "employee_ids": [],
+                        }],
+                    },
+                ]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(items["m_shop"]["name"], "Новое имя магазина")
+        self.assertEqual(items["m_shop"]["assignments"][0]["employee_ids"], ["e_shop"])
+        self.assertEqual(items["m_wh"]["name"], "Показатель склада")
+        self.assertEqual(items["m_wh"]["assignments"][0]["employee_ids"], ["e_wh"])
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"]["workAccess"]["2026-10"]["e_wh"],
+            ["m_wh"],
+        )
+        self.assertEqual(self.store["payload"]["deptMetrics"]["warehouse"]["facts"]["secret"], 1)
+
+    def test_metric_input_cannot_change_setup_and_setup_cannot_change_facts(self):
+        cookie, _ = self.login("usr_001", "1111")
+        before = json.loads(json.dumps(self.store["payload"]["shopMetrics"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"workAccess": {"2026-10": {"e_shop": ["m_new"]}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["shopMetrics"], before)
+        self._add_shop_manager("usr_setup", {"metricsSetup": "edit"})
+        cookie_setup, _ = self.login("usr_setup", "4444")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"facts": {"ok": 9}}},
+            },
+            cookie=cookie_setup,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["ok"], 1)
+
+    def _seed_finance_directory(self):
+        self.store["payload"]["financeRec"] = {
+            "operations": [
+                {"id": "op_shop", "amount": 10, "account_id": "acc_shop", "object_id": "farea_shop"},
+                {"id": "op_ter", "amount": 20, "account_id": "acc_ter", "object_id": "farea_territory"},
+            ],
+            "openings": [],
+            "sources": [
+                {
+                    "finance_source_id": "fsrc_shop_a",
+                    "account_id": "acc_shop",
+                    "name": "Касса А",
+                    "account_type": "cash",
+                    "sort_order": 10,
+                    "is_active": True,
+                    "in_actual_balance": True,
+                    "object_id": "farea_shop",
+                    "finance_area_id": "farea_shop",
+                },
+                {
+                    "finance_source_id": "fsrc_shop_b",
+                    "account_id": "acc_shop_b",
+                    "name": "Банк",
+                    "account_type": "bank",
+                    "sort_order": 20,
+                    "is_active": True,
+                    "object_id": "farea_shop",
+                    "finance_area_id": "farea_shop",
+                },
+                {
+                    "finance_source_id": "fsrc_ter",
+                    "account_id": "acc_ter",
+                    "name": "Касса территории",
+                    "account_type": "cash",
+                    "sort_order": 10,
+                    "is_active": True,
+                    "object_id": "farea_territory",
+                    "finance_area_id": "farea_territory",
+                },
+            ],
+            "areas": [
+                {
+                    "finance_area_id": "farea_shop",
+                    "object_id": "farea_shop",
+                    "name": "Магазин Володарского",
+                    "primary_cash_source_id": "fsrc_shop_a",
+                    "primary_cash_account_id": "acc_shop",
+                },
+                {
+                    "finance_area_id": "farea_territory",
+                    "object_id": "farea_territory",
+                    "name": "Территория",
+                    "primary_cash_source_id": "fsrc_ter",
+                    "primary_cash_account_id": "acc_ter",
+                },
+            ],
+        }
+
+    def test_manager_creates_cash_and_shared_account_order(self):
+        self._seed_finance_directory()
+        cookie = self._add_shop_manager("usr_fin", {
+            "financeRecSetup": "edit",
+            "financeRec": "edit",
+        })
+        self.add_user({
+            "user_id": "usr_view",
+            "display_name": "Смотрящий",
+            "pin": "4545",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"financeRec": "view"},
+        })
+        ops_before = json.loads(json.dumps(self.store["payload"]["financeRec"]["operations"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"financeRec": {
+                    "sources": [
+                        {
+                            "finance_source_id": "fsrc_shop_a",
+                            "account_id": "acc_shop",
+                            "name": "Касса А",
+                            "account_type": "cash",
+                            "sort_order": 20,
+                            "is_active": True,
+                            "object_id": "farea_shop",
+                        },
+                        {
+                            "finance_source_id": "fsrc_shop_b",
+                            "account_id": "acc_shop_b",
+                            "name": "Банк",
+                            "account_type": "bank",
+                            "sort_order": 10,
+                            "is_active": True,
+                            "object_id": "farea_shop",
+                        },
+                        {
+                            "finance_source_id": "fsrc_new",
+                            "account_id": "fsrc_new",
+                            "name": "Касса новая",
+                            "account_type": "cash",
+                            "sort_order": 30,
+                            "is_active": True,
+                            "in_actual_balance": True,
+                            "object_id": "farea_shop",
+                            "finance_area_id": "farea_shop",
+                        },
+                        {
+                            "finance_source_id": "fsrc_ter",
+                            "account_id": "acc_ter",
+                            "name": "Чужое имя",
+                            "account_type": "bank",
+                            "sort_order": 99,
+                            "is_active": False,
+                            "object_id": "farea_territory",
+                        },
+                    ],
+                    "areas": [
+                        {
+                            "object_id": "farea_shop",
+                            "primary_cash_source_id": "fsrc_new",
+                        },
+                        {
+                            "object_id": "farea_territory",
+                            "primary_cash_source_id": "fsrc_new",
+                        },
+                    ],
+                }},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        sources = {
+            row["finance_source_id"]: row
+            for row in self.store["payload"]["financeRec"]["sources"]
+        }
+        self.assertEqual(sources["fsrc_new"]["name"], "Касса новая")
+        self.assertEqual(sources["fsrc_new"]["account_type"], "cash")
+        self.assertEqual(sources["fsrc_new"]["object_id"], "farea_shop")
+        self.assertEqual(sources["fsrc_shop_a"]["sort_order"], 20)
+        self.assertEqual(sources["fsrc_shop_b"]["sort_order"], 10)
+        self.assertEqual(sources["fsrc_shop_a"]["account_id"], "acc_shop")
+        self.assertEqual(sources["fsrc_ter"]["name"], "Касса территории")
+        self.assertEqual(sources["fsrc_ter"]["sort_order"], 10)
+        self.assertEqual(sources["fsrc_ter"]["account_type"], "cash")
+        self.assertTrue(sources["fsrc_ter"]["is_active"])
+        areas = {
+            row["object_id"]: row for row in self.store["payload"]["financeRec"]["areas"]
+        }
+        self.assertEqual(areas["farea_shop"]["primary_cash_source_id"], "fsrc_new")
+        self.assertEqual(areas["farea_territory"]["primary_cash_source_id"], "fsrc_ter")
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"], ops_before)
+        view_cookie, _ = self.login("usr_view", "4545")
+        status, viewed, *_ = call("GET", "/api/state", cookie=view_cookie)
+        self.assertTrue(status.startswith("200"), status)
+        viewed_order = [
+            (row["finance_source_id"], row["sort_order"])
+            for row in viewed["payload"]["financeRec"]["sources"]
+            if row.get("object_id") == "farea_shop"
+        ]
+        self.assertEqual(
+            viewed_order,
+            [("fsrc_shop_a", 20), ("fsrc_shop_b", 10), ("fsrc_new", 30)],
+        )
+        admin_cookie, _ = self.login("user_admin", "5555")
+        status, admin_view, *_ = call("GET", "/api/state", cookie=admin_cookie)
+        self.assertTrue(status.startswith("200"), status)
+        admin_order = [
+            (row["finance_source_id"], row["sort_order"])
+            for row in admin_view["payload"]["financeRec"]["sources"]
+            if row.get("object_id") == "farea_shop"
+        ]
+        self.assertEqual(admin_order, viewed_order)
+        self.assertEqual(admin_view["payload"]["financeRec"]["operations"], ops_before)
+
+    def test_finance_directory_rejected_without_right_and_used_delete(self):
+        self._seed_finance_directory()
+        cookie, _ = self.login("usr_001", "1111")
+        before = json.loads(json.dumps(self.store["payload"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"financeRec": {"sources": [{
+                    "finance_source_id": "fsrc_shop_a",
+                    "name": "Взлом",
+                    "object_id": "farea_shop",
+                    "account_type": "cash",
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["financeRec"], before["financeRec"])
+        editor, _ = self.login("usr_set", "3333")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "users": [{"user_id": "usr_set", "role": "admin", "pin": "9999"}],
+                    "financeRec": {"sources": [{
+                        "finance_source_id": "fsrc_extra",
+                        "name": "Лишняя",
+                        "object_id": "farea_shop",
+                        "account_type": "cash",
+                    }]},
+                },
+            },
+            cookie=editor,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        roles = {row["user_id"]: row["role"] for row in self.store["payload"]["users"]}
+        self.assertEqual(roles["usr_set"], "user")
+        self.assertEqual(roles["usr_001"], "user")
+        self.assertNotIn("fsrc_extra", json.dumps(self.store["payload"]["financeRec"]))
+        manager = self._add_shop_manager("usr_fin", {"financeRecSetup": "edit"})
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"financeRec": {
+                    "removed_source_ids": ["acc_shop"],
+                    "sources": [{
+                        "finance_source_id": "fsrc_shop_a",
+                        "account_id": "acc_shop",
+                        "name": "Не должно сохраниться",
+                        "object_id": "farea_shop",
+                        "account_type": "cash",
+                        "sort_order": 70,
+                    }],
+                }},
+            },
+            cookie=manager,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        sources = {
+            row["finance_source_id"]: row
+            for row in self.store["payload"]["financeRec"]["sources"]
+        }
+        self.assertEqual(sources["fsrc_shop_a"]["name"], "Касса А")
+        self.assertEqual(sources["fsrc_ter"]["name"], "Касса территории")
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"][0]["account_id"], "acc_shop")
+
+    def test_staff_does_not_become_admin(self):
+        cookie, _ = self.login("usr_001", "1111")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"users": [{
+                    "user_id": "usr_001",
+                    "role": "admin",
+                    "legacy_role": "admin",
+                    "permissions": {"settings": "edit", "salary": "edit"},
+                }]},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        staff = next(row for row in self.store["payload"]["users"] if row["user_id"] == "usr_001")
+        self.assertEqual(staff["role"], "user")
+        self.assertEqual(staff["legacy_role"], "staff")
+        self.assertNotIn("salary", staff["permissions"])
+        self.assertEqual(self.store["payload"]["workspaces"][0]["employees"][0]["rate"], 1500)
+
+    def test_sources_without_id_keep_operation_links(self):
+        self.store["payload"]["financeRec"] = {
+            "operations": [
+                {"id": "op_old", "amount": 15, "account_id": "acc_old", "object_id": "farea_shop"},
+            ],
+            "sources": [
+                {
+                    "name": "Старая касса",
+                    "account_id": "acc_old",
+                    "object_id": "farea_shop",
+                    "account_type": "cash",
+                    "sort_order": 10,
+                },
+                {
+                    "name": "Без номера",
+                    "object_id": "farea_shop",
+                    "account_type": "bank",
+                    "sort_order": 20,
+                },
+            ],
+            "areas": [{
+                "finance_area_id": "farea_shop",
+                "object_id": "farea_shop",
+                "name": "Магазин Володарского",
+            }],
+        }
+        cookie = self._add_shop_manager("usr_fin", {"financeRecSetup": "edit"})
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"financeRec": {"sources": [
+                    {
+                        "name": "Старая касса",
+                        "account_id": "acc_old",
+                        "object_id": "farea_shop",
+                        "account_type": "cash",
+                        "sort_order": 30,
+                    },
+                    {
+                        "name": "Без номера",
+                        "object_id": "farea_shop",
+                        "account_type": "bank",
+                        "sort_order": 40,
+                    },
+                ]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        sources = self.store["payload"]["financeRec"]["sources"]
+        self.assertEqual(len(sources), 2)
+        old = next(row for row in sources if row.get("account_id") == "acc_old")
+        self.assertEqual(old["finance_source_id"], "acc_old")
+        self.assertEqual(old["sort_order"], 30)
+        blank = next(row for row in sources if row.get("name") == "Без номера")
+        self.assertTrue(str(blank["finance_source_id"]).startswith("fsrc_legacy_"))
+        self.assertEqual(blank["account_id"], blank["finance_source_id"])
+        self.assertEqual(blank["sort_order"], 40)
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"][0]["account_id"], "acc_old")
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"][0]["amount"], 15)
+
+    def test_sequential_and_concurrent_saves_do_not_drop_data(self):
+        self._seed_finance_directory()
+        self._seed_metric_access()
+        shop = next(row for row in self.store["payload"]["workspaces"] if row["code"] == "shop")
+        shop["employees"].append({"id": "e_shop2", "name": "Второй", "rate": 1000})
+        cookie = self._add_shop_manager()
+        version = int(self.store["version"])
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {"financeRec": {"sources": [{
+                    "finance_source_id": "fsrc_one",
+                    "account_id": "fsrc_one",
+                    "name": "Касса один",
+                    "account_type": "cash",
+                    "sort_order": 40,
+                    "object_id": "farea_shop",
+                }]}, "shopMetrics": {"workAccess": {"2026-10": {"e_shop": ["m_keep"]}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {"financeRec": {"sources": [{
+                    "finance_source_id": "fsrc_two",
+                    "account_id": "fsrc_two",
+                    "name": "Касса два",
+                    "account_type": "cash",
+                    "sort_order": 50,
+                    "object_id": "farea_shop",
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("409"), status)
+        ids = {row["finance_source_id"] for row in self.store["payload"]["financeRec"]["sources"]}
+        self.assertIn("fsrc_one", ids)
+        self.assertNotIn("fsrc_two", ids)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"],
+            ["m_keep"],
+        )
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "financeRec": {"sources": [{
+                        "finance_source_id": "fsrc_two",
+                        "account_id": "fsrc_two",
+                        "name": "Касса два",
+                        "account_type": "cash",
+                        "sort_order": 50,
+                        "object_id": "farea_shop",
+                    }]},
+                    "shopMetrics": {"workAccess": {"2026-10": {"e_shop2": ["m_two"]}}},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        ids = {row["finance_source_id"] for row in self.store["payload"]["financeRec"]["sources"]}
+        self.assertIn("fsrc_one", ids)
+        self.assertIn("fsrc_two", ids)
+        self.assertIn("fsrc_ter", ids)
+        access = self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_shop"], ["m_keep"])
+        self.assertEqual(access["e_shop2"], ["m_two"])
+        self.assertEqual(access["e_wh"], ["m_wh"])
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"][0]["id"], "op_shop")
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"][1]["amount"], 20)
+
+    def test_manager_employee_create_still_works(self):
+        cookie = self._add_shop_manager()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"workspaces": [{
+                    "code": "shop",
+                    "employees": [{
+                        "id": "e_fresh",
+                        "employee_id": "e_fresh",
+                        "name": "Новый продавец",
+                    }],
+                    "employeeIds": ["e_fresh"],
+                }]},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        shop = next(row for row in self.store["payload"]["workspaces"] if row["code"] == "shop")
+        by_id = {row["id"]: row for row in shop["employees"]}
+        self.assertEqual(by_id["e_shop"]["name"], "Касса")
+        self.assertEqual(by_id["e_shop"]["rate"], 1500)
+        self.assertEqual(by_id["e_fresh"]["name"], "Новый продавец")
+        self.assertNotIn("rate", by_id["e_fresh"])
+        self.assertIn("e_fresh", shop["employeeIds"])
+        self.assertEqual(self.store["payload"]["workspaces"][1]["employees"][0]["id"], "e_wh")
+        self.assertEqual(self.store["payload"]["workspaces"][1]["employees"][0]["rate"], 1800)
+
     def test_hidden_fields_survive_partial_put(self):
         cookie, _ = self.login("usr_001", "1111")
         status, *_ = call(
