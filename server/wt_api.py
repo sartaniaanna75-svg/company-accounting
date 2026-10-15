@@ -619,6 +619,18 @@ METRIC_INPUT_KEYS = frozenset(
     }
 )
 METRIC_SETUP_KEYS = frozenset({"workAccess", "extraAccess"})
+# Денежные поля KPI в shopPayroll — только системный администратор.
+SHOP_PAYROLL_KPI_MONEY_KEYS = frozenset({"kpiDefs", "assignments"})
+# Категория территории → подразделение табеля (как в app.html TERRITORY_METRIC_CATEGORIES).
+TERRITORY_CATEGORY_DEPT = {
+    "office": "office",
+    "warehouse": "warehouse",
+    "drivers": "drivers",
+    "sales_opt": "drivers",
+    "sales_retail": "warehouse",
+    "common": "",
+    "returns": "",
+}
 FINANCE_DATA_KEYS = (
     "operations",
     "money_transits",
@@ -651,7 +663,8 @@ def _can_edit_metric_input(user: dict) -> bool:
 
 
 def _can_edit_metric_setup(user: dict) -> bool:
-    return user_has_perm(user, "metricsSetup", "edit") or user_has_perm(user, "kpi", "edit")
+    """Назначение сотрудников на метрики. Не связано с денежным KPI."""
+    return user_has_perm(user, "metricsSetup", "edit")
 
 
 def _employee_dept_map(payload: dict) -> dict[str, str]:
@@ -742,12 +755,34 @@ def _apply_metric_root(current: Any, incoming: Any, user: dict, dept_code: str, 
 
 
 def _metric_item_dept(item: dict) -> str:
+    """Подразделение показателя. territory_category без department_id → известный dept."""
+    if not isinstance(item, dict):
+        return SHOP_METRIC_FALLBACK
     dept = str(item.get("department_id") or "").strip()
     if dept:
         return dept
-    if str(item.get("territory_category") or "").strip():
-        return ""
+    cat = str(item.get("territory_category") or "").strip()
+    if cat in TERRITORY_CATEGORY_DEPT:
+        return TERRITORY_CATEGORY_DEPT[cat]
     return SHOP_METRIC_FALLBACK
+
+
+def _user_can_touch_metric_item(item: dict, codes: set[str]) -> bool:
+    """Можно ли править показатель в рамках departments пользователя."""
+    if not codes:
+        return False
+    dept = _metric_item_dept(item)
+    if dept:
+        return dept in codes
+    # Общие / без dept: только назначения по разрешённым подразделениям.
+    cat = str(item.get("territory_category") or "").strip()
+    if cat in ("common", "returns") or not dept:
+        if codes & TERRITORY_CODES:
+            return True
+        for row in item.get("assignments") or []:
+            if isinstance(row, dict) and str(row.get("department_id") or "").strip() in codes:
+                return True
+    return False
 
 
 def _merge_metric_assignments(
@@ -803,28 +838,40 @@ def _apply_metric_catalog(current: Any, incoming: Any, user: dict, emp_dept: dic
     for item in incoming_items:
         if not isinstance(item, dict) or item.get("id") in (None, ""):
             continue
-        dept = _metric_item_dept(item)
-        if dept not in codes:
-            continue
         iid = str(item.get("id"))
+        existing = items[by_id[iid]] if iid in by_id else None
+        probe = item if _user_can_touch_metric_item(item, codes) else None
+        if probe is None and existing is not None and _user_can_touch_metric_item(existing, codes):
+            probe = existing
+        if probe is None:
+            continue
+        dept = _metric_item_dept(item) or (_metric_item_dept(existing) if existing else "")
         patch = _clone(item)
         patch.pop("assignments", None)
-        if iid in by_id:
-            existing = items[by_id[iid]]
-            if _metric_item_dept(existing) not in codes:
+        if existing is not None:
+            if not _user_can_touch_metric_item(existing, codes):
                 continue
-            merged = _overlay_open(existing, patch, False)
-            merged["id"] = existing.get("id")
-            if existing.get("department_id"):
-                merged["department_id"] = existing.get("department_id")
+            # Для общих показателей без dept не переписываем чужие поля целиком — только назначения.
+            if not _metric_item_dept(existing) and not dept:
+                merged = _clone(existing)
+            else:
+                merged = _overlay_open(existing, patch, False)
+                merged["id"] = existing.get("id")
+                if existing.get("department_id"):
+                    merged["department_id"] = existing.get("department_id")
+                elif dept:
+                    merged["department_id"] = dept
             merged["assignments"] = _merge_metric_assignments(
                 existing.get("assignments"), item.get("assignments"), codes, emp_dept
             )
             items[by_id[iid]] = merged
             continue
+        if not dept and not _user_can_touch_metric_item(item, codes):
+            continue
         created = _overlay_open({}, patch, False)
         created["id"] = iid
-        created["department_id"] = dept
+        if dept:
+            created["department_id"] = dept
         created["assignments"] = _merge_metric_assignments([], item.get("assignments"), codes, emp_dept)
         items.append(created)
         by_id[iid] = len(items) - 1
@@ -847,11 +894,24 @@ def _catalog_forbidden(current: Any, incoming: Any, user: dict) -> bool:
     for item in incoming.get("items") or []:
         if not isinstance(item, dict) or item.get("id") in (None, ""):
             continue
-        dept = _metric_item_dept(item)
-        if dept not in codes:
-            continue
         existing = by_id.get(str(item.get("id")))
+        if not _user_can_touch_metric_item(item, codes):
+            if existing is None or not _user_can_touch_metric_item(existing, codes):
+                continue
         if _closed_field_violations(existing, item, False):
+            return True
+    return False
+
+
+def _shop_payroll_kpi_money_forbidden(current: Any, incoming: Any, user: dict) -> bool:
+    """Денежные KPI (kpiDefs / assignments) меняет только администратор."""
+    if is_app_admin(user):
+        return False
+    if not isinstance(incoming, dict):
+        return True
+    cur = current if isinstance(current, dict) else {}
+    for key in SHOP_PAYROLL_KPI_MONEY_KEYS:
+        if key in incoming and not _same(incoming.get(key), cur.get(key)):
             return True
     return False
 
@@ -1510,6 +1570,17 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
             if _catalog_forbidden(current.get(key) if isinstance(current.get(key), dict) else {}, val, user):
                 return True
             continue
+        if key == "shopPayroll":
+            if not _can_write_top(user, key):
+                if not _same(val, current.get(key)):
+                    return True
+                continue
+            if _shop_payroll_kpi_money_forbidden(current.get(key), val, user):
+                return True
+            allow_sal = user_has_perm(user, "salary", "edit")
+            if _closed_field_violations(current.get(key), val, allow_sal):
+                return True
+            continue
         if key == "financeRec":
             if not (
                 user_has_perm(user, "financeRec", "edit") or user_has_perm(user, "financeRecSetup", "edit")
@@ -1591,6 +1662,18 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
             continue
         if key == "shopMetricCatalog":
             stored[key] = _apply_metric_catalog(stored.get(key), incoming.get(key), user, emp_dept)
+            continue
+        if key == "shopPayroll":
+            allow_sal = user_has_perm(user, "salary", "edit")
+            cur_pay = stored.get(key) if isinstance(stored.get(key), dict) else {}
+            merged = _overlay_open(cur_pay, incoming.get(key), allow_sal)
+            if isinstance(merged, dict) and not is_app_admin(user):
+                for money_key in SHOP_PAYROLL_KPI_MONEY_KEYS:
+                    if money_key in cur_pay:
+                        merged[money_key] = _clone(cur_pay.get(money_key))
+                    else:
+                        merged.pop(money_key, None)
+            stored[key] = merged
             continue
         if key == "financeRec":
             stored[key] = _apply_finance_rec(stored.get(key), incoming.get(key), user)
@@ -1821,6 +1904,12 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
         or user_has_perm(user, "metricsSetup", "view")
         or user_has_perm(user, "metrics", "view")
     )
+    # Справочник метрик общий: нужен складу/территории без галочки shop.
+    if can_metrics and "shopMetricCatalog" in payload:
+        out["shopMetricCatalog"] = drop_closed_fields(
+            payload.get("shopMetricCatalog"), allow_salary, allow_finance
+        )
+
     if "shop" in codes:
         if can_metrics and "shopMetrics" in payload:
             out["shopMetrics"] = drop_closed_fields(payload.get("shopMetrics"), allow_salary, allow_finance)
@@ -1828,12 +1917,6 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
             out["shopRevision"] = drop_closed_fields(payload.get("shopRevision"), allow_salary, allow_finance)
         if user_has_perm(user, "salesPlan", "view") and "shopSalesPlan" in payload:
             out["shopSalesPlan"] = drop_closed_fields(payload.get("shopSalesPlan"), allow_salary, allow_finance)
-        if (
-            user_has_perm(user, "metricsSetup", "view") or user_has_perm(user, "kpi", "view")
-        ) and "shopMetricCatalog" in payload:
-            out["shopMetricCatalog"] = drop_closed_fields(
-                payload.get("shopMetricCatalog"), allow_salary, allow_finance
-            )
         if allow_salary and "shopPayroll" in payload:
             out["shopPayroll"] = drop_closed_fields(payload.get("shopPayroll"), True, allow_finance)
 

@@ -1206,6 +1206,249 @@ class StoreApiTests(unittest.TestCase):
         self.assertTrue(status.startswith("403"), status)
         self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["ok"], 1)
 
+    def test_kpi_perm_does_not_grant_metric_setup(self):
+        self._seed_metric_access()
+        self.add_user({
+            "user_id": "usr_kpi_only",
+            "display_name": "Только KPI",
+            "pin": "4444",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"kpi": "manage"},
+        })
+        cookie, _ = self.login("usr_kpi_only", "4444")
+        before = json.loads(json.dumps(self.store["payload"]["shopMetrics"]["workAccess"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"workAccess": {"2026-10": {"e_shop": ["m_hack"]}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["workAccess"], before)
+
+    def test_admin_can_change_kpi_money_defs(self):
+        self.store["payload"]["shopPayroll"] = {
+            "salaries": [{"employee_id": "e_shop", "rate": 1500}],
+            "kpiDefs": [{"kpi_id": "kpi_old", "name": "Старый", "amount": 100}],
+            "assignments": [{"id": "ka1", "employee_id": "e_shop", "kpi_id": "kpi_old"}],
+        }
+        cookie, _ = self.login("user_admin", "5555")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopPayroll": {
+                        "salaries": [{"employee_id": "e_shop", "rate": 1500}],
+                        "kpiDefs": [{"kpi_id": "kpi_new", "name": "Новый", "amount": 250}],
+                        "assignments": [{"id": "ka1", "employee_id": "e_shop", "kpi_id": "kpi_new"}],
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        pay = self.store["payload"]["shopPayroll"]
+        self.assertEqual(pay["kpiDefs"][0]["kpi_id"], "kpi_new")
+        self.assertEqual(pay["kpiDefs"][0]["amount"], 250)
+        self.assertEqual(pay["assignments"][0]["kpi_id"], "kpi_new")
+
+    def test_manager_metrics_setup_cannot_change_kpi_money(self):
+        self.store["payload"]["shopPayroll"] = {
+            "salaries": [{"employee_id": "e_shop", "rate": 1500}],
+            "kpiDefs": [{"kpi_id": "kpi_old", "name": "Старый", "amount": 100}],
+            "assignments": [{"id": "ka1", "employee_id": "e_shop", "kpi_id": "kpi_old"}],
+        }
+        cookie = self._add_shop_manager(
+            "usr_ms_kpi",
+            {"metricsSetup": "edit", "salary": "edit", "salaryCalc": "edit", "timesheet": "edit"},
+        )
+        before = json.loads(json.dumps(self.store["payload"]["shopPayroll"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopPayroll": {
+                        "salaries": [{"employee_id": "e_shop", "rate": 1600}],
+                        "kpiDefs": [{"kpi_id": "kpi_hack", "name": "Взлом", "amount": 999}],
+                        "assignments": [],
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["shopPayroll"], before)
+
+    def test_staff_metrics_setup_cannot_change_kpi_money(self):
+        self.store["payload"]["shopPayroll"] = {
+            "salaries": [{"employee_id": "e_shop", "rate": 1500}],
+            "kpiDefs": [{"kpi_id": "kpi_old", "amount": 100}],
+            "assignments": [{"id": "ka1", "kpi_id": "kpi_old"}],
+        }
+        self.add_user({
+            "user_id": "usr_setup_user",
+            "display_name": "Настройщик",
+            "pin": "6666",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"metricsSetup": "edit", "salary": "edit", "salaryCalc": "edit"},
+        })
+        cookie, _ = self.login("usr_setup_user", "6666")
+        before = json.loads(json.dumps(self.store["payload"]["shopPayroll"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopPayroll": {
+                        "kpiDefs": [{"kpi_id": "kpi_hack", "amount": 1}],
+                        "assignments": [],
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["shopPayroll"], before)
+
+    def test_warehouse_metrics_setup_saves_work_access(self):
+        self._seed_metric_access()
+        self.add_user({
+            "user_id": "usr_wh_setup",
+            "display_name": "Склад настройка",
+            "pin": "7777",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["warehouse"],
+            "permissions": {"metricsSetup": "edit", "metricsInput": "edit", "timesheet": "edit"},
+        })
+        cookie, _ = self.login("usr_wh_setup", "7777")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "deptMetrics": {
+                        "warehouse": {"workAccess": {"2026-10": {"e_wh": ["m_wh", "m_extra"]}}}
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"]["workAccess"]["2026-10"]["e_wh"],
+            ["m_wh", "m_extra"],
+        )
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"],
+            ["m_keep", "m_drop"],
+        )
+
+    def test_territory_category_metric_assignments_saved(self):
+        self._seed_metric_access()
+        self.store["payload"]["shopMetricCatalog"]["items"].append({
+            "id": "m_ter",
+            "name": "Территория без dept",
+            "territory_category": "warehouse",
+            "assignments": [{
+                "assignment_id": "a_ter",
+                "department_id": "warehouse",
+                "assign_mode": "specific",
+                "employee_ids": [],
+            }],
+        })
+        self.add_user({
+            "user_id": "usr_wh_cat",
+            "display_name": "Склад каталог",
+            "pin": "8888",
+            "role": "user",
+            "is_active": True,
+            "departments": ["warehouse"],
+            "permissions": {"metricsSetup": "edit"},
+        })
+        cookie, _ = self.login("usr_wh_cat", "8888")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetricCatalog": {"items": [{
+                    "id": "m_ter",
+                    "name": "Территория без dept",
+                    "territory_category": "warehouse",
+                    "assignments": [{
+                        "assignment_id": "a_ter",
+                        "department_id": "warehouse",
+                        "assign_mode": "specific",
+                        "employee_ids": ["e_wh"],
+                    }],
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(items["m_ter"]["assignments"][0]["employee_ids"], ["e_wh"])
+        self.assertEqual(items["m_shop"]["assignments"][0]["employee_ids"], ["e_shop"])
+
+    def test_warehouse_user_receives_metric_catalog_on_get(self):
+        self._seed_metric_access()
+        self.add_user({
+            "user_id": "usr_wh_get",
+            "display_name": "Склад GET",
+            "pin": "9999",
+            "role": "user",
+            "is_active": True,
+            "departments": ["warehouse"],
+            "permissions": {"metricsSetup": "edit", "metricsInput": "edit"},
+        })
+        cookie, _ = self.login("usr_wh_get", "9999")
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        self.assertIn("shopMetricCatalog", data["payload"])
+        ids = {row["id"] for row in data["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_wh", ids)
+        self.assertIn("m_shop", ids)
+
+    def test_foreign_department_metric_setup_forbidden_effect(self):
+        self._seed_metric_access()
+        cookie = self._add_shop_manager("usr_shop_only", {"metricsSetup": "edit"})
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "deptMetrics": {
+                        "warehouse": {"workAccess": {"2026-10": {"e_wh": []}}}
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        # Нет warehouse в departments — ветка не пишется / или 403 если считается чужой.
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"]["workAccess"]["2026-10"]["e_wh"],
+            ["m_wh"],
+        )
+        if status.startswith("200"):
+            pass
+        else:
+            self.assertTrue(status.startswith("403"), status)
+
     def _seed_finance_directory(self):
         self.store["payload"]["financeRec"] = {
             "operations": [

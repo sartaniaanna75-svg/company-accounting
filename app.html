@@ -8015,7 +8015,7 @@ const ACCESS_PERM_KEYS = [
     { key: "salaryPay", label: "Выдача зарплаты" },
     { key: "salary1c", label: "Служебные суммы 1С" },
     { key: "vacationPlan", label: "Управление графиком выплаты отпускных" },
-    { key: "kpi", label: "KPI" },
+    { key: "kpi", label: "KPI — начисления" },
     { key: "settings", label: "Настройки" },
     { key: "management", label: "СПУ" },
     { key: "managementIndicators", label: "СПУ · показатели" },
@@ -10175,7 +10175,7 @@ function buildStaffPutPayload() {
         });
     }
     const metricInput = userHasPerm("metricsInput", "edit") || userHasPerm("metrics", "edit");
-    const metricSetup = userHasPerm("metricsSetup", "edit") || userHasPerm("kpi", "edit");
+    const metricSetup = userHasPerm("metricsSetup", "edit");
     if (metricInput || metricSetup) {
         const metricSlice = staffMetricSlice(appData && appData.shopMetrics, metricInput, metricSetup);
         if (codes.indexOf("shop") !== -1 && metricSlice) out.shopMetrics = metricSlice;
@@ -10207,10 +10207,18 @@ function buildStaffPutPayload() {
         });
         if (Object.keys(territory).length) out.deptSalesPlans = territory;
     }
-    if ((userHasPerm("metricsSetup", "edit") || userHasPerm("kpi", "edit")) && appData.shopMetricCatalog) {
+    if (userHasPerm("metricsSetup", "edit") && appData.shopMetricCatalog) {
         out.shopMetricCatalog = appData.shopMetricCatalog;
     }
-    if (userHasPerm("salary", "edit") && appData.shopPayroll) out.shopPayroll = appData.shopPayroll;
+    if (userHasPerm("salary", "edit") && appData.shopPayroll) {
+        // Денежные KPI (kpiDefs / assignments) на сервере принимает только администратор.
+        const pay = wtCloneJson(appData.shopPayroll);
+        if (!isAppAdmin() && pay && typeof pay === "object") {
+            delete pay.kpiDefs;
+            delete pay.assignments;
+        }
+        out.shopPayroll = pay;
+    }
     if (userHasPerm("salary", "edit") && appData.salary) out.salary = appData.salary;
     if ((userHasPerm("financeRec", "edit") || userHasPerm("financeRecSetup", "edit")) && appData.financeRec) {
         const financeSlice = staffFinanceSlice(appData.financeRec);
@@ -12922,7 +12930,7 @@ function allowedSections() {
         const list = [];
         if (isAppAdmin()) list.push("users");
         if (isAppAdmin() || userHasPerm("timesheet", "edit") || userHasPerm("settings", "edit")) list.push("summaryStaff");
-        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit") || isAppAdmin()) list.push("metricCatalog");
+        if (isAppAdmin() || userHasPerm("metricsSetup", "edit")) list.push("metricCatalog");
         if (userHasPerm("settings", "edit")) list.push("settings");
         return list;
     }
@@ -12942,7 +12950,7 @@ function allowedSections() {
         if (userHasPerm("discipline", "view")) list.push("discipline");
         if (userHasPerm("timesheet", "view") || userHasPerm("salary", "view")) list.push("analysis");
         if (userHasPerm("timesheet", "edit") || userHasPerm("settings", "edit")) list.push("summaryStaff");
-        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("metricCatalog");
+        if (isAppAdmin() || userHasPerm("metricsSetup", "edit")) list.push("metricCatalog");
         if (userHasPerm("settings", "edit")) list.push("settings");
         return list;
     }
@@ -12958,7 +12966,7 @@ function allowedSections() {
         }
         if (userHasPerm("revision", "view")) list.push("revision");
         if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
-        if (userHasPerm("kpi", "manage") || userHasPerm("settings", "edit")) list.push("metricCatalog");
+        if (isAppAdmin() || userHasPerm("metricsSetup", "edit")) list.push("metricCatalog");
     } else if (code === "warehouse") {
         if (userHasPerm("salesPlan", "view")) list.push("salesPlan");
         if (userHasPerm("revision", "view")) list.push("revision");
@@ -12985,7 +12993,7 @@ function allowedSections() {
         if (list.indexOf("metricCatalog") === -1) list.push("metricCatalog");
     }
     if (isGenericMetricsDept(code) && list.indexOf("territoryMetrics") === -1
-        && (userHasPerm("kpi", "manage") || userHasPerm("kpi", "edit") || userHasPerm("settings", "edit"))) {
+        && (userHasPerm("metricsSetup", "edit") || userHasPerm("metricsInput", "view") || userHasPerm("metrics", "view") || userHasPerm("settings", "edit"))) {
         list.push("territoryMetrics");
     }
     if (userHasPerm("settings", "edit")) list.push("settings");
@@ -21036,7 +21044,8 @@ function shopKpiAssigned(employeeId, kpiId, month) {
 }
 
 function canEditShopPayrollRules() {
-    return isAppAdmin() || userHasPerm("kpi", "manage");
+    // Денежные начисления KPI — только системный администратор.
+    return isAppAdmin();
 }
 
 function canEditShopSalaryAdj() {
@@ -26077,19 +26086,9 @@ function renderAnalysis() {
    В Общую список не заводят — он собирается сам из отделов.
 ============================================================ */
 function canEditShopMetricCatalog() {
+    // Справочник и назначения сотрудников — только metricsSetup (или админ).
     if (isAppAdmin()) return true;
-    if (isTerritoryMetricsMode()) {
-        if (userHasPerm("kpi", "manage") || userHasPerm("kpi", "edit") || userHasPerm("settings", "edit")) return true;
-        if (isTableAdmin()) return true;
-    }
-    if (userHasPerm("kpi", "manage") || userHasPerm("kpi", "edit") || userHasPerm("settings", "edit")) {
-        if (isSummary() || isAdminEntry()) return true;
-        if (workspace() && (workspace().code === "shop" || isGenericMetricsDept(workspace().code))) return true;
-    }
-    if (isSummary()) return currentSummaryRole === "admin";
-    if (!isTableAdmin() || !workspace()) return false;
-    const c = workspace().code;
-    return c === "shop" || isGenericMetricsDept(c);
+    return userHasPerm("metricsSetup", "edit");
 }
 
 function shopMetricNameKey(name) {
@@ -26718,7 +26717,7 @@ function catalogFormDeptList() {
 function catalogFormCanPickDept() {
     if (isTerritoryMetricsMode() && currentSection === "metricCatalog") return true;
     if (!isCompanyWideCatalogMode()) return false;
-    return isAppAdmin() || currentSummaryRole === "admin" || userHasPerm("kpi", "manage") || userHasPerm("settings", "edit");
+    return isAppAdmin() || currentSummaryRole === "admin" || userHasPerm("metricsSetup", "edit");
 }
 
 function refreshMetricCatalogTabOptions(selectedTabs, scopes) {
