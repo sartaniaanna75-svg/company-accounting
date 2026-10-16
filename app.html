@@ -10720,7 +10720,9 @@ function namePartsHtml(employee, disabled) {
 }
 
 function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
-    // Держит catalog.assignments в согласии с workAccess для одного сотрудника.
+    // Синхронизирует только individual (specific) списки employee_ids с workAccess.
+    // Единый корпоративный каталог и строки group_all не меняются при снятии/установке
+    // галочки: индивидуальное назначение живёт в workAccess/extraAccess.
     if (!employeeId || !userHasPerm("metricsSetup", "edit")) return;
     const home = employeeHomeDeptCode(employeeId);
     if (!home) return;
@@ -10733,24 +10735,31 @@ function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
         if (!item || !item.id || item.assignable === false) return;
         const itemDept = metricDepartmentId(item) || String(item.department_id || "");
         const rows = Array.isArray(item.assignments) ? item.assignments : [];
-        let touched = false;
+        let coveredByCatalog = false;
+        let touchedSpecific = false;
+        const want = !!assigned[item.id];
         rows.forEach(function (row) {
             if (!row || typeof row !== "object") return;
             const rowDept = String(row.department_id || itemDept || "");
             if (rowDept && rowDept !== home) return;
             if (!Array.isArray(row.employee_ids)) row.employee_ids = [];
+            if (row.assign_mode !== "specific") {
+                // group_all — шаблон доступности из общего каталога, не трогаем.
+                coveredByCatalog = true;
+                return;
+            }
             const has = row.employee_ids.indexOf(employeeId) !== -1;
-            const want = !!assigned[item.id];
             if (want && !has) {
                 row.employee_ids.push(employeeId);
-                if (!row.assign_mode) row.assign_mode = "specific";
-                touched = true;
-            } else if (!want && has && row.assign_mode === "specific") {
+                touchedSpecific = true;
+            } else if (!want && has) {
                 row.employee_ids = row.employee_ids.filter(function (id) { return id !== employeeId; });
-                touched = true;
+                touchedSpecific = true;
+            } else {
+                coveredByCatalog = true;
             }
         });
-        if (!touched && assigned[item.id]) {
+        if (want && !touchedSpecific && !coveredByCatalog) {
             if (itemDept && itemDept !== home && !(item.territory_category)) return;
             if (!Array.isArray(item.assignments)) item.assignments = [];
             item.assignments.push({
@@ -10808,7 +10817,7 @@ function commitEmployeeCard(employeeId) {
         : null;
     const empSnap = JSON.parse(JSON.stringify(employee));
     if (canEditFioWorkMetrics()) {
-        assignGroupAllMetricsToEmployee(employee);
+        // Не вызываем assignGroupAllMetricsToEmployee: каталог общий, галочки индивидуальные.
         try { syncEmployeeMetricAssignmentsToCatalog(employeeId); } catch (err) { console.error(err); }
     }
     function paintEmployeeCard() {
@@ -15712,7 +15721,20 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
     });
 }
 
+function metricCatalogItemUsesGroupAll(item) {
+    // group_all на уровне item или любой строки assignments — шаблон массового назначения.
+    if (!item) return false;
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        return item.assignments.some(function (row) {
+            return row && row.assign_mode !== "specific";
+        });
+    }
+    return item.assign_mode !== "specific";
+}
+
 function assignGroupAllMetricsToEmployee(employee) {
+    // Только явное массовое/первичное назначение по шаблону group_all.
+    // Не вызывать из commitEmployeeCard — иначе снимаемые галочки восстанавливаются.
     if (!employee || !employee.id) return;
     const home = employeeHome(employee.id);
     if (!home) return;
@@ -15721,7 +15743,7 @@ function assignGroupAllMetricsToEmployee(employee) {
     if (!tab) return;
     catalogItemsForDept(dept).forEach(function (it) {
         if (!it || it.active === false || it.assignable === false) return;
-        if (it.assign_mode === "specific") return;
+        if (!metricCatalogItemUsesGroupAll(it)) return;
         if (!metricShowsOnTab(it, tab)) return;
         applyShopEmployeeWorkMetric(employee.id, it.id, true);
     });
@@ -29397,7 +29419,7 @@ function saveEmployeeCreateForm() {
         w.employeeIds.push(employee.id);
     }
     justAddedEmployeeId = employee.id;
-    try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
+    // Новый сотрудник получает каталог группы для выбора; галочки не ставятся автоматически.
     saveEmployeeCreateForm.busy = true;
     saveApp().then(function (ok) {
         saveEmployeeCreateForm.busy = false;
@@ -29460,17 +29482,15 @@ function updateEmployee(employeeId, field, value) {
         employee.jobStatus = value === "fired" ? "fired" : "working";
     } else if (field === "work_tab_id") {
         setEmployeePrimaryWorkTab(employeeId, value);
-        try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
+        // Смена группы меняет доступный набор из общего каталога; назначения не перезаписываем.
         saveApp();
         return;
     } else if (field === "position") {
         setEmployeePosition(employee, value, selectedMonth);
-        assignGroupAllMetricsToEmployee(employee);
     } else if (field === "position_id") {
         const item = positionCatalogById(value);
         setEmployeePosition(employee, item ? item.name : "", selectedMonth);
         if (item) employee.position_id = item.position_id;
-        assignGroupAllMetricsToEmployee(employee);
     } else if (field === "participates_in_spu_meetings") {
         employee.participates_in_spu_meetings = value === true || value === "true";
         employee.meeting_participant = employee.participates_in_spu_meetings;
@@ -29715,7 +29735,7 @@ function moveEmployeeToDepartment(employeeId, deptCode) {
     } else {
         employee.work_tab_id = "";
     }
-    try { assignGroupAllMetricsToEmployee(employee); } catch (err) { console.error(err); }
+    // Перевод меняет подразделение/группу; индивидуальные назначения не восстанавливаем из group_all.
 
     saveApp();
     renderSummaryStaff();

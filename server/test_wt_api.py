@@ -1536,6 +1536,393 @@ class StoreApiTests(unittest.TestCase):
         items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
         self.assertEqual(items["m_wh"]["assignments"][0]["employee_ids"], ["e_wh"])
 
+    def _seed_group_catalog_individual_assignments(self):
+        """Единый каталог с group_all по подразделениям + индивидуальный workAccess."""
+        shop = next(row for row in self.store["payload"]["workspaces"] if row["code"] == "shop")
+        shop["employees"] = [
+            {
+                "id": "e_pack_a",
+                "employee_id": "e_pack_a",
+                "name": "Разборщик А",
+                "work_tab_id": "packers",
+                "rate": 1200,
+            },
+            {
+                "id": "e_pack_b",
+                "employee_id": "e_pack_b",
+                "name": "Разборщик Б",
+                "work_tab_id": "packers",
+                "rate": 1200,
+            },
+            {
+                "id": "e_mgr",
+                "employee_id": "e_mgr",
+                "name": "Руководитель",
+                "work_tab_id": "managers",
+                "rate": 2000,
+            },
+        ]
+        shop["employeeIds"] = ["e_pack_a", "e_pack_b", "e_mgr"]
+        wh = next(row for row in self.store["payload"]["workspaces"] if row["code"] == "warehouse")
+        wh["employees"] = [
+            {"id": "e_wh_a", "employee_id": "e_wh_a", "name": "Грузчик А", "work_tab_id": "loaders", "rate": 1100},
+            {"id": "e_wh_b", "employee_id": "e_wh_b", "name": "Грузчик Б", "work_tab_id": "loaders", "rate": 1100},
+        ]
+        wh["employeeIds"] = ["e_wh_a", "e_wh_b"]
+        self.store["payload"]["workspaces"].append({
+            "id": "ws_office",
+            "code": "office",
+            "name": "Офис",
+            "employees": [
+                {"id": "e_acc_a", "employee_id": "e_acc_a", "name": "Бухгалтер А", "work_tab_id": "accountants", "rate": 1600},
+                {"id": "e_acc_b", "employee_id": "e_acc_b", "name": "Бухгалтер Б", "work_tab_id": "accountants", "rate": 1600},
+            ],
+            "employeeIds": ["e_acc_a", "e_acc_b"],
+        })
+        self.store["payload"]["workspaces"].append({
+            "id": "ws_drivers",
+            "code": "drivers",
+            "name": "Логистика + Торговые",
+            "employees": [
+                {"id": "e_drv_a", "employee_id": "e_drv_a", "name": "Водитель А", "work_tab_id": "drivers", "rate": 1400},
+                {"id": "e_drv_b", "employee_id": "e_drv_b", "name": "Водитель Б", "work_tab_id": "drivers", "rate": 1400},
+            ],
+            "employeeIds": ["e_drv_a", "e_drv_b"],
+        })
+        self.store["payload"]["shopMetricCatalog"] = {
+            "items": [
+                {
+                    "id": "m_shelf",
+                    "name": "Выкладка позиций",
+                    "department_id": "shop",
+                    "work_tab_ids": ["packers"],
+                    "assign_mode": "group_all",
+                    "assignments": [{
+                        "assignment_id": "a_shelf",
+                        "department_id": "shop",
+                        "work_tab_id": "packers",
+                        "assign_mode": "group_all",
+                        "employee_ids": [],
+                    }],
+                },
+                {
+                    "id": "m_sugar",
+                    "name": "Фасовка сахара",
+                    "department_id": "shop",
+                    "work_tab_ids": ["packers"],
+                    "assign_mode": "group_all",
+                    "assignments": [{
+                        "assignment_id": "a_sugar",
+                        "department_id": "shop",
+                        "work_tab_id": "packers",
+                        "assign_mode": "group_all",
+                        "employee_ids": [],
+                    }],
+                },
+                {
+                    "id": "m_mgr_check",
+                    "name": "Проверка зала",
+                    "department_id": "shop",
+                    "work_tab_ids": ["managers"],
+                    "assign_mode": "group_all",
+                    "assignments": [{
+                        "assignment_id": "a_mgr",
+                        "department_id": "shop",
+                        "work_tab_id": "managers",
+                        "assign_mode": "group_all",
+                        "employee_ids": [],
+                    }],
+                },
+                {
+                    "id": "m_load",
+                    "name": "Погрузка",
+                    "department_id": "warehouse",
+                    "work_tab_ids": ["loaders"],
+                    "assign_mode": "group_all",
+                    "assignments": [{
+                        "assignment_id": "a_load",
+                        "department_id": "warehouse",
+                        "work_tab_id": "loaders",
+                        "assign_mode": "group_all",
+                        "employee_ids": [],
+                    }],
+                },
+                {
+                    "id": "m_acc",
+                    "name": "Сверка документов",
+                    "department_id": "office",
+                    "work_tab_ids": ["accountants"],
+                    "assign_mode": "group_all",
+                    "assignments": [{
+                        "assignment_id": "a_acc",
+                        "department_id": "office",
+                        "work_tab_id": "accountants",
+                        "assign_mode": "group_all",
+                        "employee_ids": [],
+                    }],
+                },
+                {
+                    "id": "m_trip",
+                    "name": "Рейсы",
+                    "department_id": "drivers",
+                    "territory_category": "drivers",
+                    "work_tab_ids": ["drivers"],
+                    "assign_mode": "group_all",
+                    "assignments": [{
+                        "assignment_id": "a_trip",
+                        "department_id": "drivers",
+                        "work_tab_id": "drivers",
+                        "assign_mode": "group_all",
+                        "employee_ids": [],
+                    }],
+                },
+                {
+                    "id": "m_specific_only",
+                    "name": "Точечный показатель",
+                    "department_id": "shop",
+                    "work_tab_ids": ["packers"],
+                    "assign_mode": "specific",
+                    "assignments": [{
+                        "assignment_id": "a_spec",
+                        "department_id": "shop",
+                        "work_tab_id": "packers",
+                        "assign_mode": "specific",
+                        "employee_ids": ["e_pack_a"],
+                    }],
+                },
+            ]
+        }
+        self.store["payload"]["shopMetrics"]["workAccess"] = {
+            "2026-10": {
+                "e_pack_a": ["m_shelf", "m_specific_only"],
+                "e_pack_b": ["m_sugar"],
+                "e_mgr": ["m_mgr_check"],
+            }
+        }
+        self.store["payload"]["shopMetrics"]["extraAccess"] = {
+            "e_pack_a": ["m_shelf", "m_specific_only"],
+            "e_pack_b": ["m_sugar"],
+            "e_mgr": ["m_mgr_check"],
+        }
+        self.store["payload"]["shopMetrics"]["facts"] = {
+            "2026-10": {"e_pack_a": {"1": {"m_shelf": 5}}},
+            "ok": 1,
+        }
+        self.store["payload"]["deptMetrics"] = {
+            "warehouse": {
+                "workAccess": {"2026-10": {"e_wh_a": ["m_load"], "e_wh_b": []}},
+                "facts": {"secret": 1},
+            },
+            "office": {
+                "workAccess": {"2026-10": {"e_acc_a": ["m_acc"], "e_acc_b": []}},
+                "facts": {"x": 1},
+            },
+            "drivers": {
+                "workAccess": {"2026-10": {"e_drv_a": ["m_trip"], "e_drv_b": []}},
+                "facts": {},
+            },
+        }
+
+    def test_group_catalog_two_employees_independent_assignments(self):
+        self._seed_group_catalog_individual_assignments()
+        cookie = self._add_shop_manager(
+            "usr_group_cat",
+            {"metricsSetup": "edit", "metricsInput": "edit", "timesheet": "edit"},
+        )
+        # Снимаем у А выкладку, оставляем точечный; Б не трогаем.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "workAccess": {
+                            "2026-10": {
+                                "e_pack_a": ["m_specific_only"],
+                                "e_pack_b": ["m_sugar"],
+                                "e_mgr": ["m_mgr_check"],
+                            }
+                        },
+                        "extraAccess": {
+                            "e_pack_a": ["m_specific_only"],
+                            "e_pack_b": ["m_sugar"],
+                            "e_mgr": ["m_mgr_check"],
+                        },
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        access = data["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_pack_a"], ["m_specific_only"])
+        self.assertEqual(access["e_pack_b"], ["m_sugar"])
+        self.assertEqual(access["e_mgr"], ["m_mgr_check"])
+        # Общий каталог и group_all не меняются при индивидуальном снятии.
+        items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(items["m_shelf"]["assign_mode"], "group_all")
+        self.assertEqual(items["m_shelf"]["assignments"][0]["assign_mode"], "group_all")
+        self.assertEqual(items["m_sugar"]["assignments"][0]["assign_mode"], "group_all")
+        self.assertEqual(items["m_specific_only"]["assignments"][0]["employee_ids"], ["e_pack_a"])
+        # История фактов сохраняется.
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["facts"]["2026-10"]["e_pack_a"]["1"]["m_shelf"],
+            5,
+        )
+
+    def test_group_catalog_clear_all_and_other_depts_stay(self):
+        self._seed_group_catalog_individual_assignments()
+        self.add_user({
+            "user_id": "usr_clear_all",
+            "display_name": "Мультиотдел",
+            "pin": "4444",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["shop", "warehouse", "office", "drivers"],
+            "permissions": {
+                "metricsSetup": "edit",
+                "metricsInput": "edit",
+                "timesheet": "edit",
+            },
+        })
+        cookie, _ = self.login("usr_clear_all", "4444")
+        # Полное снятие у pack_a + независимые назначения склада/офиса/логистики.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "workAccess": {
+                            "2026-10": {
+                                "e_pack_a": [],
+                                "e_pack_b": ["m_sugar"],
+                                "e_mgr": ["m_mgr_check"],
+                            }
+                        },
+                        "extraAccess": {
+                            "e_pack_a": [],
+                            "e_pack_b": ["m_sugar"],
+                            "e_mgr": ["m_mgr_check"],
+                        },
+                    },
+                    "deptMetrics": {
+                        "warehouse": {"workAccess": {"2026-10": {"e_wh_a": [], "e_wh_b": ["m_load"]}}},
+                        "office": {"workAccess": {"2026-10": {"e_acc_a": ["m_acc"], "e_acc_b": ["m_acc"]}}},
+                        "drivers": {"workAccess": {"2026-10": {"e_drv_a": [], "e_drv_b": ["m_trip"]}}},
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        shop_access = data["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(shop_access["e_pack_a"], [])
+        self.assertEqual(shop_access["e_pack_b"], ["m_sugar"])
+        self.assertEqual(
+            data["payload"]["deptMetrics"]["warehouse"]["workAccess"]["2026-10"]["e_wh_b"],
+            ["m_load"],
+        )
+        self.assertEqual(
+            data["payload"]["deptMetrics"]["office"]["workAccess"]["2026-10"]["e_acc_b"],
+            ["m_acc"],
+        )
+        self.assertEqual(
+            data["payload"]["deptMetrics"]["drivers"]["workAccess"]["2026-10"]["e_drv_b"],
+            ["m_trip"],
+        )
+        items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        for mid in ("m_shelf", "m_sugar", "m_load", "m_acc", "m_trip", "m_mgr_check"):
+            self.assertEqual(items[mid]["assignments"][0]["assign_mode"], "group_all", mid)
+            self.assertEqual(items[mid]["id"], mid)
+
+    def test_metrics_input_cannot_change_group_assignments(self):
+        self._seed_group_catalog_individual_assignments()
+        cookie = self._add_shop_manager(
+            "usr_input_only",
+            {"metricsInput": "edit", "timesheet": "edit"},
+        )
+        before = json.loads(json.dumps(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_pack_a"]
+        ))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "workAccess": {"2026-10": {"e_pack_a": []}},
+                        "extraAccess": {"e_pack_a": []},
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        # Без metricsSetup назначения не меняются (403 или игнор ветки).
+        after = self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_pack_a"]
+        self.assertEqual(after, before)
+        if not status.startswith("200"):
+            self.assertTrue(status.startswith("403"), status)
+
+    def test_group_catalog_new_employee_empty_access_persists(self):
+        self._seed_group_catalog_individual_assignments()
+        cookie = self._add_shop_manager(
+            "usr_new_emp",
+            {"metricsSetup": "edit", "metricsInput": "edit", "timesheet": "edit"},
+        )
+        # Новый сотрудник без rate (нет salary) и с пустым workAccess — group_all не наполняет сам.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "workspaces": [{
+                        "code": "shop",
+                        "employees": [{
+                            "id": "e_pack_c",
+                            "employee_id": "e_pack_c",
+                            "name": "Разборщик В",
+                            "work_tab_id": "packers",
+                        }],
+                        "employeeIds": ["e_pack_c"],
+                    }],
+                    "shopMetrics": {
+                        "workAccess": {
+                            "2026-10": {
+                                "e_pack_a": ["m_shelf"],
+                                "e_pack_b": ["m_sugar"],
+                                "e_pack_c": [],
+                            }
+                        },
+                        "extraAccess": {
+                            "e_pack_a": ["m_shelf"],
+                            "e_pack_b": ["m_sugar"],
+                            "e_pack_c": [],
+                        },
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        access = data["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_pack_c"], [])
+        self.assertEqual(access["e_pack_a"], ["m_shelf"])
+        shop = next(row for row in self.store["payload"]["workspaces"] if row["code"] == "shop")
+        self.assertIn("e_pack_c", {row["id"] for row in shop["employees"]})
+        items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(items["m_shelf"]["assignments"][0]["assign_mode"], "group_all")
+
     def _seed_finance_directory(self):
         self.store["payload"]["financeRec"] = {
             "operations": [
@@ -2551,6 +2938,27 @@ class StaticPagesTests(unittest.TestCase):
         then_pos = body.find("Promise.resolve(saveApp())")
         self.assertGreater(toast_ok, then_pos)
         self.assertIn("if (!ok)", body)
+        # Обычное сохранение карточки не восстанавливает group_all галочки.
+        self.assertNotIn("assignGroupAllMetricsToEmployee(", body)
+
+    def test_individual_metric_assign_does_not_force_group_all_on_card_flows(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        # Создание, смена группы/должности и перевод не ставят все галочки группы.
+        create = src[src.find("function saveEmployeeCreateForm("):src.find("function closeEmployeeCreateForm(")]
+        self.assertNotIn("assignGroupAllMetricsToEmployee(", create)
+        update = src[src.find("function updateEmployee("):src.find("function setEmployeeTermsField(")]
+        self.assertNotIn("assignGroupAllMetricsToEmployee(", update)
+        move = src[src.find("function moveEmployeeToDepartment("):src.find("/* ============================================================\n   СТАТИСТИКА")]
+        if "assignGroupAllMetricsToEmployee(" in move:
+            # допускаем только комментарий, не вызов
+            self.assertNotIn("assignGroupAllMetricsToEmployee(employee)", move)
+        sync = src[src.find("function syncEmployeeMetricAssignmentsToCatalog("):src.find("function commitEmployeeCard(")]
+        self.assertIn("group_all", sync)
+        self.assertNotIn("row.assign_mode = \"specific\"", sync)
+        self.assertNotIn("item.assign_mode = \"specific\"", sync)
+        # Функция шаблона остаётся для явного массового назначения из каталога.
+        self.assertIn("function assignGroupAllMetricsToEmployee(", src)
+        self.assertIn("function metricCatalogItemUsesGroupAll(", src)
 
     def test_login_admin_function_does_not_put_state(self):
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
