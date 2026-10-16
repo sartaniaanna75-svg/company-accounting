@@ -354,20 +354,17 @@ function frSetupAreasForUser() {
 
 /** Счета и кассы всех объектов Финконтроля: администратор или «Финконтроль — справочники». */
 function frCanManageAccounts(areaId) {
+    // areaId сохранён для совместимости вызовов; право financeRecSetup действует на все объекты.
+    void areaId;
     try {
         if (typeof isAppAdmin === "function" && isAppAdmin()) return true;
+        if (typeof userHasPerm === "function") {
+            return userHasPerm("financeRecSetup", "edit");
+        }
         const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
         if (!u || u.is_active === false) return false;
         const setup = (u.permissions && u.permissions.financeRecSetup) || "none";
-        if (frPermRank(setup) < frPermRank("edit")) return false;
-        const allowed = frSetupAreasForUser();
-        let area = areaId ? String(areaId) : "";
-        if (!area) {
-            const active = typeof frActiveArea === "function" ? frActiveArea() : null;
-            area = active ? (active.object_id || active.finance_area_id || "") : "";
-        }
-        if (!area) return allowed.length > 0;
-        return allowed.indexOf(area) !== -1;
+        return frPermRank(setup) >= frPermRank("edit");
     } catch (err) {
         return false;
     }
@@ -1480,7 +1477,7 @@ function frToggleTransitDetail(areaId) {
 
 function frSetPrimaryCash(sourceId) {
     if (!frCanManageAccounts()) {
-        toast("Недостаточно прав для изменения счетов и касс.", "error");
+        toast("Недостаточно прав для создания или изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5110,7 +5107,7 @@ function renderFrSettingsHtml(area) {
         + "От этого зависит только колонка «Поступило в Основную» в дневной сверке основной кассы. "
         + "Операции, недельная сверка и выручка не меняются.</div>";
     if (!canManage) {
-        html += '<div class="note" style="margin-bottom:8px">Просмотр справочника. Создавать, изменять, менять порядок, включать и отключать счета может пользователь с правом «Финконтроль — справочники» для этого объекта.</div>';
+        html += '<div class="note" style="margin-bottom:8px">Просмотр справочника. Создавать, изменять, менять порядок, включать и отключать счета и кассы может пользователь с правом «Финконтроль — справочники».</div>';
     }
     if (canManage) {
         html += '<button type="button" class="btn btn-primary btn-small" onclick="openFrDictForm(\'source\')">+ Счёт / касса</button>';
@@ -5451,7 +5448,7 @@ function frOnSourceDrop(e, targetAccountId) {
  */
 function frReorderSources(fromAccountId, toAccountId) {
     if (!frCanManageAccounts()) {
-        toast("Недостаточно прав для изменения счетов и касс.", "error");
+        toast("Недостаточно прав для создания или изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5497,7 +5494,7 @@ function frClearPrimaryIfSource(area, sourceId) {
 
 function frToggleInActualBalance(sourceId, enabled) {
     if (!frCanManageAccounts()) {
-        toast("Недостаточно прав для изменения счетов и касс.", "error");
+        toast("Недостаточно прав для создания или изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5520,7 +5517,7 @@ function frToggleInActualBalance(sourceId, enabled) {
 
 function frActivateSource(sourceId) {
     if (!frCanManageAccounts()) {
-        toast("Недостаточно прав для изменения счетов и касс.", "error");
+        toast("Недостаточно прав для создания или изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5543,7 +5540,7 @@ function frActivateSource(sourceId) {
 
 function frDeactivateSource(sourceId) {
     if (!frCanManageAccounts()) {
-        toast("Недостаточно прав для изменения счетов и касс.", "error");
+        toast("Недостаточно прав для создания или изменения счетов и касс.", "error");
         return;
     }
     const area = frActiveArea();
@@ -5634,7 +5631,7 @@ function openFrDictForm(kind, id) {
     const isSource = kind === "source";
     if (isSource) {
         if (!frCanManageAccounts()) {
-            toast("Недостаточно прав для изменения счетов и касс.", "error");
+            toast("Недостаточно прав для создания или изменения счетов и касс.", "error");
             return;
         }
     } else if (!frCan("setup")) {
@@ -5724,7 +5721,7 @@ function saveFrDict() {
     const kind = ((document.getElementById("frDictKind") || {}).value || "source");
     if (kind === "source") {
         if (!frCanManageAccounts()) {
-            toast("Недостаточно прав для изменения счетов и касс.", "error");
+            toast("Недостаточно прав для создания или изменения счетов и касс.", "error");
             return;
         }
     } else if (!frCan("setup")) {

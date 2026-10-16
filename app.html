@@ -8503,6 +8503,12 @@ function applyLegacyRolesFromUser(user, code) {
         }
         return;
     }
+    if (code === "financeRec") {
+        // Финконтроль не должен получать «фейковую» summary-роль admin.
+        currentDeptRole = null;
+        currentSummaryRole = null;
+        return;
+    }
     if (code === "summary") {
         currentDeptRole = null;
         if (user.legacy_role === "adjust") currentSummaryRole = "adjust";
@@ -8596,7 +8602,10 @@ function enterAsUser(user, code) {
     }
     currentUserId = user.user_id;
     setCurrentWorkspace(w);
-    applyLegacyRolesFromUser(user, destCode === "summary" || w.type === "summary" ? "summary" : destCode);
+    const roleCode = code === "financeRec"
+        ? "financeRec"
+        : (destCode === "summary" || w.type === "summary" ? "summary" : destCode);
+    applyLegacyRolesFromUser(user, roleCode);
     selectedMonth = currentMonthValue();
     const want = pendingOpenSection;
     pendingOpenSection = "";
@@ -8654,7 +8663,7 @@ function switchUserWorkspace(code) {
         currentEntry = "financeRec";
         currentUserId = user.user_id;
         setCurrentWorkspace(w);
-        applyLegacyRolesFromUser(user, "summary");
+        applyLegacyRolesFromUser(user, "financeRec");
         selectedMonth = keepMonth;
         currentSection = "financeRec";
         if (typeof frUi === "object" && frUi) {

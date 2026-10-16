@@ -2231,6 +2231,123 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn(("fsrc_ter_new", 15), viewed_order)
         self.assertEqual(viewed["payload"]["financeRec"]["operations"], ops)
 
+    def test_staff_roles_create_cash_and_bank_with_setup(self):
+        """Обычный сотрудник и руководитель с financeRecSetup создают кассы и банк."""
+        self._seed_finance_directory()
+        cases = [
+            ("usr_fin_user", "user", {"financeRec": "edit", "financeRecSetup": "edit"}),
+            ("usr_fin_mgr", "manager", {"financeRec": "edit", "financeRecSetup": "edit"}),
+            ("usr_fin_setup_only", "user", {"financeRecSetup": "edit"}),
+        ]
+        for user_id, role, perms in cases:
+            self.add_user({
+                "user_id": user_id,
+                "display_name": user_id,
+                "pin": "4810",
+                "role": role,
+                "is_active": True,
+                "departments": ["financeRec"],
+                "permissions": perms,
+            })
+            cookie, _ = self.login(user_id, "4810")
+            cash_id = "fsrc_cash_" + user_id
+            bank_id = "fsrc_bank_" + user_id
+            # Как клиент: полный список sources + новые записи.
+            sources_payload = json.loads(json.dumps(
+                self.store["payload"]["financeRec"]["sources"]
+            ))
+            sources_payload.extend([
+                {
+                    "finance_source_id": cash_id,
+                    "account_id": cash_id,
+                    "name": "Касса " + user_id,
+                    "account_type": "cash",
+                    "sort_order": 50,
+                    "is_active": True,
+                    "in_actual_balance": True,
+                    "object_id": "farea_shop",
+                    "finance_area_id": "farea_shop",
+                },
+                {
+                    "finance_source_id": bank_id,
+                    "account_id": bank_id,
+                    "name": "Банк " + user_id,
+                    "account_type": "bank",
+                    "sort_order": 60,
+                    "is_active": True,
+                    "in_actual_balance": True,
+                    "object_id": "farea_shop",
+                    "finance_area_id": "farea_shop",
+                },
+            ])
+            status, *_ = call(
+                "PUT",
+                "/api/state",
+                {
+                    "version": int(self.store["version"]),
+                    "payload": {"financeRec": {
+                        "sources": sources_payload,
+                        # «залипший» removed id при сохранении полного списка не блокирует создание.
+                        "removed_source_ids": ["acc_shop"],
+                    }},
+                },
+                cookie=cookie,
+            )
+            self.assertTrue(status.startswith("200"), "%s %s" % (user_id, status))
+            sources = {
+                row["finance_source_id"]: row
+                for row in self.store["payload"]["financeRec"]["sources"]
+            }
+            self.assertEqual(sources[cash_id]["account_type"], "cash")
+            self.assertEqual(sources[bank_id]["account_type"], "bank")
+            self.assertEqual(sources["fsrc_shop_a"]["name"], "Касса А")
+            status, data, *_ = call("GET", "/api/state", cookie=cookie)
+            self.assertTrue(status.startswith("200"), status)
+            again = {row["finance_source_id"] for row in data["payload"]["financeRec"]["sources"]}
+            self.assertIn(cash_id, again)
+            self.assertIn(bank_id, again)
+
+    def test_finance_view_cannot_create_cash_even_via_api(self):
+        self._seed_finance_directory()
+        self.add_user({
+            "user_id": "usr_fin_view",
+            "display_name": "Только просмотр",
+            "pin": "4820",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "edit"},
+        })
+        cookie, _ = self.login("usr_fin_view", "4820")
+        before = json.loads(json.dumps(self.store["payload"]["financeRec"]["sources"]))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"financeRec": {"sources": [{
+                    "finance_source_id": "fsrc_hack",
+                    "account_id": "fsrc_hack",
+                    "name": "Чужая касса",
+                    "account_type": "cash",
+                    "object_id": "farea_shop",
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["financeRec"]["sources"], before)
+
+    def test_fr_can_manage_accounts_uses_setup_perm_not_area_list(self):
+        src = Path(__file__).resolve().parents[1].joinpath("fr-mod.js").read_text(encoding="utf-8")
+        start = src.find("function frCanManageAccounts(")
+        end = src.find("function frDirectorySnap(", start)
+        body = src[start:end]
+        self.assertGreater(start, 0)
+        self.assertIn('userHasPerm("financeRecSetup", "edit")', body)
+        self.assertNotIn("frSetupAreasForUser()", body)
+        self.assertNotIn("allowed.indexOf(area)", body)
+
     def test_finance_directory_rejected_without_right_and_used_delete(self):
         self._seed_finance_directory()
         cookie, _ = self.login("usr_001", "1111")
@@ -2275,6 +2392,7 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(roles["usr_001"], "user")
         self.assertNotIn("fsrc_extra", json.dumps(self.store["payload"]["financeRec"]))
         manager = self._add_shop_manager("usr_fin", {"financeRecSetup": "edit"})
+        # Реальное удаление: счёта нет в sources, он только в removed_source_ids.
         status, *_ = call(
             "PUT",
             "/api/state",
@@ -2282,14 +2400,11 @@ class StoreApiTests(unittest.TestCase):
                 "version": int(self.store["version"]),
                 "payload": {"financeRec": {
                     "removed_source_ids": ["acc_shop"],
-                    "sources": [{
-                        "finance_source_id": "fsrc_shop_a",
-                        "account_id": "acc_shop",
-                        "name": "Не должно сохраниться",
-                        "object_id": "farea_shop",
-                        "account_type": "cash",
-                        "sort_order": 70,
-                    }],
+                    "sources": [
+                        row for row in self.store["payload"]["financeRec"]["sources"]
+                        if row.get("finance_source_id") != "fsrc_shop_a"
+                        and row.get("account_id") != "acc_shop"
+                    ],
                 }},
             },
             cookie=manager,

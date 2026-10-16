@@ -1040,6 +1040,22 @@ def _finance_directory_forbidden(current: Any, incoming: Any, user: dict) -> boo
     areas = _user_finance_areas(user, cur)
     sources = _normalize_finance_sources(cur.get("sources"))
     by_id = {_source_id(row): row for row in sources if _source_id(row)}
+    for row in sources:
+        aid = str(row.get("account_id") or "").strip()
+        if aid:
+            by_id.setdefault(aid, row)
+    # Если в PUT переданы sources, считаем удалением только id, которых там уже нет.
+    # Иначе «залипшие» removed_source_ids блокируют создание новых касс/счетов.
+    incoming_source_ids: set[str] | None = None
+    if "sources" in incoming:
+        incoming_source_ids = set()
+        for row in _normalize_finance_sources(incoming.get("sources")):
+            sid = _source_id(row)
+            if sid:
+                incoming_source_ids.add(sid)
+            aid = str(row.get("account_id") or "").strip()
+            if aid:
+                incoming_source_ids.add(aid)
     for raw in incoming.get("removed_source_ids") or []:
         sid = str(raw or "").strip()
         src = by_id.get(sid)
@@ -1050,10 +1066,16 @@ def _finance_directory_forbidden(current: Any, incoming: Any, user: dict) -> boo
                     break
         if src is None:
             continue
+        src_sid = _source_id(src)
+        src_aid = str(src.get("account_id") or src_sid)
+        if incoming_source_ids is not None and (
+            src_sid in incoming_source_ids or src_aid in incoming_source_ids
+        ):
+            continue
         area = _source_area(src)
         if area not in areas:
             return True
-        if _finance_account_used(cur, area, str(src.get("account_id") or _source_id(src))):
+        if _finance_account_used(cur, area, src_aid or src_sid):
             return True
     return False
 
@@ -1787,7 +1809,10 @@ def payload_for_client(user: dict | None, payload: dict) -> dict:
     out.pop("users", None)
     if not user_has_perm(user, "salary", "view"):
         out.pop("salary", None)
-    if not user_has_perm(user, "financeRec", "view"):
+    if not (
+        user_has_perm(user, "financeRec", "view")
+        or user_has_perm(user, "financeRecSetup", "view")
+    ):
         out.pop("financeRec", None)
     return out
 
