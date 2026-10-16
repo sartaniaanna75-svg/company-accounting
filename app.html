@@ -10719,6 +10719,51 @@ function namePartsHtml(employee, disabled) {
         + "</div>";
 }
 
+function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
+    // Держит catalog.assignments в согласии с workAccess для одного сотрудника.
+    if (!employeeId || !userHasPerm("metricsSetup", "edit")) return;
+    const home = employeeHomeDeptCode(employeeId);
+    if (!home) return;
+    const assigned = {};
+    shopEmployeeWorkMetricIds(employeeId, selectedMonth).forEach(function (id) {
+        if (id) assigned[id] = true;
+    });
+    const items = (ensureShopMetricCatalog().items || []);
+    items.forEach(function (item) {
+        if (!item || !item.id || item.assignable === false) return;
+        const itemDept = metricDepartmentId(item) || String(item.department_id || "");
+        const rows = Array.isArray(item.assignments) ? item.assignments : [];
+        let touched = false;
+        rows.forEach(function (row) {
+            if (!row || typeof row !== "object") return;
+            const rowDept = String(row.department_id || itemDept || "");
+            if (rowDept && rowDept !== home) return;
+            if (!Array.isArray(row.employee_ids)) row.employee_ids = [];
+            const has = row.employee_ids.indexOf(employeeId) !== -1;
+            const want = !!assigned[item.id];
+            if (want && !has) {
+                row.employee_ids.push(employeeId);
+                if (!row.assign_mode) row.assign_mode = "specific";
+                touched = true;
+            } else if (!want && has && row.assign_mode === "specific") {
+                row.employee_ids = row.employee_ids.filter(function (id) { return id !== employeeId; });
+                touched = true;
+            }
+        });
+        if (!touched && assigned[item.id]) {
+            if (itemDept && itemDept !== home && !(item.territory_category)) return;
+            if (!Array.isArray(item.assignments)) item.assignments = [];
+            item.assignments.push({
+                assignment_id: nextMetricAssignmentId(item.assignments),
+                department_id: home,
+                assign_mode: "specific",
+                employee_ids: [employeeId],
+                work_tab_id: employeeWorkTabId(getEmployee(employeeId), home) || defaultMetricTabId(home)
+            });
+        }
+    });
+}
+
 function commitEmployeeCard(employeeId) {
     const employee = getEmployee(employeeId);
     if (!employee) {
@@ -10729,6 +10774,7 @@ function commitEmployeeCard(employeeId) {
         toast("Нет права сохранять сотрудников.", "error");
         return;
     }
+    if (commitEmployeeCard.busy) return;
     const card = document.getElementById("emp-card-" + employeeId);
     const nameInput = card && card.querySelector(".emp-fio-input");
     const fullName = nameInput ? nameInput.value : (employee.name || "");
@@ -10752,15 +10798,55 @@ function commitEmployeeCard(employeeId) {
         employee.participates_in_spu_meetings = !!meetBox.checked;
         employee.meeting_participant = employee.participates_in_spu_meetings;
     }
-    if (canEditFioWorkMetrics()) assignGroupAllMetricsToEmployee(employee);
-    saveApp();
-    justAddedEmployeeId = employee.id;
-    if (isSummary() || isAdminEntry()) renderSummaryStaff();
-    else {
-        renderFio();
-        renderEmployees();
+    const store = metricsStoreForEmployee(employeeId);
+    const accessSnap = store ? {
+        workAccess: JSON.parse(JSON.stringify(store.workAccess || {})),
+        extraAccess: JSON.parse(JSON.stringify(store.extraAccess || {}))
+    } : null;
+    const catalogSnap = (canEditFioWorkMetrics() && appData && appData.shopMetricCatalog)
+        ? JSON.parse(JSON.stringify(appData.shopMetricCatalog))
+        : null;
+    const empSnap = JSON.parse(JSON.stringify(employee));
+    if (canEditFioWorkMetrics()) {
+        assignGroupAllMetricsToEmployee(employee);
+        try { syncEmployeeMetricAssignmentsToCatalog(employeeId); } catch (err) { console.error(err); }
     }
-    toast("Сотрудник сохранён.");
+    function paintEmployeeCard() {
+        justAddedEmployeeId = employee.id;
+        if (isSummary() || isAdminEntry()) renderSummaryStaff();
+        else {
+            renderFio();
+            renderEmployees();
+        }
+    }
+    commitEmployeeCard.busy = true;
+    Promise.resolve(saveApp()).then(function (ok) {
+        commitEmployeeCard.busy = false;
+        if (!ok) {
+            if (store && accessSnap) {
+                store.workAccess = accessSnap.workAccess;
+                store.extraAccess = accessSnap.extraAccess;
+            }
+            if (catalogSnap) appData.shopMetricCatalog = catalogSnap;
+            Object.keys(employee).forEach(function (key) { delete employee[key]; });
+            Object.keys(empSnap).forEach(function (key) { employee[key] = empSnap[key]; });
+            paintEmployeeCard();
+            toast("Не удалось сохранить сотрудника. Назначения метрик не записаны.", "error");
+            return;
+        }
+        paintEmployeeCard();
+        toast("Сотрудник сохранён.");
+    }).catch(function (err) {
+        commitEmployeeCard.busy = false;
+        console.error(err);
+        if (store && accessSnap) {
+            store.workAccess = accessSnap.workAccess;
+            store.extraAccess = accessSnap.extraAccess;
+        }
+        if (catalogSnap) appData.shopMetricCatalog = catalogSnap;
+        paintEmployeeCard();
+        toast("Не удалось сохранить сотрудника. Назначения метрик не записаны.", "error");
+    });
 }
 
 function employeeCardActionsHtml(employee) {

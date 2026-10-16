@@ -1449,6 +1449,93 @@ class StoreApiTests(unittest.TestCase):
         else:
             self.assertTrue(status.startswith("403"), status)
 
+    def test_employee_card_save_keeps_metric_checkboxes_after_reread(self):
+        """Сценарий «Сохранить сотрудника»: карточка + галочки метрик в одном PUT, затем GET."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager(
+            "usr_card_metrics",
+            {
+                "metricsSetup": "edit",
+                "metricsInput": "edit",
+                "timesheet": "edit",
+            },
+        )
+        # Установка нескольких назначений + правка карточки.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "workspaces": [{
+                        "code": "shop",
+                        "employees": [{
+                            "id": "e_shop",
+                            "employee_id": "e_shop",
+                            "name": "Касса Обновлена",
+                        }],
+                        "employeeIds": ["e_shop"],
+                    }],
+                    "shopMetrics": {
+                        "workAccess": {"2026-10": {"e_shop": ["m_keep", "m_shop"]}},
+                        "extraAccess": {"e_shop": ["m_keep"]},
+                    },
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_shop",
+                        "name": "Показатель магазина",
+                        "department_id": "shop",
+                        "assignments": [{
+                            "assignment_id": "a_shop",
+                            "department_id": "shop",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_shop"],
+                        }],
+                    }]},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        # Снятие одной галочки, остальные остаются.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "workspaces": [{
+                        "code": "shop",
+                        "employees": [{
+                            "id": "e_shop",
+                            "employee_id": "e_shop",
+                            "name": "Касса Обновлена",
+                        }],
+                        "employeeIds": ["e_shop"],
+                    }],
+                    "shopMetrics": {
+                        "workAccess": {"2026-10": {"e_shop": ["m_shop"]}},
+                        "extraAccess": {"e_shop": []},
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        access = data["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_shop"], ["m_shop"])
+        self.assertEqual(access["e_wh"], ["m_wh"])
+        shop = next(row for row in data["payload"]["workspaces"] if row["code"] == "shop")
+        by_id = {row["id"]: row for row in shop["employees"]}
+        self.assertEqual(by_id["e_shop"]["name"], "Касса Обновлена")
+        # Ставка не отдаётся без salary view, но в снимке БД должна остаться.
+        stored_shop = next(row for row in self.store["payload"]["workspaces"] if row["code"] == "shop")
+        stored_emp = next(row for row in stored_shop["employees"] if row["id"] == "e_shop")
+        self.assertEqual(stored_emp["rate"], 1500)
+        items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(items["m_wh"]["assignments"][0]["employee_ids"], ["e_wh"])
+
     def _seed_finance_directory(self):
         self.store["payload"]["financeRec"] = {
             "operations": [
@@ -2447,6 +2534,23 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("done.then", access)
         self.assertIn("if (ok) afterSaved()", access)
         self.assertIn("if (pin) prev.pin = pin", access)
+
+    def test_commit_employee_card_waits_for_server_save(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        start = src.find("function commitEmployeeCard(")
+        end = src.find("function employeeCardActionsHtml(", start)
+        body = src[start:end]
+        self.assertGreater(start, 0)
+        self.assertGreater(end, start)
+        self.assertIn("Promise.resolve(saveApp())", body)
+        self.assertIn('toast("Сотрудник сохранён.")', body)
+        self.assertIn("Назначения метрик не записаны", body)
+        self.assertIn("syncEmployeeMetricAssignmentsToCatalog", body)
+        # Успех только после ok — не до ответа сервера.
+        toast_ok = body.find('toast("Сотрудник сохранён.")')
+        then_pos = body.find("Promise.resolve(saveApp())")
+        self.assertGreater(toast_ok, then_pos)
+        self.assertIn("if (!ok)", body)
 
     def test_login_admin_function_does_not_put_state(self):
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
