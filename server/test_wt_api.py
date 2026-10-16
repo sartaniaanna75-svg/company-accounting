@@ -3071,9 +3071,59 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("group_all", sync)
         self.assertNotIn("row.assign_mode = \"specific\"", sync)
         self.assertNotIn("item.assign_mode = \"specific\"", sync)
-        # Функция шаблона остаётся для явного массового назначения из каталога.
+        # Явное массовое назначение — отдельная функция, не карточка.
         self.assertIn("function assignGroupAllMetricsToEmployee(", src)
         self.assertIn("function metricCatalogItemUsesGroupAll(", src)
+        self.assertIn("function assignMetricCatalogGroupAllToWorkAccess(", src)
+
+    def test_returns_count_and_group_all_do_not_auto_write_work_access(self):
+        """Открытие карточки/ensure не назначает метрики; group_all — только каталог."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        ensure_shop = src[src.find("function ensureShopMetrics("):src.find("function ensureShopMetricCatalog(")]
+        self.assertNotIn("applyReturnsCountGroupIfNeeded()", ensure_shop)
+        ensure_dept = src[src.find("function ensureDeptMetrics("):src.find("function metricsStoreForEmployee(")]
+        self.assertNotIn("applyReturnsCountGroupIfNeeded()", ensure_dept)
+        returns_fn = src[
+            src.find("function applyReturnsCountGroupIfNeeded("):src.find("function metricCatalogGroupEmployees(")
+        ]
+        self.assertIn("seedReturnsCountMetric()", returns_fn)
+        self.assertNotIn("applyMetricCatalogGroupAssignment(", returns_fn)
+        self.assertNotIn("applyShopEmployeeWorkMetric(", returns_fn)
+        # Показатель остаётся в каталоге с тем же id.
+        seed = src[src.find("function seedReturnsCountMetric("):src.find("function inferTerritoryMetricCategory(")]
+        self.assertIn('METRIC_RETURNS_COUNT_ID', seed)
+        self.assertIn('"metric_returns_count"', src[src.find("const METRIC_RETURNS_COUNT_ID"):src.find("const METRIC_RETURNS_COUNT_ID") + 80])
+        group_fn = src[
+            src.find("function applyMetricCatalogGroupAssignment("):src.find("function assignMetricCatalogGroupAllToWorkAccess(")
+        ]
+        self.assertNotIn("applyShopEmployeeWorkMetric(", group_fn)
+        assign_fn = src[
+            src.find("function applyMetricCatalogAssignments("):src.find("function syncCommonMetricTabsFromAssignments(")
+        ]
+        self.assertIn('row.assign_mode !== "specific"', assign_fn)
+        self.assertIn("if (!specificRows.length)", assign_fn)
+        # Массовая запись только в явной функции; карточка/создание/смена группы её не зовут.
+        explicit = src[
+            src.find("function assignMetricCatalogGroupAllToWorkAccess("):src.find("function applyMetricCatalogSpecificAssignment(")
+        ]
+        self.assertIn("applyShopEmployeeWorkMetric(", explicit)
+        for name, start, end in (
+            ("commit", "function commitEmployeeCard(", "function employeeCardActionsHtml("),
+            ("create", "function saveEmployeeCreateForm(", "function closeEmployeeCreateForm("),
+            ("update", "function updateEmployee(", "function setEmployeeTermsField("),
+        ):
+            body = src[src.find(start):src.find(end, src.find(start))]
+            self.assertNotIn("assignMetricCatalogGroupAllToWorkAccess(", body, name)
+            self.assertNotIn("assignGroupAllMetricsToEmployee(", body, name)
+        # Сохранение формы каталога не зовёт явное массовое назначение.
+        save_cat = src[src.find("if (assignmentRows) applyMetricCatalogAssignments(item);"):]
+        save_cat = save_cat[:save_cat.find("Promise.resolve(saveApp())")]
+        self.assertIn("applyMetricCatalogGroupAssignment(item)", save_cat)
+        self.assertNotIn("assignMetricCatalogGroupAllToWorkAccess(", save_cat)
+        # Чтение галочек карточки — через workAccess / shopEmployeeHasWorkMetric.
+        fio_metrics = src[src.find("shopGrantableExtraMetrics(employee).forEach"):]
+        fio_metrics = fio_metrics[:800]
+        self.assertIn("shopEmployeeHasWorkMetric(employee.id, def.id)", fio_metrics)
 
     def test_login_admin_function_does_not_put_state(self):
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")

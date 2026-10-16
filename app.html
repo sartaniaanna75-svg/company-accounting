@@ -13460,7 +13460,7 @@ function ensureShopMetrics() {
     wtBusy.shopMetrics = true;
     try {
         ensureShopMetricCatalog();
-        try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
+        // Не вызываем applyReturnsCountGroupIfNeeded: назначения только вручную через workAccess.
         return root;
     } finally {
         wtBusy.shopMetrics = false;
@@ -13745,11 +13745,12 @@ function territoryCategoryEmployeePool(catId) {
 }
 
 function applyReturnsCountGroupIfNeeded() {
+    // Только присутствие показателя в едином каталоге. В workAccess не пишем —
+    // иначе при открытии карточки ТП галочка «Количество возвратов» возвращалась сама.
     if (wtBusy.applyReturnsCount) return;
     wtBusy.applyReturnsCount = true;
     try {
-        const item = seedReturnsCountMetric();
-        if (item && item.assign_mode !== "specific") applyMetricCatalogGroupAssignment(item);
+        seedReturnsCountMetric();
     } catch (err) {
         console.error(err);
     } finally {
@@ -13783,14 +13784,32 @@ function metricCatalogGroupEmployees(item) {
 }
 
 function applyMetricCatalogGroupAssignment(item) {
+    // group_all — шаблон доступности в каталоге, не массовая запись workAccess.
     if (!item || !item.id || item.assignable === false) return;
     if (Array.isArray(item.assignments) && item.assignments.length) {
         applyMetricCatalogAssignments(item);
         return;
     }
+    if (metricTerritoryCategory(item) === "common") syncCommonMetricTabsFromAssignments(item);
+}
+
+/** Явное массовое назначение group_all в workAccess. Не вызывать из ensure/карточки/обычного сохранения каталога. */
+function assignMetricCatalogGroupAllToWorkAccess(item) {
+    if (!item || !item.id || item.assignable === false) return;
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        (item.assignments || []).forEach(function (row) {
+            if (!row || row.assign_mode === "specific") return;
+            employeesForMetricAssignmentRow(row).forEach(function (e) {
+                if (e && e.id) applyShopEmployeeWorkMetric(e.id, item.id, true);
+            });
+        });
+        if (metricTerritoryCategory(item) === "common") syncCommonMetricTabsFromAssignments(item);
+        return;
+    }
     metricCatalogGroupEmployees(item).forEach(function (e) {
         try { applyShopEmployeeWorkMetric(e.id, item.id, true); } catch (err) { console.error(err); }
     });
+    if (metricTerritoryCategory(item) === "common") syncCommonMetricTabsFromAssignments(item);
 }
 
 function applyMetricCatalogSpecificAssignment(item, employeeIds) {
@@ -13962,27 +13981,28 @@ function ensureMetricAssignments(item) {
 }
 
 function applyMetricCatalogAssignments(item) {
+    // В workAccess пишем только явные строки specific. group_all — доступность каталога.
+    // Существующие назначения не снимаем автоматически при сохранении каталога.
     if (!item || !item.id || item.assignable === false) return;
     const want = {};
+    const specificRows = [];
     (item.assignments || []).forEach(function (row) {
-        const people = employeesForMetricAssignmentRow(row);
-        people.forEach(function (e) {
-            if (row.assign_mode === "specific" && (row.employee_ids || []).indexOf(e.id) === -1) return;
-            want[e.id] = true;
+        if (!row || row.assign_mode !== "specific") return;
+        specificRows.push(row);
+        (row.employee_ids || []).forEach(function (id) {
+            if (id) want[id] = true;
         });
     });
+    if (!specificRows.length) {
+        if (metricTerritoryCategory(item) === "common") syncCommonMetricTabsFromAssignments(item);
+        return;
+    }
     const handled = {};
-    DEPT_DEFAULTS.forEach(function (def) {
-        const code = def && def.code;
-        if (!code) return;
-        const w = findWorkspaceByCode(code);
-        ((w && w.employees) || []).forEach(function (e) {
+    specificRows.forEach(function (row) {
+        employeesForMetricAssignmentRow(row).forEach(function (e) {
             if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
             handled[e.id] = true;
-            const on = !!want[e.id];
-            if (on || shopEmployeeHasWorkMetric(e.id, item.id)) {
-                applyShopEmployeeWorkMetric(e.id, item.id, on);
-            }
+            applyShopEmployeeWorkMetric(e.id, item.id, !!want[e.id]);
         });
     });
     Object.keys(want).forEach(function (id) {
@@ -14293,9 +14313,7 @@ function ensureDeptMetrics(deptCode) {
     wtBusy.deptMetrics[deptCode] = true;
     try {
         ensureShopMetricCatalog();
-        if (deptCode === "drivers") {
-            try { applyReturnsCountGroupIfNeeded(); } catch (err) { console.error(err); }
-        }
+        // Не назначаем «Количество возвратов» и другие group_all при ensure/открытии карточки.
         return root;
     } finally {
         wtBusy.deptMetrics[deptCode] = false;
