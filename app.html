@@ -14584,23 +14584,35 @@ function metricShowDayTotal(itemOrId) {
     return !!(item && item.show_day_total === true);
 }
 
-/** Только числовые и денежные метрики — без auto_calc/auto_sum/check/средних. */
+/**
+ * auto_calc: add/sub/mul — сумма личных результатов; div — Σчислителей/Σзнаменателей.
+ * pct — недоступно (сумма процентов некорректна).
+ */
+function metricAutoCalcAllowsDayTotal(item) {
+    if (!item || item.fill_type !== "auto_calc") return false;
+    const op = normalizeCatalogAutoCalcOp(item.formula && item.formula.op);
+    return op === "add" || op === "sub" || op === "mul" || op === "div";
+}
+
+/** Число/деньги и auto_calc с допустимой операцией. */
 function metricAllowsDayTotal(item) {
     if (!item) return false;
     const fill = item.fill_type;
-    return fill === "number" || fill === "money";
+    if (fill === "number" || fill === "money") return true;
+    if (fill === "auto_calc") return metricAutoCalcAllowsDayTotal(item);
+    return false;
 }
 
 function fieldShowsDayTotal(field) {
     if (!field || field.service) return false;
-    if (field.autoCalc || field.type === "avgCheck" || field.type === "check"
-        || field.type === "vehicle" || field.type === "writeoff_personal"
+    if (field.type === "check" || field.type === "vehicle" || field.type === "writeoff_personal"
         || field.fill_type === "check" || field.fill_type === "vehicle"
-        || field.fill_type === "auto_calc" || field.fill_type === "auto_sum") {
+        || field.fill_type === "auto_sum") {
         return false;
     }
     const mid = field.metricId || (typeof METRIC_ID_ALIASES !== "undefined" ? METRIC_ID_ALIASES[field.key] : "");
     const it = shopMetricCatalogById(mid);
+    if (!it) return false;
     return metricAllowsDayTotal(it) && metricShowDayTotal(it);
 }
 
@@ -14613,10 +14625,116 @@ function metricDayTotalCellId(metricId, submetricId, dayKey) {
 }
 
 function formatMetricDayTotal(field, sum) {
-    const n = Number(sum || 0);
-    if (!n) return "—";
+    if (sum == null || sum === "") return "—";
+    const n = Number(sum);
+    if (!Number.isFinite(n) || n === 0) return "—";
+    const mid = field && field.metricId;
+    const it = mid ? shopMetricCatalogById(mid) : null;
+    if (it && it.fill_type === "auto_calc") {
+        return formatCatalogAutoCalcResult(it.formula, n);
+    }
     if (field && (field.type === "money" || field.fill_type === "money")) return money(n);
     return n.toLocaleString("ru-RU");
+}
+
+/** Значение ячейки auto_calc для суммы «Итого за день» (null/пусто → 0). */
+function autoCalcDayTotalContribution(employeeId, day, metricId, month) {
+    const v = shopCatalogAutoValue(employeeId, day, metricId, month);
+    if (v == null || !Number.isFinite(Number(v))) return 0;
+    return Number(v);
+}
+
+/** Уникальные сотрудники колонки — без двойного учёта одного id. */
+function uniqueMetricPeople(people) {
+    const seen = {};
+    const out = [];
+    (people || []).forEach(function (e) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        seen[e.id] = true;
+        out.push(e);
+    });
+    return out;
+}
+
+/**
+ * Итого за день по назначенным сотрудникам для auto_calc.
+ * add/sub/mul — сумма личных результатов; div — Σleft/Σright (не сумма частных);
+ * нет данных или Σright=0 → null (в UI «—»).
+ */
+function autoCalcPeopleDayTotal(people, day, metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    const it = shopMetricCatalogById(mid);
+    if (!it || it.fill_type !== "auto_calc" || !it.formula) return null;
+    const op = normalizeCatalogAutoCalcOp(it.formula.op);
+    const uniq = uniqueMetricPeople(people);
+    if (op === "div") {
+        let sumL = 0;
+        let sumR = 0;
+        let any = false;
+        uniq.forEach(function (e) {
+            const leftSnap = shopCatalogOperandSnapshot(e.id, day, it.formula.left, month);
+            const rightSnap = shopCatalogOperandSnapshot(e.id, day, it.formula.right, month);
+            if (!leftSnap.present || !rightSnap.present) return;
+            const a = Number(leftSnap.value);
+            const b = Number(rightSnap.value);
+            if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+            sumL += a;
+            sumR += b;
+            any = true;
+        });
+        if (!any || sumR === 0) return null;
+        return sumL / sumR;
+    }
+    if (op !== "add" && op !== "sub" && op !== "mul") return null;
+    let sum = 0;
+    let any = false;
+    uniq.forEach(function (e) {
+        const v = shopCatalogAutoValue(e.id, day, mid, month);
+        if (v == null || !Number.isFinite(Number(v))) return;
+        sum += Number(v);
+        any = true;
+    });
+    return any ? sum : null;
+}
+
+/** Месячный итог столбца «Итого»: для div — Σчислителей/Σзнаменателей за все дни. */
+function autoCalcPeopleMonthDayTotal(people, metricId, month, daysCount) {
+    const mid = canonicalMetricId(metricId);
+    const it = shopMetricCatalogById(mid);
+    if (!it || it.fill_type !== "auto_calc" || !it.formula) return null;
+    const op = normalizeCatalogAutoCalcOp(it.formula.op);
+    const m = month || selectedMonth;
+    const days = Number(daysCount) || daysInMonthValue(m);
+    if (op === "div") {
+        const uniq = uniqueMetricPeople(people);
+        let sumL = 0;
+        let sumR = 0;
+        let any = false;
+        for (let day = 1; day <= days; day++) {
+            uniq.forEach(function (e) {
+                const leftSnap = shopCatalogOperandSnapshot(e.id, day, it.formula.left, m);
+                const rightSnap = shopCatalogOperandSnapshot(e.id, day, it.formula.right, m);
+                if (!leftSnap.present || !rightSnap.present) return;
+                const a = Number(leftSnap.value);
+                const b = Number(rightSnap.value);
+                if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+                sumL += a;
+                sumR += b;
+                any = true;
+            });
+        }
+        if (!any || sumR === 0) return null;
+        return sumL / sumR;
+    }
+    let tot = 0;
+    let any = false;
+    for (let day = 1; day <= days; day++) {
+        const v = autoCalcPeopleDayTotal(people, day, mid, m);
+        if (v == null || !Number.isFinite(Number(v))) continue;
+        tot += Number(v);
+        any = true;
+    }
+    return any ? tot : null;
 }
 
 function sumMetricDayForPeople(people, readValue) {
@@ -17644,8 +17762,15 @@ function renderShopMetricsColgroup(table, fields, employees, category) {
 
 function shopMetricFieldDayNumber(category, employeeId, day, field) {
     if (!field || !employeeId) return 0;
-    if (field.autoCalc || field.type === "avgCheck" || field.type === "check") return 0;
+    if (field.type === "check") return 0;
     const mid = field.metricId || METRIC_ID_ALIASES[field.key];
+    const it = mid ? shopMetricCatalogById(mid) : null;
+    if (field.autoCalc || field.type === "avgCheck" || (it && it.fill_type === "auto_calc")) {
+        if (it && fieldShowsDayTotal(field)) {
+            return autoCalcDayTotalContribution(employeeId, day, mid, selectedMonth);
+        }
+        return 0;
+    }
     if (mid && (shopMetricUsesFacts(mid) || (typeof shopMetricFieldUsesFactsOverlay === "function" && shopMetricFieldUsesFactsOverlay(field)))) {
         return Number(getShopMetricFact(employeeId, day, mid, selectedMonth, field.submetricId) || 0);
     }
@@ -17654,9 +17779,28 @@ function shopMetricFieldDayNumber(category, employeeId, day, field) {
 }
 
 function shopFieldPeopleDayTotal(category, field, people, day) {
+    const mid = field && (field.metricId || (typeof METRIC_ID_ALIASES !== "undefined" ? METRIC_ID_ALIASES[field.key] : ""));
+    const it = mid ? shopMetricCatalogById(mid) : null;
+    if (field && (field.autoCalc || (it && it.fill_type === "auto_calc"))) {
+        const v = autoCalcPeopleDayTotal(people, day, mid, selectedMonth);
+        return v == null ? 0 : v;
+    }
     return sumMetricDayForPeople(people, function (e) {
         return shopMetricFieldDayNumber(category, e.id, day, field);
     });
+}
+
+function shopFieldPeopleMonthDayTotal(category, field, people) {
+    const mid = field && (field.metricId || (typeof METRIC_ID_ALIASES !== "undefined" ? METRIC_ID_ALIASES[field.key] : ""));
+    const it = mid ? shopMetricCatalogById(mid) : null;
+    if (field && (field.autoCalc || (it && it.fill_type === "auto_calc"))) {
+        const v = autoCalcPeopleMonthDayTotal(people, mid, selectedMonth, daysInMonth());
+        return v == null ? 0 : v;
+    }
+    let monthTot = 0;
+    const days = daysInMonth();
+    for (let d = 1; d <= days; d++) monthTot += shopFieldPeopleDayTotal(category, field, people, d);
+    return monthTot;
 }
 
 function shopWorkMetricPeople(metricId, category) {
@@ -18651,10 +18795,7 @@ function renderShopCashierMetrics() {
             html += '<td class="metrics-emp-col ' + shopMetricGroupClass(gi) + ' metrics-group-start">—</td>';
         }
         if (fieldShowsDayTotal(field)) {
-            let monthDayTot = 0;
-            const daysN = daysInMonth();
-            for (let d = 1; d <= daysN; d++) monthDayTot += shopFieldPeopleDayTotal(category, field, people, d);
-            html += metricDayTotalTdHtml(field, gi, "month", monthDayTot, {});
+            html += metricDayTotalTdHtml(field, gi, "month", shopFieldPeopleMonthDayTotal(category, field, people), {});
         }
         gi += 1;
     });
@@ -19562,9 +19703,7 @@ function renderShopMetrics() {
             html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</td>';
         }
         if (fieldShowsDayTotal(field)) {
-            let monthDayTot = 0;
-            for (let d = 1; d <= days; d++) monthDayTot += shopFieldPeopleDayTotal(category, field, people, d);
-            html += metricDayTotalTdHtml(field, fi, "month", monthDayTot, {});
+            html += metricDayTotalTdHtml(field, fi, "month", shopFieldPeopleMonthDayTotal(category, field, people), {});
         }
     });
     html += "</tr>";
@@ -19648,9 +19787,7 @@ function refreshShopMetricDayTotalsUi(category, employees) {
         };
         const people = shopMetricColumnPeople(cat, field, peoplePool);
         if (dayKey === "month") {
-            let monthTot = 0;
-            for (let d = 1; d <= days; d++) monthTot += shopFieldPeopleDayTotal(cat, field, people, d);
-            cell.textContent = formatMetricDayTotal(field, monthTot);
+            cell.textContent = formatMetricDayTotal(field, shopFieldPeopleMonthDayTotal(cat, field, people));
             return;
         }
         const day = Number(dayKey);
@@ -27996,7 +28133,7 @@ function refreshMetricCatalogFormulaBox(formula) {
                     + escapeHtml(x.name) + (x.fill_type === "auto_calc" ? " (расчёт)" : "") + "</option>";
             });
         }
-        html += '</select><select id="mcOp" title="Математическое действие">';
+        html += '</select><select id="mcOp" title="Математическое действие" onchange="refreshMetricCatalogDayTotalBox()">'
         const opChoices = CATALOG_AUTO_CALC_OPS_SELECTABLE.slice();
         if (curOp === "pct") {
             const pctOp = CATALOG_AUTO_CALC_OPS.find(function (x) { return x.id === "pct"; });
@@ -28039,18 +28176,45 @@ function refreshMetricCatalogDayTotalBox() {
     const fill = document.getElementById("mcFill");
     if (!box || !fill) return;
     const type = fill.value;
-    const allow = type === "number" || type === "money";
-    box.style.display = allow ? "" : "none";
-    if (!allow) {
-        const cb = document.getElementById("mcShowDayTotal");
-        if (cb) cb.checked = false;
-    }
+    const cb = document.getElementById("mcShowDayTotal");
     const note = document.getElementById("mcDayTotalNote");
     const struct = document.getElementById("mcStructure");
-    if (note) {
-        note.textContent = (struct && struct.value === "with_submetrics")
-            ? "Сумма по назначенным сотрудникам за дату. Для метрик с подметриками итог считается отдельно по каждой подметрике (без двойного суммирования родителя)."
-            : "Сумма по назначенным сотрудникам за дату в рабочей таблице метрик. Не создаёт отдельную метрику и не влияет на СПУ.";
+    if (type === "number" || type === "money") {
+        box.style.display = "";
+        if (cb) cb.disabled = false;
+        if (note) {
+            note.textContent = (struct && struct.value === "with_submetrics")
+                ? "Сумма по назначенным сотрудникам за дату. Для метрик с подметриками итог считается отдельно по каждой подметрике (без двойного суммирования родителя)."
+                : "Сумма по назначенным сотрудникам за дату в рабочей таблице метрик. Не создаёт отдельную метрику и не влияет на СПУ.";
+        }
+        return;
+    }
+    if (type === "auto_calc") {
+        box.style.display = "";
+        const opEl = document.getElementById("mcOp");
+        const op = normalizeCatalogAutoCalcOp(opEl ? opEl.value : "") || "div";
+        const allowOp = op === "add" || op === "sub" || op === "mul" || op === "div";
+        if (cb) {
+            cb.disabled = !allowOp;
+            if (!allowOp) cb.checked = false;
+        }
+        if (note) {
+            if (op === "pct") {
+                note.textContent = "Для процентного отклонения столбец «Итого» недоступен: сумма процентов по сотрудникам математически некорректна.";
+            } else if (op === "div") {
+                note.textContent = "Итого за день = сумма числителей ÷ сумма знаменателей по участвующим сотрудникам (не сумма частных). При нулевом общем знаменателе — прочерк. Не создаёт запись в PostgreSQL.";
+            } else if (op === "mul") {
+                note.textContent = "Итого за день = сумма индивидуальных произведений по сотрудникам (не произведение общих сумм). Не создаёт запись в PostgreSQL.";
+            } else {
+                note.textContent = "Итого за день = сумма индивидуальных результатов формулы по сотрудникам за дату. Не создаёт отдельную метрику и не влияет на СПУ.";
+            }
+        }
+        return;
+    }
+    box.style.display = "none";
+    if (cb) {
+        cb.disabled = false;
+        cb.checked = false;
     }
 }
 
@@ -28336,7 +28500,11 @@ function saveMetricCatalogForm(id, dupIgnore) {
         item.kind = "";
     }
     item.show_day_total = !!(document.getElementById("mcShowDayTotal") && document.getElementById("mcShowDayTotal").checked)
-        && metricAllowsDayTotal({ fill_type: item.fill_type || fill });
+        && !document.getElementById("mcShowDayTotal").disabled
+        && metricAllowsDayTotal({
+            fill_type: item.fill_type || fill,
+            formula: item.formula || formula
+        });
     if (structure === "with_submetrics") {
         const nextSubs = collectMetricCatalogSubmetrics(item.submetrics);
         if (!nextSubs.length) {
@@ -29194,9 +29362,26 @@ function fillDeptWorkTable(dept, tab, ids, options) {
     }
     const fieldPeopleDayTotal = function (field, day) {
         const people = peopleOf(field.metricId);
+        const it = shopMetricCatalogById(field.metricId);
+        if (field.autoCalc || (it && it.fill_type === "auto_calc")) {
+            const v = autoCalcPeopleDayTotal(people, day, field.metricId, selectedMonth);
+            return v == null ? 0 : v;
+        }
         return sumMetricDayForPeople(people, function (e) {
             return getDeptMetricStored(factDeptOf(e.id), e.id, day, field.metricId, selectedMonth, field.submetricId);
         });
+    };
+    const fieldPeopleMonthDayTotal = function (field) {
+        const people = peopleOf(field.metricId);
+        const it = shopMetricCatalogById(field.metricId);
+        const daysN = daysInMonth();
+        if (field.autoCalc || (it && it.fill_type === "auto_calc")) {
+            const v = autoCalcPeopleMonthDayTotal(people, field.metricId, selectedMonth, daysN);
+            return v == null ? 0 : v;
+        }
+        let monthDayTot = 0;
+        for (let d = 1; d <= daysN; d++) monthDayTot += fieldPeopleDayTotal(field, d);
+        return monthDayTot;
     };
     if (head) {
         const hasSubs = fields.some(function (f) { return f && f.submetricId; });
@@ -29357,9 +29542,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
             html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</td>';
         }
         if (fieldShowsDayTotal(field)) {
-            let monthDayTot = 0;
-            for (let d = 1; d <= days; d++) monthDayTot += fieldPeopleDayTotal(field, d);
-            html += metricDayTotalTdHtml(field, fi, "month", monthDayTot, {});
+            html += metricDayTotalTdHtml(field, fi, "month", fieldPeopleMonthDayTotal(field), {});
         }
     });
     html += "</tr>";

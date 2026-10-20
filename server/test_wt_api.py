@@ -4000,37 +4000,133 @@ class BootstrapAdminTests(unittest.TestCase):
         self.assertNotIn(self.PIN, src)
 
     def test_metric_show_day_total_catalog_and_tables(self):
-        """Этап 1: галочка «Показывать итого за день» в каталоге и колонке рабочих таблиц."""
+        """Галочка «Показывать итого за день» в каталоге и колонке рабочих таблиц."""
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
         self.assertIn("function metricShowDayTotal(", src)
         self.assertIn("function metricAllowsDayTotal(", src)
+        self.assertIn("function metricAutoCalcAllowsDayTotal(", src)
         self.assertIn("function fieldShowsDayTotal(", src)
         self.assertIn("function shopFieldPeopleDayTotal(", src)
         self.assertIn("function refreshShopMetricDayTotalsUi(", src)
+        self.assertIn("function autoCalcDayTotalContribution(", src)
         self.assertIn('id="mcShowDayTotal"', src)
         self.assertIn("Показывать итого за день", src)
         self.assertIn("item.show_day_total", src)
         self.assertIn('if (item.show_day_total !== true) item.show_day_total = false;', src)
-        # Только number/money; auto_calc/auto_sum не суммируются этой галочкой.
         allows = src[src.find("function metricAllowsDayTotal("):src.find("function fieldShowsDayTotal(")]
         self.assertIn('fill === "number"', allows)
         self.assertIn('fill === "money"', allows)
-        self.assertNotIn("auto_calc", allows)
-        field_fn = src[src.find("function fieldShowsDayTotal("):src.find("function fieldDayTotalExtraCols(")]
-        self.assertIn("auto_calc", field_fn)
-        self.assertIn("avgCheck", field_fn)
-        # Сумма по назначенным людям контекста таблицы, не отдельный pipeline фактов.
-        self.assertIn("sumMetricDayForPeople(", src)
-        self.assertIn("getDeptMetricStored(", src[src.find("const fieldPeopleDayTotal = function"):src.find("const fieldPeopleDayTotal = function") + 500])
+        self.assertIn('fill === "auto_calc"', allows)
+        auto_allow = src[
+            src.find("function metricAutoCalcAllowsDayTotal(") : src.find("function metricAllowsDayTotal(")
+        ]
+        self.assertIn('op === "add"', auto_allow)
+        self.assertIn('op === "sub"', auto_allow)
+        self.assertIn('op === "mul"', auto_allow)
+        self.assertIn('op === "div"', auto_allow)
+        self.assertNotIn('op === "pct"', auto_allow)
+        day_box = src[
+            src.find("function refreshMetricCatalogDayTotalBox(") : src.find(
+                "function employeeWorkGroupCaption("
+            )
+        ]
+        self.assertIn('type === "auto_calc"', day_box)
+        self.assertIn("cb.disabled", day_box)
+        self.assertIn("сумма числителей", day_box)
+        self.assertIn("процентного отклонения", day_box)
+        self.assertIn('onchange="refreshMetricCatalogDayTotalBox()"', src)
+        self.assertIn("function autoCalcPeopleDayTotal(", src)
+        self.assertIn("function uniqueMetricPeople(", src)
+        self.assertIn("autoCalcDayTotalContribution(", src)
         self.assertIn("metricDayTotalTdHtml(", src)
         self.assertIn("metricDayTotalThHtml(", src)
-        # Живой пересчёт магазина без полного F5.
         summary = src[src.find("function refreshShopMetricSummary("):src.find("function refreshShopCashierSummary(")]
         self.assertIn("refreshShopMetricDayTotalsUi(", summary)
-        # Сохранение формы каталога не трогает group_all массово.
         save_cat = src[src.find("item.show_day_total = !!("):]
         save_cat = save_cat[:save_cat.find("Promise.resolve(saveApp())")]
         self.assertNotIn("assignMetricCatalogGroupAllToWorkAccess(", save_cat)
+        self.assertIn("formula: item.formula || formula", save_cat)
+
+    def test_auto_calc_day_total_sum_of_individual_results(self):
+        """Итого: add/sub/mul — сумма личных; div — ΣL/ΣR; pct недоступен."""
+
+        def day_total(op, rows):
+            """rows: list of (a, b) per employee; None = нет данных."""
+            if op == "pct":
+                return None
+            if op == "div":
+                sum_l = 0.0
+                sum_r = 0.0
+                any_v = False
+                for a, b in rows:
+                    if a is None or b is None:
+                        continue
+                    sum_l += a
+                    sum_r += b
+                    any_v = True
+                if not any_v or sum_r == 0:
+                    return None
+                return sum_l / sum_r
+            total = 0.0
+            any_v = False
+            for a, b in rows:
+                if a is None or b is None:
+                    continue
+                if op == "add":
+                    v = a + b
+                elif op == "sub":
+                    v = a - b
+                elif op == "mul":
+                    v = a * b
+                else:
+                    return None
+                total += v
+                any_v = True
+            return total if any_v else None
+
+        self.assertEqual(day_total("sub", [(120, 110), (50, 40)]), 20)
+        self.assertEqual(day_total("add", [(10, 5), (3, 2)]), 20)
+        self.assertEqual(day_total("mul", [(2, 3), (4, 5)]), 26)
+        # div: (120+50)/(10+5)=170/15, не сумма частных 12+10=22
+        self.assertAlmostEqual(day_total("div", [(120, 10), (50, 5)]), 170 / 15)
+        self.assertNotAlmostEqual(day_total("div", [(120, 10), (50, 5)]), 12 + 10)
+        self.assertIsNone(day_total("div", [(120, 0), (50, 0)]))
+        self.assertIsNone(day_total("div", [(None, 10), (None, 5)]))
+        self.assertIsNone(day_total("pct", [(120, 110), (50, 40)]))
+        self.assertEqual(day_total("sub", [(120, 110), (None, 40)]), 10)
+
+    def test_auto_calc_div_day_total_no_double_count_people(self):
+        """Уникальные сотрудники: дубликат id не удваивает числитель/знаменатель."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function uniqueMetricPeople(", src)
+        self.assertIn("function autoCalcPeopleDayTotal(", src)
+        div_fn = src[src.find("function autoCalcPeopleDayTotal(") : src.find("function autoCalcPeopleMonthDayTotal(")]
+        self.assertIn("uniqueMetricPeople(people)", div_fn)
+        self.assertIn('op === "div"', div_fn)
+        self.assertIn("sumL/sumR", div_fn.replace(" ", ""))
+        self.assertIn("sumR === 0", div_fn)
+
+        def div_total(rows):
+            seen = set()
+            sum_l = sum_r = 0.0
+            any_v = False
+            for emp_id, a, b in rows:
+                if emp_id in seen:
+                    continue
+                seen.add(emp_id)
+                if a is None or b is None:
+                    continue
+                sum_l += a
+                sum_r += b
+                any_v = True
+            if not any_v or sum_r == 0:
+                return None
+            return sum_l / sum_r
+
+        # Один сотрудник дважды в списке people — учёт один раз: 100/10=10, не 200/20.
+        self.assertEqual(div_total([("e1", 100, 10), ("e1", 100, 10)]), 10)
+        self.assertEqual(div_total([("e1", 100, 10), ("e2", 50, 5)]), 10)
+        self.assertIsNone(div_total([("e1", 100, 0)]))
 
     def test_metric_auto_calc_formula_ops_stage2(self):
         """Этап 2: математические операции auto_calc, конструктор, совместимость div."""
