@@ -700,26 +700,58 @@ def _metric_id_list(value: Any) -> list[str]:
     return out
 
 
-def _merge_access_map(current: Any, incoming: Any, allowed_ids: set[str], nested: bool) -> Any:
-    """Обновляет списки своих сотрудников и не удаляет ключи, которых нет в запросе."""
+def _merge_access_map(current: Any, incoming: Any, allowed_ids: set[str] | None, nested: bool) -> Any:
+    """Обновляет списки назначений. Ключи, которых нет во входящем снимке, не удаляет.
+
+    allowed_ids=None — без фильтра (админ). Пустой список [] сохраняется как явный отказ
+    от метрик (не путать с отсутствием ключа, когда действует наследование).
+    Явный JSON null у сотрудника/месяца удаляет ключ.
+    """
     base = _clone(current) if isinstance(current, dict) else {}
     if not isinstance(incoming, dict):
         return base
     if not nested:
         for emp_id, metrics in incoming.items():
-            if str(emp_id) not in allowed_ids:
+            eid = str(emp_id)
+            if allowed_ids is not None and eid not in allowed_ids:
                 continue
-            base[str(emp_id)] = _metric_id_list(metrics)
+            if metrics is None:
+                base.pop(eid, None)
+            else:
+                base[eid] = _metric_id_list(metrics)
         return base
     for month, emps in incoming.items():
+        month_key = str(month)
+        if emps is None:
+            base.pop(month_key, None)
+            continue
         if not isinstance(emps, dict):
             continue
-        slot = _clone(base.get(month)) if isinstance(base.get(month), dict) else {}
+        slot = _clone(base.get(month_key)) if isinstance(base.get(month_key), dict) else {}
         for emp_id, metrics in emps.items():
-            if str(emp_id) not in allowed_ids:
+            eid = str(emp_id)
+            if allowed_ids is not None and eid not in allowed_ids:
                 continue
-            slot[str(emp_id)] = _metric_id_list(metrics)
-        base[str(month)] = slot
+            if metrics is None:
+                slot.pop(eid, None)
+            else:
+                slot[eid] = _metric_id_list(metrics)
+        base[month_key] = slot
+    return base
+
+
+def _merge_metric_branch_admin(current: Any, incoming: Any) -> Any:
+    """Админский merge ветки метрик: факты/кассы через overlay, назначения — отдельно."""
+    base = _clone(current) if isinstance(current, dict) else {}
+    if not isinstance(incoming, dict):
+        return base
+    data_in = {key: val for key, val in incoming.items() if key not in METRIC_SETUP_KEYS}
+    if data_in:
+        base = _overlay_open(base, data_in, True)
+    if "workAccess" in incoming:
+        base["workAccess"] = _merge_access_map(base.get("workAccess"), incoming.get("workAccess"), None, True)
+    if "extraAccess" in incoming:
+        base["extraAccess"] = _merge_access_map(base.get("extraAccess"), incoming.get("extraAccess"), None, False)
     return base
 
 
@@ -1505,16 +1537,18 @@ def _merge_admin_payload(current: dict, incoming: dict) -> dict:
             stored["users"] = current_users
         elif key in ("shopMetrics", "deptMetrics"):
             # Не затираем целиком: иначе устаревший снимок админа стирает свежий ввод сотрудника.
+            # workAccess/extraAccess мержим отдельно — иначе overlay по спискам назначений мог
+            # оставлять галочки в несогласованном состоянии относительно карточки сотрудника.
             if _empty_wipe(val, stored.get(key)):
                 continue
             if key == "deptMetrics" and isinstance(val, dict):
                 base_map = stored.get(key) if isinstance(stored.get(key), dict) else {}
                 next_map = _clone(base_map)
                 for dept, branch in val.items():
-                    next_map[str(dept)] = _overlay_open(base_map.get(str(dept)), branch, True)
+                    next_map[str(dept)] = _merge_metric_branch_admin(base_map.get(str(dept)), branch)
                 stored[key] = next_map
             else:
-                stored[key] = _overlay_open(stored.get(key), val, True)
+                stored[key] = _merge_metric_branch_admin(stored.get(key), val)
         elif _empty_wipe(val, stored.get(key)):
             continue
         else:

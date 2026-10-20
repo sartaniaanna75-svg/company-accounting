@@ -10812,7 +10812,14 @@ function commitEmployeeCard(employeeId) {
         toast("Нет права сохранять сотрудников.", "error");
         return;
     }
-    if (commitEmployeeCard.busy) return;
+    if (commitEmployeeCard.busy) {
+        toast("Сохранение ещё выполняется. Подождите ответа сервера.", "error");
+        return;
+    }
+    if (wtServerMode && wtPutPaused) {
+        toast("Сохранение приостановлено из-за конфликта версий. Обновите данные с сервера (диалог конфликта) и повторите.", "error");
+        return;
+    }
     const card = document.getElementById("emp-card-" + employeeId);
     const nameInput = card && card.querySelector(".emp-fio-input");
     const fullName = nameInput ? nameInput.value : (employee.name || "");
@@ -10835,6 +10842,10 @@ function commitEmployeeCard(employeeId) {
     if (meetBox) {
         employee.participates_in_spu_meetings = !!meetBox.checked;
         employee.meeting_participant = employee.participates_in_spu_meetings;
+    }
+    // Материализуем месяц workAccess до снимка — иначе пустой объект не отправит галочки.
+    if (canEditFioWorkMetrics()) {
+        try { shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId)); } catch (err) { console.error(err); }
     }
     const store = metricsStoreForEmployee(employeeId);
     const accessSnap = store ? {
@@ -10859,7 +10870,6 @@ function commitEmployeeCard(employeeId) {
     }
     commitEmployeeCard.busy = true;
     Promise.resolve(saveApp()).then(function (ok) {
-        commitEmployeeCard.busy = false;
         if (!ok) {
             if (store && accessSnap) {
                 store.workAccess = accessSnap.workAccess;
@@ -10875,7 +10885,6 @@ function commitEmployeeCard(employeeId) {
         paintEmployeeCard();
         toast("Сотрудник сохранён.");
     }).catch(function (err) {
-        commitEmployeeCard.busy = false;
         console.error(err);
         if (store && accessSnap) {
             store.workAccess = accessSnap.workAccess;
@@ -10884,6 +10893,8 @@ function commitEmployeeCard(employeeId) {
         if (catalogSnap) appData.shopMetricCatalog = catalogSnap;
         paintEmployeeCard();
         toast("Не удалось сохранить сотрудника. Назначения метрик не записаны.", "error");
+    }).then(function () {
+        commitEmployeeCard.busy = false;
     });
 }
 
@@ -16017,16 +16028,31 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
     applyShopEmployeeWorkMetric(employeeId, metricId, on);
     function paintWorkMetrics() {
         if (currentSection === "fio" || currentSection === "employees") renderFio();
+        if (currentSection === "summaryStaff" || currentSection === "users") {
+            try { renderSummaryStaff(); } catch (err) { console.error(err); }
+        }
         if (currentSection === "shopSalary" || currentSection === "warehouseSalary" || currentSection === "driversSalary") {
             renderPayrollView(payrollViewFromSection());
         }
         refreshMetricsUi();
     }
-    paintWorkMetrics();
+    // Сначала пишем на сервер, потом перерисовываем — иначе галочка «откатывается» молча.
     Promise.resolve(saveApp()).then(function (ok) {
-        if (ok || !accessSnap || !store) return;
-        store.workAccess = accessSnap.workAccess;
-        store.extraAccess = accessSnap.extraAccess;
+        if (!ok) {
+            if (accessSnap && store) {
+                store.workAccess = accessSnap.workAccess;
+                store.extraAccess = accessSnap.extraAccess;
+            }
+            toast("Не удалось сохранить назначение метрики на сервер. Галочка не записана.", "error");
+        }
+        paintWorkMetrics();
+    }).catch(function (err) {
+        console.error(err);
+        if (accessSnap && store) {
+            store.workAccess = accessSnap.workAccess;
+            store.extraAccess = accessSnap.extraAccess;
+        }
+        toast("Не удалось сохранить назначение метрики на сервер. Галочка не записана.", "error");
         paintWorkMetrics();
     });
 }

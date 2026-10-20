@@ -956,6 +956,79 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(metrics["cashiers"]["2026-10"]["e_shop"]["1"]["sales"], 164197)
         self.assertEqual(metrics["facts"]["ok"], 1)
 
+    def test_admin_saves_work_access_with_cashier_nulls(self):
+        """Галочки workAccess сохраняются админом даже если в cashiers есть JSON null."""
+        self.store["payload"]["shopMetrics"]["cashiers"] = {
+            "2026-10": {"e_shop": {"1": {"sales": 100, "receipts": 5}}}
+        }
+        self.store["payload"]["shopMetrics"]["workAccess"] = {
+            "2026-10": {"e_shop": ["metric_display_positions"], "e_other": ["metric_assembly"]}
+        }
+        cookie, _ = self.login("user_admin", "5555")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {
+                            "2026-10": {"e_shop": {"1": {"sales": None, "receipts": 5}}}
+                        },
+                        "workAccess": {
+                            "2026-10": {
+                                "e_shop": [
+                                    "metric_display_positions",
+                                    "metric_recount",
+                                    "metric_assembly",
+                                    "metric_sugar_packing",
+                                ],
+                                "e_other": ["metric_assembly"],
+                            }
+                        },
+                        "extraAccess": {"e_shop": []},
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        metrics = self.store["payload"]["shopMetrics"]
+        self.assertNotIn("sales", metrics["cashiers"]["2026-10"]["e_shop"]["1"])
+        self.assertEqual(metrics["cashiers"]["2026-10"]["e_shop"]["1"]["receipts"], 5)
+        self.assertEqual(
+            metrics["workAccess"]["2026-10"]["e_shop"],
+            [
+                "metric_display_positions",
+                "metric_recount",
+                "metric_assembly",
+                "metric_sugar_packing",
+            ],
+        )
+        self.assertEqual(metrics["workAccess"]["2026-10"]["e_other"], ["metric_assembly"])
+        # Снятие всех галочек — явный [].
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "workAccess": {"2026-10": {"e_shop": []}},
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"], [])
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_other"],
+            ["metric_assembly"],
+        )
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertEqual(data["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"], [])
+
     def test_client_staff_metric_input_includes_category_stores(self):
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
         self.assertIn("STAFF_METRIC_CATEGORY_STORE_KEYS", src)
@@ -966,6 +1039,26 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("function saveMetricChange(", src)
         self.assertNotIn("store_id", block)
         self.assertNotIn("workAccess", block)
+
+    def test_client_metric_assignment_save_feedback(self):
+        """Галочки назначений: явная ошибка при сбое saveApp, busy не зависает."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        fn = src[src.find("function setShopEmployeeExtraMetric("):src.find("function metricCatalogItemUsesGroupAll(")]
+        self.assertIn("Не удалось сохранить назначение метрики на сервер", fn)
+        self.assertIn("paintWorkMetrics();", fn)
+        # Перерисовка после ответа, не до него (иначе молчаливый откат).
+        apply_at = fn.find("applyShopEmployeeWorkMetric(")
+        save_at = fn.find("Promise.resolve(saveApp())")
+        paint_in_then = fn.find("paintWorkMetrics();", save_at)
+        self.assertGreater(save_at, apply_at)
+        self.assertGreater(paint_in_then, save_at)
+        commit = src[src.find("function commitEmployeeCard("):src.find("function employeeCardActionsHtml(")]
+        self.assertIn("commitEmployeeCard.busy = false", commit)
+        self.assertIn("shopMaterializeWorkAccessMonth(", commit)
+        self.assertIn("Сохранение ещё выполняется", commit)
+        api = Path(__file__).resolve().parent.joinpath("wt_api.py").read_text(encoding="utf-8")
+        self.assertIn("def _merge_metric_branch_admin(", api)
+        self.assertIn('base["workAccess"] = _merge_access_map(', api)
 
     def test_staff_spu_indicators_read_write(self):
         spu = {
