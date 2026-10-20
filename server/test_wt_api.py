@@ -3091,6 +3091,31 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(self.store["payload"]["financeRec"]["operations"][0]["id"], "op_shop")
         self.assertEqual(self.store["payload"]["financeRec"]["operations"][1]["amount"], 20)
 
+    def test_fr_fact_money_card_split_main_vs_bank_card(self):
+        """Верхняя карточка: общая сумма без изменений + строки Основная касса / Расчётные счета."""
+        src = Path(__file__).resolve().parents[1].joinpath("fr-mod.js").read_text(encoding="utf-8")
+        fn = src[src.find("function frWeekFactMoneyTotal(") : src.find("function frCreateTransferOp(")]
+        self.assertIn("bankCardCalc", fn)
+        self.assertIn("mainCash", fn)
+        self.assertIn('account_type === "bank"', fn)
+        self.assertIn('account_type === "card"', fn)
+        # Общая сумма по-прежнему из sumActual / sumCalc, без новой формулы.
+        self.assertIn("sumActual", fn)
+        self.assertIn("sumCalc", fn)
+        self.assertIn("value-bankCard", fn.replace(" ", ""))
+        card = src[src.find("const factMoney = frWeekFactMoneyTotal(") :]
+        card = card[: card.find("} else {")]
+        self.assertIn("Основная касса:", card)
+        self.assertIn("Расчётные счета:", card)
+        self.assertIn("factMoney.mainCash", card)
+        self.assertIn("factMoney.bankCard", card)
+        # Пример Территории: 13 921 247,15 − 48 513,83 = 13 872 733,32
+        total = 13921247.15
+        bank = 48513.83
+        self.assertAlmostEqual(round(total - bank, 2), 13872733.32)
+        # Отрицательный банк увеличивает «Основную кассу».
+        self.assertAlmostEqual(round(1000000 - (-50000), 2), 1050000.0)
+
     def test_manager_employee_create_still_works(self):
         cookie = self._add_shop_manager()
         status, *_ = call(

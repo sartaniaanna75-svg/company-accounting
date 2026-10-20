@@ -1360,22 +1360,35 @@ function frWeekFactMoneyTotal(areaId, periodKey) {
     const sources = frActualBalanceSources(areaId);
     let sumActual = 0;
     let sumCalc = 0;
+    let bankCardActual = 0;
+    let bankCardCalc = 0;
     let allFilled = sources.length > 0;
     sources.forEach(function (s) {
         const sid = s.finance_source_id;
         const calc = frWeekEndCalculatedForAccount(areaId, periodKey, w.end_date, sid);
+        const isBankCard = s.account_type === "bank" || s.account_type === "card";
         sumCalc += calc;
+        if (isBankCard) bankCardCalc += calc;
         if (frIsTransitSource(s)) {
             sumActual += calc;
             return;
         }
         const actual = frDayActual(areaId, w.end_date, sid);
         if (actual == null) allFilled = false;
-        else sumActual += actual;
+        else {
+            sumActual += actual;
+            if (isBankCard) bankCardActual += actual;
+        }
     });
-    if (!sources.length) return { value: null, mode: "none" };
-    if (allFilled) return { value: frRound(sumActual), mode: "actual" };
-    return { value: frRound(sumCalc), mode: "calc" };
+    if (!sources.length) {
+        return { value: null, mode: "none", mainCash: null, bankCard: null };
+    }
+    const mode = allFilled ? "actual" : "calc";
+    const value = frRound(allFilled ? sumActual : sumCalc);
+    const bankCard = frRound(allFilled ? bankCardActual : bankCardCalc);
+    /* Основная касса = общий остаток − bank/card; торговые кассы и вклады не прибавляются повторно. */
+    const mainCash = frRound(value - bankCard);
+    return { value: value, mode: mode, mainCash: mainCash, bankCard: bankCard };
 }
 
 function frCreateTransferOp(areaId, fromId, toId, amount, date, comment, extra) {
@@ -2763,8 +2776,14 @@ function renderFinanceRec() {
                 + "</div>";
             html += '<div class="fr-card"><span>Фактический остаток денег</span><b>'
                 + (factMoney.value == null ? "—" : frMoney(factMoney.value)) + "</b>"
-                + (factMoney.mode === "calc" ? '<span class="fr-muted">расчётный</span>' : "")
-                + "</div>";
+                + (factMoney.mode === "calc" ? '<span class="fr-muted">расчётный</span>' : "");
+            if (factMoney.value != null) {
+                html += '<span class="fr-muted" style="display:block;margin-top:4px;font-size:12px;line-height:1.35">'
+                    + "Основная касса: " + frMoney(factMoney.mainCash) + "</span>"
+                    + '<span class="fr-muted" style="display:block;font-size:12px;line-height:1.35">'
+                    + "Расчётные счета: " + frMoney(factMoney.bankCard) + "</span>";
+            }
+            html += "</div>";
         } else {
             html += '<div class="fr-card"><span>Остаток на начало недели</span><b>' + frMoney(tot.opening) + "</b></div>";
             html += '<div class="fr-card"><span>Доходы</span><b class="fr-in">' + frMoney(tot.income) + "</b></div>";
