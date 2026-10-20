@@ -3491,6 +3491,113 @@ class BootstrapAdminTests(unittest.TestCase):
         self.assertNotIn("5555", src)
         self.assertNotIn(self.PIN, src)
 
+    def test_metric_show_day_total_catalog_and_tables(self):
+        """Этап 1: галочка «Показывать итого за день» в каталоге и колонке рабочих таблиц."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function metricShowDayTotal(", src)
+        self.assertIn("function metricAllowsDayTotal(", src)
+        self.assertIn("function fieldShowsDayTotal(", src)
+        self.assertIn("function shopFieldPeopleDayTotal(", src)
+        self.assertIn("function refreshShopMetricDayTotalsUi(", src)
+        self.assertIn('id="mcShowDayTotal"', src)
+        self.assertIn("Показывать итого за день", src)
+        self.assertIn("item.show_day_total", src)
+        self.assertIn('if (item.show_day_total !== true) item.show_day_total = false;', src)
+        # Только number/money; auto_calc/auto_sum не суммируются этой галочкой.
+        allows = src[src.find("function metricAllowsDayTotal("):src.find("function fieldShowsDayTotal(")]
+        self.assertIn('fill === "number"', allows)
+        self.assertIn('fill === "money"', allows)
+        self.assertNotIn("auto_calc", allows)
+        field_fn = src[src.find("function fieldShowsDayTotal("):src.find("function fieldDayTotalExtraCols(")]
+        self.assertIn("auto_calc", field_fn)
+        self.assertIn("avgCheck", field_fn)
+        # Сумма по назначенным людям контекста таблицы, не отдельный pipeline фактов.
+        self.assertIn("sumMetricDayForPeople(", src)
+        self.assertIn("getDeptMetricStored(", src[src.find("const fieldPeopleDayTotal = function"):src.find("const fieldPeopleDayTotal = function") + 500])
+        self.assertIn("metricDayTotalTdHtml(", src)
+        self.assertIn("metricDayTotalThHtml(", src)
+        # Живой пересчёт магазина без полного F5.
+        summary = src[src.find("function refreshShopMetricSummary("):src.find("function refreshShopCashierSummary(")]
+        self.assertIn("refreshShopMetricDayTotalsUi(", summary)
+        # Сохранение формы каталога не трогает group_all массово.
+        save_cat = src[src.find("item.show_day_total = !!("):]
+        save_cat = save_cat[:save_cat.find("Promise.resolve(saveApp())")]
+        self.assertNotIn("assignMetricCatalogGroupAllToWorkAccess(", save_cat)
+
+    def test_metric_auto_calc_formula_ops_stage2(self):
+        """Этап 2: математические операции auto_calc, конструктор, совместимость div."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("CATALOG_AUTO_CALC_OPS", src)
+        self.assertIn("CATALOG_AUTO_CALC_OPS_SELECTABLE", src)
+        self.assertIn("function normalizeCatalogAutoCalcOp(", src)
+        self.assertIn("function shopCatalogOperandSnapshot(", src)
+        self.assertIn("function formatCatalogAutoCalcResult(", src)
+        self.assertIn("function catalogFormulaWouldCycle(", src)
+        self.assertIn("function metricFormulaDependsOn(", src)
+        self.assertIn("function catalogAutoCalcMonthTotal(", src)
+        self.assertIn('id="mcOp"', src)
+        # Четыре действия в выборе для новых; pct сохранён для совместимости.
+        for op_id in ('"add"', '"sub"', '"mul"', '"div"', '"pct"'):
+            self.assertIn(op_id, src)
+        self.assertIn("Процентное отклонение", src)
+        self.assertIn("((b - a) / a) * 100", src)
+        selectable = src[src.find("CATALOG_AUTO_CALC_OPS_SELECTABLE"):src.find("const CATALOG_AUTO_CALC_OPS =")]
+        self.assertIn('"add"', selectable)
+        self.assertIn('"div"', selectable)
+        self.assertNotIn('"pct"', selectable)
+        self.assertIn('if (curOp === "pct")', src)
+        self.assertIn("Как считать итог за период", src)
+        self.assertIn("Сложить все значения", src)
+        self.assertIn("Выберите, как программа должна рассчитывать итог за неделю или месяц.", src)
+        # Старый средний чек: op div left sales right checks.
+        self.assertIn(
+            'formula: { op: "div", left: "metric_sales", right: "metric_checks" }',
+            src,
+        )
+        # Безопасность: нет подмены отсутствующего нулём в новом пути; /0 → null.
+        auto_fn = src[src.find("function shopCatalogAutoValue("):src.find("function formatCatalogAutoCalcResult(")]
+        self.assertIn("if (!leftSnap.present || !rightSnap.present) return null", auto_fn)
+        self.assertIn("return b === 0 ? null : a / b", auto_fn)
+        self.assertIn('return a === 0 ? null : ((b - a) / a) * 100', auto_fn)
+        # Проценты не суммируются в месячном итоге.
+        month_fn = src[src.find("function catalogAutoCalcMonthTotal("):src.find("function shopCatalogDaySum(")]
+        self.assertIn('if (op === "pct" || op === "div") return null', month_fn)
+        # Сохранение читает mcOp и пишет left/right ID.
+        save = src[src.find('if (fill === "auto_calc") {'):]
+        save = save[: save.find('} else if (fill === "auto_sum")')]
+        self.assertIn("mcOp", save)
+        self.assertIn("catalogFormulaWouldCycle", save)
+        self.assertIn("left:leftId,right:rightId", save.replace(" ", ""))
+        # СПУ / workAccess group_all не трогаем в этом блоке.
+        self.assertNotIn("assignMetricCatalogGroupAllToWorkAccess(", save)
+
+    def test_auto_calc_math_reference_values(self):
+        """Эталонные значения формул этапа 2 (логика как в shopCatalogAutoValue)."""
+
+        def calc(op, a, b):
+            if a is None or b is None:
+                return None
+            if op == "add":
+                return a + b
+            if op == "sub":
+                return a - b
+            if op == "mul":
+                return a * b
+            if op == "div":
+                return None if b == 0 else a / b
+            if op == "pct":
+                return None if a == 0 else ((b - a) / a) * 100
+            return None
+
+        self.assertEqual(calc("sub", 120, 110), 10)
+        self.assertEqual(calc("add", 120, 110), 230)
+        self.assertEqual(calc("mul", 120, 2), 240)
+        self.assertEqual(calc("div", 120, 10), 12)
+        self.assertAlmostEqual(calc("pct", 120, 110), -8.333333, places=5)
+        self.assertIsNone(calc("sub", None, 110))
+        self.assertIsNone(calc("div", 120, 0))
+        self.assertIsNone(calc("pct", 0, 110))
+
 
 if __name__ == "__main__":
     unittest.main()
