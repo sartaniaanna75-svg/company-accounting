@@ -3116,6 +3116,30 @@ class StoreApiTests(unittest.TestCase):
         # Отрицательный банк увеличивает «Основную кассу».
         self.assertAlmostEqual(round(1000000 - (-50000), 2), 1050000.0)
 
+    def test_fr_non_income_cash_and_bank_blocks(self):
+        """Два независимых блока внедохода: основная касса и расчётный счёт."""
+        src = Path(__file__).resolve().parents[1].joinpath("fr-mod.js").read_text(encoding="utf-8")
+        self.assertIn("ВНЕДОХОДОВЫЕ ПОСТУПЛЕНИЯ — ОСНОВНАЯ КАССА", src)
+        self.assertIn("ВНЕДОХОДОВЫЕ ПОСТУПЛЕНИЯ — РАСЧЁТНЫЙ СЧЁТ", src)
+        self.assertIn("function frDefaultSettlementAccountId(", src)
+        self.assertIn("function frNonIncomeChannelOf(", src)
+        self.assertIn('non_income_channel: ch', src)
+        self.assertIn("non_income_bank_grid", src)
+        self.assertIn('renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit, "cash")', src)
+        self.assertIn('renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit, "bank")', src)
+        set_fn = src[src.find("function frSetNonIncomeCell(") : src.find("function frRenameNonIncomeLine(")]
+        self.assertIn('ch === "bank"', set_fn)
+        self.assertIn("frDefaultSettlementAccountId", set_fn)
+        self.assertIn("frPrimaryCashId", set_fn)
+        # Сценарии: каналы не смешивают остатки.
+        cash_open, bank_open, revenue = 1_000_000.0, 200_000.0, 500_000.0
+        cash_ni, bank_ni = 100_000.0, 50_000.0
+        self.assertAlmostEqual(cash_open + cash_ni, 1_100_000.0)
+        self.assertAlmostEqual(bank_open, 200_000.0)  # кассовый внедоход банк не трогает
+        self.assertAlmostEqual(bank_open + bank_ni, 250_000.0)
+        self.assertAlmostEqual(cash_open + cash_ni, 1_100_000.0)  # банковский внедоход кассу не трогает
+        self.assertAlmostEqual(revenue, 500_000.0)
+
     def test_manager_employee_create_still_works(self):
         cookie = self._add_shop_manager()
         status, *_ = call(

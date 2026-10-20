@@ -585,6 +585,9 @@ function ensureFinanceRec() {
             if (o.op_type === "non_income" || o.movement_kind === "non_income") {
                 o.movement_kind = "non_income";
                 o.op_type = "non_income";
+                if (o.non_income_channel !== "bank" && o.non_income_channel !== "cash") {
+                    o.non_income_channel = frNonIncomeChannelOf(o, o.object_id || o.finance_area_id || "");
+                }
             } else {
                 o.movement_kind = "income";
                 o.op_type = "income";
@@ -825,6 +828,43 @@ function frIsCashAccountType(typeId) {
 
 function frIsCashSource(src) {
     return !!(src && frIsCashAccountType(src.account_type));
+}
+
+function frIsBankCardAccountType(typeId) {
+    return typeId === "bank" || typeId === "card";
+}
+
+function frIsBankCardSource(src) {
+    return !!(src && frIsBankCardAccountType(src.account_type));
+}
+
+/**
+ * Расчётный счёт / карта объекта по умолчанию для внедохода на р/с.
+ * Предпочтительно bank с участием в факт. остатке, иначе любая активная bank/card.
+ */
+function frDefaultSettlementAccountId(areaId) {
+    const sources = frSources(areaId, false).filter(frIsBankCardSource);
+    if (!sources.length) return "";
+    const ranked = sources.slice().sort(function (a, b) {
+        const aBank = a.account_type === "bank" ? 0 : 1;
+        const bBank = b.account_type === "bank" ? 0 : 1;
+        if (aBank !== bBank) return aBank - bBank;
+        const aAct = frInActualBalance(a) ? 0 : 1;
+        const bAct = frInActualBalance(b) ? 0 : 1;
+        if (aAct !== bAct) return aAct - bAct;
+        return Number(a.sort_order || 0) - Number(b.sort_order || 0)
+            || String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+    return ranked[0].finance_source_id || ranked[0].account_id || "";
+}
+
+/** Канал внедохода: cash (осн. касса) | bank (расчётный счёт). Legacy без поля → по типу счёта. */
+function frNonIncomeChannelOf(o, areaId) {
+    if (!o) return "cash";
+    if (o.non_income_channel === "bank" || o.non_income_channel === "cash") return o.non_income_channel;
+    const oid = areaId || o.object_id || o.finance_area_id || "";
+    const src = frSourceByAccountId(oid, frOpAccountId(o));
+    return frIsBankCardSource(src) ? "bank" : "cash";
 }
 
 /**
@@ -1818,17 +1858,21 @@ function frHandedInForDay(areaId, periodKey, date) {
     return frRound(sum);
 }
 
-/** Сумма всех внедоходовых операций объекта за день (не входит в ОПТ/Розницу/Склад). */
-function frNonIncomeForDay(areaId, periodKey, date) {
+/**
+ * Сумма внедоходовых за день (не входит в ОПТ/Розницу/Склад).
+ * channel: "cash" | "bank" | falsy (= все каналы, для сводной сверки).
+ */
+function frNonIncomeForDay(areaId, periodKey, date, channel) {
     let sum = 0;
     frOpsForDate(areaId, periodKey, date, "non_income").forEach(function (o) {
+        if (channel && frNonIncomeChannelOf(o, areaId) !== channel) return;
         sum += frNum(o.amount);
     });
     return frRound(sum);
 }
 
-function frNonIncomeGridForDay(areaId, periodKey, date) {
-    return frNonIncomeForDay(areaId, periodKey, date);
+function frNonIncomeGridForDay(areaId, periodKey, date, channel) {
+    return frNonIncomeForDay(areaId, periodKey, date, channel || "cash");
 }
 
 function frAreaDayAggregate(areaId, periodKey, date) {
@@ -1885,12 +1929,14 @@ function frNonIncomeLineKey(o, areaId) {
 }
 
 /** Строки внедоходовых за неделю: существующие операции + группировка по комментарию / line_id. */
-function frNonIncomeWeekLines(areaId, periodKey, dates) {
+function frNonIncomeWeekLines(areaId, periodKey, dates, channel) {
+    const ch = channel === "bank" ? "bank" : "cash";
     const dateSet = {};
     (dates || []).forEach(function (d) { dateSet[d] = true; });
     const map = {};
     frOps(areaId, periodKey).forEach(function (o) {
         if (frOpKind(o) !== "non_income") return;
+        if (frNonIncomeChannelOf(o, areaId) !== ch) return;
         const d = frNormDate(o.date);
         if (!d || !dateSet[d]) return;
         if (!(frNum(o.amount) > 0) && !String(o.comment || "").trim()) return;
@@ -1900,6 +1946,7 @@ function frNonIncomeWeekLines(areaId, periodKey, dates) {
                 key: key,
                 lineId: o.non_income_line_id || "",
                 comment: frNonIncomeOpComment(o, areaId),
+                channel: ch,
                 byDate: {}
             };
         }
@@ -1914,13 +1961,15 @@ function frNonIncomeWeekLines(areaId, periodKey, dates) {
     });
 }
 
-function frNonIncomeCommentSuggestions(areaId) {
+function frNonIncomeCommentSuggestions(areaId, channel) {
+    const ch = channel === "bank" ? "bank" : "cash";
     const seen = {};
     const out = [];
     ((appData.financeRec && appData.financeRec.operations) || []).forEach(function (o) {
         if (!o || o.is_deleted) return;
         if ((o.object_id || o.finance_area_id) !== areaId) return;
         if (frOpKind(o) !== "non_income") return;
+        if (frNonIncomeChannelOf(o, areaId) !== ch) return;
         const c = String(o.comment || "").trim();
         if (!c) return;
         const k = frNonIncomeCommentKey(c);
@@ -1932,12 +1981,14 @@ function frNonIncomeCommentSuggestions(areaId) {
     return out.slice(0, 100);
 }
 
-function frFindNonIncomeOpsForLine(areaId, periodKey, dates, lineKey, comment) {
+function frFindNonIncomeOpsForLine(areaId, periodKey, dates, lineKey, comment, channel) {
+    const ch = channel === "bank" ? "bank" : "cash";
     const dateSet = {};
     (dates || []).forEach(function (d) { dateSet[d] = true; });
     const wantKey = lineKey || ("c:" + frNonIncomeCommentKey(comment));
     return frOps(areaId, periodKey).filter(function (o) {
         if (frOpKind(o) !== "non_income") return false;
+        if (frNonIncomeChannelOf(o, areaId) !== ch) return false;
         const d = frNormDate(o.date);
         if (!d || !dateSet[d]) return false;
         return frNonIncomeLineKey(o, areaId) === wantKey
@@ -1947,14 +1998,15 @@ function frFindNonIncomeOpsForLine(areaId, periodKey, dates, lineKey, comment) {
 
 /**
  * Ячейка внедоходового: комментарий + дата + сумма.
- * Не трогает доходы/расходы/перемещения. Пишется на основную кассу объекта.
+ * channel "cash" → основная касса; "bank" → расчётный счёт/карта объекта.
+ * Не трогает доходы/расходы/перемещения и не пишет в выручку.
  */
-function frSetNonIncomeCell(areaId, lineKey, comment, date, amount, dataSource) {
+function frSetNonIncomeCell(areaId, lineKey, comment, date, amount, dataSource, channel) {
     ensureFinanceRec();
+    const ch = channel === "bank" ? "bank" : "cash";
     const amt = frRound(frNum(amount));
     const want = frNormDate(date) || date;
     const opWeek = frWeek(want);
-    const cashId = frPrimaryCashId(areaId) || (frSources(areaId, false)[0] && frSources(areaId, false)[0].finance_source_id) || "";
     const commentText = String(comment || "").replace(/\s+/g, " ").trim();
     let lineId = "";
     if (lineKey && String(lineKey).indexOf("id:") === 0) lineId = String(lineKey).slice(3);
@@ -1963,11 +2015,26 @@ function frSetNonIncomeCell(areaId, lineKey, comment, date, amount, dataSource) 
         if (!o || o.is_deleted) return false;
         if ((o.object_id || o.finance_area_id) !== areaId) return false;
         if (frOpKind(o) !== "non_income") return false;
+        if (frNonIncomeChannelOf(o, areaId) !== ch) return false;
         if (frNormDate(o.date) !== want) return false;
         if (lineId && o.non_income_line_id === lineId) return true;
         if (lineId) return false;
         return frNonIncomeCommentKey(frNonIncomeOpComment(o, areaId)) === frNonIncomeCommentKey(commentText);
     });
+
+    let accountId = "";
+    if (existing[0]) accountId = frOpAccountId(existing[0]);
+    if (!accountId) {
+        if (ch === "bank") accountId = frDefaultSettlementAccountId(areaId);
+        else {
+            accountId = frPrimaryCashId(areaId)
+                || (frSources(areaId, false)[0] && frSources(areaId, false)[0].finance_source_id)
+                || "";
+        }
+    }
+    if (ch === "bank" && !accountId) {
+        return { lineId: lineId, lineKey: lineKey, error: "no_bank" };
+    }
 
     if (!(amt > 0)) {
         existing.forEach(function (o) {
@@ -1991,6 +2058,8 @@ function frSetNonIncomeCell(areaId, lineKey, comment, date, amount, dataSource) 
         o.deleted_reason = "non_income_merge";
     });
 
+    const entryRole = ch === "bank" ? "non_income_bank_grid" : "non_income_grid";
+
     if (!rec) {
         rec = {
             finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
@@ -2000,56 +2069,64 @@ function frSetNonIncomeCell(areaId, lineKey, comment, date, amount, dataSource) 
             finance_category_id: "",
             amount: amt,
             comment: commentText,
-            entry_role: "non_income_grid",
+            entry_role: entryRole,
             grid_cell: true,
             non_income_line_id: lineId,
-            source_id: cashId,
+            non_income_channel: ch,
+            source_id: accountId,
             is_deleted: false,
             created_at: new Date().toISOString()
         };
         frStampOperation(rec, {
             object_id: areaId,
-            account_id: cashId,
+            account_id: accountId,
             op_type: "non_income",
             data_source: dataSource || FR_DATA_SOURCES.manual,
-            revenue_direction: ""
+            revenue_direction: "none"
         });
+        rec.non_income_channel = ch;
         appData.financeRec.operations.push(rec);
     } else {
         rec.amount = amt;
         rec.comment = commentText;
         rec.non_income_line_id = lineId;
-        rec.entry_role = "non_income_grid";
+        rec.non_income_channel = ch;
+        rec.entry_role = entryRole;
         rec.grid_cell = true;
         rec.period_key = opWeek.period_key;
         rec.date = want;
         rec.data_source = dataSource || rec.data_source || FR_DATA_SOURCES.manual;
         rec.updated_at = new Date().toISOString();
-        if (!rec.finance_source_id && cashId) {
+        if (!rec.finance_source_id && accountId) {
             frStampOperation(rec, {
                 object_id: areaId,
-                account_id: cashId,
+                account_id: accountId,
                 op_type: "non_income",
                 data_source: rec.data_source,
-                revenue_direction: ""
+                revenue_direction: "none"
             });
+            rec.non_income_channel = ch;
         } else {
             rec.op_type = "non_income";
             rec.movement_kind = "non_income";
             rec.type = "in";
             rec.object_id = areaId;
             rec.finance_area_id = areaId;
+            rec.revenue_direction = "none";
+            rec.direction = "";
         }
     }
     return { lineId: lineId, lineKey: "id:" + lineId, op: rec };
 }
 
-function frRenameNonIncomeLine(areaId, periodKey, dates, lineKey, newComment) {
+function frRenameNonIncomeLine(areaId, periodKey, dates, lineKey, newComment, channel) {
+    const ch = channel === "bank" ? "bank" : "cash";
     const commentText = String(newComment || "").replace(/\s+/g, " ").trim();
-    const ops = frFindNonIncomeOpsForLine(areaId, periodKey, dates, lineKey, "");
+    const ops = frFindNonIncomeOpsForLine(areaId, periodKey, dates, lineKey, "", ch);
     let lineId = lineKey && String(lineKey).indexOf("id:") === 0 ? String(lineKey).slice(3) : "";
     ops.forEach(function (o) {
         o.comment = commentText;
+        o.non_income_channel = ch;
         if (!lineId && o.non_income_line_id) lineId = o.non_income_line_id;
         if (!lineId) {
             lineId = nextPrefixedId("fnil", (appData.financeRec.operations || []).map(function (x) {
@@ -2990,7 +3067,8 @@ function renderFrReconcileTab(areaId, w, canEdit) {
         + "Вставка Ctrl+V поддерживает одну сумму и диапазон ячеек. "
         + "Нажмите на сумму расходов, чтобы открыть детализацию.</div>";
 
-    html += renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit);
+    html += renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit, "cash");
+    html += renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit, "bank");
 
     html += "</div>";
     html += renderFrMainCashDaysBlock(areaId, w);
@@ -2998,20 +3076,45 @@ function renderFrReconcileTab(areaId, w, canEdit) {
     return html;
 }
 
-function renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit) {
-    const lines = frNonIncomeWeekLines(areaId, w.period_key, dates);
-    const suggestions = frNonIncomeCommentSuggestions(areaId);
-    const listId = "frNiSuggest_" + String(areaId || "").replace(/\W+/g, "_");
+function renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit, channel) {
+    const ch = channel === "bank" ? "bank" : "cash";
+    const lines = frNonIncomeWeekLines(areaId, w.period_key, dates, ch);
+    const suggestions = frNonIncomeCommentSuggestions(areaId, ch);
+    const listId = "frNiSuggest_" + ch + "_" + String(areaId || "").replace(/\W+/g, "_");
     const isTerritory = frIsTerritoryArea(areaId);
-    let html = '<div class="fr-non-income-block" style="margin-top:14px">';
-    html += "<h3>ВНЕДОХОДОВЫЕ ПОСТУПЛЕНИЯ</h3>";
-    html += '<div class="fr-muted" style="margin-bottom:8px">'
-        + "Отдельный тип операции: свободный комментарий (например: «Макулатура», «Возврат подотчёта») и сумма по дню. "
-        + "Увеличивает остаток денег на счёте/кассе, но не является выручкой и не делает сам счёт «внедоходовым». ";
-    if (isTerritory) {
-        html += "Не входит в ОПТ / Розницу / Склад. ";
+    const bankId = ch === "bank" ? frDefaultSettlementAccountId(areaId) : "";
+    const bankSrc = bankId ? frSourceByAccountId(areaId, bankId) : null;
+    const tableId = ch === "bank" ? "frNonIncomeBankTable" : "frNonIncomeTable";
+    const canEditChannel = canEdit && (ch !== "bank" || !!bankId);
+
+    let html = '<div class="fr-non-income-block" data-ni-channel="' + ch + '" style="margin-top:14px">';
+    if (ch === "bank") {
+        html += "<h3>ВНЕДОХОДОВЫЕ ПОСТУПЛЕНИЯ — РАСЧЁТНЫЙ СЧЁТ</h3>";
+        html += '<div class="fr-muted" style="margin-bottom:8px">'
+            + "Возвраты и прочие поступления на расчётный счёт, которые не являются доходом компании "
+            + "(например: возврат ошибочно перечисленных налогов, возврат излишне уплаченных средств, "
+            + "возврат аванса от поставщика). Свободный комментарий и сумма по дню. "
+            + "Увеличивают только остаток расчётного счёта, не входят в выручку";
+        if (isTerritory) html += " ОПТ / Розницу / Склад";
+        html += ". ";
+        if (bankSrc) {
+            html += "Счёт зачисления: <b>" + escapeHtml(bankSrc.name || bankId) + "</b>.</div>";
+        } else {
+            html += "</div>";
+            html += '<div class="note">Нет активного расчётного счёта или карты. '
+                + "Добавьте его во вкладке «Счета и кассы».</div></div>";
+            return html;
+        }
+    } else {
+        html += "<h3>ВНЕДОХОДОВЫЕ ПОСТУПЛЕНИЯ — ОСНОВНАЯ КАССА</h3>";
+        html += '<div class="fr-muted" style="margin-bottom:8px">'
+            + "Отдельный тип операции: свободный комментарий (например: «Макулатура», «Возврат подотчёта») и сумма по дню. "
+            + "Увеличивает только остаток основной кассы, не является выручкой и не делает сам счёт «внедоходовым». ";
+        if (isTerritory) {
+            html += "Не входит в ОПТ / Розницу / Склад. ";
+        }
+        html += "Подсказки из ранее введённых комментариев необязательны.</div>";
     }
-    html += "Подсказки из ранее введённых комментариев необязательны.</div>";
     if (suggestions.length) {
         html += '<datalist id="' + escapeAttribute(listId) + '">';
         suggestions.forEach(function (s) {
@@ -3019,7 +3122,8 @@ function renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit) {
         });
         html += "</datalist>";
     }
-    html += '<div class="fr-table-wrap fr-reconcile-wrap"><table class="fr-table fr-reconcile-table" id="frNonIncomeTable">';
+    html += '<div class="fr-table-wrap fr-reconcile-wrap"><table class="fr-table fr-reconcile-table fr-non-income-table" id="'
+        + escapeAttribute(tableId) + '" data-ni-channel="' + ch + '">';
     html += '<thead><tr><th class="fr-src-col">Комментарий</th>';
     dates.forEach(function (d) {
         html += '<th class="fr-num fr-day-col">' + escapeHtml(frShortDayHead(d)) + "</th>";
@@ -3031,13 +3135,14 @@ function renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit) {
         const key = isEmpty ? "new" : line.key;
         const comment = isEmpty ? "" : (line.comment || "");
         let rowSum = 0;
-        let row = '<tr class="fr-ni-row" data-line-key="' + escapeAttribute(key) + '">';
+        let row = '<tr class="fr-ni-row" data-line-key="' + escapeAttribute(key) + '" data-ni-channel="' + ch + '">';
         row += "<td>";
-        if (canEdit) {
+        if (canEditChannel) {
             row += '<input type="text" class="fr-ni-comment" placeholder="Комментарий"'
                 + (suggestions.length ? ' list="' + escapeAttribute(listId) + '"' : "")
                 + ' value="' + escapeAttribute(comment) + '"'
                 + ' data-line-key="' + escapeAttribute(key) + '"'
+                + ' data-ni-channel="' + ch + '"'
                 + ' autocomplete="off">';
         } else {
             row += escapeHtml(comment || "—");
@@ -3046,10 +3151,11 @@ function renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit) {
         dates.forEach(function (d, c) {
             const val = isEmpty ? 0 : frNum(line.byDate[d] && line.byDate[d].amount);
             rowSum += val;
-            if (canEdit) {
+            if (canEditChannel) {
                 row += '<td class="fr-num fr-cell-td">'
                     + '<input type="text" class="fr-ni-cell" inputmode="decimal" autocomplete="off"'
                     + ' data-ni-r="' + niRow + '" data-ni-c="' + c + '"'
+                    + ' data-ni-channel="' + ch + '"'
                     + ' data-line-key="' + escapeAttribute(key) + '"'
                     + ' data-date="' + escapeAttribute(d) + '"'
                     + ' value="' + escapeAttribute(frFmtCellAmount(val)) + '">'
@@ -3064,18 +3170,18 @@ function renderFrNonIncomeReconcileBlock(areaId, w, dates, canEdit) {
     }
 
     lines.forEach(function (line) { html += renderNiRow(line, false); });
-    if (canEdit) html += renderNiRow(null, true);
+    if (canEditChannel) html += renderNiRow(null, true);
 
     html += '<tr class="fr-total-row fr-ni-total-row">';
     html += "<td><b>ИТОГО ВНЕДОХОДОВЫЕ</b></td>";
     let niWeek = 0;
     dates.forEach(function (d) {
-        const t = frNonIncomeForDay(areaId, w.period_key, d);
+        const t = frNonIncomeForDay(areaId, w.period_key, d, ch);
         niWeek += t;
-        html += '<td class="fr-num fr-ni-day" data-date="' + escapeAttribute(d) + '"><b>'
+        html += '<td class="fr-num fr-ni-day" data-ni-channel="' + ch + '" data-date="' + escapeAttribute(d) + '"><b>'
             + frMoney(t) + "</b></td>";
     });
-    html += '<td class="fr-num fr-ni-week"><b>' + frMoney(frRound(niWeek)) + "</b></td></tr>";
+    html += '<td class="fr-num fr-ni-week" data-ni-channel="' + ch + '"><b>' + frMoney(frRound(niWeek)) + "</b></td></tr>";
     html += "</tbody></table></div></div>";
     return html;
 }
@@ -3376,57 +3482,67 @@ function frBindReconcileGrid() {
     frBindNonIncomeGrid();
 }
 
+function frNiChannelOfEl(el) {
+    if (!el) return "cash";
+    const ch = el.getAttribute("data-ni-channel")
+        || (el.closest && el.closest("[data-ni-channel]") && el.closest("[data-ni-channel]").getAttribute("data-ni-channel"));
+    return ch === "bank" ? "bank" : "cash";
+}
+
 function frBindNonIncomeGrid() {
-    const table = document.getElementById("frNonIncomeTable");
-    if (!table) return;
-    table.querySelectorAll(".fr-ni-comment").forEach(function (inp) {
-        inp.addEventListener("blur", function () {
-            if (frUi._reconcilePasteLock) return;
-            frCommitNonIncomeComment(inp);
-        });
-        inp.addEventListener("keydown", function (e) {
-            if (e.key === "Enter") {
-                e.preventDefault();
+    document.querySelectorAll("table.fr-non-income-table").forEach(function (table) {
+        table.querySelectorAll(".fr-ni-comment").forEach(function (inp) {
+            inp.addEventListener("blur", function () {
+                if (frUi._reconcilePasteLock) return;
                 frCommitNonIncomeComment(inp);
-                const tr = inp.closest("tr");
-                const firstAmt = tr && tr.querySelector(".fr-ni-cell");
-                if (firstAmt) { firstAmt.focus(); try { firstAmt.select(); } catch (err) {} }
-            }
+            });
+            inp.addEventListener("keydown", function (e) {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    frCommitNonIncomeComment(inp);
+                    const tr = inp.closest("tr");
+                    const firstAmt = tr && tr.querySelector(".fr-ni-cell");
+                    if (firstAmt) { firstAmt.focus(); try { firstAmt.select(); } catch (err) {} }
+                }
+            });
         });
-    });
-    table.querySelectorAll(".fr-ni-cell").forEach(function (inp) {
-        inp.addEventListener("focus", function () {
-            try { inp.select(); } catch (err) {}
-        });
-        inp.addEventListener("keydown", function (e) {
-            if (e.key === "Enter") {
-                e.preventDefault();
-                const needRender = frCommitNonIncomeCell(inp, FR_DATA_SOURCES.manual);
-                if (needRender === "render") {
-                    const r = inp.getAttribute("data-ni-r");
-                    const c = inp.getAttribute("data-ni-c");
+        table.querySelectorAll(".fr-ni-cell").forEach(function (inp) {
+            inp.addEventListener("focus", function () {
+                try { inp.select(); } catch (err) {}
+            });
+            inp.addEventListener("keydown", function (e) {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    const needRender = frCommitNonIncomeCell(inp, FR_DATA_SOURCES.manual);
+                    if (needRender === "render") {
+                        const r = inp.getAttribute("data-ni-r");
+                        const c = inp.getAttribute("data-ni-c");
+                        const ch = frNiChannelOfEl(inp);
+                        renderFinanceRec();
+                        setTimeout(function () {
+                            const el = document.querySelector(
+                                '.fr-ni-cell[data-ni-channel="' + ch + '"][data-ni-r="' + r + '"][data-ni-c="' + c + '"]'
+                            );
+                            if (el) { el.focus(); try { el.select(); } catch (err) {} }
+                        }, 0);
+                        return;
+                    }
+                    frFocusNonIncomeNeighbor(inp, e.shiftKey ? -1 : 1, 0);
+                }
+            });
+            inp.addEventListener("blur", function () {
+                if (frUi._reconcilePasteLock) return;
+                const res = frCommitNonIncomeCell(inp, FR_DATA_SOURCES.manual);
+                if (res === "render") {
                     renderFinanceRec();
-                    setTimeout(function () {
-                        const el = document.querySelector('.fr-ni-cell[data-ni-r="' + r + '"][data-ni-c="' + c + '"]');
-                        if (el) { el.focus(); try { el.select(); } catch (err) {} }
-                    }, 0);
                     return;
                 }
-                frFocusNonIncomeNeighbor(inp, e.shiftKey ? -1 : 1, 0);
-            }
-        });
-        inp.addEventListener("blur", function () {
-            if (frUi._reconcilePasteLock) return;
-            const res = frCommitNonIncomeCell(inp, FR_DATA_SOURCES.manual);
-            if (res === "render") {
-                renderFinanceRec();
-                return;
-            }
-            frRefreshNonIncomeTotalsDom();
-            frRefreshDayAggDom();
-        });
-        inp.addEventListener("paste", function (e) {
-            frOnNonIncomePaste(e, inp);
+                frRefreshNonIncomeTotalsDom();
+                frRefreshDayAggDom();
+            });
+            inp.addEventListener("paste", function (e) {
+                frOnNonIncomePaste(e, inp);
+            });
         });
     });
 }
@@ -3434,7 +3550,10 @@ function frBindNonIncomeGrid() {
 function frFocusNonIncomeNeighbor(inp, dRow, dCol) {
     const r = Number(inp.getAttribute("data-ni-r")) + dRow;
     const c = Number(inp.getAttribute("data-ni-c")) + dCol;
-    const next = document.querySelector('.fr-ni-cell[data-ni-r="' + r + '"][data-ni-c="' + c + '"]');
+    const ch = frNiChannelOfEl(inp);
+    const next = document.querySelector(
+        '.fr-ni-cell[data-ni-channel="' + ch + '"][data-ni-r="' + r + '"][data-ni-c="' + c + '"]'
+    );
     if (next) {
         next.focus();
         try { next.select(); } catch (err) {}
@@ -3447,6 +3566,7 @@ function frCommitNonIncomeComment(inp) {
     if (!area) return false;
     const tr = inp.closest("tr");
     if (!tr) return false;
+    const ch = frNiChannelOfEl(inp);
     let lineKey = tr.getAttribute("data-line-key") || inp.getAttribute("data-line-key") || "";
     const comment = String(inp.value || "").replace(/\s+/g, " ").trim();
     inp.value = comment;
@@ -3456,7 +3576,7 @@ function frCommitNonIncomeComment(inp) {
     }
     const w = frEnsureWeek();
     const dates = frWeekDates(w);
-    const newKey = frRenameNonIncomeLine(area.finance_area_id, w.period_key, dates, lineKey, comment);
+    const newKey = frRenameNonIncomeLine(area.finance_area_id, w.period_key, dates, lineKey, comment, ch);
     if (newKey && newKey !== lineKey) {
         tr.setAttribute("data-line-key", newKey);
         tr.querySelectorAll("[data-line-key]").forEach(function (el) {
@@ -3473,6 +3593,7 @@ function frCommitNonIncomeCell(inp, dataSource) {
     if (!area) return false;
     const tr = inp.closest("tr");
     if (!tr) return false;
+    const ch = frNiChannelOfEl(inp);
     const commentInp = tr.querySelector(".fr-ni-comment");
     const comment = String((commentInp && commentInp.value) || "").replace(/\s+/g, " ").trim();
     let lineKey = tr.getAttribute("data-line-key") || "new";
@@ -3486,9 +3607,14 @@ function frCommitNonIncomeCell(inp, dataSource) {
         if (commentInp) commentInp.focus();
         return false;
     }
+    if (ch === "bank" && amt > 0 && !frDefaultSettlementAccountId(area.finance_area_id)) {
+        toast("Нет расчётного счёта для зачисления", "error");
+        inp.value = "";
+        return false;
+    }
     const w = frEnsureWeek();
     const dates = frWeekDates(w);
-    const lines = frNonIncomeWeekLines(area.finance_area_id, w.period_key, dates);
+    const lines = frNonIncomeWeekLines(area.finance_area_id, w.period_key, dates, ch);
     const prevLine = lines.find(function (l) { return l.key === lineKey; });
     const prev = prevLine && prevLine.byDate[date] ? frNum(prevLine.byDate[date].amount) : 0;
     if (Math.abs(prev - amt) < 0.005 && lineKey !== "new") {
@@ -3502,8 +3628,14 @@ function frCommitNonIncomeCell(inp, dataSource) {
         comment,
         date,
         amt,
-        dataSource || FR_DATA_SOURCES.manual
+        dataSource || FR_DATA_SOURCES.manual,
+        ch
     );
+    if (result && result.error === "no_bank") {
+        toast("Нет расчётного счёта для зачисления", "error");
+        inp.value = frFmtCellAmount(prev);
+        return false;
+    }
     if (result && result.lineKey) {
         tr.setAttribute("data-line-key", result.lineKey);
         tr.querySelectorAll("[data-line-key]").forEach(function (el) {
@@ -3512,7 +3644,7 @@ function frCommitNonIncomeCell(inp, dataSource) {
         lineKey = result.lineKey;
     }
     inp.value = frFmtCellAmount(amt);
-    frAudit("non_income_grid", {
+    frAudit(ch === "bank" ? "non_income_bank_grid" : "non_income_grid", {
         detail: comment + " " + date,
         old_value: prev,
         new_value: amt
@@ -3536,11 +3668,12 @@ function frOnNonIncomePaste(e, inp) {
     frUi._reconcilePasteLock = true;
     const startR = Number(inp.getAttribute("data-ni-r"));
     const startC = Number(inp.getAttribute("data-ni-c"));
+    const ch = frNiChannelOfEl(inp);
     let needRender = false;
     matrix.forEach(function (row, ri) {
         row.forEach(function (cell, ci) {
             const target = document.querySelector(
-                '.fr-ni-cell[data-ni-r="' + (startR + ri) + '"][data-ni-c="' + (startC + ci) + '"]'
+                '.fr-ni-cell[data-ni-channel="' + ch + '"][data-ni-r="' + (startR + ri) + '"][data-ni-c="' + (startC + ci) + '"]'
             );
             if (!target) return;
             target.value = frFmtCellAmount(frNum(cell));
@@ -3563,22 +3696,24 @@ function frRefreshNonIncomeTotalsDom() {
     const w = frEnsureWeek();
     const dates = frWeekDates(w);
     const areaId = area.finance_area_id;
-    let week = 0;
-    dates.forEach(function (d) {
-        const t = frNonIncomeForDay(areaId, w.period_key, d);
-        week += t;
-        const el = document.querySelector('.fr-ni-day[data-date="' + d + '"]');
-        if (el) el.innerHTML = "<b>" + frMoney(t) + "</b>";
-    });
-    const gw = document.querySelector(".fr-ni-week");
-    if (gw) gw.innerHTML = "<b>" + frMoney(frRound(week)) + "</b>";
-    document.querySelectorAll("#frNonIncomeTable tr.fr-ni-row").forEach(function (tr) {
-        let sum = 0;
-        tr.querySelectorAll(".fr-ni-cell").forEach(function (inp) {
-            sum += frNum(inp.value);
+    ["cash", "bank"].forEach(function (ch) {
+        let week = 0;
+        dates.forEach(function (d) {
+            const t = frNonIncomeForDay(areaId, w.period_key, d, ch);
+            week += t;
+            const el = document.querySelector('.fr-ni-day[data-ni-channel="' + ch + '"][data-date="' + d + '"]');
+            if (el) el.innerHTML = "<b>" + frMoney(t) + "</b>";
         });
-        const tot = tr.querySelector(".fr-ni-row-total");
-        if (tot) tot.innerHTML = "<b>" + frMoney(frRound(sum)) + "</b>";
+        const gw = document.querySelector('.fr-ni-week[data-ni-channel="' + ch + '"]');
+        if (gw) gw.innerHTML = "<b>" + frMoney(frRound(week)) + "</b>";
+        document.querySelectorAll('table.fr-non-income-table[data-ni-channel="' + ch + '"] tr.fr-ni-row').forEach(function (tr) {
+            let sum = 0;
+            tr.querySelectorAll(".fr-ni-cell").forEach(function (cell) {
+                sum += frNum(cell.value);
+            });
+            const tot = tr.querySelector(".fr-ni-row-total");
+            if (tot) tot.innerHTML = "<b>" + frMoney(frRound(sum)) + "</b>";
+        });
     });
 }
 
