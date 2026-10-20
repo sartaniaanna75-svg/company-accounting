@@ -10129,9 +10129,12 @@ function staffEmployeeCardForPut(emp, allowSalary) {
     return out;
 }
 
+/* Рабочий ввод метрик магазина. Категории cashiers/pickers/managers — таблицы по дням.
+   Настройки прав (workAccess/extraAccess) — отдельно. store_id/storeMeta/substitutionPayDefaults не передаём. */
+const STAFF_METRIC_CATEGORY_STORE_KEYS = ["cashiers", "pickers", "managers"];
 const STAFF_METRIC_INPUT_KEYS = [
     "facts", "channelValues", "store", "channels", "recountResponsible", "inventoryResults", "dayRoles", "entries"
-];
+].concat(STAFF_METRIC_CATEGORY_STORE_KEYS);
 const STAFF_METRIC_SETUP_KEYS = ["workAccess", "extraAccess"];
 const STAFF_FINANCE_DATA_KEYS = [
     "operations", "money_transits", "openings", "day_closings", "period_states", "audit", "import_batches", "formulas"
@@ -10309,11 +10312,11 @@ function handleWtSaveConflict(data) {
     wtPutPaused = true;
     const draft = wtCloneJson(appData);
     const base = wtLastLoadedPayload ? wtCloneJson(wtLastLoadedPayload) : null;
-    const msg = "Конфликт: данные уже изменил другой сотрудник. Ваш черновик на экране сохранён.\n\nOK — загрузить свежие данные, наложить ваши правки поверх и сохранить, не затирая чужие разделы.\nОтмена — оставить черновик на экране без записи.";
+    const msg = "Конфликт версий (409): данные на сервере уже изменил другой пользователь. Ваши несохранённые значения на экране сохранены и не записаны.\n\nOK — загрузить актуальные данные с сервера, аккуратно наложить ваши правки и сохранить.\nОтмена — оставить черновик на экране без записи на сервер (чужие данные не затираются).";
     const mergeAndSave = window.confirm(msg);
     if (!mergeAndSave) {
         wtAllowConflictRetry = true;
-        toast("Черновик остался на экране и не записан. Сохранение не затирает чужие данные.", "error");
+        toast("Черновик на экране. На сервер не записано. Чужие данные не перезаписаны.", "error");
         return false;
     }
     return fetch("/api/state", { credentials: "same-origin" }).then(function (res) {
@@ -10429,6 +10432,16 @@ function saveApp() {
         toast("Не удалось сохранить данные.", "error");
         return Promise.resolve(false);
     }
+}
+
+/** Сохранение ввода метрик: дождаться ответа сервера и явно сообщить, если запись не прошла. */
+function saveMetricChange() {
+    return Promise.resolve(saveApp()).then(function (ok) {
+        if (ok === false && wtServerMode) {
+            toast("Изменение метрики не записано на сервер. Не обновляйте страницу — данные пока только на этом экране.", "error");
+        }
+        return ok;
+    });
 }
 
 
@@ -15600,6 +15613,46 @@ function shopMetricMonthStore(categoryId, month) {
     return root[categoryId][month];
 }
 
+/**
+ * Явная очистка для серверного overlay: JSON null удаляет ключ.
+ * Простое отсутствие ключа во входящем снимке сервер не трогает.
+ */
+function metricMarkCleared(rec, field) {
+    if (!rec || typeof rec !== "object") return;
+    rec[field] = null;
+}
+
+function metricEmpDayMapPrune(store, employeeId, dayKey) {
+    if (!store || typeof store !== "object") return;
+    const emp = store[employeeId];
+    if (!emp || typeof emp !== "object") {
+        store[employeeId] = null;
+        return;
+    }
+    if (!shopMetricDayRecHasKeepable(emp[dayKey])) {
+        emp[dayKey] = null;
+    }
+    const hasLive = Object.keys(emp).some(function (d) {
+        return emp[d] != null && typeof emp[d] === "object";
+    });
+    if (!hasLive) store[employeeId] = null;
+}
+
+function metricDayMapPrune(map, dayKey, keepKeys) {
+    if (!map || typeof map !== "object") return;
+    const rec = map[dayKey];
+    if (!rec || typeof rec !== "object") {
+        map[dayKey] = null;
+        return;
+    }
+    const keep = keepKeys || {};
+    const live = Object.keys(rec).some(function (k) {
+        if (keep[k] || k === "source" || k === "store_id" || k === "store_metric_id") return false;
+        return rec[k] != null && rec[k] !== "";
+    });
+    if (!live) map[dayKey] = null;
+}
+
 function shopStoreMonth(month) {
     const root = ensureShopMetrics();
     const key = month || selectedMonth;
@@ -15629,19 +15682,19 @@ function setShopStoreValue(day, field, raw) {
     const dayKey = String(day);
     if (!store[dayKey] || typeof store[dayKey] !== "object") store[dayKey] = { source: "manual" };
     if (!n) {
-        delete store[dayKey][field];
-        const keys = Object.keys(store[dayKey]).filter(function (k) { return k !== "source"; });
-        if (!keys.length) delete store[dayKey];
+        metricMarkCleared(store[dayKey], field);
+        if (field === "visitors") metricMarkCleared(store[dayKey], "store_metric_id");
+        metricDayMapPrune(store, dayKey);
     } else {
         store[dayKey][field] = n;
         store[dayKey].source = "manual";
         store[dayKey].store_id = ensureShopMetrics().store_id || "store_volodarsky";
         if (field === "visitors") store[dayKey].store_metric_id = STORE_METRIC_VISITORS;
     }
-    saveApp();
     const input = document.getElementById("mstore-" + day + "-" + field);
     if (input) input.value = blankZero(n);
     refreshShopMetricSummary();
+    saveMetricChange();
 }
 
 function getShopChannelValue(channelId, day, field, month) {
@@ -15656,19 +15709,18 @@ function setShopChannelValue(channelId, day, field, raw) {
     const dayKey = String(day);
     if (!store[dayKey] || typeof store[dayKey] !== "object") store[dayKey] = { source: "manual" };
     if (!n) {
-        delete store[dayKey][field];
-        const keys = Object.keys(store[dayKey]).filter(function (k) { return k !== "source"; });
-        if (!keys.length) delete store[dayKey];
+        metricMarkCleared(store[dayKey], field);
+        metricDayMapPrune(store, dayKey);
     } else {
         store[dayKey][field] = field === "sales" ? Math.round(n) : n;
         store[dayKey].source = "manual";
     }
-    saveApp();
     const input = document.getElementById("mchan-" + channelId + "-" + day + "-" + field);
     if (input) {
         input.value = field === "sales" ? formatShopMetricMoney(n) : blankZero(n);
     }
     refreshShopMetricSummary();
+    saveMetricChange();
 }
 
 function shopChannelMonthTotals(channelId, month) {
@@ -17082,10 +17134,17 @@ function setShopMetricFact(employeeId, day, metricId, n, submetricId) {
     rec.employee_id = employeeId;
     stampAuthOnRecord(rec);
     if (!n) {
-        delete rec[key];
-        const keys = Object.keys(rec).filter(function (k) { return k !== "employee_id" && k !== "source"; });
-        if (!keys.length) delete monthStore[employeeId][dayKey];
-        if (!Object.keys(monthStore[employeeId]).length) delete monthStore[employeeId];
+        metricMarkCleared(rec, key);
+        const keys = Object.keys(rec).filter(function (k) {
+            return k !== "employee_id" && k !== "source" && rec[k] != null && rec[k] !== "";
+        });
+        if (!keys.length) {
+            monthStore[employeeId][dayKey] = null;
+            const hasLive = Object.keys(monthStore[employeeId]).some(function (d) {
+                return monthStore[employeeId][d] != null && typeof monthStore[employeeId][d] === "object";
+            });
+            if (!hasLive) monthStore[employeeId] = null;
+        }
     } else {
         rec[key] = n;
         rec.source = "manual";
@@ -17320,11 +17379,13 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         rec.assigned_cashier_employee_id = employeeId;
     }
     if (!n) {
-        delete rec[field];
-        if (!shopMetricDayRecHasKeepable(rec)) {
-            delete store[employeeId][dayKey];
-            if (!Object.keys(store[employeeId]).length) delete store[employeeId];
-        }
+        metricMarkCleared(rec, field);
+        const midMeta = ((shopMetricFieldSpec(categoryId, field) || {}).metricId) || METRIC_ID_ALIASES[field];
+        if (midMeta) metricMarkCleared(rec, field + "_metric_id");
+        metricEmpDayMapPrune(store, employeeId, dayKey);
+        const spec0 = shopMetricFieldSpec(categoryId, field);
+        const mid0 = (spec0 && spec0.metricId) || METRIC_ID_ALIASES[field];
+        if (mid0 && shopMetricUsesFacts(mid0)) setShopMetricFact(employeeId, day, mid0, 0, spec0 && spec0.submetricId);
     } else {
         rec[field] = field === "sales" ? Math.round(n) : n;
         rec.source = "manual";
@@ -17335,12 +17396,6 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         if (mid) rec[field + "_metric_id"] = mid;
         if (mid && shopMetricUsesFacts(mid)) setShopMetricFact(employeeId, day, mid, n, spec && spec.submetricId);
     }
-    if (!n) {
-        const spec0 = shopMetricFieldSpec(categoryId, field);
-        const mid0 = (spec0 && spec0.metricId) || METRIC_ID_ALIASES[field];
-        if (mid0 && shopMetricUsesFacts(mid0)) setShopMetricFact(employeeId, day, mid0, 0, spec0 && spec0.submetricId);
-    }
-    saveApp();
     const input = document.getElementById("mcell-" + categoryId + "-" + employeeId + "-" + day + "-" + field);
     if (input) {
         const spec = shopMetricFieldSpec(categoryId, field);
@@ -17348,6 +17403,7 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
     }
     refreshShopMetricSummary();
     if (field === "recount") refreshShopRecountTotalsUi();
+    saveMetricChange();
 }
 
 function changeShopMetricCategory(id) {
@@ -17577,17 +17633,14 @@ function setShopCashierActual(slotId, day, actualId) {
     rec.source = rec.source || "manual";
     const next = String(actualId || "");
     if (!shopTimesheetLockLabel(slotId, day) || !next) {
-        delete rec.actual_cashier_employee_id;
+        metricMarkCleared(rec, "actual_cashier_employee_id");
     } else {
         rec.actual_cashier_employee_id = next;
     }
-    if (!shopMetricDayRecHasKeepable(rec)) {
-        delete store[slotId][dayKey];
-        if (!Object.keys(store[slotId]).length) delete store[slotId];
-    }
+    metricEmpDayMapPrune(store, slotId, dayKey);
     syncShopCashierSlotDayRole(slotId, day, shopCashierSlotActualId(slotId, day));
-    saveApp();
     renderShopCashierMetrics();
+    saveMetricChange();
 }
 
 function shopCashierAttributedMonthTotals(employeeId, month) {
@@ -18600,8 +18653,8 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
     const spec = shopMetricFieldSpec(categoryId, field);
     if (spec && spec.metricId) rec[field + "_metric_id"] = spec.metricId;
     if (field === METRIC_SHELF_LABELS_FIELD) rec.metric_id = METRIC_SHELF_LABELS_ID;
-    saveApp();
     renderShopMetrics();
+    saveMetricChange();
 }
 
 function shopCheckCellHtml(categoryId, employeeId, day, field, canEdit) {
@@ -28390,13 +28443,16 @@ function clearDeptMetricDayIfEmpty(deptCode, employeeId, day) {
     const facts = deptMetricFactsMonth(deptCode);
     const dayKey = String(day);
     const rec = facts[employeeId] && facts[employeeId][dayKey];
-    if (!rec) return;
+    if (!rec || typeof rec !== "object") return;
     const keys = Object.keys(rec).filter(function (k) {
-        return k !== "employee_id" && k !== "source";
+        return k !== "employee_id" && k !== "source" && rec[k] != null && rec[k] !== "";
     });
     if (keys.length) return;
-    delete facts[employeeId][dayKey];
-    if (!Object.keys(facts[employeeId]).length) delete facts[employeeId];
+    facts[employeeId][dayKey] = null;
+    const hasLive = Object.keys(facts[employeeId]).some(function (d) {
+        return facts[employeeId][d] != null && typeof facts[employeeId][d] === "object";
+    });
+    if (!hasLive) facts[employeeId] = null;
 }
 
 function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricId) {
@@ -28409,26 +28465,26 @@ function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricI
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
     if (it.fill_type === "vehicle") {
         if (text === "") {
-            delete rec[key];
+            metricMarkCleared(rec, key);
             clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
         } else {
             rec[key] = text;
             stampAuthOnRecord(rec);
         }
-        saveApp();
         refreshDeptWorkUi();
+        saveMetricChange();
         return;
     }
     const n = parseShopMetricNumber(raw);
     if (text === "") {
-        delete rec[key];
+        metricMarkCleared(rec, key);
         clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
     } else {
         rec[key] = it.fill_type === "money" ? Math.round(n) : n;
         stampAuthOnRecord(rec);
     }
-    saveApp();
     refreshDeptWorkUi();
+    saveMetricChange();
 }
 
 function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark, submetricId) {
@@ -28440,8 +28496,8 @@ function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark, submetric
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
     rec[key + "Mark"] = mark === "fail" ? "fail" : "done";
     stampAuthOnRecord(rec);
-    saveApp();
     refreshDeptWorkUi();
+    saveMetricChange();
 }
 
 function deptMetricInputHtml(deptCode, employeeId, day, field) {

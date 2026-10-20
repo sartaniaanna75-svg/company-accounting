@@ -574,10 +574,14 @@ def _closed_field_violations(current: Any, incoming: Any, allow_salary: bool = F
 
 
 def _overlay_open(current: Any, incoming: Any, allow_salary: bool = False) -> Any:
+    """Слияние словарей. Явный JSON null удаляет ключ; отсутствующий ключ не трогает."""
     if isinstance(incoming, dict):
         base = _clone(current) if isinstance(current, dict) else {}
         for key, val in incoming.items():
             if _is_closed_key(str(key), allow_salary):
+                continue
+            if val is None:
+                base.pop(key, None)
                 continue
             base[key] = _overlay_open(base.get(key), val, allow_salary)
         return base
@@ -606,6 +610,8 @@ def _overlay_open(current: Any, incoming: Any, allow_salary: bool = False) -> An
     return _clone(incoming)
 
 
+# Рабочий ввод по вкладкам магазина (месяц → сотрудник → день). Не настройки прав.
+METRIC_CATEGORY_STORE_KEYS = frozenset({"cashiers", "pickers", "managers"})
 METRIC_INPUT_KEYS = frozenset(
     {
         "facts",
@@ -617,8 +623,10 @@ METRIC_INPUT_KEYS = frozenset(
         "dayRoles",
         "entries",
     }
-)
+) | METRIC_CATEGORY_STORE_KEYS
 METRIC_SETUP_KEYS = frozenset({"workAccess", "extraAccess"})
+# Служебные/админские ключи shopMetrics — staff не должен их менять через PUT.
+METRIC_ADMIN_META_KEYS = frozenset({"store_id", "storeMeta", "substitutionPayDefaults"})
 # Денежные поля KPI в shopPayroll — только системный администратор.
 SHOP_PAYROLL_KPI_MONEY_KEYS = frozenset({"kpiDefs", "assignments"})
 # Категория территории → подразделение табеля (как в app.html TERRITORY_METRIC_CATEGORIES).
@@ -722,6 +730,10 @@ def _metric_root_forbidden(current: Any, incoming: Any, user: dict) -> bool:
     can_input = _can_edit_metric_input(user)
     can_setup = _can_edit_metric_setup(user)
     for key, val in incoming.items():
+        if key in METRIC_ADMIN_META_KEYS:
+            if not _same(val, cur.get(key)):
+                return True
+            continue
         if key in METRIC_SETUP_KEYS:
             if not can_setup and not _same(val, cur.get(key)):
                 return True
@@ -738,6 +750,7 @@ def _metric_root_forbidden(current: Any, incoming: Any, user: dict) -> bool:
 
 
 def _apply_metric_root(current: Any, incoming: Any, user: dict, dept_code: str, emp_dept: dict[str, str]) -> Any:
+    """Накладывает только разрешённые ветки. Ключи, которых нет во входящем снимке, не удаляет."""
     base = _clone(current) if isinstance(current, dict) else {}
     if not isinstance(incoming, dict):
         return base
@@ -1490,6 +1503,18 @@ def _merge_admin_payload(current: dict, incoming: dict) -> dict:
                 else:
                     current_users.append(_clone(item))
             stored["users"] = current_users
+        elif key in ("shopMetrics", "deptMetrics"):
+            # Не затираем целиком: иначе устаревший снимок админа стирает свежий ввод сотрудника.
+            if _empty_wipe(val, stored.get(key)):
+                continue
+            if key == "deptMetrics" and isinstance(val, dict):
+                base_map = stored.get(key) if isinstance(stored.get(key), dict) else {}
+                next_map = _clone(base_map)
+                for dept, branch in val.items():
+                    next_map[str(dept)] = _overlay_open(base_map.get(str(dept)), branch, True)
+                stored[key] = next_map
+            else:
+                stored[key] = _overlay_open(stored.get(key), val, True)
         elif _empty_wipe(val, stored.get(key)):
             continue
         else:

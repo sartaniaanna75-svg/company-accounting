@@ -594,6 +594,379 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(self.store["payload"]["shopMetrics"]["nested"]["employees"][0]["rate"], 777)
         self.assertIn("shopMetrics", data["payload"])
 
+    def test_staff_writes_cashier_category_store(self):
+        """Продажи/чеки/«Кто работал» лежат в shopMetrics.cashiers и должны сохраняться staff-PUT."""
+        self.store["payload"]["shopMetrics"]["cashiers"] = {
+            "2026-10": {
+                "e_other": {"1": {"sales": 50000, "receipts": 40}},
+                "e_shop": {"2": {"sales": 1000, "receipts": 5}},
+            }
+        }
+        cookie, _ = self.login("usr_001", "1111")
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {
+                            "2026-10": {
+                                "e_shop": {
+                                    "1": {
+                                        "sales": 164197,
+                                        "receipts": 110,
+                                        "actual_cashier_employee_id": "e_shop",
+                                        "source": "manual",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        cashiers = self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]
+        self.assertEqual(cashiers["e_shop"]["1"]["sales"], 164197)
+        self.assertEqual(cashiers["e_shop"]["1"]["receipts"], 110)
+        self.assertEqual(cashiers["e_shop"]["1"]["actual_cashier_employee_id"], "e_shop")
+        # Чужие дни/сотрудники и другие даты не стираются overlay-слиянием.
+        self.assertEqual(cashiers["e_other"]["1"]["sales"], 50000)
+        self.assertEqual(cashiers["e_shop"]["2"]["sales"], 1000)
+
+    def test_staff_updates_and_clears_cashier_cell(self):
+        """Создание → изменение → очистка (JSON null). 0 не путать с удалением ключа."""
+        self.store["payload"]["shopMetrics"]["cashiers"] = {
+            "2026-10": {
+                "e_shop": {"1": {"sales": 150000, "receipts": 100, "actual_cashier_employee_id": "e_a"}},
+                "e_other": {"1": {"sales": 50000}},
+            }
+        }
+        cookie, _ = self.login("usr_001", "1111")
+        # Исправление суммы.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {"2026-10": {"e_shop": {"1": {"sales": 120000, "receipts": 100}}}}
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        day = self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"]["1"]
+        self.assertEqual(day["sales"], 120000)
+        self.assertEqual(day["receipts"], 100)
+        # Очистка sales и «Кто работал» явным null; receipts остаётся; чужой сотрудник цел.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {
+                            "2026-10": {
+                                "e_shop": {
+                                    "1": {
+                                        "sales": None,
+                                        "actual_cashier_employee_id": None,
+                                        "receipts": 100,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        day = self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"]["1"]
+        self.assertNotIn("sales", day)
+        self.assertNotIn("actual_cashier_employee_id", day)
+        self.assertEqual(day["receipts"], 100)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_other"]["1"]["sales"],
+            50000,
+        )
+        # Полная очистка дня сотрудника — null на уровне дня.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {"cashiers": {"2026-10": {"e_shop": {"1": None}}}}
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertNotIn("1", self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"])
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_other"]["1"]["sales"],
+            50000,
+        )
+
+    def test_staff_clear_does_not_treat_zero_as_delete_marker(self):
+        """Число 0 сохраняется как 0; удаление только через JSON null."""
+        self.store["payload"]["shopMetrics"]["cashiers"] = {
+            "2026-10": {"e_shop": {"1": {"sales": 10, "receipts": 1}}}
+        }
+        cookie, _ = self.login("usr_001", "1111")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {"2026-10": {"e_shop": {"1": {"sales": 0, "receipts": 1}}}}
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        day = self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"]["1"]
+        self.assertEqual(day["sales"], 0)
+        self.assertIn("sales", day)
+
+    def test_concurrent_staff_overlay_different_fields(self):
+        """Два последовательных staff-PUT по разным полям не затирают друг друга."""
+        self.store["payload"]["shopMetrics"]["cashiers"] = {
+            "2026-10": {"e_shop": {"1": {"sales": 100, "receipts": 10}}}
+        }
+        cookie, _ = self.login("usr_001", "1111")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {"2026-10": {"e_shop": {"1": {"sales": 200}}}}
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {"2026-10": {"e_shop": {"1": {"receipts": 25}}}}
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        day = self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"]["1"]
+        self.assertEqual(day["sales"], 200)
+        self.assertEqual(day["receipts"], 25)
+
+    def test_version_conflict_409_keeps_server_data(self):
+        self.store["payload"]["shopMetrics"]["cashiers"] = {
+            "2026-10": {"e_shop": {"1": {"sales": 111}}}
+        }
+        cookie, _ = self.login("usr_001", "1111")
+        stale_version = int(self.store["version"])
+        # Другой клиент успешно записал новую версию.
+        self.store["version"] = stale_version + 1
+        self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"]["1"]["sales"] = 222
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": stale_version,
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {"2026-10": {"e_shop": {"1": {"sales": 999}}}}
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("409"), status)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"]["1"]["sales"],
+            222,
+        )
+
+    def test_visitors_and_self_checkout_still_save(self):
+        cookie, _ = self.login("usr_001", "1111")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "store": {"2026-10": {"1": {"visitors": 80}}},
+                        "channelValues": {
+                            "2026-10": {"self_checkout": {"1": {"sales": 5000, "receipts": 20}}}
+                        },
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["store"]["2026-10"]["1"]["visitors"],
+            80,
+        )
+        ch = self.store["payload"]["shopMetrics"]["channelValues"]["2026-10"]["self_checkout"]["1"]
+        self.assertEqual(ch["sales"], 5000)
+        # Очистка visitors через null.
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {"store": {"2026-10": {"1": {"visitors": None}}}}
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertNotIn(
+            "visitors",
+            self.store["payload"]["shopMetrics"]["store"]["2026-10"]["1"],
+        )
+
+    def test_reload_after_cashier_save(self):
+        cookie, _ = self.login("usr_001", "1111")
+        call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "cashiers": {
+                            "2026-10": {
+                                "e_shop": {"1": {"sales": 164197, "receipts": 110}}
+                            }
+                        }
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        day = data["payload"]["shopMetrics"]["cashiers"]["2026-10"]["e_shop"]["1"]
+        self.assertEqual(day["sales"], 164197)
+        self.assertEqual(day["receipts"], 110)
+
+    def test_client_metric_clear_uses_null_sentinel(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function metricMarkCleared(", src)
+        self.assertIn("function metricEmpDayMapPrune(", src)
+        self.assertIn("function saveMetricChange(", src)
+        self.assertIn("metricMarkCleared(rec, field)", src)
+        self.assertIn('metricMarkCleared(rec, "actual_cashier_employee_id")', src)
+        api = Path(__file__).resolve().parent.joinpath("wt_api.py").read_text(encoding="utf-8")
+        self.assertIn("if val is None:", api)
+        self.assertIn("base.pop(key, None)", api)
+
+    def test_staff_writes_pickers_and_managers_category_stores(self):
+        cookie, _ = self.login("usr_001", "1111")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "pickers": {"2026-10": {"e_shop": {"2": {"display": 12}}}},
+                        "managers": {"2026-10": {"e_shop": {"2": {"receiving": 3}}}},
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["pickers"]["2026-10"]["e_shop"]["2"]["display"],
+            12,
+        )
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["managers"]["2026-10"]["e_shop"]["2"]["receiving"],
+            3,
+        )
+
+    def test_staff_cannot_change_shop_metrics_admin_meta(self):
+        self.store["payload"]["shopMetrics"]["store_id"] = "store_volodarsky"
+        self.store["payload"]["shopMetrics"]["substitutionPayDefaults"] = {"day_rate": 100}
+        before = json.loads(json.dumps(self.store["payload"]["shopMetrics"]))
+        cookie, _ = self.login("usr_001", "1111")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {
+                        "store_id": "hacked",
+                        "substitutionPayDefaults": {"day_rate": 999},
+                        "facts": {"ok": 2},
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"]["shopMetrics"], before)
+
+    def test_admin_shop_metrics_overlay_keeps_sibling_keys(self):
+        """Админ не должен целиком затирать shopMetrics неполным снимком."""
+        self.store["payload"]["shopMetrics"]["cashiers"] = {
+            "2026-10": {"e_shop": {"1": {"sales": 164197, "receipts": 110}}}
+        }
+        self.store["payload"]["shopMetrics"]["facts"] = {"ok": 1}
+        cookie, _ = self.login("user_admin", "5555")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"store": {"2026-10": {"1": {"visitors": 50}}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        metrics = self.store["payload"]["shopMetrics"]
+        self.assertEqual(metrics["store"]["2026-10"]["1"]["visitors"], 50)
+        self.assertEqual(metrics["cashiers"]["2026-10"]["e_shop"]["1"]["sales"], 164197)
+        self.assertEqual(metrics["facts"]["ok"], 1)
+
+    def test_client_staff_metric_input_includes_category_stores(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("STAFF_METRIC_CATEGORY_STORE_KEYS", src)
+        block = src[src.find("STAFF_METRIC_CATEGORY_STORE_KEYS"):src.find("STAFF_METRIC_SETUP_KEYS")]
+        self.assertIn('"cashiers"', block)
+        self.assertIn('"pickers"', block)
+        self.assertIn('"managers"', block)
+        self.assertIn("function saveMetricChange(", src)
+        self.assertNotIn("store_id", block)
+        self.assertNotIn("workAccess", block)
+
     def test_staff_spu_indicators_read_write(self):
         spu = {
             "user_id": "usr_spu",
