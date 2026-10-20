@@ -1041,24 +1041,66 @@ class StoreApiTests(unittest.TestCase):
         self.assertNotIn("workAccess", block)
 
     def test_client_metric_assignment_save_feedback(self):
-        """Галочки назначений: явная ошибка при сбое saveApp, busy не зависает."""
+        """Галочки в карточке — локально; Save сбрасывает busy; PUT с тайм-аутом."""
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
         fn = src[src.find("function setShopEmployeeExtraMetric("):src.find("function metricCatalogItemUsesGroupAll(")]
+        self.assertIn("if (fioSection)", fn)
         self.assertIn("Не удалось сохранить назначение метрики на сервер", fn)
-        self.assertIn("paintWorkMetrics();", fn)
-        # Перерисовка после ответа, не до него (иначе молчаливый откат).
+        self.assertIn('ok === "timeout"', fn)
+        # В карточке (fio) нет PUT на каждый клик — иначе очередь блокирует Save.
         apply_at = fn.find("applyShopEmployeeWorkMetric(")
-        save_at = fn.find("Promise.resolve(saveApp())")
-        paint_in_then = fn.find("paintWorkMetrics();", save_at)
-        self.assertGreater(save_at, apply_at)
-        self.assertGreater(paint_in_then, save_at)
+        fio_branch = fn.find("if (fioSection)", apply_at)
+        save_at = fn.find("Promise.resolve(saveApp())", apply_at)
+        self.assertGreater(fio_branch, apply_at)
+        self.assertGreater(save_at, fio_branch)
+        paint_before_return = fn.find("paintWorkMetrics();", fio_branch)
+        self.assertGreater(save_at, paint_before_return)
         commit = src[src.find("function commitEmployeeCard("):src.find("function employeeCardActionsHtml(")]
-        self.assertIn("commitEmployeeCard.busy = false", commit)
+        self.assertIn("clearCommitBusy", commit)
+        self.assertIn("commitEmployeeCard.busy = true", commit)
         self.assertIn("shopMaterializeWorkAccessMonth(", commit)
         self.assertIn("Сохранение ещё выполняется", commit)
+        self.assertIn('ok === "timeout"', commit)
+        self.assertIn("refreshMetricsUi()", commit)
+        # busy ставится до тяжёлых снимков JSON.
+        busy_at = commit.find("commitEmployeeCard.busy = true")
+        snap_at = commit.find("JSON.parse(JSON.stringify(store.workAccess")
+        self.assertGreater(snap_at, busy_at)
+        put = src[src.find("function putServerStateOnce("):src.find("function saveApp(")]
+        self.assertIn("AbortController", put)
+        self.assertIn("AbortError", put)
+        self.assertIn('return "timeout"', put)
         api = Path(__file__).resolve().parent.joinpath("wt_api.py").read_text(encoding="utf-8")
         self.assertIn("def _merge_metric_branch_admin(", api)
         self.assertIn('base["workAccess"] = _merge_access_map(', api)
+
+    def test_client_work_access_drives_metric_table_people(self):
+        """Личный workAccess показывает сотрудника в родной таблице метрики без фильтра должности/группы."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function metricHostsOnDeptTab(", src)
+        self.assertIn("function metricAssignmentPlaceCaption(", src)
+        people_fn = src[
+            src.find("function workMetricPeopleForTab(") : src.find("function deptMetricFields(")
+        ]
+        self.assertIn("shopEmployeeHasWorkMetric", people_fn)
+        self.assertIn("metricHostsOnDeptTab", people_fn)
+        self.assertIn("TERRITORY_DEPT_CODES.forEach", people_fn)
+        # Личное назначение не режется основной рабочей группой сотрудника.
+        self.assertNotIn("employeeBelongsToWorkGroup", people_fn)
+        self.assertNotIn("employeeMatchesMetricAssignments", people_fn)
+        hub = src[src.find("function territoryHubPeople(") : src.find("function syncTerritoryMetricsHubNav(")]
+        self.assertIn("shopEmployeeHasWorkMetric", hub)
+        self.assertNotIn("employeeBelongsToWorkGroup", hub)
+        grant = src[
+            src.find("function shopGrantableExtraMetrics(") : src.find("function shopMetricFactsMonth(")
+        ]
+        self.assertIn("isGenericMetricsDept(dept) && isGenericMetricsDept(mDept)", grant)
+        card = src[src.find("function shopExtraFunctionsHtml(") : src.find("function renderFio(")]
+        self.assertIn("metricAssignmentPlaceCaption", card)
+        self.assertIn("emp-extra-fn-place", card)
+        # Связка: магазин и dept tabs используют один people-builder.
+        self.assertIn("return workMetricPeopleForTab(\"shop\", metricId, catId)", src)
+        self.assertIn("return workMetricPeopleForTab(deptCode, metricId, tabId", src)
 
     def test_staff_spu_indicators_read_write(self):
         spu = {

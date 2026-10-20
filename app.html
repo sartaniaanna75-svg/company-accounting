@@ -2446,11 +2446,16 @@
             font-weight: 400;
         }
         .emp-extra-fn-list label.check span {
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
+            display: block;
+            min-width: 0;
+        }
+        .emp-extra-fn-place {
+            display: block;
+            margin-top: 1px;
+            font-size: 10px;
+            line-height: 1.2;
+            font-weight: 400;
+            color: #5b6472;
         }
         .employee-row .emp-extra-fn-list input[type="checkbox"],
         .emp-extra-fn-list input[type="checkbox"] {
@@ -6575,6 +6580,60 @@ function metricAssignedToDeptTab(item, deptCode, tabId) {
     if (metricDepartmentId(item) !== deptCode) return false;
     return !tabId || metricShowsOnTab(item, tabId);
 }
+
+/** Метрика «хозяин» этой таблицы (объект + вкладка). Не путать с должностью сотрудника. */
+function metricHostsOnDeptTab(item, deptCode, tabId) {
+    if (!item || !deptCode) return false;
+    const tab = String(tabId || "");
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        return metricAssignedToDeptTab(item, deptCode, tab);
+    }
+    if (deptCode === "shop") {
+        return metricDepartmentId(item) === "shop" && (!tab || metricShowsOnTab(item, tab));
+    }
+    if (metricDepartmentId(item) === "shop") return false;
+    const cat = metricTerritoryCategory(item);
+    if (cat === "common") return !tab || !metricWorkTabIds(item).length || metricShowsOnTab(item, tab);
+    if (deptCode === "warehouse") {
+        if (tab === "cashiers") return cat === "sales_retail" && metricShowsOnTab(item, tab);
+        return (cat === "warehouse" || metricDepartmentId(item) === "warehouse") && metricShowsOnTab(item, tab);
+    }
+    if (deptCode === "drivers") {
+        if (tab === "sales") return cat === "sales_opt" && metricShowsOnTab(item, tab);
+        if (tab === "drivers") {
+            return (cat === "drivers" || metricDepartmentId(item) === "drivers") && metricShowsOnTab(item, tab);
+        }
+    }
+    if (deptCode === "office") {
+        return (cat === "office" || metricDepartmentId(item) === "office") && (!tab || metricShowsOnTab(item, tab));
+    }
+    return metricDepartmentId(item) === deptCode && (!tab || metricShowsOnTab(item, tab));
+}
+
+/** Подпись объекта и раздела метрики для карточки сотрудника. */
+function metricAssignmentPlaceCaption(item) {
+    const it = item && item.id ? (shopMetricCatalogById(item.id) || item) : item;
+    if (!it) return "";
+    const dept = metricDepartmentId(it);
+    const cat = metricTerritoryCategory(it);
+    let objectLabel = "";
+    if (dept === "shop") {
+        objectLabel = entryLabel("shop") || "Магазин Володарского";
+    } else if (cat && cat !== "common") {
+        const spec = territoryMetricCategoryById(cat);
+        objectLabel = (spec && spec.label) || entryLabel(dept) || dept;
+    } else if (cat === "common") {
+        objectLabel = "Территория · общие";
+    } else {
+        objectLabel = entryLabel(dept) || dept || "";
+    }
+    const tabs = metricWorkTabIds(it);
+    const tabPart = tabs.map(function (t) {
+        return metricTabLabel(dept, t);
+    }).filter(Boolean).join(", ");
+    if (objectLabel && tabPart) return objectLabel + " · " + tabPart;
+    return objectLabel || tabPart || "";
+}
 function metricSubmetrics(item, onlyActive) {
     const list = (item && Array.isArray(item.submetrics)) ? item.submetrics : [];
     return list.filter(function (s) {
@@ -10354,12 +10413,24 @@ function putServerStateOnce() {
         return Promise.resolve(false);
     }
     if (!payload) return Promise.resolve(true);
-    return fetch("/api/state", {
+    // Без тайм-аута зависший PUT навсегда блокирует wtPutChain и commitEmployeeCard.busy.
+    const timeoutMs = 60000;
+    const canAbort = typeof AbortController !== "undefined";
+    const ctrl = canAbort ? new AbortController() : null;
+    let timer = null;
+    if (ctrl) {
+        timer = setTimeout(function () {
+            try { ctrl.abort(); } catch (err) {}
+        }, timeoutMs);
+    }
+    const fetchOpts = {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ version: wtStateVersion, payload: payload })
-    }).then(function (res) {
+    };
+    if (ctrl) fetchOpts.signal = ctrl.signal;
+    return fetch("/api/state", fetchOpts).then(function (res) {
         if (res.status === 401) return handleWtSaveUnauthorized();
         if (res.status === 409) {
             return res.json().then(handleWtSaveConflict, function () {
@@ -10395,9 +10466,20 @@ function putServerStateOnce() {
             try { wtLastLoadedPayload = wtCloneJson(appData); } catch (err) {}
             return true;
         });
-    }).catch(function () {
+    }).catch(function (err) {
+        if (err && err.name === "AbortError") {
+            // Сервер мог успеть записать до обрыва ответа — не считаем ни успехом, ни отказом.
+            toast("Нет ответа сервера за 60 с. Запись могла пройти или нет — не обновляйте страницу, проверьте сохранение ещё раз.", "error");
+            return "timeout";
+        }
         toast("Нет соединения с сервером. Изменения не записаны.", "error");
         return false;
+    }).then(function (ok) {
+        if (timer) clearTimeout(timer);
+        return ok;
+    }, function (err) {
+        if (timer) clearTimeout(timer);
+        throw err;
     });
 }
 
@@ -10752,9 +10834,10 @@ function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
     // Синхронизирует только individual (specific) списки employee_ids с workAccess.
     // Единый корпоративный каталог и строки group_all не меняются при снятии/установке
     // галочки: индивидуальное назначение живёт в workAccess/extraAccess.
-    if (!employeeId || !userHasPerm("metricsSetup", "edit")) return;
+    if (!employeeId || !canEditFioWorkMetrics()) return;
     const home = employeeHomeDeptCode(employeeId);
     if (!home) return;
+    const empTab = employeeWorkTabId(getEmployee(employeeId), home) || defaultMetricTabId(home);
     const assigned = {};
     shopEmployeeWorkMetricIds(employeeId, selectedMonth).forEach(function (id) {
         if (id) assigned[id] = true;
@@ -10773,10 +10856,12 @@ function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
             if (rowDept && rowDept !== home) return;
             if (!Array.isArray(row.employee_ids)) row.employee_ids = [];
             if (row.assign_mode !== "specific") {
-                // group_all — шаблон доступности из общего каталога, не трогаем.
-                coveredByCatalog = true;
+                // group_all покрывает только свою вкладку; чужой work_tab не блокирует specific.
+                if (!row.work_tab_id || row.work_tab_id === empTab) coveredByCatalog = true;
                 return;
             }
+            // specific другой вкладки не трогаем.
+            if (row.work_tab_id && empTab && row.work_tab_id !== empTab) return;
             const has = row.employee_ids.indexOf(employeeId) !== -1;
             if (want && !has) {
                 row.employee_ids.push(employeeId);
@@ -10784,7 +10869,7 @@ function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
             } else if (!want && has) {
                 row.employee_ids = row.employee_ids.filter(function (id) { return id !== employeeId; });
                 touchedSpecific = true;
-            } else {
+            } else if (has || want) {
                 coveredByCatalog = true;
             }
         });
@@ -10796,7 +10881,7 @@ function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
                 department_id: home,
                 assign_mode: "specific",
                 employee_ids: [employeeId],
-                work_tab_id: employeeWorkTabId(getEmployee(employeeId), home) || defaultMetricTabId(home)
+                work_tab_id: empTab
             });
         }
     });
@@ -10828,37 +10913,14 @@ function commitEmployeeCard(employeeId) {
         toast("Введите ФИО сотрудника.", "error");
         return;
     }
-    const tabSel = card && card.querySelector(".emp-work-tab");
-    if (tabSel) {
-        const home = employeeHome(employeeId);
-        const code = home && home.code;
-        const tab = tabSel.value;
-        if (tab !== String(employee.work_tab_id || "")) {
-            setEmployeePrimaryWorkTab(employeeId, tab);
-        }
-    }
-    if (!employee.employee_id) employee.employee_id = employee.id;
-    const meetBox = card && card.querySelector(".emp-spu-meet");
-    if (meetBox) {
-        employee.participates_in_spu_meetings = !!meetBox.checked;
-        employee.meeting_participant = employee.participates_in_spu_meetings;
-    }
-    // Материализуем месяц workAccess до снимка — иначе пустой объект не отправит галочки.
-    if (canEditFioWorkMetrics()) {
-        try { shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId)); } catch (err) { console.error(err); }
-    }
-    const store = metricsStoreForEmployee(employeeId);
-    const accessSnap = store ? {
-        workAccess: JSON.parse(JSON.stringify(store.workAccess || {})),
-        extraAccess: JSON.parse(JSON.stringify(store.extraAccess || {}))
-    } : null;
-    const catalogSnap = (canEditFioWorkMetrics() && appData && appData.shopMetricCatalog)
-        ? JSON.parse(JSON.stringify(appData.shopMetricCatalog))
-        : null;
-    const empSnap = JSON.parse(JSON.stringify(employee));
-    if (canEditFioWorkMetrics()) {
-        // Не вызываем assignGroupAllMetricsToEmployee: каталог общий, галочки индивидуальные.
-        try { syncEmployeeMetricAssignmentsToCatalog(employeeId); } catch (err) { console.error(err); }
+    // busy сразу после валидации — до тяжёлых снимков, иначе повторный клик запускает второй PUT.
+    commitEmployeeCard.busy = true;
+    let store = null;
+    let accessSnap = null;
+    let catalogSnap = null;
+    let empSnap = null;
+    function clearCommitBusy() {
+        commitEmployeeCard.busy = false;
     }
     function paintEmployeeCard() {
         justAddedEmployeeId = employee.id;
@@ -10868,34 +10930,77 @@ function commitEmployeeCard(employeeId) {
             renderEmployees();
         }
     }
-    commitEmployeeCard.busy = true;
-    Promise.resolve(saveApp()).then(function (ok) {
-        if (!ok) {
-            if (store && accessSnap) {
-                store.workAccess = accessSnap.workAccess;
-                store.extraAccess = accessSnap.extraAccess;
-            }
-            if (catalogSnap) appData.shopMetricCatalog = catalogSnap;
-            Object.keys(employee).forEach(function (key) { delete employee[key]; });
-            Object.keys(empSnap).forEach(function (key) { employee[key] = empSnap[key]; });
-            paintEmployeeCard();
-            toast("Не удалось сохранить сотрудника. Назначения метрик не записаны.", "error");
-            return;
-        }
-        paintEmployeeCard();
-        toast("Сотрудник сохранён.");
-    }).catch(function (err) {
-        console.error(err);
+    function restoreCommitDraft() {
         if (store && accessSnap) {
             store.workAccess = accessSnap.workAccess;
             store.extraAccess = accessSnap.extraAccess;
         }
         if (catalogSnap) appData.shopMetricCatalog = catalogSnap;
+        if (empSnap) {
+            Object.keys(employee).forEach(function (key) { delete employee[key]; });
+            Object.keys(empSnap).forEach(function (key) { employee[key] = empSnap[key]; });
+        }
+    }
+    try {
+        const tabSel = card && card.querySelector(".emp-work-tab");
+        if (tabSel) {
+            const tab = tabSel.value;
+            if (tab !== String(employee.work_tab_id || "")) {
+                setEmployeePrimaryWorkTab(employeeId, tab);
+            }
+        }
+        if (!employee.employee_id) employee.employee_id = employee.id;
+        const meetBox = card && card.querySelector(".emp-spu-meet");
+        if (meetBox) {
+            employee.participates_in_spu_meetings = !!meetBox.checked;
+            employee.meeting_participant = employee.participates_in_spu_meetings;
+        }
+        // Материализуем месяц workAccess до снимка — иначе пустой объект не отправит галочки.
+        if (canEditFioWorkMetrics()) {
+            try { shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId)); } catch (err) { console.error(err); }
+        }
+        store = metricsStoreForEmployee(employeeId);
+        accessSnap = store ? {
+            workAccess: JSON.parse(JSON.stringify(store.workAccess || {})),
+            extraAccess: JSON.parse(JSON.stringify(store.extraAccess || {}))
+        } : null;
+        catalogSnap = (canEditFioWorkMetrics() && appData && appData.shopMetricCatalog)
+            ? JSON.parse(JSON.stringify(appData.shopMetricCatalog))
+            : null;
+        empSnap = JSON.parse(JSON.stringify(employee));
+        if (canEditFioWorkMetrics()) {
+            // Не вызываем assignGroupAllMetricsToEmployee: каталог общий, галочки индивидуальные.
+            try { syncEmployeeMetricAssignmentsToCatalog(employeeId); } catch (err) { console.error(err); }
+        }
+    } catch (err) {
+        console.error(err);
+        clearCommitBusy();
+        toast("Не удалось подготовить карточку сотрудника к сохранению.", "error");
+        return;
+    }
+    Promise.resolve(saveApp()).then(function (ok) {
+        if (ok === "timeout") {
+            // Черновик не откатываем: сервер мог уже принять запись.
+            paintEmployeeCard();
+            try { refreshMetricsUi(); } catch (err) { console.error(err); }
+            toast("Ответ сервера не получен. Галочки на экране сохранены — обновите данные с сервера или повторите «Сохранить», не делайте F5 сразу.", "error");
+            return;
+        }
+        if (!ok) {
+            restoreCommitDraft();
+            paintEmployeeCard();
+            toast("Не удалось сохранить сотрудника. Назначения метрик не записаны.", "error");
+            return;
+        }
+        paintEmployeeCard();
+        try { refreshMetricsUi(); } catch (err) { console.error(err); }
+        toast("Сотрудник сохранён.");
+    }).catch(function (err) {
+        console.error(err);
+        restoreCommitDraft();
         paintEmployeeCard();
         toast("Не удалось сохранить сотрудника. Назначения метрик не записаны.", "error");
-    }).then(function () {
-        commitEmployeeCard.busy = false;
-    });
+    }).then(clearCommitBusy, clearCommitBusy);
 }
 
 function employeeCardActionsHtml(employee) {
@@ -16036,9 +16141,18 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
         }
         refreshMetricsUi();
     }
-    // Сначала пишем на сервер, потом перерисовываем — иначе галочка «откатывается» молча.
+    // В карточке сотрудника галочки только меняют локальный workAccess.
+    // Иначе каждый клик ставит полный PUT в wtPutChain, а «Сохранить» ждёт всю очередь → busy «висит».
+    // Запись на сервер — через commitEmployeeCard («Сохранить»).
+    if (fioSection) {
+        paintWorkMetrics();
+        return;
+    }
+    // Вне карточки (зарплата и т.п.) — сохраняем сразу; при timeout черновик не откатываем.
     Promise.resolve(saveApp()).then(function (ok) {
-        if (!ok) {
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Галочка на экране оставлена — повторите сохранение или сверьте данные с сервером.", "error");
+        } else if (!ok) {
             if (accessSnap && store) {
                 store.workAccess = accessSnap.workAccess;
                 store.extraAccess = accessSnap.extraAccess;
@@ -16099,16 +16213,18 @@ function shopGrantableExtraMetrics(employee) {
     return shopWorkMetricDefs().filter(function (def) {
         const it = shopMetricCatalogById(def.id);
         if (!it) return false;
+        const keepInactive = empId && shopEmployeeHasWorkMetric(empId, def.id);
+        if (it.active === false && !keepInactive) return false;
+        // Магазин: только метрики магазина (вкладки pickers/cashiers/managers — у самой метрики).
         if (dept === "shop") return metricDepartmentId(it) === "shop";
+        // Территория: не смешивать с магазином.
         if (metricDepartmentId(it) === "shop") return false;
-        if (metricTerritoryCategory(it) === "common") {
-            return it.active !== false || (empId && shopEmployeeHasWorkMetric(empId, def.id));
-        }
-        if (metricDepartmentId(it) !== dept) {
-            return !!(empId && shopEmployeeHasWorkMetric(empId, def.id));
-        }
-        if (it.active !== false) return true;
-        return empId && shopEmployeeHasWorkMetric(empId, def.id);
+        if (metricTerritoryCategory(it) === "common") return true;
+        const mDept = metricDepartmentId(it);
+        // Личное назначение может быть на метрику другого объекта Территории (склад → Продажи ОПТ).
+        if (isGenericMetricsDept(dept) && isGenericMetricsDept(mDept)) return true;
+        if (mDept === dept) return true;
+        return !!keepInactive;
     });
 }
 
@@ -17761,7 +17877,9 @@ function shopAppendCatalogExtraFields(list, category) {
         if (!it || it.core_column || !shopCatalogItemShownInUi(it)) return false;
         if (it.id === METRIC_WRITEOFF_LOSSES_ID || it.fill_type === "month_money") return false;
         if (Array.isArray(it.assignments) && it.assignments.length) {
-            return metricAssignedToDeptTab(it, "shop", category.id);
+            if (metricAssignedToDeptTab(it, "shop", category.id)) return true;
+            // Личные workAccess на этой вкладке — колонка нужна, даже если в каталоге другой work_tab.
+            return shopWorkMetricPeople(it.id, category).length > 0;
         }
         return metricDepartmentId(it) === "shop" && metricShowsOnTab(it, category.id);
     }).sort(function (a, b) { return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0); }).forEach(function (it) {
@@ -22937,10 +23055,15 @@ function renderShopSalarySettings(view) {
         + '<div class="shop-work-metrics-compact">';
     shopGrantableExtraMetrics(employee).forEach(function (def) {
         const on = shopEmployeeHasWorkMetric(employee.id, def.id);
-        html += '<label class="check" title="' + escapeAttribute(def.label) + '">'
+        const it = shopMetricCatalogById(def.id);
+        const place = metricAssignmentPlaceCaption(it || def);
+        const title = place ? (def.label + " — " + place) : def.label;
+        html += '<label class="check" title="' + escapeAttribute(title) + '">'
             + '<input type="checkbox"' + (on ? " checked" : "")
             + " onclick=\"setShopEmployeeExtraMetric('" + employee.id + "','" + def.id + "',this.checked)\">"
-            + "<span>" + escapeHtml(def.label) + "</span></label>";
+            + "<span>" + escapeHtml(def.label)
+            + (place ? '<span class="emp-extra-fn-place">' + escapeHtml(place) + "</span>" : "")
+            + "</span></label>";
     });
     html += "</div>";
     if (view.id === "shop") {
@@ -28371,18 +28494,22 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     if (!mid) return [];
     const code = isGenericMetricsDept(deptCode) ? deptCode : (deptCode || "shop");
     const tab = workTabId || defaultMetricTabId(code);
-    const w = findWorkspaceByCode(code);
+    const metricItem = shopMetricCatalogById(mid);
+    // Колонка только в «родной» таблице метрики (объект + вкладка), не в таблице должности сотрудника.
+    if (metricItem && !metricHostsOnDeptTab(metricItem, code, tab)) {
+        const def = SHOP_WORK_METRIC_DEFS.find(function (d) { return d.id === mid; });
+        if (!(def && def.tabs && def.tabs.indexOf(tab) !== -1 && code === "shop")) return [];
+    } else if (!metricItem) {
+        const def = SHOP_WORK_METRIC_DEFS.find(function (d) { return d.id === mid; });
+        if (def && def.tabs && def.tabs.length && def.tabs.indexOf(tab) === -1) return [];
+        if (def && code !== "shop") return [];
+    }
     const list = [];
     const seen = {};
-    ((w && w.employees) || []).forEach(function (e) {
+    function consider(e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
-        if (employeeHomeDeptCode(e.id) !== code) return;
-        if (code !== "shop" && employeeHomeDeptCode(e.id) === "shop") return;
-        if (isGenericMetricsDept(code) && !isTerritoryEmployee(e)) return;
+        // Личное назначение (workAccess) не зависит от основной группы/должности.
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
-        if (tab && !employeeBelongsToWorkGroup(e, code, tab)) return;
-        const metricItem = shopMetricCatalogById(mid);
-        if (metricItem && !employeeMatchesMetricAssignments(metricItem, e, tab)) return;
         if (!isWorking(e)) {
             if (isGenericMetricsDept(code)) {
                 if (!deptMetricEmployeeHasData(code, e.id, mid)) return;
@@ -28392,7 +28519,24 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
         }
         seen[e.id] = true;
         list.push(e);
-    });
+    }
+    if (code === "shop") {
+        const w = findWorkspaceByCode("shop");
+        ((w && w.employees) || []).forEach(function (e) {
+            if (!e || employeeHomeDeptCode(e.id) !== "shop") return;
+            consider(e);
+        });
+    } else {
+        // Территория: сотрудник другого объекта с личной галочкой тоже попадает в родную таблицу метрики.
+        TERRITORY_DEPT_CODES.forEach(function (homeCode) {
+            const w = findWorkspaceByCode(homeCode);
+            ((w && w.employees) || []).forEach(function (e) {
+                if (!e || !isTerritoryEmployee(e)) return;
+                if (employeeHomeDeptCode(e.id) !== homeCode) return;
+                consider(e);
+            });
+        });
+    }
     list.sort(compareEmployeesByStatusThenName);
     return list;
 }
@@ -28403,8 +28547,10 @@ function deptMetricFields(deptCode, tabId) {
     shopMetricCatalogItems().filter(function (it) {
         if (!it || !shopCatalogItemShownInUi(it)) return false;
         if (Array.isArray(it.assignments) && it.assignments.length) {
+            const hasPeople = workMetricPeopleForTab(deptCode, it.id, tab).length > 0;
+            if (hasPeople) return true;
             if (!metricAssignedToDeptTab(it, deptCode, tab)) return false;
-            return workMetricPeopleForTab(deptCode, it.id, tab).length > 0 || metricIsChecklist(it);
+            return metricIsChecklist(it);
         }
         if (metricDepartmentId(it) === "shop") return false;
         const cat = metricTerritoryCategory(it);
@@ -28808,20 +28954,36 @@ function territoryHubFields(spec) {
 function territoryHubPeople(spec, metricId) {
     const tabs = territoryHubTabIds(spec);
     const dept = (spec && spec.departmentId) || "";
-    const pool = (spec && spec.allTerritory)
-        ? territoryCategoryEmployeePool("common")
-        : territoryDeptEmployeePool(dept);
-    const metricItem = shopMetricCatalogById(metricId);
-    const list = pool.filter(function (e) {
-        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
-        if (!isWorking(e) || !isTerritoryEmployee(e)) return false;
-        if (employeeHomeDeptCode(e.id) === "shop") return false;
-        if (!shopEmployeeHasWorkMetric(e.id, metricId)) return false;
-        if (metricItem && !employeeMatchesMetricAssignments(metricItem, e, "")) return false;
-        if (!tabs.length) return true;
-        const home = employeeHomeDeptCode(e.id) || dept;
-        return tabs.some(function (tab) { return employeeBelongsToWorkGroup(e, home, tab); });
-    });
+    const mid = canonicalMetricId(metricId);
+    const metricItem = shopMetricCatalogById(mid);
+    // Хаб показывает метрику только на своих вкладках; люди — по личному workAccess.
+    if (metricItem && tabs.length && dept) {
+        const hosts = tabs.some(function (tab) { return metricHostsOnDeptTab(metricItem, dept, tab); });
+        if (!hosts && metricTerritoryCategory(metricItem) !== "common" && !(spec && spec.allTerritory)) {
+            return [];
+        }
+    }
+    const list = [];
+    const seen = {};
+    function pushEmp(e) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        if (!isWorking(e) || !isTerritoryEmployee(e)) return;
+        if (employeeHomeDeptCode(e.id) === "shop") return;
+        if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
+        seen[e.id] = true;
+        list.push(e);
+    }
+    if (spec && spec.allTerritory) {
+        territoryCategoryEmployeePool("common").forEach(pushEmp);
+    } else {
+        TERRITORY_DEPT_CODES.forEach(function (homeCode) {
+            const w = findWorkspaceByCode(homeCode);
+            ((w && w.employees) || []).forEach(function (e) {
+                if (!e || employeeHomeDeptCode(e.id) !== homeCode) return;
+                pushEmp(e);
+            });
+        });
+    }
     list.sort(compareEmployeesByStatusThenName);
     return list;
 }
@@ -29231,14 +29393,20 @@ function shopExtraFunctionsHtml(employee) {
     }
     const boxes = opts.map(function (def) {
         const on = shopEmployeeHasWorkMetric(employee.id, def.id);
-        return '<label class="check" title="' + escapeAttribute(def.label) + '">'
+        const it = shopMetricCatalogById(def.id);
+        const place = metricAssignmentPlaceCaption(it || def);
+        const title = place ? (def.label + " — " + place) : def.label;
+        return '<label class="check" title="' + escapeAttribute(title) + '">'
             + '<input type="checkbox"' + (on ? " checked" : "")
             + " onclick=\"setShopEmployeeExtraMetric('" + employee.id + "','" + def.id + "',this.checked)\">"
-            + "<span>" + escapeHtml(def.label) + "</span></label>";
+            + "<span>" + escapeHtml(def.label)
+            + (place ? '<span class="emp-extra-fn-place">' + escapeHtml(place) + "</span>" : "")
+            + "</span></label>";
     }).join("");
     return fieldBlock(
         "Рабочие метрики",
-        '<div class="note emp-extra-fn-hint">Месяц ' + escapeHtml(monthLabel(selectedMonth)) + ", не KPI</div>"
+        '<div class="note emp-extra-fn-hint">Месяц ' + escapeHtml(monthLabel(selectedMonth))
+            + ". Галочка — личное участие в метрике своего раздела (не зависит от основной должности).</div>"
             + '<div class="emp-extra-fn-list">' + boxes + "</div>",
         "emp-extra-fns"
     );
