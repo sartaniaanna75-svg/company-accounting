@@ -3140,6 +3140,25 @@ class StoreApiTests(unittest.TestCase):
         self.assertAlmostEqual(cash_open + cash_ni, 1_100_000.0)  # банковский внедоход кассу не трогает
         self.assertAlmostEqual(revenue, 500_000.0)
 
+    def test_metric_catalog_category_includes_shop(self):
+        """В «Категория в Метриках» доступен Магазин Володарского (select=shop → territory_category "")."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn('value="shop"', src)
+        self.assertIn("showShopCategoryOption", src)
+        self.assertIn("isShopCategory", src)
+        self.assertIn('catRaw === "shop"', src)
+        self.assertIn(">Магазин Володарского</option>", src)
+        # Раньше магазин скрывали на центральном справочнике — такого условия больше нет.
+        self.assertNotIn(
+            "!territoryForm && !isCentralMetricCatalogScreen() && !isGenericMetricsDept",
+            src,
+        )
+        # Назначения на центральном экране доступны и для магазина.
+        norm = src.replace("\r\n", "\n")
+        self.assertIn("|| territoryForm\n        || isCentralMetricCatalogScreen();", norm)
+        self.assertIn('item.territory_category = "";', norm)
+        self.assertIn('item.department_id = dept || "shop";', norm)
+
     def test_manager_employee_create_still_works(self):
         cookie = self._add_shop_manager()
         status, *_ = call(

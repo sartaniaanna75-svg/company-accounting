@@ -27640,12 +27640,15 @@ function metricCatalogAssignmentFormActive() {
 
 function defaultMetricCatalogAssignmentRow() {
     const cat = String((document.getElementById("mcCategory") || {}).value || "");
-    const spec = territoryMetricCategoryById(cat);
+    const isShopCat = cat === "shop" || cat === "";
+    const spec = (!isShopCat && cat) ? territoryMetricCategoryById(cat) : null;
     const deptEl = document.getElementById("mcDept");
-    const dept = (spec && spec.departmentId)
-        || (deptEl && deptEl.value)
-        || catalogDeptContext()
-        || "office";
+    const dept = isShopCat
+        ? "shop"
+        : ((spec && spec.departmentId)
+            || (deptEl && deptEl.value)
+            || catalogDeptContext()
+            || "office");
     const tabs = metricTabsForDept(dept);
     let workTab = "";
     if (spec && Array.isArray(spec.workTabIds) && spec.workTabIds.length) {
@@ -27872,9 +27875,11 @@ function metricCatalogFormSubrowHtml(id, name, order, active) {
 function onMetricCatalogCategoryChange() {
     const catEl = document.getElementById("mcCategory");
     const cat = catEl && catEl.value;
-    const spec = territoryMetricCategoryById(cat);
+    const isShopCat = cat === "shop" || cat === "";
+    const spec = (!isShopCat && cat) ? territoryMetricCategoryById(cat) : null;
     const deptEl = document.getElementById("mcDept");
-    if (deptEl && spec && spec.departmentId) deptEl.value = spec.departmentId;
+    if (deptEl && isShopCat) deptEl.value = "shop";
+    else if (deptEl && spec && spec.departmentId) deptEl.value = spec.departmentId;
     if (deptEl && spec && spec.allTerritory) deptEl.value = deptEl.value === "shop" ? "office" : (deptEl.value || "office");
     if (metricCatalogAssignmentFormActive()) {
         const formId = String((document.getElementById("mcMetricId") || {}).value || "");
@@ -27960,11 +27965,15 @@ function openMetricCatalogForm(id, dupIgnore) {
     };
     const depts = catalogFormDeptList();
     const deptLocked = !catalogFormCanPickDept() || !!(it.builtin);
+    /* На центральном справочнике и в режиме территории — форма назначений (в т.ч. для магазина). */
     const useAssignForm = checklistMode
-        || ((territoryForm || isCentralMetricCatalogScreen()) && dept !== "shop" && metricDepartmentId(it) !== "shop");
+        || territoryForm
+        || isCentralMetricCatalogScreen();
     const formTitle = checklistMode
         ? (id ? "Изменить чек-лист" : "Создать чек-лист")
         : (id ? "Изменить метрику" : "Добавить метрику");
+    /* Магазин в данных: territory_category=""; в select — значение "shop". */
+    const categorySelect = (!category || category === "shop") ? "shop" : category;
     let html = "<h3 style=\"margin:0 0 8px\">" + formTitle + "</h3>"
         + '<div class="metric-cat-form">'
         + '<div class="form-group full"><label>' + (checklistMode ? "Название чек-листа *" : "Название метрики *") + "</label>"
@@ -27973,12 +27982,15 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '<input type="hidden" id="mcFormMode" value="' + (checklistMode ? "checklist" : "") + '">'
         + '<div class="form-group full"><label>' + (useAssignForm ? "Категория в Метриках *" : "Категория / отдел *") + "</label>"
         + '<select id="mcCategory" onchange="onMetricCatalogCategoryChange()">';
-    metricCatalogCategoriesForForm(territoryForm || isCentralMetricCatalogScreen()).forEach(function (c) {
-        html += '<option value="' + c.id + '"' + (category === c.id ? " selected" : "") + ">" + escapeHtml(c.label) + "</option>";
-    });
-    if (!territoryForm && !isCentralMetricCatalogScreen() && !isGenericMetricsDept((workspace() && workspace().code) || "")) {
-        html += '<option value=""' + (!category ? " selected" : "") + ">Магазин Володарского / без категории территории</option>";
+    const showShopCategoryOption = isCentralMetricCatalogScreen()
+        || territoryForm
+        || (!isGenericMetricsDept((workspace() && workspace().code) || ""));
+    if (showShopCategoryOption) {
+        html += '<option value="shop"' + (categorySelect === "shop" ? " selected" : "") + ">Магазин Володарского</option>";
     }
+    metricCatalogCategoriesForForm(territoryForm || isCentralMetricCatalogScreen()).forEach(function (c) {
+        html += '<option value="' + c.id + '"' + (categorySelect === c.id ? " selected" : "") + ">" + escapeHtml(c.label) + "</option>";
+    });
     html += "</select></div>"
         + (useAssignForm
             ? '<div class="note full">Категория задаёт только место метрики в разделе «Метрики». Кому она назначена — в блоке ниже, отдельно.</div>'
@@ -28238,7 +28250,7 @@ function refreshMetricCatalogPeopleBox(metricId) {
             + "><span>" + escapeHtml(shopMetricEmployeeCaption(e))
             + (cap ? " · " + escapeHtml(cap) : "") + "</span></label>";
     }
-    if (cat && cat !== "returns") {
+    if (cat && cat !== "returns" && cat !== "shop") {
         const spec = territoryMetricCategoryById(cat);
         const people = territoryCategoryEmployeePool(cat).filter(function (e) {
             if (!e || !isWorking(e) || !isTerritoryEmployee(e)) return false;
@@ -28301,10 +28313,12 @@ function saveMetricCatalogForm(id, dupIgnore) {
     let tabIds = assignmentRows
         ? assignmentRows.map(function (row) { return row.work_tab_id; }).filter(Boolean)
         : collectMetricCatalogTabIds();
-    const cat = String((document.getElementById("mcCategory") || {}).value || "");
+    const catRaw = String((document.getElementById("mcCategory") || {}).value || "");
+    const isShopCategory = catRaw === "shop";
+    const cat = isShopCategory ? "" : catRaw;
     const spec = cat ? territoryMetricCategoryById(cat) : null;
     if (assignmentRows) {
-        if (!cat) {
+        if (!catRaw) {
             formErr("Выберите категорию в Метриках.");
             return;
         }
@@ -28329,8 +28343,11 @@ function saveMetricCatalogForm(id, dupIgnore) {
         }
         // Home department: first assignment wins; category only suggests display hub.
         if (assignmentRows[0] && assignmentRows[0].department_id) dept = assignmentRows[0].department_id;
+        else if (isShopCategory) dept = "shop";
         else if (spec && spec.departmentId) dept = spec.departmentId;
         else if (spec && spec.allTerritory && (!dept || dept === "shop")) dept = "office";
+    } else if (isShopCategory) {
+        dept = "shop";
     } else if (spec && spec.departmentId) {
         dept = spec.departmentId;
         const allowed = workTabsAllowedForTerritoryCategory(cat, dept);
@@ -28464,12 +28481,14 @@ function saveMetricCatalogForm(id, dupIgnore) {
     item.metric_tab_id = item.section_id || item.metric_tab_id;
     item.work_tab_ids = tabIds.slice();
     item.work_tab_scopes = assignmentRows ? {} : collectMetricCatalogTabScopes();
-    if (cat) {
+    if (isShopCategory || (!cat && dept === "shop")) {
+        /* Магазин Володарского: в справочнике категория select=shop → в данных territory_category пустая. */
+        item.territory_category = "";
+        item.department_id = dept || "shop";
+    } else if (cat) {
         item.territory_category = cat;
         // Keep department_id from assignments / explicit dept — category is display hub only.
         if (!assignmentRows && spec && spec.departmentId) item.department_id = spec.departmentId;
-    } else if (dept === "shop") {
-        item.territory_category = "";
     } else {
         item.territory_category = inferTerritoryMetricCategory(item);
     }
@@ -28979,9 +28998,10 @@ function defaultTerritoryCategoryForCurrentWork() {
 
 function metricCatalogCategoriesForForm(territoryForm) {
     const code = workspace() && workspace().code;
+    /* Только хабы территории. Магазин Володарского добавляется отдельно (value=shop → territory_category ""). */
     return TERRITORY_METRIC_CATEGORIES.filter(function (c) {
         if (c.id === "returns") return false;
-        if (territoryForm) return true;
+        if (territoryForm || isCentralMetricCatalogScreen()) return true;
         if (code === "drivers") return c.id === "sales_opt" || c.id === "drivers" || c.id === "common";
         if (code === "warehouse") return c.id === "warehouse" || c.id === "sales_retail" || c.id === "common";
         if (code === "office") return c.id === "office" || c.id === "common";
