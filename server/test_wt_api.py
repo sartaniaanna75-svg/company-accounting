@@ -1160,7 +1160,13 @@ class StoreApiTests(unittest.TestCase):
             src.find("function employeesForMetricAssignmentRow(") : src.find("function employeeMatchesMetricAssignments(")
         ]
         self.assertIn("dept === \"shop\" && isTerritoryCode(home)", asg_people)
-        self.assertNotIn("!isTerritoryEmployee(e)", asg_people)
+        # Назначения: только основная группа карточки, не work_group_ids[].
+        self.assertIn("employeeCardWorkGroupId(e, dept) !== tab", asg_people)
+        self.assertNotIn("employeesForWorkGroup(dept, row.work_tab_id)", asg_people)
+        match_asg = src[
+            src.find("function employeeMatchesMetricAssignments(") : src.find("function syncWorkTabIdsFromMetricAssignments(")
+        ]
+        self.assertIn("employeeCardWorkGroupId(employee, row.department_id) !== row.work_tab_id", match_asg)
         ts = src[
             src.find("function timesheetEmployeesForView(") : src.find("function renderTimesheetGroupFilter(")
         ]

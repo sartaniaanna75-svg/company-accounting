@@ -14141,16 +14141,25 @@ function positionsForMetricAssignment(dept, workTabId) {
     return filtered.length ? filtered : all;
 }
 
+/**
+ * Список ФИО для строки назначения метрики.
+ * Группа = основная рабочая группа карточки (work_tab_id), как в «Общее → Сотрудники».
+ * Не используем employeeBelongsToWorkGroup / work_group_ids[] — иначе кассир с устаревшим
+ * loaders в массиве попадает в назначение «Грузчики».
+ */
 function employeesForMetricAssignmentRow(row) {
     if (!row || !row.department_id || !row.work_tab_id) return [];
     const dept = String(row.department_id);
-    return employeesForWorkGroup(dept, row.work_tab_id).filter(function (e) {
+    const tab = String(row.work_tab_id);
+    return departmentEmployeePool(dept).filter(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
+        if (!isWorking(e)) return false;
         const home = employeeHomeDeptCode(e.id);
         if (dept === "shop" && isTerritoryCode(home)) return false;
+        if (employeeCardWorkGroupId(e, dept) !== tab) return false;
         if (!employeeHasPositionId(e, row.position_id)) return false;
         return true;
-    });
+    }).sort(compareEmployeesByStatusThenName);
 }
 
 function employeeMatchesMetricAssignments(item, employee, workTabId) {
@@ -14164,7 +14173,8 @@ function employeeMatchesMetricAssignments(item, employee, workTabId) {
         if (row.department_id === "shop" && isTerritoryCode(home)) return false;
         const inRowDept = belongsToWorkspace(findWorkspaceByCode(row.department_id), employee.id);
         if (!inRowDept && home !== row.department_id) return false;
-        if (!employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)) return false;
+        // Та же строгость, что в форме назначений: основная группа карточки.
+        if (employeeCardWorkGroupId(employee, row.department_id) !== row.work_tab_id) return false;
         if (!employeeHasPositionId(employee, row.position_id)) return false;
         if (row.assign_mode === "specific") {
             return (row.employee_ids || []).indexOf(employee.id) !== -1;
