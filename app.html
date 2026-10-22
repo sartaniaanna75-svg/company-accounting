@@ -14182,7 +14182,7 @@ function employeesForMetricAssignmentRow(row) {
     }).sort(compareEmployeesByStatusThenName);
 }
 
-/** Уже отмеченные в specific — не теряем галочки при повторном открытии формы. */
+/** Уже отмеченные в specific — не теряем галочки при повторном открытии (Территория). */
 function employeesForMetricAssignmentRowWithSelected(row) {
     const people = employeesForMetricAssignmentRow(row);
     if (!row || row.assign_mode !== "specific") return people;
@@ -14204,6 +14204,7 @@ function employeesForMetricAssignmentRowWithSelected(row) {
 /**
  * Кого показать в рабочей таблице Территории по строкам assignments.
  * Не путать с основной рабочей группой в карточке сотрудника.
+ * Магазин Володарского сюда не входит.
  */
 function peopleAssignedToMetricOnTab(item, deptCode, tabId) {
     if (!item || !deptCode || !tabId || deptCode === "shop") return [];
@@ -28069,6 +28070,7 @@ function onMetricCatalogAssignmentField(idx, field, value) {
         row.position_id = "";
         row.employee_ids = [];
     } else if (field === "work_tab_id") {
+        // Таблица отображения сменилась — сбрасываем выбор ФИО (не переносим из другой группы).
         row.position_id = "";
         row.employee_ids = [];
     } else if (field === "position_id") {
@@ -28133,6 +28135,8 @@ function renderMetricCatalogAssignments() {
         let html = '<div class="mc-asg-card">'
             + '<div class="mc-asg-head"><h4>Назначение №' + (idx + 1) + "</h4>"
             + '<button type="button" class="btn btn-secondary btn-small" onclick="removeMetricCatalogAssignment(' + idx + ')">Удалить назначение</button></div>'
+            + '<div class="note" style="margin:0 0 8px">Рабочая группа — в какой таблице показывать метрику. '
+            + "Должность и ФИО — кому назначить (основная группа в карточке сотрудника не меняется).</div>"
             + '<div class="mc-asg-grid">'
             + '<div class="form-group"><label>Подразделение</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'department_id\',this.value)">';
         depts.forEach(function (d) {
@@ -28140,7 +28144,7 @@ function renderMetricCatalogAssignments() {
                 + escapeHtml(d.name) + "</option>";
         });
         html += "</select></div>"
-            + '<div class="form-group"><label>Рабочая группа</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'work_tab_id\',this.value)">'
+            + '<div class="form-group"><label>Рабочая группа (таблица)</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'work_tab_id\',this.value)">'
             + '<option value="">— выбрать —</option>';
         tabs.forEach(function (t) {
             html += '<option value="' + escapeAttribute(t.id) + '"' + (row.work_tab_id === t.id ? " selected" : "") + ">"
@@ -29114,6 +29118,7 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     const seen = {};
     function consider(e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        // Legacy без assignments / магазин: личное workAccess.
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
         // Магазин Володарского: колонка только если основная группа карточки = эта таблица.
         if (code === "shop" && employeeCardWorkGroupId(e, "shop") !== tab) return;
