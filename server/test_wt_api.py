@@ -1103,16 +1103,18 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn('base["workAccess"] = _merge_access_map(', api)
 
     def test_client_work_access_drives_metric_table_people(self):
-        """Магазин: колонка = workAccess И основная группа карточки; Территория: без ужесточения группы."""
+        """Магазин: workAccess + основная группа; Территория с assignments: peopleAssignedToMetricOnTab."""
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
         self.assertIn("function metricHostsOnDeptTab(", src)
         self.assertIn("function metricAssignmentPlaceCaption(", src)
+        self.assertIn("function peopleAssignedToMetricOnTab(", src)
         people_fn = src[
             src.find("function workMetricPeopleForTab(") : src.find("function deptMetricFields(")
         ]
         self.assertIn("shopEmployeeHasWorkMetric", people_fn)
         self.assertIn("metricHostsOnDeptTab", people_fn)
         self.assertIn("TERRITORY_DEPT_CODES.forEach", people_fn)
+        self.assertIn("peopleAssignedToMetricOnTab", people_fn)
         # Магазин Володарского: основная группа карточки обязательна для колонки.
         self.assertIn('code === "shop" && employeeCardWorkGroupId(e, "shop") !== tab', people_fn)
         self.assertNotIn("employeeBelongsToWorkGroup", people_fn)
@@ -1166,14 +1168,18 @@ class StoreApiTests(unittest.TestCase):
         asg_people = src[
             src.find("function employeesForMetricAssignmentRow(") : src.find("function employeeMatchesMetricAssignments(")
         ]
-        # Магазин: фильтр по основной группе карточки; Территория — employeesForWorkGroup.
+        # Магазин: основная группа карточки. Территория: подразделение + должность (не work group).
         self.assertIn('employeeCardWorkGroupId(e, "shop") !== row.work_tab_id', asg_people)
-        self.assertIn("employeesForWorkGroup(dept, row.work_tab_id)", asg_people)
+        self.assertIn("employeeInMetricAssignmentDept(e, dept)", asg_people)
+        self.assertNotIn("employeesForWorkGroup(dept, row.work_tab_id)", asg_people)
+        self.assertIn("function peopleAssignedToMetricOnTab(", src)
+        self.assertIn("function employeesForMetricAssignmentRowWithSelected(", src)
         match_asg = src[
             src.find("function employeeMatchesMetricAssignments(") : src.find("function syncWorkTabIdsFromMetricAssignments(")
         ]
         self.assertIn('employeeCardWorkGroupId(employee, "shop") !== row.work_tab_id', match_asg)
-        self.assertIn("employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)", match_asg)
+        self.assertIn("Территория: основная группа карточки НЕ ограничивает назначение", match_asg)
+        self.assertNotIn("employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)", match_asg)
         ts = src[
             src.find("function timesheetEmployeesForView(") : src.find("function renderTimesheetGroupFilter(")
         ]
@@ -1185,6 +1191,8 @@ class StoreApiTests(unittest.TestCase):
             src.find("function renderMetricCatalogAssignments(") : src.find("function onMetricCatalogStructureChange(")
         ]
         self.assertIn("deptsForMetricAssignmentFormRow(row)", render)
+        self.assertIn("<label>Подразделение</label>", render)
+        self.assertIn("employeesForMetricAssignmentRowWithSelected(row)", render)
         # СПУ: новые подключения только с use_in_spu; keepIds сохраняет уже связанные.
         spu_pick = src[
             src.find("function spuParticipatingWorkMetrics(") : src.find("function spuSrcMetricSectionId(")

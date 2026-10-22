@@ -14125,16 +14125,25 @@ function employeeHasPositionId(employee, positionId) {
     return positionNameKey(employee.position) === positionNameKey(pos.name);
 }
 
+function employeeInMetricAssignmentDept(employee, dept) {
+    if (!employee || !employee.id || !dept) return false;
+    const home = employeeHomeDeptCode(employee.id);
+    if (dept === "shop" && isTerritoryCode(home)) return false;
+    if (dept !== "shop" && home === "shop") return false;
+    if (belongsToWorkspace(findWorkspaceByCode(dept), employee.id)) return true;
+    return home === dept;
+}
+
 function positionsForMetricAssignment(dept, workTabId) {
+    // Территория: весь справочник должностей подразделения (независимо от рабочей группы).
+    // Магазин: должности сотрудников выбранной основной группы карточки.
+    if (dept !== "shop") return positionCatalogItems(dept, false);
     const all = positionCatalogItems(dept, false);
     if (!workTabId) return all;
     const used = {};
-    const people = (dept === "shop")
-        ? departmentEmployeePool("shop").filter(function (e) {
-            return e && isWorking(e) && employeeCardWorkGroupId(e, "shop") === workTabId;
-        })
-        : employeesForWorkGroup(dept, workTabId);
-    people.forEach(function (e) {
+    departmentEmployeePool("shop").filter(function (e) {
+        return e && isWorking(e) && employeeCardWorkGroupId(e, "shop") === workTabId;
+    }).forEach(function (e) {
         if (e && e.position_id) used[e.position_id] = true;
         const hit = e ? positionCatalogByName(dept, e.position) : null;
         if (hit) used[hit.position_id] = true;
@@ -14148,8 +14157,8 @@ function positionsForMetricAssignment(dept, workTabId) {
 
 /**
  * Кандидаты ФИО для строки назначения.
- * Магазин Володарского: только основная группа карточки + должность.
- * Территория: прежняя логика (employeesForWorkGroup), без изменений для замещений.
+ * Магазин Володарского: основная группа карточки + должность (без изменений).
+ * Территория: подразделение + должность; рабочая группа = только таблица отображения.
  */
 function employeesForMetricAssignmentRow(row) {
     if (!row || !row.department_id || !row.work_tab_id) return [];
@@ -14164,11 +14173,62 @@ function employeesForMetricAssignmentRow(row) {
             return true;
         }).sort(compareEmployeesByStatusThenName);
     }
-    return employeesForWorkGroup(dept, row.work_tab_id).filter(function (e) {
+    return departmentEmployeePool(dept).filter(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
+        if (!isWorking(e)) return false;
+        if (!employeeInMetricAssignmentDept(e, dept)) return false;
         if (!employeeHasPositionId(e, row.position_id)) return false;
         return true;
+    }).sort(compareEmployeesByStatusThenName);
+}
+
+/** Уже отмеченные в specific — не теряем галочки при повторном открытии формы. */
+function employeesForMetricAssignmentRowWithSelected(row) {
+    const people = employeesForMetricAssignmentRow(row);
+    if (!row || row.assign_mode !== "specific") return people;
+    if (String(row.department_id || "") === "shop") return people;
+    const seen = {};
+    people.forEach(function (e) { if (e && e.id) seen[e.id] = true; });
+    const dept = String(row.department_id || "");
+    (row.employee_ids || []).forEach(function (id) {
+        if (!id || seen[id]) return;
+        const e = getEmployee(id);
+        if (!e || !employeeInMetricAssignmentDept(e, dept)) return;
+        seen[id] = true;
+        people.push(e);
     });
+    people.sort(compareEmployeesByStatusThenName);
+    return people;
+}
+
+/**
+ * Кого показать в рабочей таблице Территории по строкам assignments.
+ * Не путать с основной рабочей группой в карточке сотрудника.
+ */
+function peopleAssignedToMetricOnTab(item, deptCode, tabId) {
+    if (!item || !deptCode || !tabId || deptCode === "shop") return [];
+    const list = [];
+    const seen = {};
+    function add(e) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        seen[e.id] = true;
+        list.push(e);
+    }
+    (item.assignments || []).forEach(function (row) {
+        if (!row || row.department_id !== deptCode || row.work_tab_id !== tabId) return;
+        if (row.assign_mode === "specific") {
+            (row.employee_ids || []).forEach(function (id) {
+                const e = getEmployee(id);
+                if (!e || !employeeInMetricAssignmentDept(e, deptCode)) return;
+                if (!isWorking(e) && !deptMetricEmployeeHasData(deptCode, e.id, item.id)) return;
+                add(e);
+            });
+        } else {
+            employeesForMetricAssignmentRow(row).forEach(add);
+        }
+    });
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
 }
 
 function employeeMatchesMetricAssignments(item, employee, workTabId) {
@@ -14180,14 +14240,12 @@ function employeeMatchesMetricAssignments(item, employee, workTabId) {
         if (!row || !row.department_id || !row.work_tab_id) return false;
         if (tab && row.work_tab_id !== tab) return false;
         if (row.department_id === "shop" && isTerritoryCode(home)) return false;
-        const inRowDept = belongsToWorkspace(findWorkspaceByCode(row.department_id), employee.id);
-        if (!inRowDept && home !== row.department_id) return false;
-        // Магазин: только основная группа карточки. Территория: без ужесточения.
+        if (!employeeInMetricAssignmentDept(employee, row.department_id)) return false;
+        // Магазин: только основная группа карточки (поведение не менять).
         if (row.department_id === "shop") {
             if (employeeCardWorkGroupId(employee, "shop") !== row.work_tab_id) return false;
-        } else if (!employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)) {
-            return false;
         }
+        // Территория: основная группа карточки НЕ ограничивает назначение на таблицу.
         if (!employeeHasPositionId(employee, row.position_id)) return false;
         if (row.assign_mode === "specific") {
             return (row.employee_ids || []).indexOf(employee.id) !== -1;
@@ -28013,7 +28071,15 @@ function onMetricCatalogAssignmentField(idx, field, value) {
     } else if (field === "work_tab_id") {
         row.position_id = "";
         row.employee_ids = [];
-    } else if (field === "position_id" || field === "assign_mode") {
+    } else if (field === "position_id") {
+        const before = (row.employee_ids || []).length;
+        const allowed = {};
+        employeesForMetricAssignmentRow(row).forEach(function (e) { if (e) allowed[e.id] = true; });
+        row.employee_ids = (row.employee_ids || []).filter(function (id) { return allowed[id]; });
+        if (String(row.department_id || "") !== "shop" && before && row.employee_ids.length < before) {
+            toast("Сняты сотрудники, не подходящие под выбранную должность.", "error");
+        }
+    } else if (field === "assign_mode") {
         const allowed = {};
         employeesForMetricAssignmentRow(row).forEach(function (e) { if (e) allowed[e.id] = true; });
         row.employee_ids = (row.employee_ids || []).filter(function (id) { return allowed[id]; });
@@ -28026,7 +28092,10 @@ function onMetricCatalogAssignmentEmployee(idx, employeeId, checked) {
     if (!row) return;
     if (!Array.isArray(row.employee_ids)) row.employee_ids = [];
     if (checked) {
-        const allowed = employeesForMetricAssignmentRow(row).some(function (e) {
+        const pool = String(row.department_id || "") === "shop"
+            ? employeesForMetricAssignmentRow(row)
+            : employeesForMetricAssignmentRowWithSelected(row);
+        const allowed = pool.some(function (e) {
             return e && e.id === employeeId;
         });
         if (!allowed) return;
@@ -28056,13 +28125,16 @@ function renderMetricCatalogAssignments() {
         const depts = deptsForMetricAssignmentFormRow(row);
         const tabs = metricTabsForDept(row.department_id);
         const positions = positionsForMetricAssignment(row.department_id, row.work_tab_id);
-        const people = employeesForMetricAssignmentRow(row);
         const specific = row.assign_mode === "specific";
+        const isShopRow = String(row.department_id || "") === "shop";
+        const people = (!isShopRow && specific)
+            ? employeesForMetricAssignmentRowWithSelected(row)
+            : employeesForMetricAssignmentRow(row);
         let html = '<div class="mc-asg-card">'
             + '<div class="mc-asg-head"><h4>Назначение №' + (idx + 1) + "</h4>"
             + '<button type="button" class="btn btn-secondary btn-small" onclick="removeMetricCatalogAssignment(' + idx + ')">Удалить назначение</button></div>'
             + '<div class="mc-asg-grid">'
-            + '<div class="form-group"><label>Раздел / отдел</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'department_id\',this.value)">';
+            + '<div class="form-group"><label>Подразделение</label><select onchange="onMetricCatalogAssignmentField(' + idx + ',\'department_id\',this.value)">';
         depts.forEach(function (d) {
             html += '<option value="' + escapeAttribute(d.code) + '"' + (row.department_id === d.code ? " selected" : "") + ">"
                 + escapeHtml(d.name) + "</option>";
@@ -28088,7 +28160,10 @@ function renderMetricCatalogAssignments() {
             + "</select></div></div>";
         if (specific) {
             html += '<div class="mc-asg-people">';
-            if (!people.length) html += '<div class="note">Нет сотрудников в выбранном разделе, группе и должности.</div>';
+            if (!people.length) {
+                html += '<div class="note">Нет сотрудников подразделения'
+                    + (row.position_id ? " с выбранной должностью" : "") + ".</div>";
+            }
             people.forEach(function (e) {
                 const on = (row.employee_ids || []).indexOf(e.id) !== -1;
                 html += '<label class="check"><input type="checkbox"' + (on ? " checked" : "")
@@ -28096,10 +28171,15 @@ function renderMetricCatalogAssignments() {
                     + escapeAttribute(e.id) + '"><span>' + escapeHtml(shopMetricEmployeeCaption(e)) + "</span></label>";
             });
             html += "</div>";
-        } else {
+        } else if (isShopRow) {
             html += '<div class="note" style="margin-top:6px">Доступно всем сотрудникам этой группы'
                 + (row.position_id ? " и должности" : "") + ". Сейчас подходящих: "
                 + people.length + ".</div>";
+        } else {
+            html += '<div class="note" style="margin-top:6px">Все подходящие = сотрудники подразделения'
+                + (row.position_id ? " с выбранной должностью" : " (все должности)")
+                + ". Таблица «" + escapeHtml(metricTabLabel(row.department_id, row.work_tab_id) || row.work_tab_id || "—")
+                + "». Сейчас: " + people.length + ".</div>";
         }
         html += "</div>";
         return html;
@@ -29025,13 +29105,17 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
         if (def && def.tabs && def.tabs.length && def.tabs.indexOf(tab) === -1) return [];
         if (def && code !== "shop") return [];
     }
+    // Территория: при наличии assignments — разные work_tab_id → разные списки ФИО.
+    // Магазин Володарского сюда не входит (отдельная логика ниже).
+    if (code !== "shop" && metricItem && Array.isArray(metricItem.assignments) && metricItem.assignments.length) {
+        return peopleAssignedToMetricOnTab(metricItem, code, tab);
+    }
     const list = [];
     const seen = {};
     function consider(e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
         // Магазин Володарского: колонка только если основная группа карточки = эта таблица.
-        // workAccess / старые назначения / история групп сами по себе колонку не создают.
         if (code === "shop" && employeeCardWorkGroupId(e, "shop") !== tab) return;
         if (!isWorking(e)) {
             if (isGenericMetricsDept(code)) {
@@ -29046,7 +29130,7 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     if (code === "shop") {
         departmentEmployeePool("shop").forEach(consider);
     } else {
-        // Территория: без ужесточения по основной группе (отдельная логика замещений позже).
+        // Legacy Территория без assignments: workAccess по пулу отделов.
         TERRITORY_DEPT_CODES.forEach(function (homeCode) {
             departmentEmployeePool(homeCode).forEach(consider);
         });
