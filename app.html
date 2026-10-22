@@ -5909,6 +5909,22 @@ let wtPutPaused = false;
 let wtKeepUnsavedDraft = false;
 let wtPauseToastAt = 0;
 let wtAllowConflictRetry = false;
+/** Временный срез для PUT: только эти ключи appData (не полный снимок). */
+let wtPutPayloadOverride = null;
+/** Безопасные замеры этапов сохранения (консоль). Вкл: localStorage.wtSaveTiming = "1" */
+function wtSaveTimingEnabled() {
+    try { return localStorage.getItem("wtSaveTiming") === "1"; } catch (err) { return false; }
+}
+function wtSaveMark(label, t0) {
+    if (!wtSaveTimingEnabled() || t0 == null) return;
+    try {
+        const ms = Math.round((typeof performance !== "undefined" && performance.now ? performance.now() : Date.now()) - t0);
+        console.info("[wt-save]", label, ms + "ms");
+    } catch (err) {}
+}
+function wtSaveNow() {
+    return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+}
 let wtDirectoryUsers = [];
 let wtDirectoryReady = false;
 let wtDirectoryError = "";
@@ -10335,8 +10351,59 @@ function buildStaffPutPayload() {
 }
 
 function payloadForServerPut() {
+    if (wtPutPayloadOverride != null) {
+        /* Функция-сборщик: каждый PUT читает актуальный appData (в т.ч. после 409 merge). */
+        const slice = typeof wtPutPayloadOverride === "function"
+            ? wtPutPayloadOverride()
+            : wtPutPayloadOverride;
+        if (!slice || typeof slice !== "object") return null;
+        return wtCloneJson(slice);
+    }
     if (isAppAdmin()) return wtCloneJson(appData);
     return buildStaffPutPayload();
+}
+
+/**
+ * Срез для сохранения справочника метрик: без financeRec/табелей/всего appData.
+ * assignments specific могут тронуть shopMetrics/deptMetrics; syncPayroll — shopPayroll.
+ */
+function metricCatalogPutSlice() {
+    const out = {};
+    if (appData && appData.shopMetricCatalog) out.shopMetricCatalog = appData.shopMetricCatalog;
+    if (appData && appData.shopMetrics) out.shopMetrics = appData.shopMetrics;
+    if (appData && appData.deptMetrics) out.deptMetrics = appData.deptMetrics;
+    if (appData && appData.shopPayroll) out.shopPayroll = appData.shopPayroll;
+    return out;
+}
+
+/** sliceOrFn — объект или функция(), чтобы после 409 merge не ушёл устаревший снимок. */
+function saveAppWithPayloadSlice(sliceOrFn) {
+    if (sliceOrFn == null) {
+        wtPutPayloadOverride = null;
+    } else if (typeof sliceOrFn === "function") {
+        wtPutPayloadOverride = sliceOrFn;
+    } else if (typeof sliceOrFn === "object") {
+        /* Не держим «замороженный» объект: каждый PUT берёт актуальные ключи из appData. */
+        const keys = Object.keys(sliceOrFn);
+        wtPutPayloadOverride = function () {
+            const out = {};
+            keys.forEach(function (key) {
+                if (appData && Object.prototype.hasOwnProperty.call(appData, key)) {
+                    out[key] = appData[key];
+                }
+            });
+            return out;
+        };
+    } else {
+        wtPutPayloadOverride = null;
+    }
+    return Promise.resolve(saveApp()).then(function (ok) {
+        wtPutPayloadOverride = null;
+        return ok;
+    }, function (err) {
+        wtPutPayloadOverride = null;
+        throw err;
+    });
 }
 
 function stripLocalSecretsAfterSave() {
@@ -10371,9 +10438,16 @@ function handleWtSaveConflict(data) {
     wtPutPaused = true;
     const draft = wtCloneJson(appData);
     const base = wtLastLoadedPayload ? wtCloneJson(wtLastLoadedPayload) : null;
-    const msg = "Конфликт версий (409): данные на сервере уже изменил другой пользователь. Ваши несохранённые значения на экране сохранены и не записаны.\n\nOK — загрузить актуальные данные с сервера, аккуратно наложить ваши правки и сохранить.\nОтмена — оставить черновик на экране без записи на сервер (чужие данные не затираются).";
+    const sliceMode = wtPutPayloadOverride != null;
+    const msg = "Конфликт версий (409): данные на сервере уже изменил другой пользователь. Ваши несохранённые значения на экране сохранены и не записаны.\n\nOK — загрузить актуальные данные с сервера, аккуратно наложить ваши правки"
+        + (sliceMode
+            ? " на экран. Затем проверьте метрику и нажмите «Сохранить» ещё раз (автозапись среза после конфликта отключена)."
+            : " и сохранить.")
+        + "\nОтмена — оставить черновик на экране без записи на сервер (чужие данные не затираются).";
     const mergeAndSave = window.confirm(msg);
     if (!mergeAndSave) {
+        /* Сбрасываем срез: иначе следующий PUT мог бы уйти с устаревшим override. */
+        wtPutPayloadOverride = null;
         wtAllowConflictRetry = true;
         toast("Черновик на экране. На сервер не записано. Чужие данные не перезаписаны.", "error");
         return false;
@@ -10381,22 +10455,34 @@ function handleWtSaveConflict(data) {
     return fetch("/api/state", { credentials: "same-origin" }).then(function (res) {
         if (res.status === 401) return handleWtSaveUnauthorized();
         if (!res.ok) {
+            wtPutPayloadOverride = null;
             toast("Не удалось обновить данные с сервера. Черновик на экране сохранён.", "error");
             return false;
         }
         return res.json();
     }).then(function (state) {
-        if (!state || state === false) return false;
+        if (!state || state === false) {
+            wtPutPayloadOverride = null;
+            return false;
+        }
         applyServerState(state);
         appData = wtThreeWayMerge(appData, draft, base);
         wtPutPaused = false;
         wtKeepUnsavedDraft = false;
         wtAllowConflictRetry = false;
-        toast("Свежие данные загружены, ваши правки наложены. Сохраняем…");
         try { renderAccessUsers(); } catch (err) {}
         try { renderDeptNow(); } catch (err) {}
+        if (sliceMode) {
+            /* Не шлём PUT автоматически: срез мог быть собран до merge; пользователь проверяет и жмёт «Сохранить». */
+            wtPutPayloadOverride = null;
+            toast("Данные с сервера загружены, ваши правки наложены на экран. Проверьте метрику и нажмите «Сохранить» ещё раз — без этого на сервер не записано.", "error");
+            /* Не false: иначе форма метрики откатит merge через restoreMetricCatalog. */
+            return "conflict_review";
+        }
+        toast("Свежие данные загружены, ваши правки наложены. Сохраняем…");
         return putServerStateOnce();
     }).catch(function () {
+        wtPutPayloadOverride = null;
         toast("Нет соединения с сервером. Черновик на экране сохранён.", "error");
         return false;
     });
@@ -10405,14 +10491,26 @@ function handleWtSaveConflict(data) {
 function putServerStateOnce() {
     if (!wtServerMode || !appData) return Promise.resolve(false);
     if (wtPutPaused) return Promise.resolve(false);
+    const tAll = wtSaveNow();
     let payload;
+    let bodyText;
     try {
+        const tPrep = wtSaveNow();
         payload = payloadForServerPut();
+        wtSaveMark("prepare-payload", tPrep);
     } catch (err) {
         toast("Не удалось подготовить данные для сохранения.", "error");
         return Promise.resolve(false);
     }
     if (!payload) return Promise.resolve(true);
+    try {
+        const tStr = wtSaveNow();
+        bodyText = JSON.stringify({ version: wtStateVersion, payload: payload });
+        wtSaveMark("stringify-body (" + Math.round((bodyText.length || 0) / 1024) + " KB)", tStr);
+    } catch (err) {
+        toast("Не удалось подготовить данные для сохранения.", "error");
+        return Promise.resolve(false);
+    }
     // Без тайм-аута зависший PUT навсегда блокирует wtPutChain и commitEmployeeCard.busy.
     const timeoutMs = 60000;
     const canAbort = typeof AbortController !== "undefined";
@@ -10427,10 +10525,13 @@ function putServerStateOnce() {
         method: "PUT",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: wtStateVersion, payload: payload })
+        body: bodyText
     };
     if (ctrl) fetchOpts.signal = ctrl.signal;
+    const tNet = wtSaveNow();
+    const sentSliceKeys = wtPutPayloadOverride ? Object.keys(payload) : null;
     return fetch("/api/state", fetchOpts).then(function (res) {
+        wtSaveMark("network-PUT", tNet);
         if (res.status === 401) return handleWtSaveUnauthorized();
         if (res.status === 409) {
             return res.json().then(handleWtSaveConflict, function () {
@@ -10460,19 +10561,37 @@ function putServerStateOnce() {
             toast("Не удалось сохранить данные на сервере. Изменения не записаны.", "error");
             return false;
         }
+        const tParse = wtSaveNow();
         return res.json().then(function (state) {
+            wtSaveMark("parse-response", tParse);
             if (state && state.version != null) wtStateVersion = Number(state.version) || wtStateVersion;
             stripLocalSecretsAfterSave();
-            try { wtLastLoadedPayload = wtCloneJson(appData); } catch (err) {}
+            try {
+                const tSnap = wtSaveNow();
+                if (sentSliceKeys && sentSliceKeys.length && wtLastLoadedPayload && typeof wtLastLoadedPayload === "object") {
+                    /* Частичный PUT: обновляем только отправленные ключи в базовом снимке. */
+                    sentSliceKeys.forEach(function (key) {
+                        try {
+                            wtLastLoadedPayload[key] = wtCloneJson(appData[key]);
+                        } catch (err) {}
+                    });
+                } else {
+                    wtLastLoadedPayload = wtCloneJson(appData);
+                }
+                wtSaveMark("update-last-loaded", tSnap);
+            } catch (err) {}
+            wtSaveMark("put-total", tAll);
             return true;
         });
     }).catch(function (err) {
         if (err && err.name === "AbortError") {
             // Сервер мог успеть записать до обрыва ответа — не считаем ни успехом, ни отказом.
             toast("Нет ответа сервера за 60 с. Запись могла пройти или нет — не обновляйте страницу, проверьте сохранение ещё раз.", "error");
+            wtSaveMark("put-timeout", tAll);
             return "timeout";
         }
         toast("Нет соединения с сервером. Изменения не записаны.", "error");
+        wtSaveMark("put-network-error", tAll);
         return false;
     }).then(function (ok) {
         if (timer) clearTimeout(timer);
@@ -28287,6 +28406,10 @@ function saveMetricCatalogForm(id, dupIgnore) {
         }
         toast(msg, "error");
     }
+    if (saveMetricCatalogForm.busy) {
+        toast("Сохранение метрики ещё выполняется…", "error");
+        return;
+    }
     if (!canEditShopMetricCatalog()) {
         formErr("Нет права создавать или изменять метрики.");
         return;
@@ -28570,7 +28693,30 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
     const savedKind = item.kind;
     const back = metricFormReturnSection;
-    Promise.resolve(saveApp()).then(function (ok) {
+    /* Не шлём весь appData (financeRec/табели) — только каталог и связанные ветки. */
+    saveMetricCatalogForm.busy = true;
+    Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice)).then(function (ok) {
+        saveMetricCatalogForm.busy = false;
+        if (ok === "timeout") {
+            /* Не успех: форма остаётся открытой; откат не делаем — сервер мог уже записать. */
+            const box = document.getElementById("mcFormError");
+            if (box) {
+                box.style.display = "";
+                box.textContent = "Нет подтверждения сохранения. Сервер мог уже принять запись — не закрывайте форму, обновите данные с сервера или повторите «Сохранить».";
+            }
+            toast("Ответ сервера не получен за отведённое время. Не считаем метрику сохранённой. Проверьте данные и при необходимости сохраните снова (без F5 сразу).", "error");
+            return;
+        }
+        if (ok === "conflict_review") {
+            /* Merge уже на экране; на сервер не записано. Откат snap запрещён. */
+            const box = document.getElementById("mcFormError");
+            if (box) {
+                box.style.display = "";
+                box.textContent = "Конфликт версий: данные на экране обновлены с сервера и с вашими правками. На сервер ещё не записано — проверьте и нажмите «Сохранить».";
+            }
+            try { refreshMetricCatalogFormulaBox(); } catch (err) {}
+            return;
+        }
         if (!ok) {
             restoreMetricCatalog();
             const box = document.getElementById("mcFormError");
@@ -28593,6 +28739,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
         }
         toast(savedKind === "checklist" ? "Чек-лист сохранён." : "Метрика сохранена.");
     }).catch(function () {
+        saveMetricCatalogForm.busy = false;
         restoreMetricCatalog();
         const box = document.getElementById("mcFormError");
         if (box) {

@@ -2395,6 +2395,7 @@ def fetch_state(cur) -> dict:
 
 
 def persist_payload(cur, payload: dict, expected_version: int, updated_by: str):
+    """Пишет снимок. RETURNING без payload — иначе каждый PUT гоняет весь JSON обратно из PG."""
     cur.execute(
         """
         INSERT INTO app_state (id, payload, version, updated_by)
@@ -2411,7 +2412,7 @@ def persist_payload(cur, payload: dict, expected_version: int, updated_by: str):
             updated_at = NOW(),
             updated_by = %s
         WHERE id = %s AND version = %s
-        RETURNING payload, version, updated_at, updated_by
+        RETURNING version, updated_at, updated_by
         """,
         (json.dumps(payload, ensure_ascii=False), updated_by, STATE_ID, expected_version),
     )
@@ -2825,13 +2826,14 @@ def handle_put_state(environ):
             row = persist_payload(cur, stored, expected, updated_by)
             if row:
                 conn.commit()
-                result = row_to_state(row)
-                stored_payload = result.get("payload") or {}
-                if is_app_admin(user):
-                    result["payload"] = strip_secrets(stored_payload)
-                else:
-                    result["payload"] = filter_state_payload(stored_payload, user)
-                return json_bytes(result)
+                version, updated_at, updated_by_row = row[0], row[1], row[2]
+                # Клиент после PUT читает только version — полный payload не отдаём (экономия сети/CPU).
+                return json_bytes({
+                    "ok": True,
+                    "version": int(version or 0),
+                    "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else (updated_at or ""),
+                    "updated_by": updated_by_row or "",
+                })
             latest = fetch_state(cur)
             conn.rollback()
             return json_bytes(conflict_body(latest), "409 Conflict")

@@ -174,12 +174,20 @@ class FakeCursor:
             self.store["version"] = int(self.store["version"]) + 1
             self.store["updated_by"] = updated_by
             self.store["updated_at"] = datetime.now(timezone.utc)
-            self._row = (
-                self.store["payload"],
-                self.store["version"],
-                self.store["updated_at"],
-                self.store["updated_by"],
-            )
+            # PUT: RETURNING version, updated_at, updated_by (без payload).
+            if "RETURNING version, updated_at, updated_by" in text and "RETURNING payload" not in text:
+                self._row = (
+                    self.store["version"],
+                    self.store["updated_at"],
+                    self.store["updated_by"],
+                )
+            else:
+                self._row = (
+                    self.store["payload"],
+                    self.store["version"],
+                    self.store["updated_at"],
+                    self.store["updated_by"],
+                )
             return
         if "SELECT payload, version" in text:
             self._row = (
@@ -510,6 +518,8 @@ class StoreApiTests(unittest.TestCase):
         }, cookie=cookie)
         self.assertTrue(status.startswith("200"))
         self.assertEqual(data["version"], version + 1)
+        self.assertNotIn("payload", data)
+        self.assertTrue(data.get("ok"))
         stored_users = self.store["payload"]["users"]
         self.assertTrue(str(stored_users[0].get("pin_hash") or "").startswith("scrypt$"))
         self.assertNotIn("pin", stored_users[0])
@@ -517,6 +527,22 @@ class StoreApiTests(unittest.TestCase):
         self.assertTrue(status2.startswith("200"))
         self.assertEqual(got["payload"]["workspaces"][0]["code"], "shop")
         self.assertNotIn("pin_hash", raw)
+
+    def test_put_success_omits_full_payload(self):
+        """Успешный PUT не возвращает весь JSON — только version (ускорение сети)."""
+        cookie, _ = self.login()
+        version = self.current_version(cookie)
+        status, data, raw, _ = call(
+            "PUT",
+            "/api/state",
+            {"version": version, "payload": {"shopMetrics": {"facts": {"t": 1}}}},
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(data["version"], version + 1)
+        self.assertNotIn("payload", data)
+        self.assertNotIn("shopMetrics", raw)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["t"], 1)
 
     def test_stale_version_does_not_overwrite(self):
         cookie, _ = self.login()
@@ -592,7 +618,9 @@ class StoreApiTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), status)
         self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["ok"], 9)
         self.assertEqual(self.store["payload"]["shopMetrics"]["nested"]["employees"][0]["rate"], 777)
-        self.assertIn("shopMetrics", data["payload"])
+        # PUT отвечает без полного payload (только version) — снимок проверяем в store / GET.
+        self.assertEqual(data["version"], int(self.store["version"]))
+        self.assertNotIn("payload", data)
 
     def test_staff_writes_cashier_category_store(self):
         """Продажи/чеки/«Кто работал» лежат в shopMetrics.cashiers и должны сохраняться staff-PUT."""
@@ -1212,12 +1240,15 @@ class StoreApiTests(unittest.TestCase):
             cookie=cookie,
         )
         self.assertTrue(status.startswith("200"), status)
+        self.assertNotIn("payload", data)
         shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
         self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["1"], "О")
         self.assertEqual(shop["employees"][0]["rate"], 1500)
         self.assertEqual(self.store["payload"]["workspaces"][1], before_wh)
         self.assertEqual(self.store["payload"]["salary"], SAMPLE_APP["salary"])
-        codes = [w["code"] for w in data["payload"]["workspaces"]]
+        status_get, got, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status_get.startswith("200"), status_get)
+        codes = [w["code"] for w in got["payload"]["workspaces"]]
         self.assertEqual(codes, ["shop"])
 
     def test_staff_cannot_change_fio_or_rate_via_timesheet(self):
@@ -1292,7 +1323,10 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(shop["timesheet"]["2026-10"]["e_new"]["2"], "О")
         self.assertEqual(self.store["payload"]["workspaces"][1]["employees"][0]["name"], "Кладовщик")
         self.assertEqual(self.store["payload"]["salary"]["2026-10"]["e_shop"]["rate"], 1500)
-        visible = data["payload"]["workspaces"]
+        self.assertNotIn("payload", data)
+        status_get, got, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status_get.startswith("200"), status_get)
+        visible = got["payload"]["workspaces"]
         self.assertEqual([w["code"] for w in visible], ["shop"])
         visible_new = next(e for e in visible[0]["employees"] if e["id"] == "e_new")
         self.assertEqual(visible_new["name"], "Новый Сотрудник")
@@ -3601,6 +3635,37 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("401", save)
         self.assertIn("wtStateVersion = Number(state.version)", save)
         self.assertIn("window.confirm", save)
+        self.assertIn("function metricCatalogPutSlice(", save)
+        self.assertIn("function saveAppWithPayloadSlice(", save)
+        self.assertIn("wtSaveTimingEnabled", save)
+        # Передаём функцию-сборщик, не готовый объект — иначе после 409 уходит устаревший срез.
+        self.assertIn("saveAppWithPayloadSlice(metricCatalogPutSlice)", src)
+        self.assertNotIn("saveAppWithPayloadSlice(metricCatalogPutSlice())", src)
+        self.assertIn("saveMetricCatalogForm.busy", src)
+        cat_save = src[src.find("Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice))"):]
+        cat_save = cat_save[: cat_save.find("function getDeptMetricStored(")]
+        self.assertIn('ok === "timeout"', cat_save)
+        self.assertIn("Нет подтверждения сохранения", cat_save)
+        timeout_branch = cat_save.split('ok === "timeout"')[1].split('ok === "conflict_review"')[0]
+        self.assertNotIn("closeMetricCatalogModal", timeout_branch)
+        self.assertNotIn("Метрика сохранена", timeout_branch)
+        self.assertNotIn("Чек-лист сохранён", timeout_branch)
+        self.assertNotIn("restoreMetricCatalog", timeout_branch)
+        conflict_branch = cat_save.split('ok === "conflict_review"')[1].split("if (!ok)")[0]
+        self.assertNotIn("restoreMetricCatalog", conflict_branch)
+        self.assertNotIn("closeMetricCatalogModal", conflict_branch)
+        self.assertNotIn("Метрика сохранена", conflict_branch)
+        conflict = src[src.find("function handleWtSaveConflict("):src.find("function putServerStateOnce(")]
+        self.assertIn("sliceMode", conflict)
+        self.assertIn("автозапись среза после конфликта отключена", conflict)
+        self.assertIn("wtPutPayloadOverride = null", conflict)
+        self.assertIn('return "conflict_review"', conflict)
+        # В режиме среза после merge нет автоматического putServerStateOnce.
+        slice_block = conflict.split("if (sliceMode)")[1].split('toast("Свежие данные загружены')[0]
+        self.assertNotIn("return putServerStateOnce()", slice_block)
+        api = Path(__file__).resolve().parent.joinpath("wt_api.py").read_text(encoding="utf-8")
+        self.assertIn("RETURNING version, updated_at, updated_by", api)
+        self.assertIn('"ok": True', api)
         self.assertIn("wtThreeWayMerge", save)
         self.assertIn("payloadForServerPut", save)
         self.assertIn("buildStaffPutPayload", save)
