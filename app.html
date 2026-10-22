@@ -14129,7 +14129,12 @@ function positionsForMetricAssignment(dept, workTabId) {
     const all = positionCatalogItems(dept, false);
     if (!workTabId) return all;
     const used = {};
-    employeesForWorkGroup(dept, workTabId).forEach(function (e) {
+    const people = (dept === "shop")
+        ? departmentEmployeePool("shop").filter(function (e) {
+            return e && isWorking(e) && employeeCardWorkGroupId(e, "shop") === workTabId;
+        })
+        : employeesForWorkGroup(dept, workTabId);
+    people.forEach(function (e) {
         if (e && e.position_id) used[e.position_id] = true;
         const hit = e ? positionCatalogByName(dept, e.position) : null;
         if (hit) used[hit.position_id] = true;
@@ -14141,13 +14146,26 @@ function positionsForMetricAssignment(dept, workTabId) {
     return filtered.length ? filtered : all;
 }
 
+/**
+ * Кандидаты ФИО для строки назначения.
+ * Магазин Володарского: только основная группа карточки + должность.
+ * Территория: прежняя логика (employeesForWorkGroup), без изменений для замещений.
+ */
 function employeesForMetricAssignmentRow(row) {
     if (!row || !row.department_id || !row.work_tab_id) return [];
     const dept = String(row.department_id);
+    if (dept === "shop") {
+        return departmentEmployeePool("shop").filter(function (e) {
+            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
+            if (!isWorking(e)) return false;
+            if (isTerritoryEmployee(e) || employeeHomeDeptCode(e.id) !== "shop") return false;
+            if (employeeCardWorkGroupId(e, "shop") !== row.work_tab_id) return false;
+            if (!employeeHasPositionId(e, row.position_id)) return false;
+            return true;
+        }).sort(compareEmployeesByStatusThenName);
+    }
     return employeesForWorkGroup(dept, row.work_tab_id).filter(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
-        const home = employeeHomeDeptCode(e.id);
-        if (dept === "shop" && isTerritoryCode(home)) return false;
         if (!employeeHasPositionId(e, row.position_id)) return false;
         return true;
     });
@@ -14164,7 +14182,12 @@ function employeeMatchesMetricAssignments(item, employee, workTabId) {
         if (row.department_id === "shop" && isTerritoryCode(home)) return false;
         const inRowDept = belongsToWorkspace(findWorkspaceByCode(row.department_id), employee.id);
         if (!inRowDept && home !== row.department_id) return false;
-        if (!employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)) return false;
+        // Магазин: только основная группа карточки. Территория: без ужесточения.
+        if (row.department_id === "shop") {
+            if (employeeCardWorkGroupId(employee, "shop") !== row.work_tab_id) return false;
+        } else if (!employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)) {
+            return false;
+        }
         if (!employeeHasPositionId(employee, row.position_id)) return false;
         if (row.assign_mode === "specific") {
             return (row.employee_ids || []).indexOf(employee.id) !== -1;
@@ -17710,10 +17733,12 @@ function shopMetricEmployees(category) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (employeeHomeDeptCode(e.id) !== "shop") return;
         if (isTerritoryEmployee(e)) return;
+        // Магазин: только основная группа карточки (не история, не work_group_ids[], не workAccess).
+        if (employeeCardWorkGroupId(e, "shop") !== tab) return;
         seen[e.id] = true;
         list.push(e);
     }
-    employeesForWorkGroup("shop", tab, { includeInactive: true }).forEach(function (e) {
+    departmentEmployeePool("shop").forEach(function (e) {
         const hasData = shopMetricEmployeeHasMonthData(tab, e.id);
         if (isWorking(e) || hasData) add(e);
     });
@@ -17722,7 +17747,6 @@ function shopMetricEmployees(category) {
         if (seen[id] || !shopMetricEmployeeHasMonthData(tab, id)) return;
         const found = getEmployee(id);
         if (!found || employeeHomeDeptCode(found.id) !== "shop") return;
-        if (!employeeBelongsToWorkGroup(found, "shop", tab)) return;
         add(found);
     });
     list.sort(compareEmployeesByStatusThenName);
@@ -29005,8 +29029,10 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     const seen = {};
     function consider(e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
-        // Личное назначение (workAccess) не зависит от основной группы/должности.
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
+        // Магазин Володарского: колонка только если основная группа карточки = эта таблица.
+        // workAccess / старые назначения / история групп сами по себе колонку не создают.
+        if (code === "shop" && employeeCardWorkGroupId(e, "shop") !== tab) return;
         if (!isWorking(e)) {
             if (isGenericMetricsDept(code)) {
                 if (!deptMetricEmployeeHasData(code, e.id, mid)) return;
@@ -29020,8 +29046,7 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     if (code === "shop") {
         departmentEmployeePool("shop").forEach(consider);
     } else {
-        // Территория: пул отдела (изоляция от магазина) + личная галочка workAccess.
-        // Не требуем home===homeCode: запись в employees отдела достаточна.
+        // Территория: без ужесточения по основной группе (отдельная логика замещений позже).
         TERRITORY_DEPT_CODES.forEach(function (homeCode) {
             departmentEmployeePool(homeCode).forEach(consider);
         });

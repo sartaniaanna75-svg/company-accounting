@@ -1103,7 +1103,7 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn('base["workAccess"] = _merge_access_map(', api)
 
     def test_client_work_access_drives_metric_table_people(self):
-        """Личный workAccess показывает сотрудника в родной таблице метрики без фильтра должности/группы."""
+        """Магазин: колонка = workAccess И основная группа карточки; Территория: без ужесточения группы."""
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
         self.assertIn("function metricHostsOnDeptTab(", src)
         self.assertIn("function metricAssignmentPlaceCaption(", src)
@@ -1113,9 +1113,16 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("shopEmployeeHasWorkMetric", people_fn)
         self.assertIn("metricHostsOnDeptTab", people_fn)
         self.assertIn("TERRITORY_DEPT_CODES.forEach", people_fn)
-        # Личное назначение не режется основной рабочей группой сотрудника.
+        # Магазин Володарского: основная группа карточки обязательна для колонки.
+        self.assertIn('code === "shop" && employeeCardWorkGroupId(e, "shop") !== tab', people_fn)
         self.assertNotIn("employeeBelongsToWorkGroup", people_fn)
         self.assertNotIn("employeeMatchesMetricAssignments", people_fn)
+        shop_emp = src[
+            src.find("function shopMetricEmployees(") : src.find("function parseShopMetricNumber(")
+        ]
+        self.assertIn('employeeCardWorkGroupId(e, "shop") !== tab', shop_emp)
+        self.assertNotIn("employeesForWorkGroup(\"shop\"", shop_emp)
+        self.assertNotIn("employeeBelongsToWorkGroup", shop_emp)
         hub = src[src.find("function territoryHubPeople(") : src.find("function syncTerritoryMetricsHubNav(")]
         self.assertIn("shopEmployeeHasWorkMetric", hub)
         self.assertNotIn("employeeBelongsToWorkGroup", hub)
@@ -1159,8 +1166,14 @@ class StoreApiTests(unittest.TestCase):
         asg_people = src[
             src.find("function employeesForMetricAssignmentRow(") : src.find("function employeeMatchesMetricAssignments(")
         ]
-        self.assertIn("dept === \"shop\" && isTerritoryCode(home)", asg_people)
-        self.assertNotIn("!isTerritoryEmployee(e)", asg_people)
+        # Магазин: фильтр по основной группе карточки; Территория — employeesForWorkGroup.
+        self.assertIn('employeeCardWorkGroupId(e, "shop") !== row.work_tab_id', asg_people)
+        self.assertIn("employeesForWorkGroup(dept, row.work_tab_id)", asg_people)
+        match_asg = src[
+            src.find("function employeeMatchesMetricAssignments(") : src.find("function syncWorkTabIdsFromMetricAssignments(")
+        ]
+        self.assertIn('employeeCardWorkGroupId(employee, "shop") !== row.work_tab_id', match_asg)
+        self.assertIn("employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)", match_asg)
         ts = src[
             src.find("function timesheetEmployeesForView(") : src.find("function renderTimesheetGroupFilter(")
         ]
