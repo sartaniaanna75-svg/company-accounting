@@ -1144,15 +1144,26 @@ class StoreApiTests(unittest.TestCase):
         belong = src[
             src.find("function employeeBelongsToWorkGroup(") : src.find("function employeeCardWorkGroupId(")
         ]
-        self.assertIn("employeeHomeDeptCode(employee.id) !== dept", belong)
+        # Изоляция Магазин↔Территория; точный home===dept больше не режет складских.
+        self.assertIn("dept === \"shop\" && isTerritoryCode(home)", belong)
+        self.assertIn("isTerritoryCode(dept) && home === \"shop\"", belong)
+        self.assertNotIn("employeeHomeDeptCode(employee.id) !== dept", belong)
         pool = src[
             src.find("function departmentEmployeePool(") : src.find("function territoryDeptEmployeePool(")
         ]
-        self.assertIn("code === \"shop\" && isTerritoryEmployee(e)", pool)
+        self.assertIn("code === \"shop\" && isTerritoryCode(home)", pool)
+        self.assertIn("code !== \"shop\" && home === \"shop\"", pool)
+        self.assertNotIn("employeeHomeDeptCode(e.id) !== code", pool)
+        self.assertNotIn("!isTerritoryEmployee(e)", pool)
         asg_people = src[
             src.find("function employeesForMetricAssignmentRow(") : src.find("function employeeMatchesMetricAssignments(")
         ]
-        self.assertIn("dept === \"shop\" && isTerritoryEmployee(e)", asg_people)
+        self.assertIn("dept === \"shop\" && isTerritoryCode(home)", asg_people)
+        self.assertNotIn("!isTerritoryEmployee(e)", asg_people)
+        ts = src[
+            src.find("function timesheetEmployeesForView(") : src.find("function renderTimesheetGroupFilter(")
+        ]
+        self.assertIn("directoryEmployees(w).forEach(add)", ts)
         save = src[src.find("function saveMetricCatalogForm(") : src.find("function saveMetricCatalogForm(") + 12000]
         self.assertIn("assignmentDeptAllowedForCategory(row.department_id, catRaw)", save)
         self.assertIn("нельзя смешивать Магазин Володарского и Территорию", save)
