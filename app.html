@@ -6936,6 +6936,8 @@ function metricResultRoutes(item) {
 
 function applyMetricResultRoute(item) {
     if (!item || !metricRollupEnabled(item)) return;
+    // Без галочки «Участвует в СПУ» не проталкиваем метрику в показатели (существующие связи не удаляем).
+    if (!metricUseInSpu(item)) return;
     ensureManagement();
     metricResultRoutes(item).forEach(function (route) {
         if (!route || (route.target && route.target !== "spu")) return;
@@ -7323,6 +7325,8 @@ function employeeBelongsToWorkGroup(employee, dept, workTabId, month) {
     const tab = String(workTabId || "");
     if (!tab) return true;
     if (!employee) return false;
+    // Одинаковые id групп (managers/pickers) у Магазина и Территории — не смешивать объекты.
+    if (dept && employee.id && employeeHomeDeptCode(employee.id) !== dept) return false;
     return employeeWorkGroupIds(employee, dept, month).indexOf(tab) !== -1;
 }
 function employeeCardWorkGroupId(employee, dept, month) {
@@ -7358,6 +7362,8 @@ function departmentEmployeePool(deptCode) {
     ((w && w.employees) || []).forEach(function (e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (employeeHomeDeptCode(e.id) !== code) return;
+        // Магазин Володарского и Территория — разные объекты: не пересекать пулы.
+        if (code === "shop" && isTerritoryEmployee(e)) return;
         if (code !== "shop" && employeeHomeDeptCode(e.id) === "shop") return;
         if (isTerritoryCode(code) && !isTerritoryEmployee(e)) return;
         seen[e.id] = true;
@@ -14021,19 +14027,21 @@ function metricCatalogGroupEmployees(item) {
         });
     }
     const dept = metricDepartmentId(item);
-    const w = findWorkspaceByCode(dept);
     const tabs = metricWorkTabIds(item);
+    if (!dept) return [];
+    if (!tabs.length) {
+        return departmentEmployeePool(dept).filter(function (e) {
+            try { return !!(e && e.id && isWorking(e)); } catch (err) { console.error(err); return false; }
+        });
+    }
+    const seen = {};
     const out = [];
-    ((w && w.employees) || []).forEach(function (e) {
-        try {
-            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || !isWorking(e)) return;
-            if (employeeHomeDeptCode(e.id) === "shop") return;
-            if (!tabs.length) return;
-            if (!tabs.some(function (tab) { return employeeBelongsToWorkGroup(e, dept, tab); })) return;
+    tabs.forEach(function (tab) {
+        employeesForWorkGroup(dept, tab).forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
             out.push(e);
-        } catch (err) {
-            console.error(err);
-        }
+        });
     });
     return out;
 }
@@ -14075,7 +14083,7 @@ function applyMetricCatalogSpecificAssignment(item, employeeIds) {
     const handled = {};
     const applyList = cat
         ? territoryCategoryEmployeePool(cat)
-        : ((findWorkspaceByCode(metricDepartmentId(item)) || {}).employees || []);
+        : departmentEmployeePool(metricDepartmentId(item));
     applyList.forEach(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
         applyShopEmployeeWorkMetric(e.id, item.id, !!want[e.id]);
@@ -14124,9 +14132,12 @@ function positionsForMetricAssignment(dept, workTabId) {
 
 function employeesForMetricAssignmentRow(row) {
     if (!row || !row.department_id || !row.work_tab_id) return [];
-    return employeesForWorkGroup(row.department_id, row.work_tab_id).filter(function (e) {
+    const dept = String(row.department_id);
+    return employeesForWorkGroup(dept, row.work_tab_id).filter(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
-        if (employeeHomeDeptCode(e.id) !== row.department_id) return false;
+        if (employeeHomeDeptCode(e.id) !== dept) return false;
+        if (dept === "shop" && isTerritoryEmployee(e)) return false;
+        if (dept !== "shop" && !isTerritoryEmployee(e)) return false;
         if (!employeeHasPositionId(e, row.position_id)) return false;
         return true;
     });
@@ -14544,16 +14555,46 @@ function catalogFilterEmployeeOptions(items) {
 }
 
 function employeeHomeDeptCode(employeeId) {
-    const list = (appData && appData.workspaces) || [];
-    for (let i = 0; i < list.length; i++) {
-        const w = list[i];
-        if (!w || w.type === "summary") continue;
-        if ((w.employees || []).some(function (e) { return e && e.id === employeeId; })) {
-            return w.code || "shop";
-        }
-    }
+    // Единый путь с employeeHome (не отдельный «первый в массиве» обход).
+    const home = typeof employeeHome === "function" ? employeeHome(employeeId) : null;
+    if (home && home.code) return home.code;
     const cur = workspace();
     return (cur && cur.code) || "shop";
+}
+
+/** Диагностика: один employee_id в нескольких workspace (без удаления/переноса). */
+function findDuplicateEmployeeIdsAcrossWorkspaces() {
+    const map = {};
+    ((appData && appData.workspaces) || []).forEach(function (w) {
+        if (!w || w.type === "summary" || !w.code) return;
+        ((w.employees) || []).forEach(function (e) {
+            if (!e || !e.id) return;
+            if (!map[e.id]) map[e.id] = { employee_id: e.id, name: e.name || "", departments: [] };
+            if (map[e.id].departments.indexOf(w.code) === -1) map[e.id].departments.push(w.code);
+            if (e.name && !map[e.id].name) map[e.id].name = e.name;
+        });
+    });
+    return Object.keys(map).map(function (id) { return map[id]; }).filter(function (row) {
+        return row.departments && row.departments.length > 1;
+    });
+}
+
+function employeeDuplicateIdsReportHtml() {
+    const rows = findDuplicateEmployeeIdsAcrossWorkspaces();
+    if (!rows.length) return "";
+    let html = '<div class="note" style="border:1px solid #a67c00;background:#fffbeb;padding:10px;margin:0 0 12px;border-radius:8px">'
+        + "<strong>Обнаружены сотрудники с одним id в нескольких подразделениях (" + rows.length + ").</strong>"
+        + "<div style=\"margin-top:6px\">Автоматически не переносим и не удаляем. Домашнее подразделение берётся через employeeHome; "
+        + "смена модели (явное home_department) — только после согласования.</div>"
+        + '<ul style="margin:8px 0 0;padding-left:18px;max-height:140px;overflow:auto">';
+    rows.slice(0, 30).forEach(function (r) {
+        html += "<li>" + escapeHtml(r.name || r.employee_id)
+            + ' <span class="mgmt-src">' + escapeHtml(r.employee_id) + " → "
+            + escapeHtml((r.departments || []).join(", ")) + "</span></li>";
+    });
+    if (rows.length > 30) html += "<li>… и ещё " + (rows.length - 30) + "</li>";
+    html += "</ul></div>";
+    return html;
 }
 
 function ensureDeptMetrics(deptCode) {
@@ -16253,8 +16294,7 @@ function shopMaterializeWorkAccessMonth(month, deptCode) {
     const root = metricsStoreForDept(code);
     if (!root.workAccess[m] || typeof root.workAccess[m] !== "object") root.workAccess[m] = {};
     const map = root.workAccess[m];
-    const w = findWorkspaceByCode(isGenericMetricsDept(code) ? code : "shop");
-    ((w && w.employees) || []).forEach(function (e) {
+    departmentEmployeePool(isGenericMetricsDept(code) ? code : "shop").forEach(function (e) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
         if (!Object.prototype.hasOwnProperty.call(map, e.id) || !Array.isArray(map[e.id])) {
             map[e.id] = Array.isArray(map[e.id]) ? map[e.id] : shopWorkAccessInheritIds(e.id, m);
@@ -16444,6 +16484,18 @@ function renderShopMetricAccessPanel() {
     }
 }
 
+/** Правило 1 ФИО: подразделение справочника; multi-dept — только явный assignments[].department_id. */
+function metricBelongsToEmployeeDeptForFio(item, deptCode) {
+    if (!item || !deptCode) return false;
+    if (metricDepartmentId(item) === deptCode) return true;
+    if (Array.isArray(item.assignments) && item.assignments.length) {
+        return item.assignments.some(function (row) {
+            return !!(row && row.department_id === deptCode);
+        });
+    }
+    return false;
+}
+
 function shopGrantableExtraMetrics(employee) {
     const empId = employee && employee.id;
     const dept = empId ? employeeHomeDeptCode(empId) : catalogDeptContext();
@@ -16452,16 +16504,11 @@ function shopGrantableExtraMetrics(employee) {
         if (!it) return false;
         const keepInactive = empId && shopEmployeeHasWorkMetric(empId, def.id);
         if (it.active === false && !keepInactive) return false;
-        // Магазин: только метрики магазина (вкладки pickers/cashiers/managers — у самой метрики).
-        if (dept === "shop") return metricDepartmentId(it) === "shop";
-        // Территория: не смешивать с магазином.
-        if (metricDepartmentId(it) === "shop") return false;
-        if (metricTerritoryCategory(it) === "common") return true;
-        const mDept = metricDepartmentId(it);
-        // Личное назначение может быть на метрику другого объекта Территории (склад → Продажи ОПТ).
-        if (isGenericMetricsDept(dept) && isGenericMetricsDept(mDept)) return true;
-        if (mDept === dept) return true;
-        return !!keepInactive;
+        // Правило 1 — подразделение из справочника (не по названию; не «все объекты Территории»).
+        if (!metricBelongsToEmployeeDeptForFio(it, dept)) return false;
+        // Правило 2 — назначения: группа / должность / сотрудник (без tab-среза — membership внутри).
+        if (!employeeMatchesMetricAssignments(it, employee, "")) return false;
+        return true;
     });
 }
 
@@ -17627,6 +17674,8 @@ function shopMetricEmployees(category) {
     const list = [];
     function add(e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        if (employeeHomeDeptCode(e.id) !== "shop") return;
+        if (isTerritoryEmployee(e)) return;
         seen[e.id] = true;
         list.push(e);
     }
@@ -17638,7 +17687,8 @@ function shopMetricEmployees(category) {
         if (id === SHOP_SELF_CHECKOUT_ID) return;
         if (seen[id] || !shopMetricEmployeeHasMonthData(tab, id)) return;
         const found = getEmployee(id);
-        if (!found || !employeeBelongsToWorkGroup(found, "shop", tab)) return;
+        if (!found || employeeHomeDeptCode(found.id) !== "shop") return;
+        if (!employeeBelongsToWorkGroup(found, "shop", tab)) return;
         add(found);
     });
     list.sort(compareEmployeesByStatusThenName);
@@ -17970,17 +18020,24 @@ function shopCashierAbsenceReasonId(slotId, day, month) {
 }
 
 function shopCashierPeopleForActual(slotId, day) {
-    const w = findWorkspaceByCode("shop");
     const seen = {};
     const list = [];
-    function add(e) {
+    function add(e, allowOrphan) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id]) return;
+        if (!allowOrphan) {
+            if (employeeHomeDeptCode(e.id) !== "shop") return;
+            if (isTerritoryEmployee(e)) return;
+        }
         seen[e.id] = true;
         list.push(e);
     }
-    ((w && w.employees) || []).forEach(add);
+    departmentEmployeePool("shop").forEach(function (e) { add(e, false); });
     const actualId = shopCashierSlotActualId(slotId, day);
-    if (actualId) add(getEmployee(actualId) || { id: actualId, name: "Сотрудник удалён" });
+    if (actualId) {
+        const actual = getEmployee(actualId);
+        if (actual) add(actual, false);
+        else add({ id: actualId, name: "Сотрудник удалён" }, true);
+    }
     list.sort(compareEmployeesByStatusThenName);
     return list;
 }
@@ -27757,17 +27814,64 @@ function metricCatalogAssignmentFormActive() {
     return !!document.getElementById("mcAssignList");
 }
 
+/** Допустимые department_id для назначений: Магазин и Территория не смешиваются. */
+function allowedAssignmentDeptCodesForCategory(catRaw) {
+    const cat = String(catRaw || "");
+    if (cat === "shop" || cat === "") return ["shop"];
+    const spec = territoryMetricCategoryById(cat);
+    if (spec && spec.allTerritory) return TERRITORY_DEPT_CODES.slice();
+    if (spec && spec.departmentId) return [String(spec.departmentId)];
+    return TERRITORY_DEPT_CODES.slice();
+}
+
+function assignmentDeptAllowedForCategory(deptCode, catRaw) {
+    return allowedAssignmentDeptCodesForCategory(catRaw).indexOf(String(deptCode || "")) !== -1;
+}
+
+function deptsForMetricAssignmentFormRow(row) {
+    const cat = String((document.getElementById("mcCategory") || {}).value || "");
+    const codes = allowedAssignmentDeptCodesForCategory(cat).slice();
+    // Устаревшая строка с чужим отделом остаётся видимой, пока администратор не исправит.
+    if (row && row.department_id && codes.indexOf(row.department_id) === -1) {
+        codes.push(row.department_id);
+    }
+    return DEPT_DEFAULTS.filter(function (d) { return d && codes.indexOf(d.code) !== -1; });
+}
+
+function sanitizeMetricCatalogAssignDraftForCategory(catRaw) {
+    const allowed = allowedAssignmentDeptCodesForCategory(catRaw);
+    if (!allowed.length || !Array.isArray(mcAssignDraft)) return;
+    mcAssignDraft.forEach(function (row) {
+        if (!row) return;
+        if (allowed.indexOf(row.department_id) === -1) {
+            row.department_id = allowed[0];
+            const tabs = metricTabsForDept(row.department_id);
+            row.work_tab_id = (tabs[0] && tabs[0].id) || "";
+            row.position_id = "";
+            row.employee_ids = [];
+            return;
+        }
+        const ok = {};
+        employeesForMetricAssignmentRow(row).forEach(function (e) {
+            if (e && e.id) ok[e.id] = true;
+        });
+        row.employee_ids = (row.employee_ids || []).filter(function (id) { return !!ok[id]; });
+    });
+}
+
 function defaultMetricCatalogAssignmentRow() {
     const cat = String((document.getElementById("mcCategory") || {}).value || "");
     const isShopCat = cat === "shop" || cat === "";
     const spec = (!isShopCat && cat) ? territoryMetricCategoryById(cat) : null;
+    const allowed = allowedAssignmentDeptCodesForCategory(cat);
     const deptEl = document.getElementById("mcDept");
-    const dept = isShopCat
+    let dept = isShopCat
         ? "shop"
         : ((spec && spec.departmentId)
             || (deptEl && deptEl.value)
             || catalogDeptContext()
             || "office");
+    if (allowed.indexOf(dept) === -1) dept = allowed[0] || (isShopCat ? "shop" : "office");
     const tabs = metricTabsForDept(dept);
     let workTab = "";
     if (spec && Array.isArray(spec.workTabIds) && spec.workTabIds.length) {
@@ -27775,7 +27879,6 @@ function defaultMetricCatalogAssignmentRow() {
     } else if (tabs.length) {
         workTab = tabs[0].id;
     }
-    const positions = positionsForMetricAssignment(dept, workTab);
     const positionId = "";
     return {
         assignment_id: nextMetricAssignmentId(mcAssignDraft),
@@ -27838,6 +27941,12 @@ function removeMetricCatalogAssignment(idx) {
 function onMetricCatalogAssignmentField(idx, field, value) {
     const row = mcAssignDraft[idx];
     if (!row) return;
+    const cat = String((document.getElementById("mcCategory") || {}).value || "");
+    if (field === "department_id" && value && !assignmentDeptAllowedForCategory(value, cat)) {
+        toast("Нельзя назначить метрику между Магазином Володарского и Территорией.", "error");
+        renderMetricCatalogAssignments();
+        return;
+    }
     row[field] = value;
     if (field === "department_id") {
         row.work_tab_id = "";
@@ -27846,9 +27955,9 @@ function onMetricCatalogAssignmentField(idx, field, value) {
     } else if (field === "work_tab_id") {
         row.position_id = "";
         row.employee_ids = [];
-    } else if (field === "position_id") {
+    } else if (field === "position_id" || field === "assign_mode") {
         const allowed = {};
-        employeesForMetricAssignmentRow(row).forEach(function (e) { allowed[e.id] = true; });
+        employeesForMetricAssignmentRow(row).forEach(function (e) { if (e) allowed[e.id] = true; });
         row.employee_ids = (row.employee_ids || []).filter(function (id) { return allowed[id]; });
     }
     renderMetricCatalogAssignments();
@@ -27858,6 +27967,12 @@ function onMetricCatalogAssignmentEmployee(idx, employeeId, checked) {
     const row = mcAssignDraft[idx];
     if (!row) return;
     if (!Array.isArray(row.employee_ids)) row.employee_ids = [];
+    if (checked) {
+        const allowed = employeesForMetricAssignmentRow(row).some(function (e) {
+            return e && e.id === employeeId;
+        });
+        if (!allowed) return;
+    }
     const i = row.employee_ids.indexOf(employeeId);
     if (checked && i === -1) row.employee_ids.push(employeeId);
     if (!checked && i !== -1) row.employee_ids.splice(i, 1);
@@ -27875,12 +27990,12 @@ function renderMetricCatalogAssignments() {
     const box = document.getElementById("mcAssignList");
     if (!box) return;
     if (!Array.isArray(mcAssignDraft)) mcAssignDraft = [];
-    const depts = DEPT_DEFAULTS.filter(function (d) { return d && d.code; });
     if (!mcAssignDraft.length) {
         box.innerHTML = '<div class="note">Назначений нет. Добавьте хотя бы одно — это не создаёт копию чек-листа/метрики.</div>';
         return;
     }
     box.innerHTML = mcAssignDraft.map(function (row, idx) {
+        const depts = deptsForMetricAssignmentFormRow(row);
         const tabs = metricTabsForDept(row.department_id);
         const positions = positionsForMetricAssignment(row.department_id, row.work_tab_id);
         const people = employeesForMetricAssignmentRow(row);
@@ -28004,8 +28119,10 @@ function onMetricCatalogCategoryChange() {
         const formId = String((document.getElementById("mcMetricId") || {}).value || "");
         if (!formId) {
             mcAssignDraft = [defaultMetricCatalogAssignmentRow()];
-            renderMetricCatalogAssignments();
+        } else {
+            sanitizeMetricCatalogAssignDraftForCategory(cat);
         }
+        renderMetricCatalogAssignments();
         refreshMetricCatalogFormulaBox();
         return;
     }
@@ -28456,6 +28573,18 @@ function saveMetricCatalogForm(id, dupIgnore) {
                 asgErr = "В назначении №" + (idx + 1) + " выберите раздел и рабочую группу.";
                 return;
             }
+            if (!assignmentDeptAllowedForCategory(row.department_id, catRaw)) {
+                asgErr = "В назначении №" + (idx + 1)
+                    + " нельзя смешивать Магазин Володарского и Территорию.";
+                return;
+            }
+            const allowedPeople = {};
+            employeesForMetricAssignmentRow(row).forEach(function (e) {
+                if (e && e.id) allowedPeople[e.id] = true;
+            });
+            row.employee_ids = (row.employee_ids || []).filter(function (id) {
+                return !!allowedPeople[id];
+            });
             if (row.assign_mode === "specific" && !(row.employee_ids || []).length) {
                 asgErr = "В назначении №" + (idx + 1) + " отметьте сотрудников или выберите «Все подходящие».";
             }
@@ -28464,7 +28593,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
             formErr(asgErr);
             return;
         }
-        // Home department: first assignment wins; category only suggests display hub.
+        // Home department: first assignment wins within the same object (shop XOR territory).
         if (assignmentRows[0] && assignmentRows[0].department_id) dept = assignmentRows[0].department_id;
         else if (isShopCategory) dept = "shop";
         else if (spec && spec.departmentId) dept = spec.departmentId;
@@ -33590,11 +33719,78 @@ function spuParticipatingWorkMetrics(keepIds) {
         const mid = canonicalMetricId(id);
         if (mid) keep[mid] = true;
     });
-    // Для выбора источника показателя СПУ доступен весь каталог WT.
-    // Сами метрики в список «Показатели СПУ» не попадают.
+    // Новые подключения — только use_in_spu === true.
+    // keepIds: уже привязанные к открытому показателю метрики (даже без галочки) остаются видимыми, связи не рвём.
     return spuWorkMetricsCatalog().filter(function (m) {
-        return !!m && !!m.id;
+        if (!m || !m.id) return false;
+        const mid = canonicalMetricId(m.id);
+        if (keep[mid]) return true;
+        return metricUseInSpu(m);
     });
+}
+
+/** Показатели СПУ, у которых источник WT без галочки «Участвует в СПУ» (связи не трогаем). */
+function spuMetricLinkConflictsWithoutUseInSpu() {
+    const out = [];
+    const seen = {};
+    ensureManagement();
+    function pushConflict(it, mid, via) {
+        mid = canonicalMetricId(mid);
+        if (!mid || !it) return;
+        const m = shopMetricCatalogById(mid);
+        if (!m || metricUseInSpu(m)) return;
+        const key = String(it.indicator_id || "") + "|" + mid + "|" + via;
+        if (seen[key]) return;
+        seen[key] = true;
+        out.push({
+            indicator_id: it.indicator_id || "",
+            indicator_name: it.name || it.indicator_id || "",
+            metric_id: mid,
+            metric_name: m.name || mid,
+            via: via
+        });
+    }
+    ((appData.management && appData.management.indicators) || []).forEach(function (it) {
+        if (!it || it.is_deleted) return;
+        if (it.source_type === "worktime_metric") {
+            pushConflict(it, it.source_metric_id, "source_metric_id");
+        }
+        (Array.isArray(it.sources) ? it.sources : []).forEach(function (s) {
+            if (!s || s.source_type !== "worktime_metric") return;
+            pushConflict(it, s.source_metric_id, "sources");
+        });
+    });
+    shopMetricCatalogItems().forEach(function (m) {
+        if (!m || metricUseInSpu(m)) return;
+        metricResultRoutes(m).forEach(function (route) {
+            if (!route || !route.spu_indicator_id) return;
+            const ind = ((appData.management && appData.management.indicators) || []).find(function (x) {
+                return x && x.indicator_id === route.spu_indicator_id;
+            });
+            if (ind) pushConflict(ind, m.id, "result_route");
+        });
+    });
+    return out;
+}
+
+function spuMetricLinkConflictsHtml() {
+    const rows = spuMetricLinkConflictsWithoutUseInSpu();
+    if (!rows.length) return "";
+    let html = '<div class="note" style="border:1px solid #c45c26;background:#fff7f0;padding:10px;margin:0 0 12px;border-radius:8px">'
+        + "<strong>Конфликт: показатели СПУ связаны с метриками без галочки «Участвует в СПУ» (" + rows.length + ").</strong>"
+        + "<div style=\"margin-top:6px\">Связи <b>не разорваны</b>. Для новых подключений такие метрики недоступны.</div>"
+        + "<div style=\"margin-top:6px\"><b>Безопасный порядок:</b> 1) откройте метрику и включите «Участвует в СПУ», "
+        + "либо 2) смените источник показателя на другую отмеченную метрику / ручной ввод. "
+        + "Не снимайте галочку у метрики «вслепую» — при снятии программа спросит подтверждение снятия связей.</div>"
+        + '<ul style="margin:8px 0 0;padding-left:18px;max-height:160px;overflow:auto">';
+    rows.slice(0, 40).forEach(function (r) {
+        html += "<li>" + escapeHtml(r.indicator_name)
+            + " ← " + escapeHtml(r.metric_name)
+            + ' <span class="mgmt-src">(' + escapeHtml(r.metric_id) + ", " + escapeHtml(r.via) + ")</span></li>";
+    });
+    if (rows.length > 40) html += "<li>… и ещё " + (rows.length - 40) + "</li>";
+    html += "</ul></div>";
+    return html;
 }
 
 /** Раздел каталога WT для фильтра источника: shop | territory (стабильные ID). */
@@ -35618,7 +35814,11 @@ function renderSpuMetricSettingsHtml() {
     rows = rows.slice().sort(function (a, b) {
         return String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
-    let html = '<p class="spu-ind-note">Каталог Метрик Work Time — только для выбора <b>источника</b> показателя СПУ (тот же metric_id, без копий). Отметка «Участвует в СПУ» помечает удобные источники; сама метрика не становится показателем СПУ и не попадает в План–факт автоматически.</p>';
+    let html = '<p class="spu-ind-note">Каталог Метрик Work Time — выбор <b>источника</b> показателя СПУ (тот же metric_id, без копий). '
+        + "Для <b>нового</b> подключения нужна галочка «Участвует в СПУ». Сама метрика не становится показателем СПУ. "
+        + "Зарплата и KPI от этой галочки не зависят.</p>";
+    html += spuMetricLinkConflictsHtml();
+    html += employeeDuplicateIdsReportHtml();
     html += '<div class="metrics-tabs" style="margin:0 0 12px">'
         + '<button type="button" class="metrics-tab' + (inner === "in_spu" ? " active" : "") + '" onclick="setSpuMetricsInnerTab(\'in_spu\')">Помеченные как источник (' + all.filter(metricUseInSpu).length + ")</button>"
         + '<button type="button" class="metrics-tab' + (inner === "all" ? " active" : "") + '" onclick="setSpuMetricsInnerTab(\'all\')">Весь каталог WT (' + all.length + ')</button>'
@@ -42169,9 +42369,21 @@ function saveMgmtIndicator(id) {
         hideSpuIndicatorFromWorkMetrics(it);
     } else if (it.source_type === "worktime_metric") {
         spuIndSyncDraftFromDom();
+        const prevKeep = {};
+        function markPrevMetric(mid) {
+            mid = canonicalMetricId(mid);
+            if (mid) prevKeep[mid] = true;
+        }
+        markPrevMetric(prevMetricId);
+        (Array.isArray(it.sources) ? it.sources : []).forEach(function (s) {
+            if (s && s.source_type === "worktime_metric") markPrevMetric(s.source_metric_id);
+        });
         const sources = (spuIndFormSources || []).filter(function (s) {
             const m = shopMetricCatalogById(s && s.source_metric_id);
-            return !!(m && (metricUseInSpu(m) || canonicalMetricId(m.id) === canonicalMetricId(prevMetricId)));
+            if (!m) return false;
+            if (metricUseInSpu(m)) return true;
+            // Уже подключённые ранее — оставляем; новые без галочки не принимаем.
+            return !!prevKeep[canonicalMetricId(m.id)];
         });
         if (!sources.length) return mgmtMarkInvalid("miSource", "Выберите метрику, отмеченную «Участвует в СПУ».");
         const first = sources[0];

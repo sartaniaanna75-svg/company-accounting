@@ -1122,13 +1122,60 @@ class StoreApiTests(unittest.TestCase):
         grant = src[
             src.find("function shopGrantableExtraMetrics(") : src.find("function shopMetricFactsMonth(")
         ]
-        self.assertIn("isGenericMetricsDept(dept) && isGenericMetricsDept(mDept)", grant)
+        # Двухэтапный фильтр ФИО: сначала подразделение справочника, затем назначения.
+        self.assertNotIn("isGenericMetricsDept(dept) && isGenericMetricsDept(mDept)", grant)
+        self.assertIn("metricBelongsToEmployeeDeptForFio", grant)
+        self.assertIn("employeeMatchesMetricAssignments", grant)
+        self.assertIn("function metricBelongsToEmployeeDeptForFio(", src)
         card = src[src.find("function shopExtraFunctionsHtml(") : src.find("function renderFio(")]
         self.assertIn("metricAssignmentPlaceCaption", card)
         self.assertIn("emp-extra-fn-place", card)
         # Связка: магазин и dept tabs используют один people-builder.
         self.assertIn("return workMetricPeopleForTab(\"shop\", metricId, catId)", src)
         self.assertIn("return workMetricPeopleForTab(deptCode, metricId, tabId", src)
+
+    def test_client_shop_territory_assignment_isolation(self):
+        """Магазин Володарского и Территория не смешиваются в назначениях и пулах сотрудников."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function allowedAssignmentDeptCodesForCategory(", src)
+        self.assertIn("function assignmentDeptAllowedForCategory(", src)
+        self.assertIn("function deptsForMetricAssignmentFormRow(", src)
+        self.assertIn("function sanitizeMetricCatalogAssignDraftForCategory(", src)
+        belong = src[
+            src.find("function employeeBelongsToWorkGroup(") : src.find("function employeeCardWorkGroupId(")
+        ]
+        self.assertIn("employeeHomeDeptCode(employee.id) !== dept", belong)
+        pool = src[
+            src.find("function departmentEmployeePool(") : src.find("function territoryDeptEmployeePool(")
+        ]
+        self.assertIn("code === \"shop\" && isTerritoryEmployee(e)", pool)
+        asg_people = src[
+            src.find("function employeesForMetricAssignmentRow(") : src.find("function employeeMatchesMetricAssignments(")
+        ]
+        self.assertIn("dept === \"shop\" && isTerritoryEmployee(e)", asg_people)
+        save = src[src.find("function saveMetricCatalogForm(") : src.find("function saveMetricCatalogForm(") + 12000]
+        self.assertIn("assignmentDeptAllowedForCategory(row.department_id, catRaw)", save)
+        self.assertIn("нельзя смешивать Магазин Володарского и Территорию", save)
+        render = src[
+            src.find("function renderMetricCatalogAssignments(") : src.find("function onMetricCatalogStructureChange(")
+        ]
+        self.assertIn("deptsForMetricAssignmentFormRow(row)", render)
+        # СПУ: новые подключения только с use_in_spu; keepIds сохраняет уже связанные.
+        spu_pick = src[
+            src.find("function spuParticipatingWorkMetrics(") : src.find("function spuSrcMetricSectionId(")
+        ]
+        self.assertIn("metricUseInSpu(m)", spu_pick)
+        self.assertIn("keep[mid]", spu_pick)
+        self.assertIn("function spuMetricLinkConflictsWithoutUseInSpu(", src)
+        self.assertIn("function findDuplicateEmployeeIdsAcrossWorkspaces(", src)
+        self.assertIn("if (!metricUseInSpu(item)) return;", src[
+            src.find("function applyMetricResultRoute(") : src.find("function metricRouteSourceOptions(")
+        ])
+        # Сохранение каталога: timeout и 409 conflict_review без ложного успеха.
+        cat_save = src[src.find("Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice))"):]
+        self.assertIn('ok === "timeout"', cat_save)
+        self.assertIn('ok === "conflict_review"', cat_save)
+        self.assertIn("function metricCatalogPutSlice(", src)
 
     def test_staff_spu_indicators_read_write(self):
         spu = {
