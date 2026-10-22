@@ -1144,17 +1144,18 @@ class StoreApiTests(unittest.TestCase):
         belong = src[
             src.find("function employeeBelongsToWorkGroup(") : src.find("function employeeCardWorkGroupId(")
         ]
-        # Изоляция Магазин↔Территория; точный home===dept больше не режет складских.
         self.assertIn("dept === \"shop\" && isTerritoryCode(home)", belong)
-        self.assertIn("isTerritoryCode(dept) && home === \"shop\"", belong)
+        self.assertIn("!inTarget && home !== dept", belong)
         self.assertNotIn("employeeHomeDeptCode(employee.id) !== dept", belong)
         pool = src[
             src.find("function departmentEmployeePool(") : src.find("function territoryDeptEmployeePool(")
         ]
         self.assertIn("code === \"shop\" && isTerritoryCode(home)", pool)
-        self.assertIn("code !== \"shop\" && home === \"shop\"", pool)
-        self.assertNotIn("employeeHomeDeptCode(e.id) !== code", pool)
-        self.assertNotIn("!isTerritoryEmployee(e)", pool)
+        # Территория больше не режет home===shop при записи в employees отдела.
+        self.assertNotIn("code !== \"shop\" && home === \"shop\"", pool)
+        self.assertIn("function metricsDeptCodeForEmployee(", src)
+        self.assertIn("function buildWarehouseStaffDiagnostics(", src)
+        self.assertIn("shopMaterializeWorkAccessMonth(selectedMonth, metricsDeptCodeForEmployee(employeeId))", src)
         asg_people = src[
             src.find("function employeesForMetricAssignmentRow(") : src.find("function employeeMatchesMetricAssignments(")
         ]

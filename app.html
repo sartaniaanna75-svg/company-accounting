@@ -4835,7 +4835,9 @@
                     <div id="deptWorkAdminBar" class="toolbar" style="display:none;flex-wrap:wrap;gap:8px;margin-top:10px">
                         <button type="button" class="btn btn-primary" id="deptWorkAddFioBtn" onclick="addEmployeeFromWorkMetrics()">+ Добавить сотрудника</button>
                         <button type="button" class="btn btn-primary" id="deptWorkAddMetricBtn" onclick="openMetricFromWorkMetrics()" style="display:none">+ Добавить метрику</button>
+                        <button type="button" class="btn btn-secondary" id="deptWorkDiagBtn" onclick="showWarehouseStaffDiagnostics()" style="display:none">Диагностика списка</button>
                     </div>
+                    <div id="deptWorkDiagBox" class="note" style="display:none;margin-top:8px;max-height:220px;overflow:auto"></div>
                 </div>
                 <div class="metrics-stats" id="metricsCards"></div>
                 <div class="card">
@@ -7328,11 +7330,10 @@ function employeeBelongsToWorkGroup(employee, dept, workTabId, month) {
     if (dept) {
         const home = employeeHomeDeptCode(employee.id);
         const inTarget = belongsToWorkspace(findWorkspaceByCode(dept), employee.id);
-        // Строгая изоляция объектов: Магазин Володарского ↔ Территория.
+        // Магазин ← не пускать территориальных.
         if (dept === "shop" && isTerritoryCode(home)) return false;
-        if (isTerritoryCode(dept) && home === "shop") return false;
-        // Не отсекать склад/офис/логистику только из‑за порядка home при записи в этом workspace.
-        if (!inTarget && home && home !== dept) return false;
+        // В списке отдела (employees) или home совпадает — иначе чужой объект/отдел.
+        if (!inTarget && home !== dept) return false;
     }
     return employeeWorkGroupIds(employee, dept, month).indexOf(tab) !== -1;
 }
@@ -7370,9 +7371,11 @@ function departmentEmployeePool(deptCode) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         const home = employeeHomeDeptCode(e.id);
         // Членство = запись в employees этого workspace.
-        // Режем только пересечение объектов Магазин ↔ Территория (не home!==code внутри Территории).
+        // Магазин: не показывать территориальных (изоляция объектов).
         if (code === "shop" && isTerritoryCode(home)) return;
-        if (code !== "shop" && home === "shop") return;
+        // Территория: НЕ отсекать home==="shop" — иначе админка/зарплата видят
+        // человека в warehouse.employees, а dwork/табель группы его теряют
+        // (дубликат id или порядок employeeHome). Магазинный пул их всё равно не возьмёт.
         seen[e.id] = true;
         out.push(e);
     });
@@ -7449,9 +7452,8 @@ function timesheetEmployeesForView() {
     function add(e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         const home = employeeHomeDeptCode(e.id);
-        // Как в зарплате: employeeIds + employees; изоляция только Магазин ↔ Территория.
+        // Как в зарплате: employeeIds + employees. Магазин не берёт территориальных.
         if (w.code === "shop" && isTerritoryCode(home)) return;
-        if (w.code !== "shop" && home === "shop") return;
         if (!belongsToWorkspace(w, e.id) && assignedIds(w).indexOf(e.id) === -1) return;
         if (tab && !employeeBelongsToWorkGroup(e, w.code, tab, selectedMonth)) return;
         seen[e.id] = true;
@@ -14146,7 +14148,6 @@ function employeesForMetricAssignmentRow(row) {
         if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
         const home = employeeHomeDeptCode(e.id);
         if (dept === "shop" && isTerritoryCode(home)) return false;
-        if (dept !== "shop" && home === "shop") return false;
         if (!employeeHasPositionId(e, row.position_id)) return false;
         return true;
     });
@@ -14160,9 +14161,7 @@ function employeeMatchesMetricAssignments(item, employee, workTabId) {
     return item.assignments.some(function (row) {
         if (!row || !row.department_id || !row.work_tab_id) return false;
         if (tab && row.work_tab_id !== tab) return false;
-        // Объектная изоляция; точный home===dept не обязателен, если сотрудник в workspace назначения.
         if (row.department_id === "shop" && isTerritoryCode(home)) return false;
-        if (row.department_id !== "shop" && home === "shop") return false;
         const inRowDept = belongsToWorkspace(findWorkspaceByCode(row.department_id), employee.id);
         if (!inRowDept && home !== row.department_id) return false;
         if (!employeeBelongsToWorkGroup(employee, row.department_id, row.work_tab_id)) return false;
@@ -14632,8 +14631,29 @@ function ensureDeptMetrics(deptCode) {
     }
 }
 
+/**
+ * Отдел store workAccess/facts для сотрудника.
+ * Если человек числится в workspace Территории (в т.ч. склад), пишем/читаем deptMetrics
+ * этого отдела — даже когда employeeHome из‑за порядка/дубликата вернул «shop».
+ * Иначе зарплата/админка видят ФИО на складе, а dwork-* пустой (workAccess в другом store).
+ */
+function metricsDeptCodeForEmployee(employeeId) {
+    if (!employeeId) return "shop";
+    const cur = workspace();
+    if (cur && isGenericMetricsDept(cur.code) && belongsToWorkspace(cur, employeeId)) {
+        return cur.code;
+    }
+    const home = employeeHomeDeptCode(employeeId);
+    if (isGenericMetricsDept(home)) return home;
+    for (let i = 0; i < TERRITORY_DEPT_CODES.length; i++) {
+        const code = TERRITORY_DEPT_CODES[i];
+        if (belongsToWorkspace(findWorkspaceByCode(code), employeeId)) return code;
+    }
+    return home || "shop";
+}
+
 function metricsStoreForEmployee(employeeId) {
-    const dept = employeeHomeDeptCode(employeeId);
+    const dept = metricsDeptCodeForEmployee(employeeId);
     return isGenericMetricsDept(dept) ? ensureDeptMetrics(dept) : ensureShopMetrics();
 }
 
@@ -16281,7 +16301,7 @@ function shopWorkAccessInheritIds(employeeId, month) {
             return canonicalMetricId(id);
         }).filter(Boolean);
     }
-    if (isGenericMetricsDept(employeeHomeDeptCode(employeeId))) return [];
+    if (isGenericMetricsDept(metricsDeptCodeForEmployee(employeeId))) return [];
     return shopWorkAccessDefaultIds(employeeId);
 }
 
@@ -16319,7 +16339,7 @@ function shopMaterializeWorkAccessMonth(month, deptCode) {
 }
 
 function syncShopExtraAccessFromWork(employeeId, month) {
-    if (isGenericMetricsDept(employeeHomeDeptCode(employeeId))) return;
+    if (isGenericMetricsDept(metricsDeptCodeForEmployee(employeeId))) return;
     const extras = shopEmployeeWorkMetricIds(employeeId, month).filter(function (id) {
         return SHOP_QTY_FACT_METRIC_IDS[id];
     });
@@ -16356,7 +16376,7 @@ function peekEmployeeHasWorkMetric(employeeId, metricId, month) {
     const mid = canonicalMetricId(metricId);
     if (!mid || !employeeId) return false;
     const m = month || selectedMonth;
-    const dept = employeeHomeDeptCode(employeeId);
+    const dept = metricsDeptCodeForEmployee(employeeId);
     const root = isGenericMetricsDept(dept)
         ? (appData.deptMetrics && appData.deptMetrics[dept])
         : (appData && appData.shopMetrics);
@@ -16369,7 +16389,7 @@ function peekEmployeeHasWorkMetric(employeeId, metricId, month) {
 function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
     const mid = canonicalMetricId(metricId);
     if (!mid || (!shopIsAssignableMetricId(mid) && !SHOP_WORK_METRIC_IDS[mid] && !peekEmployeeHasWorkMetric(employeeId, mid))) return;
-    const map = shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId));
+    const map = shopMaterializeWorkAccessMonth(selectedMonth, metricsDeptCodeForEmployee(employeeId));
     if (!Object.prototype.hasOwnProperty.call(map, employeeId) || !Array.isArray(map[employeeId])) {
         map[employeeId] = Array.isArray(map[employeeId]) ? map[employeeId] : shopWorkAccessInheritIds(employeeId, selectedMonth);
         if (!Array.isArray(map[employeeId])) map[employeeId] = [];
@@ -21349,7 +21369,6 @@ function employeePicker(selectedId) {
         if (!e || !e.id) return;
         const home = employeeHomeDeptCode(e.id);
         if (code === "shop" && isTerritoryCode(home)) return;
-        if (code && code !== "shop" && home === "shop") return;
         if (tab && !employeeBelongsToWorkGroup(e, code, tab, selectedMonth)) return;
         if (!isWorking(e) && e.id !== selectedId) return;
         const taken = used.indexOf(e.id) !== -1 && e.id !== selectedId;
@@ -29300,12 +29319,126 @@ function syncDeptWorkAdminBar() {
     bar.style.display = on ? "flex" : "none";
     const fioBtn = document.getElementById("deptWorkAddFioBtn");
     const metBtn = document.getElementById("deptWorkAddMetricBtn");
+    const diagBtn = document.getElementById("deptWorkDiagBtn");
     if (fioBtn) fioBtn.style.display = on && canEditStaff() ? "" : "none";
     if (metBtn) {
         metBtn.style.display = on && canEditShopMetricCatalog() ? "" : "none";
         metBtn.textContent = "+ Добавить метрику";
         metBtn.onclick = function () { openCreateMetricForm(); };
     }
+    if (diagBtn) diagBtn.style.display = on && (isAppAdmin() || isAdminEntry()) ? "" : "none";
+    if (!on) {
+        const box = document.getElementById("deptWorkDiagBox");
+        if (box) {
+            box.style.display = "none";
+            box.innerHTML = "";
+        }
+    }
+}
+
+/** Админ-диагностика: почему сотрудники склада не видны в dwork/табеле (без ПДн в консоли). */
+function buildWarehouseStaffDiagnostics(deptCode, tabId) {
+    const code = deptCode || (workspace() && workspace().code) || "warehouse";
+    const tab = tabId || currentDeptMetricTab(code) || "";
+    const w = findWorkspaceByCode(code);
+    const employeesArr = (w && w.employees) || [];
+    const idsArr = assignedIds(w);
+    const pool = departmentEmployeePool(code);
+    const byGroup = tab ? employeesForWorkGroup(code, tab, { includeInactive: true }) : pool.slice();
+    const ts = (typeof timesheetEmployeesForView === "function" && workspace() && workspace().code === code)
+        ? timesheetEmployeesForView()
+        : [];
+    const fields = typeof deptMetricFields === "function" ? deptMetricFields(code, tab) : [];
+    let withAccess = 0;
+    const drop = { homeShopButInWs: 0, noWorkTab: 0, noWorkAccess: 0, sample: [] };
+    employeesArr.forEach(function (e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        const home = employeeHomeDeptCode(e.id);
+        const storeDept = metricsDeptCodeForEmployee(e.id);
+        const tabs = employeeWorkGroupIds(e, code);
+        const accessN = shopEmployeeWorkMetricIds(e.id).length;
+        const inPool = pool.some(function (p) { return p && p.id === e.id; });
+        const inGroup = !tab || byGroup.some(function (p) { return p && p.id === e.id; });
+        if (home === "shop") drop.homeShopButInWs += 1;
+        if (tab && tabs.indexOf(tab) === -1) drop.noWorkTab += 1;
+        if (!accessN) drop.noWorkAccess += 1;
+        if (drop.sample.length < 8) {
+            drop.sample.push({
+                id: e.id,
+                home: home,
+                store: storeDept,
+                tabs: tabs.slice(0, 4),
+                access: accessN,
+                inPool: inPool,
+                inGroup: inGroup,
+                inIds: idsArr.indexOf(e.id) !== -1
+            });
+        }
+        if (accessN) withAccess += 1;
+    });
+    let metricPeople = 0;
+    fields.forEach(function (f) {
+        if (!f || f.service || !f.metricId) return;
+        metricPeople += workMetricPeopleForTab(code, f.metricId, tab).length;
+    });
+    return {
+        code: code,
+        tab: tab,
+        month: selectedMonth,
+        counts: {
+            employees: employeesArr.length,
+            employeeIds: idsArr.length,
+            pool: pool.length,
+            workGroup: byGroup.length,
+            timesheetView: ts.length,
+            metricFields: fields.filter(function (f) { return f && !f.service; }).length,
+            metricPeopleCols: metricPeople,
+            withAnyWorkAccess: withAccess
+        },
+        drop: drop
+    };
+}
+
+function showWarehouseStaffDiagnostics() {
+    if (!(isAppAdmin() || isAdminEntry())) {
+        toast("Диагностика только для администратора.", "error");
+        return;
+    }
+    const w = workspace();
+    if (!w || (w.code !== "warehouse" && w.code !== "drivers")) return;
+    const tab = isDeptWorkSection(currentSection) ? deptWorkTabFromSection(currentSection) : currentDeptMetricTab(w.code);
+    const d = buildWarehouseStaffDiagnostics(w.code, tab);
+    const box = document.getElementById("deptWorkDiagBox");
+    if (!box) return;
+    let html = "<strong>Диагностика «" + escapeHtml(officialName(w)) + "»</strong>"
+        + " · вкладка <code>" + escapeHtml(d.tab || "—") + "</code> · месяц " + escapeHtml(d.month || "")
+        + "<br>employees: <b>" + d.counts.employees + "</b>"
+        + " · employeeIds: <b>" + d.counts.employeeIds + "</b>"
+        + " · pool: <b>" + d.counts.pool + "</b>"
+        + " · группа: <b>" + d.counts.workGroup + "</b>"
+        + " · табель: <b>" + d.counts.timesheetView + "</b>"
+        + " · метрик: <b>" + d.counts.metricFields + "</b>"
+        + " · колонок людей в метриках: <b>" + d.counts.metricPeopleCols + "</b>"
+        + " · с workAccess: <b>" + d.counts.withAnyWorkAccess + "</b>"
+        + "<br>home=shop при записи в отделе: " + d.drop.homeShopButInWs
+        + " · без work_tab группы: " + d.drop.noWorkTab
+        + " · без workAccess: " + d.drop.noWorkAccess
+        + "<br><span class=\"note\">dwork показывает колонки только при workAccess (ФИО → Рабочие метрики). "
+        + "store читается через metricsDeptCodeForEmployee.</span>";
+    if (d.drop.sample.length) {
+        html += "<br><code style=\"font-size:11px;white-space:pre-wrap\">"
+            + escapeHtml(d.drop.sample.map(function (s) {
+                return s.id + " home=" + s.home + " store=" + s.store
+                    + " tabs=" + (s.tabs.join("|") || "—")
+                    + " access=" + s.access
+                    + " pool=" + (s.inPool ? "1" : "0")
+                    + " group=" + (s.inGroup ? "1" : "0")
+                    + " ids=" + (s.inIds ? "1" : "0");
+            }).join("\n"))
+            + "</code>";
+    }
+    box.innerHTML = html;
+    box.style.display = "";
 }
 
 function addEmployeeFromWorkMetrics() {
@@ -29912,7 +30045,6 @@ function renderFio() {
         if (!e || !e.id) return false;
         const home = employeeHomeDeptCode(e.id);
         if (code === "shop" && isTerritoryCode(home)) return false;
-        if (code !== "shop" && home === "shop") return false;
         return true;
     });
     const filterHost = document.getElementById("fioFilters");
