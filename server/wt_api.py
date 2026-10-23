@@ -478,6 +478,187 @@ def can_write_dept_employees(user: dict | None) -> bool:
     return user_has_perm(user, "timesheet", "edit")
 
 
+# Префиксы ID только для НОВЫХ сотрудников. Старые emp_* не трогаем.
+EMPLOYEE_ID_PREFIX_BY_DEPT = {
+    "shop": "V",
+    "warehouse": "T-S",
+    "office": "T-O",
+    "drivers": "T-L",
+}
+EMPLOYEE_ID_NUM_RE = re.compile(
+    r"^(?P<prefix>V|T-S|T-O|T-L)-(?P<num>\d{1,8})$",
+    re.IGNORECASE,
+)
+
+
+def employee_id_prefix_for_dept(dept_code: str) -> str | None:
+    return EMPLOYEE_ID_PREFIX_BY_DEPT.get(str(dept_code or "").strip())
+
+
+def format_new_employee_id(prefix: str, number: int) -> str:
+    return f"{prefix}-{int(number):06d}"
+
+
+def _iter_workspace_employees(payload: Any):
+    if not isinstance(payload, dict):
+        return
+    for ws in payload.get("workspaces") or []:
+        if not isinstance(ws, dict) or ws.get("type") == "summary":
+            continue
+        code = str(ws.get("code") or "").strip()
+        if not code:
+            continue
+        for emp in ws.get("employees") or []:
+            if isinstance(emp, dict):
+                yield code, emp
+
+
+def collect_employee_id_dept_counts(payload: Any) -> dict[str, dict[str, int]]:
+    """id → {dept_code: count} по всем подразделениям."""
+    out: dict[str, dict[str, int]] = {}
+    for code, emp in _iter_workspace_employees(payload):
+        eid = str(emp.get("id") or "").strip()
+        if not eid:
+            continue
+        bucket = out.setdefault(eid, {})
+        bucket[code] = int(bucket.get(code) or 0) + 1
+    return out
+
+
+def max_employee_id_number_for_prefix(payload: Any, prefix: str) -> int:
+    """Максимум номера по префиксу: карточки + employeeIdCounters."""
+    pref = str(prefix or "").upper()
+    max_n = 0
+    counters = payload.get("employeeIdCounters") if isinstance(payload, dict) else None
+    if isinstance(counters, dict):
+        raw = counters.get(pref)
+        if raw is None:
+            raw = counters.get(prefix)
+        try:
+            max_n = max(max_n, int(raw or 0))
+        except (TypeError, ValueError):
+            pass
+    for _code, emp in _iter_workspace_employees(payload):
+        eid = str(emp.get("id") or "").strip()
+        m = EMPLOYEE_ID_NUM_RE.match(eid)
+        if not m:
+            continue
+        if m.group("prefix").upper() != pref:
+            continue
+        try:
+            max_n = max(max_n, int(m.group("num")))
+        except (TypeError, ValueError):
+            continue
+    return max_n
+
+
+def allocate_employee_id_in_payload(payload: dict, dept_code: str) -> tuple[str | None, str | None]:
+    """
+    Атомарно (при вызове под FOR UPDATE) резервирует следующий ID в payload.employeeIdCounters.
+    Возвращает (employee_id, error).
+    """
+    prefix = employee_id_prefix_for_dept(dept_code)
+    if not prefix:
+        return None, "invalid department"
+    next_n = max_employee_id_number_for_prefix(payload, prefix) + 1
+    eid = format_new_employee_id(prefix, next_n)
+    # Глобальная уникальность: id не должен уже существовать (любой формат).
+    existing = collect_employee_id_dept_counts(payload)
+    if eid in existing:
+        next_n = max_employee_id_number_for_prefix(payload, prefix) + 1
+        while format_new_employee_id(prefix, next_n) in existing:
+            next_n += 1
+        eid = format_new_employee_id(prefix, next_n)
+    counters = payload.get("employeeIdCounters")
+    if not isinstance(counters, dict):
+        counters = {}
+    else:
+        counters = dict(counters)
+    counters[prefix] = next_n
+    payload["employeeIdCounters"] = counters
+    return eid, None
+
+
+def _effective_employee_id_counts_after_put(current: dict, incoming: dict) -> dict[str, dict[str, int]]:
+    """
+    Счётчики id после PUT: для отделов из incoming берём их employees,
+    остальные отделы оставляем из current (staff шлёт неполный payload).
+    """
+    effective = collect_employee_id_dept_counts(current)
+    touched: set[str] = set()
+    if not isinstance(incoming, dict):
+        return effective
+    for ws in incoming.get("workspaces") or []:
+        if not isinstance(ws, dict) or ws.get("type") == "summary":
+            continue
+        code = str(ws.get("code") or "").strip()
+        if not code or "employees" not in ws:
+            continue
+        touched.add(code)
+    if not touched:
+        return effective
+    # Обнуляем вклады touched-отделов, затем набираем из incoming.
+    for eid, depts in list(effective.items()):
+        for code in touched:
+            if code in depts:
+                depts[code] = 0
+        if sum(depts.values()) <= 0:
+            del effective[eid]
+    for ws in incoming.get("workspaces") or []:
+        if not isinstance(ws, dict) or ws.get("type") == "summary":
+            continue
+        code = str(ws.get("code") or "").strip()
+        if code not in touched:
+            continue
+        for emp in ws.get("employees") or []:
+            if not isinstance(emp, dict):
+                continue
+            eid = str(emp.get("id") or "").strip()
+            if not eid:
+                continue
+            bucket = effective.setdefault(eid, {})
+            bucket[code] = int(bucket.get(code) or 0) + 1
+    return effective
+
+
+def employee_id_put_denied(current: dict, incoming: dict) -> str | None:
+    """
+    Блокирует только НОВЫЕ нарушения уникальности ID.
+    Исторические дубли (effective_total <= cur_total) не мешают обычному сохранению.
+    """
+    cur = collect_employee_id_dept_counts(current)
+    eff = _effective_employee_id_counts_after_put(current, incoming)
+    for eid in set(cur) | set(eff):
+        cur_total = sum((cur.get(eid) or {}).values())
+        eff_total = sum((eff.get(eid) or {}).values())
+        if eff_total <= cur_total:
+            continue
+        if cur_total == 0 and eff_total == 1:
+            continue
+        return "duplicate_employee_id"
+    return None
+
+
+def merge_employee_id_counters(current: Any, incoming: Any) -> dict:
+    """Счётчики только растут (max), чтобы устаревший снимок админа не откатил резерв."""
+    out: dict[str, int] = {}
+    for src in (current, incoming):
+        if not isinstance(src, dict):
+            continue
+        for key, raw in src.items():
+            pref = str(key or "").strip()
+            if not pref:
+                continue
+            try:
+                n = int(raw or 0)
+            except (TypeError, ValueError):
+                continue
+            if n < 0:
+                continue
+            out[pref] = max(int(out.get(pref) or 0), n)
+    return out
+
+
 def json_canon(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
@@ -1500,6 +1681,11 @@ def _empty_wipe(val: Any, existing: Any) -> bool:
 def _merge_admin_payload(current: dict, incoming: dict) -> dict:
     stored = _clone(current)
     for key, val in incoming.items():
+        if key == "employeeIdCounters":
+            stored["employeeIdCounters"] = merge_employee_id_counters(
+                stored.get("employeeIdCounters"), val
+            )
+            continue
         if key == "workspaces":
             if not isinstance(val, list) or not val:
                 continue
@@ -1865,13 +2051,21 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
         current = {}
     if not isinstance(incoming, dict):
         return None, "forbidden"
+    # Новые дубли ID блокируем; исторические (уже в current) — нет.
+    if employee_id_put_denied(current, incoming):
+        return None, "duplicate_employee_id"
     if is_app_admin(user):
         if incoming_admin_pin_duplicate(current, incoming):
             return None, "duplicate_pin"
         return _merge_admin_payload(current, incoming), None
     if _staff_put_forbidden(current, incoming, user):
         return None, "forbidden"
-    return _apply_staff_writes(current, incoming, user), None
+    stored = _apply_staff_writes(current, incoming, user)
+    # Staff PUT обычно не шлёт counters — сохраняем серверные после reserve.
+    if isinstance(stored, dict) and "employeeIdCounters" not in incoming:
+        if isinstance(current.get("employeeIdCounters"), dict):
+            stored["employeeIdCounters"] = _clone(current.get("employeeIdCounters"))
+    return stored, None
 
 
 def payload_for_client(user: dict | None, payload: dict) -> dict:
@@ -2433,6 +2627,31 @@ def persist_payload(cur, payload: dict, expected_version: int, updated_by: str):
     return cur.fetchone()
 
 
+def fetch_state_for_update(cur) -> dict:
+    """Блокирует строку app_state для атомарного резерва ID."""
+    cur.execute(
+        """
+        INSERT INTO app_state (id, payload, version, updated_by)
+        VALUES (%s, '{}'::jsonb, 0, '')
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (STATE_ID,),
+    )
+    cur.execute(
+        """
+        SELECT payload, version, updated_at, updated_by
+        FROM app_state
+        WHERE id = %s
+        FOR UPDATE
+        """,
+        (STATE_ID,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"version": 0, "payload": {}, "updated_at": "", "updated_by": ""}
+    return row_to_state(row)
+
+
 def persist_bootstrap_admin(cur, payload: dict, expected_version: int, updated_by: str):
     cur.execute(
         """
@@ -2826,6 +3045,11 @@ def handle_put_state(environ):
         return auth_unavailable()
     if denied == "duplicate_pin":
         return json_bytes({"error": "duplicate pin"}, "400 Bad Request")
+    if denied == "duplicate_employee_id":
+        return json_bytes(
+            {"error": "duplicate employee id", "message": "Этот ID сотрудника уже используется."},
+            "400 Bad Request",
+        )
     if denied or stored is None:
         return json_bytes({"error": "forbidden"}, "403 Forbidden")
     updated_by = str(user.get("user_id") or "")[:120]
@@ -2861,6 +3085,75 @@ def handle_put_state(environ):
         conn.close()
 
 
+def handle_reserve_employee_id(environ):
+    """Атомарная выдача уникального ID нового сотрудника (без миграции схемы)."""
+    raw = read_body(environ)
+    try:
+        data = json.loads(raw.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return json_bytes({"error": "invalid json"}, "400 Bad Request")
+    if not isinstance(data, dict):
+        return json_bytes({"error": "body must be an object"}, "400 Bad Request")
+    dept = str(data.get("department_id") or data.get("dept") or data.get("code") or "").strip()
+    if not employee_id_prefix_for_dept(dept):
+        return json_bytes({"error": "invalid department"}, "400 Bad Request")
+    user_id, err = require_session(environ)
+    if err:
+        return err
+    if not db_configured():
+        return db_unavailable()
+    try:
+        conn = connect()
+    except Exception:
+        return db_unavailable()
+    try:
+        with conn.cursor() as cur:
+            state = fetch_state_for_update(cur)
+            payload = state.get("payload") if isinstance(state.get("payload"), dict) else {}
+            payload = _clone(payload) if payload else {}
+            user = current_user_from_state(environ, payload, user_id)
+            if not user:
+                conn.rollback()
+                return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
+            if not is_app_admin(user):
+                if not can_write_dept_employees(user):
+                    conn.rollback()
+                    return json_bytes({"error": "forbidden"}, "403 Forbidden")
+                if dept not in user_dept_codes(user):
+                    conn.rollback()
+                    return json_bytes({"error": "forbidden"}, "403 Forbidden")
+            eid, alloc_err = allocate_employee_id_in_payload(payload, dept)
+            if alloc_err or not eid:
+                conn.rollback()
+                return json_bytes({"error": alloc_err or "allocate failed"}, "400 Bad Request")
+            try:
+                expected = int(state.get("version") or 0)
+            except (TypeError, ValueError):
+                expected = 0
+            updated_by = str(user.get("user_id") or "")[:120]
+            row = persist_payload(cur, payload, expected, updated_by)
+            if not row:
+                conn.rollback()
+                return json_bytes({"error": "conflict", "message": "Повторите создание сотрудника."}, "409 Conflict")
+            conn.commit()
+            version = int(row[0] or 0)
+            return json_bytes({
+                "ok": True,
+                "employee_id": eid,
+                "department_id": dept,
+                "version": version,
+                "employeeIdCounters": payload.get("employeeIdCounters") or {},
+            })
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return db_unavailable()
+    finally:
+        conn.close()
+
+
 def application(environ, start_response):
     method = (environ.get("REQUEST_METHOD") or "GET").upper()
     path = environ.get("PATH_INFO") or "/"
@@ -2884,6 +3177,8 @@ def application(environ, start_response):
             status, headers, body = handle_get_state(environ)
         elif method == "PUT" and path == "/api/state":
             status, headers, body = handle_put_state(environ)
+        elif method == "POST" and path == "/api/employee-id/reserve":
+            status, headers, body = handle_reserve_employee_id(environ)
         elif method == "OPTIONS" and path.startswith("/api/"):
             status, headers, body = "204 No Content", [("Content-Length", "0")], b""
         elif method == "GET":

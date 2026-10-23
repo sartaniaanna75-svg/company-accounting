@@ -7669,8 +7669,121 @@ function allEmployeeIdsFrom(data) {
     return ids;
 }
 
+/** Префиксы только для НОВЫХ сотрудников. Старые emp_* не меняем. */
+var EMPLOYEE_ID_PREFIX_BY_DEPT = {
+    shop: "V",
+    warehouse: "T-S",
+    office: "T-O",
+    drivers: "T-L"
+};
+
+function employeeIdPrefixForDept(deptCode) {
+    return EMPLOYEE_ID_PREFIX_BY_DEPT[String(deptCode || "")] || "";
+}
+
+function formatNewEmployeeId(prefix, number) {
+    const n = Math.max(1, Number(number) || 1);
+    let s = String(n);
+    while (s.length < 6) s = "0" + s;
+    return String(prefix) + "-" + s;
+}
+
+function maxEmployeeIdNumberForPrefix(data, prefix) {
+    const pref = String(prefix || "").toUpperCase();
+    let max = 0;
+    const root = data || appData || {};
+    const counters = root.employeeIdCounters;
+    if (counters && typeof counters === "object") {
+        const raw = counters[pref] != null ? counters[pref] : counters[prefix];
+        const n = Number(raw);
+        if (isFinite(n) && n > max) max = n;
+    }
+    const re = /^(V|T-S|T-O|T-L)-(\d+)$/i;
+    allEmployeeIdsFrom(root).forEach(function (id) {
+        const m = String(id || "").match(re);
+        if (!m) return;
+        if (String(m[1]).toUpperCase() !== pref) return;
+        const n = Number(m[2]);
+        if (isFinite(n) && n > max) max = n;
+    });
+    return max;
+}
+
+/** Локальная выдача (offline). В server mode — только после /api/employee-id/reserve. */
+function generateEmployeeIdForDept(deptCode) {
+    const prefix = employeeIdPrefixForDept(deptCode);
+    if (!prefix) return nextPrefixedId("emp", allEmployeeIdsFrom(appData));
+    let next = maxEmployeeIdNumberForPrefix(appData, prefix) + 1;
+    const occupied = {};
+    allEmployeeIdsFrom(appData).forEach(function (id) { if (id) occupied[id] = true; });
+    let eid = formatNewEmployeeId(prefix, next);
+    while (occupied[eid]) {
+        next += 1;
+        eid = formatNewEmployeeId(prefix, next);
+    }
+    if (!appData.employeeIdCounters || typeof appData.employeeIdCounters !== "object") {
+        appData.employeeIdCounters = {};
+    }
+    appData.employeeIdCounters[prefix] = next;
+    return eid;
+}
+
+/** @deprecated только fallback; новые карточки — generateEmployeeIdForDept / reserve. */
 function generateEmployeeId() {
-    return nextPrefixedId("emp", allEmployeeIdsFrom(appData));
+    const w = staffTargetWorkspace() || workspace();
+    const code = w && w.code && w.type !== "summary" ? w.code : "shop";
+    return generateEmployeeIdForDept(code);
+}
+
+function reserveEmployeeIdOnServer(deptCode) {
+    return fetch("/api/employee-id/reserve", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ department_id: deptCode })
+    }).then(function (res) {
+        if (res.status === 401) {
+            return { error: "unauthorized" };
+        }
+        if (res.status === 409) {
+            return { error: "conflict", retry: true };
+        }
+        if (!res.ok) {
+            return res.json().then(function (body) {
+                return { error: (body && body.error) || "reserve failed" };
+            }, function () {
+                return { error: "reserve failed" };
+            });
+        }
+        return res.json();
+    }).then(function (body) {
+        if (!body || body.error) return body || { error: "reserve failed" };
+        if (body.version != null && typeof wtStateVersion !== "undefined") {
+            wtStateVersion = Number(body.version) || wtStateVersion;
+        }
+        if (body.employeeIdCounters && appData) {
+            appData.employeeIdCounters = body.employeeIdCounters;
+        }
+        try {
+            if (wtLastLoadedPayload && body.employeeIdCounters) {
+                wtLastLoadedPayload.employeeIdCounters = JSON.parse(JSON.stringify(body.employeeIdCounters));
+            }
+        } catch (err) {}
+        return body;
+    });
+}
+
+function obtainNewEmployeeId(deptCode) {
+    if (!wtServerMode) {
+        return Promise.resolve({ employee_id: generateEmployeeIdForDept(deptCode) });
+    }
+    function once() {
+        return reserveEmployeeIdOnServer(deptCode);
+    }
+    return once().then(function (body) {
+        if (body && body.retry) return once();
+        return body;
+    });
 }
 
 function generateBonusRuleId() {
@@ -10719,6 +10832,8 @@ function putServerStateOnce() {
             return res.json().then(function (body) {
                 if (body && body.error === "duplicate pin") {
                     toast("Этот PIN уже используется другим администратором. Назначьте другой PIN.", "error");
+                } else if (body && body.error === "duplicate employee id") {
+                    toast("Этот ID сотрудника уже используется. Создание/сохранение отклонено.", "error");
                 } else {
                     toast("Не удалось сохранить данные на сервере. Изменения не записаны.", "error");
                 }
@@ -31101,94 +31216,148 @@ function openEmployeeCreateForm() {
 }
 
 function saveEmployeeCreateForm() {
+    // busy сразу — защита от двойного клика до генерации ID.
     if (saveEmployeeCreateForm.busy) return;
-    try {
-    if (!canEditStaff()) {
-        toast("Нет права добавлять сотрудников.", "error");
-        return;
-    }
-    const nameEl = document.getElementById("empFormName");
-    const fullName = nameEl ? nameEl.value : "";
-    if (isBlankName(fullName)) {
-        toast("Введите ФИО сотрудника", "error");
-        if (nameEl) nameEl.focus();
-        return;
-    }
-    const deptCode = ((document.getElementById("empFormDeptValue") || {}).value)
-        || ((document.getElementById("empFormDept") || {}).value)
-        || ((staffTargetWorkspace() && staffTargetWorkspace().code) || "");
-    const w = findWorkspaceByCode(deptCode) || staffTargetWorkspace();
-    if (!w || w.code === "summary" || w.type === "summary") {
-        toast("Не выбран отдел для сотрудника.", "error");
-        return;
-    }
-    const tabEl = document.getElementById("empFormTab");
-    let tab = tabEl ? tabEl.value : "";
-    if (!tab || !metricTabsForDept(w.code).some(function (t) { return t.id === tab; })) {
-        tab = defaultMetricTabId(w.code);
-    }
-    const posEl = document.getElementById("empFormPosition");
-    const posRaw = posEl ? String(posEl.value || "") : "";
-    const posItem = positionCatalogById(posRaw) || positionCatalogByName(w.code, posRaw);
-    const posName = posItem ? posItem.name : posRaw;
-    const statusEl = document.getElementById("empFormStatus");
-    const employee = {
-        id: generateEmployeeId(),
-        employee_id: "",
-        external_1c_id: "",
-        name: "",
-        last_name: "",
-        first_name: "",
-        middle_name: "",
-        position: posName,
-        position_id: posItem ? posItem.position_id : "",
-        work_tab_id: tab || "",
-        work_tab_from: tab ? selectedMonth : "",
-        work_tab_history: [],
-        department: officialName(w),
-        start: "08:00",
-        end: "17:00",
-        rate: 0,
-        taxiDaily: 0,
-        jobStatus: (statusEl && statusEl.value === "fired") ? "fired" : "working",
-        participates_in_spu_meetings: !!(document.getElementById("empFormSpuMeet") && document.getElementById("empFormSpuMeet").checked),
-        meeting_participant: !!(document.getElementById("empFormSpuMeet") && document.getElementById("empFormSpuMeet").checked),
-        terms: {}
-    };
-    applyEmployeeFullName(employee, fullName);
-    employee.employee_id = employee.id;
-    if (!Array.isArray(w.employees)) w.employees = [];
-    if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
-    w.employees.push(employee);
-    if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
-        w.employeeIds.push(employee.id);
-    }
-    justAddedEmployeeId = employee.id;
-    // Новый сотрудник получает каталог группы для выбора; галочки не ставятся автоматически.
     saveEmployeeCreateForm.busy = true;
-    saveApp().then(function (ok) {
+    function unlockCreate() {
         saveEmployeeCreateForm.busy = false;
-        if (!ok) {
-            w.employees = (w.employees || []).filter(function (item) { return !item || item.id !== employee.id; });
-            w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employee.id; });
-            if (justAddedEmployeeId === employee.id) justAddedEmployeeId = "";
-            try { refreshAfterEmployeeCreate(); } catch (err) {}
+        const btn = document.querySelector("#employeeCreateModal .btn-primary");
+        if (btn) {
+            btn.disabled = false;
+            btn.removeAttribute("disabled");
+        }
+    }
+    try {
+        if (!canEditStaff()) {
+            unlockCreate();
+            toast("Нет права добавлять сотрудников.", "error");
             return;
         }
-        closeEmployeeCreateForm();
-        try { refreshAfterEmployeeCreate(); } catch (err) { console.error(err); }
-        toast("Сотрудник сохранён.");
-    }).catch(function (err) {
-        saveEmployeeCreateForm.busy = false;
-        w.employees = (w.employees || []).filter(function (item) { return !item || item.id !== employee.id; });
-        w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employee.id; });
-        if (justAddedEmployeeId === employee.id) justAddedEmployeeId = "";
-        console.error(err);
-        toast("Не удалось сохранить сотрудника. Запись на сервере не подтверждена.", "error");
-        try { refreshAfterEmployeeCreate(); } catch (e) {}
-    });
+        const nameEl = document.getElementById("empFormName");
+        const fullName = nameEl ? nameEl.value : "";
+        if (isBlankName(fullName)) {
+            unlockCreate();
+            toast("Введите ФИО сотрудника", "error");
+            if (nameEl) nameEl.focus();
+            return;
+        }
+        const deptCode = ((document.getElementById("empFormDeptValue") || {}).value)
+            || ((document.getElementById("empFormDept") || {}).value)
+            || ((staffTargetWorkspace() && staffTargetWorkspace().code) || "");
+        const w = findWorkspaceByCode(deptCode) || staffTargetWorkspace();
+        if (!w || w.code === "summary" || w.type === "summary") {
+            unlockCreate();
+            toast("Не выбран отдел для сотрудника.", "error");
+            return;
+        }
+        if (!employeeIdPrefixForDept(w.code)) {
+            unlockCreate();
+            toast("Нельзя создать сотрудника в этом разделе.", "error");
+            return;
+        }
+        const saveBtn = document.querySelector("#employeeCreateModal .btn-primary");
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.setAttribute("disabled", "disabled");
+        }
+        const tabEl = document.getElementById("empFormTab");
+        let tab = tabEl ? tabEl.value : "";
+        if (!tab || !metricTabsForDept(w.code).some(function (t) { return t.id === tab; })) {
+            tab = defaultMetricTabId(w.code);
+        }
+        const posEl = document.getElementById("empFormPosition");
+        const posRaw = posEl ? String(posEl.value || "") : "";
+        const posItem = positionCatalogById(posRaw) || positionCatalogByName(w.code, posRaw);
+        const posName = posItem ? posItem.name : posRaw;
+        const statusEl = document.getElementById("empFormStatus");
+        const meetOn = !!(document.getElementById("empFormSpuMeet") && document.getElementById("empFormSpuMeet").checked);
+        const jobStatus = (statusEl && statusEl.value === "fired") ? "fired" : "working";
+
+        obtainNewEmployeeId(w.code).then(function (res) {
+            if (!res || res.error || !res.employee_id) {
+                unlockCreate();
+                if (res && res.error === "unauthorized") {
+                    toast("Сессия истекла. Войдите снова.", "error");
+                } else if (res && res.error === "forbidden") {
+                    toast("Нет права создавать сотрудников в этом отделе.", "error");
+                } else {
+                    toast("Не удалось получить уникальный ID сотрудника. Повторите сохранение.", "error");
+                }
+                return null;
+            }
+            const occupied = {};
+            allEmployeeIdsFrom(appData).forEach(function (id) { if (id) occupied[id] = true; });
+            if (occupied[res.employee_id]) {
+                unlockCreate();
+                toast("ID " + res.employee_id + " уже занят. Повторите создание.", "error");
+                return null;
+            }
+            const employee = {
+                id: res.employee_id,
+                employee_id: res.employee_id,
+                external_1c_id: "",
+                name: "",
+                last_name: "",
+                first_name: "",
+                middle_name: "",
+                position: posName,
+                position_id: posItem ? posItem.position_id : "",
+                work_tab_id: tab || "",
+                work_tab_from: tab ? selectedMonth : "",
+                work_tab_history: [],
+                department: officialName(w),
+                start: "08:00",
+                end: "17:00",
+                rate: 0,
+                taxiDaily: 0,
+                jobStatus: jobStatus,
+                participates_in_spu_meetings: meetOn,
+                meeting_participant: meetOn,
+                terms: {}
+            };
+            applyEmployeeFullName(employee, fullName);
+            employee.employee_id = employee.id;
+            if (!Array.isArray(w.employees)) w.employees = [];
+            if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
+            w.employees.push(employee);
+            if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
+                w.employeeIds.push(employee.id);
+            }
+            justAddedEmployeeId = employee.id;
+            return Promise.resolve(saveApp()).then(function (ok) {
+                return { ok: ok, employee: employee };
+            });
+        }).then(function (result) {
+            if (!result) return;
+            const employee = result.employee;
+            const ok = result.ok;
+            if (ok === "timeout") {
+                unlockCreate();
+                toast("Ответ сервера не получен. Не создавайте сотрудника повторно сразу — проверьте список после обновления данных.", "error");
+                try { refreshAfterEmployeeCreate(); } catch (err) {}
+                return;
+            }
+            if (!ok) {
+                w.employees = (w.employees || []).filter(function (item) { return !item || item.id !== employee.id; });
+                w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employee.id; });
+                if (justAddedEmployeeId === employee.id) justAddedEmployeeId = "";
+                unlockCreate();
+                try { refreshAfterEmployeeCreate(); } catch (err) {}
+                toast("Не удалось сохранить сотрудника. Запись на сервере не подтверждена.", "error");
+                return;
+            }
+            unlockCreate();
+            closeEmployeeCreateForm();
+            try { refreshAfterEmployeeCreate(); } catch (err) { console.error(err); }
+            toast("Сотрудник сохранён.");
+        }).catch(function (err) {
+            console.error(err);
+            unlockCreate();
+            toast("Не удалось сохранить сотрудника. Запись на сервере не подтверждена.", "error");
+            try { refreshAfterEmployeeCreate(); } catch (e) {}
+        });
     } catch (err) {
-        saveEmployeeCreateForm.busy = false;
+        unlockCreate();
         console.error(err);
         toast("Не удалось сохранить сотрудника: " + (err && err.message ? err.message : String(err)), "error");
     }

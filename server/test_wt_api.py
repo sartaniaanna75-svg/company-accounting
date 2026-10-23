@@ -4652,5 +4652,97 @@ class EmployeeCardGuardClientTests(unittest.TestCase):
         self.assertIn("usage.employees", reassign)
 
 
+class EmployeeIdAllocationTests(unittest.TestCase):
+    """Уникальные ID новых сотрудников: префиксы, counters, защита PUT от новых дублей."""
+
+    def test_format_and_prefix(self):
+        self.assertEqual(wt_api.employee_id_prefix_for_dept("shop"), "V")
+        self.assertEqual(wt_api.employee_id_prefix_for_dept("warehouse"), "T-S")
+        self.assertEqual(wt_api.employee_id_prefix_for_dept("office"), "T-O")
+        self.assertEqual(wt_api.employee_id_prefix_for_dept("drivers"), "T-L")
+        self.assertIsNone(wt_api.employee_id_prefix_for_dept("summary"))
+        self.assertEqual(wt_api.format_new_employee_id("V", 1), "V-000001")
+        self.assertEqual(wt_api.format_new_employee_id("T-S", 12), "T-S-000012")
+
+    def test_allocate_increments_and_skips_existing(self):
+        payload = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "type": "dept",
+                    "employees": [{"id": "emp_010", "name": "Old"}, {"id": "V-000001", "name": "A"}],
+                },
+                {"code": "warehouse", "type": "dept", "employees": [{"id": "emp_010", "name": "DupHist"}]},
+            ],
+            "employeeIdCounters": {"V": 1},
+        }
+        eid, err = wt_api.allocate_employee_id_in_payload(payload, "shop")
+        self.assertIsNone(err)
+        self.assertEqual(eid, "V-000002")
+        self.assertEqual(payload["employeeIdCounters"]["V"], 2)
+        eid2, err2 = wt_api.allocate_employee_id_in_payload(payload, "warehouse")
+        self.assertIsNone(err2)
+        self.assertEqual(eid2, "T-S-000001")
+
+    def test_put_allows_historical_duplicate_but_blocks_new(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "warehouse",
+                    "employees": [
+                        {"id": "emp_010", "name": "A"},
+                        {"id": "emp_010", "name": "B"},
+                    ],
+                },
+                {"code": "shop", "employees": [{"id": "V-000001", "name": "S"}]},
+            ]
+        }
+        # Исторический дубль без изменений — ок.
+        same = {
+            "workspaces": [
+                {
+                    "code": "warehouse",
+                    "employees": [
+                        {"id": "emp_010", "name": "A"},
+                        {"id": "emp_010", "name": "B"},
+                    ],
+                }
+            ]
+        }
+        self.assertIsNone(wt_api.employee_id_put_denied(current, same))
+        # Новая копия существующего id в другом отделе — запрет.
+        clone = {
+            "workspaces": [
+                {
+                    "code": "office",
+                    "employees": [{"id": "V-000001", "name": "Stolen"}],
+                }
+            ]
+        }
+        self.assertEqual(wt_api.employee_id_put_denied(current, clone), "duplicate_employee_id")
+        # Новый уникальный id — ок.
+        fresh = {
+            "workspaces": [
+                {"code": "shop", "employees": [
+                    {"id": "V-000001", "name": "S"},
+                    {"id": "V-000002", "name": "New"},
+                ]}
+            ]
+        }
+        self.assertIsNone(wt_api.employee_id_put_denied(current, fresh))
+        # Перевод: убрали из shop, добавили в warehouse — totals равны.
+        moved = {
+            "workspaces": [
+                {"code": "shop", "employees": []},
+                {"code": "warehouse", "employees": [
+                    {"id": "emp_010", "name": "A"},
+                    {"id": "emp_010", "name": "B"},
+                    {"id": "V-000001", "name": "S"},
+                ]},
+            ]
+        }
+        self.assertIsNone(wt_api.employee_id_put_denied(current, moved))
+
+
 if __name__ == "__main__":
     unittest.main()
