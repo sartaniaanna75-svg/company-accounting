@@ -7930,6 +7930,90 @@ function isTerritoryCode(code) {
     return TERRITORY_DEPT_CODES.indexOf(code) !== -1;
 }
 
+/** Сторона объекта по department_id: shop | territory | "" (неизвестный код). */
+function metricDeptObjectSide(deptCode) {
+    const d = String(deptCode || "").trim();
+    if (d === "shop") return "shop";
+    if (isTerritoryCode(d)) return "territory";
+    return "";
+}
+
+/**
+ * К каким объектам относится метрика по назначениям / явным полям.
+ * Не по названию. При наличии assignments[] — только по их department_id.
+ * Без assignments: явный department_id или territory_category; пустые поля → legacy shop
+ * (неоднозначные записи отдельно собирает findAmbiguousMetricObjectOwnership).
+ */
+function metricItemObjectSides(item) {
+    const sides = { shop: false, territory: false };
+    if (!item) return sides;
+    const rows = Array.isArray(item.assignments) ? item.assignments : [];
+    let fromRows = false;
+    rows.forEach(function (row) {
+        if (!row || !row.department_id) return;
+        fromRows = true;
+        const side = metricDeptObjectSide(row.department_id);
+        if (side === "shop") sides.shop = true;
+        if (side === "territory") sides.territory = true;
+    });
+    if (fromRows) return sides;
+    const explicit = String(item.department_id || "").trim();
+    if (explicit === "shop") {
+        sides.shop = true;
+        return sides;
+    }
+    if (isTerritoryCode(explicit)) {
+        sides.territory = true;
+        return sides;
+    }
+    const cat = String(item.territory_category || "").trim();
+    if (cat && typeof territoryMetricCategoryById === "function") {
+        if (cat === "common" || cat === "returns") {
+            sides.territory = true;
+            return sides;
+        }
+        const spec = territoryMetricCategoryById(cat);
+        if (spec && isTerritoryCode(spec.departmentId)) {
+            sides.territory = true;
+            return sides;
+        }
+    }
+    // Legacy: пустой department_id без territory_category → как shop (metricDepartmentId).
+    sides.shop = true;
+    return sides;
+}
+
+function metricItemHasObjectSide(item, side) {
+    const s = String(side || "");
+    if (s !== "shop" && s !== "territory") return false;
+    return !!metricItemObjectSides(item)[s];
+}
+
+/** Аудит: метрики с назначениями сразу shop и Территория, либо без достоверной стороны. */
+function findAmbiguousMetricObjectOwnership() {
+    const cross = [];
+    const unclear = [];
+    shopMetricCatalogItems().forEach(function (it) {
+        if (!it || !it.id) return;
+        const rows = Array.isArray(it.assignments) ? it.assignments : [];
+        const sides = metricItemObjectSides(it);
+        if (sides.shop && sides.territory) {
+            cross.push({
+                id: it.id,
+                name: it.name || it.id,
+                assignment_ids: rows.filter(function (r) { return r && r.assignment_id; })
+                    .map(function (r) { return r.assignment_id; })
+            });
+        }
+        const explicit = String(it.department_id || "").trim();
+        const cat = String(it.territory_category || "").trim();
+        if (!rows.length && !explicit && !cat) {
+            unclear.push({ id: it.id, name: it.name || it.id });
+        }
+    });
+    return { crossObjectAssignments: cross, unclearOwnership: unclear };
+}
+
 function isTerritoryEmployeeId(employeeId) {
     if (!employeeId || employeeId === SHOP_SELF_CHECKOUT_ID) return false;
     return isTerritoryCode(employeeHomeDeptCode(employeeId));
@@ -11013,7 +11097,11 @@ function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
             }
         });
         if (want && !touchedSpecific && !coveredByCatalog) {
-            if (itemDept && itemDept !== home && !(item.territory_category)) return;
+            // Запрет создавать назначение другого объекта (shop ↔ territory).
+            // territory_category не обходит изоляцию.
+            const empSide = metricDeptObjectSide(home);
+            if (!empSide || !metricItemHasObjectSide(item, empSide)) return;
+            if (itemDept && metricDeptObjectSide(itemDept) && metricDeptObjectSide(itemDept) !== empSide) return;
             if (!Array.isArray(item.assignments)) item.assignments = [];
             item.assignments.push({
                 assignment_id: nextMetricAssignmentId(item.assignments),
@@ -14233,12 +14321,18 @@ function peopleAssignedToMetricOnTab(item, deptCode, tabId) {
 }
 
 function employeeMatchesMetricAssignments(item, employee, workTabId) {
-    if (!item || !Array.isArray(item.assignments) || !item.assignments.length) return true;
-    if (!employee) return false;
-    const tab = String(workTabId || "");
+    if (!item || !employee) return false;
     const home = employeeHomeDeptCode(employee.id);
+    const empSide = metricDeptObjectSide(home);
+    if (!empSide || !metricItemHasObjectSide(item, empSide)) return false;
+    if (!Array.isArray(item.assignments) || !item.assignments.length) {
+        // Без строк назначений — своя сторона (выше) и точное подразделение сотрудника.
+        return metricDepartmentId(item) === home;
+    }
+    const tab = String(workTabId || "");
     return item.assignments.some(function (row) {
         if (!row || !row.department_id || !row.work_tab_id) return false;
+        if (metricDeptObjectSide(row.department_id) !== empSide) return false;
         if (tab && row.work_tab_id !== tab) return false;
         if (row.department_id === "shop" && isTerritoryCode(home)) return false;
         if (!employeeInMetricAssignmentDept(employee, row.department_id)) return false;
@@ -16600,29 +16694,34 @@ function renderShopMetricAccessPanel() {
     }
 }
 
-/** Правило 1 ФИО: подразделение справочника; multi-dept — только явный assignments[].department_id. */
+/**
+ * Правило 1 ФИО: сначала сторона объекта (shop ↔ territory), затем подразделение.
+ * multi-dept на одной стороне — только явный assignments[].department_id.
+ */
 function metricBelongsToEmployeeDeptForFio(item, deptCode) {
     if (!item || !deptCode) return false;
-    if (metricDepartmentId(item) === deptCode) return true;
+    const empSide = metricDeptObjectSide(deptCode);
+    if (!empSide || !metricItemHasObjectSide(item, empSide)) return false;
     if (Array.isArray(item.assignments) && item.assignments.length) {
         return item.assignments.some(function (row) {
             return !!(row && row.department_id === deptCode);
         });
     }
-    return false;
+    return metricDepartmentId(item) === deptCode;
 }
 
 function shopGrantableExtraMetrics(employee) {
     const empId = employee && employee.id;
     const dept = empId ? employeeHomeDeptCode(empId) : catalogDeptContext();
+    const empSide = metricDeptObjectSide(dept);
     return shopWorkMetricDefs().filter(function (def) {
         const it = shopMetricCatalogById(def.id);
         if (!it) return false;
+        // Чужой объект не показывать даже с галочкой в workAccess / inactive keep.
+        if (!empSide || !metricItemHasObjectSide(it, empSide)) return false;
         const keepInactive = empId && shopEmployeeHasWorkMetric(empId, def.id);
         if (it.active === false && !keepInactive) return false;
-        // Правило 1 — подразделение из справочника (не по названию; не «все объекты Территории»).
         if (!metricBelongsToEmployeeDeptForFio(it, dept)) return false;
-        // Правило 2 — назначения: группа / должность / сотрудник (без tab-среза — membership внутри).
         if (!employeeMatchesMetricAssignments(it, employee, "")) return false;
         return true;
     });
@@ -18313,10 +18412,10 @@ function shopAppendCatalogExtraFields(list, category) {
     shopMetricCatalogItems().filter(function (it) {
         if (!it || it.core_column || !shopCatalogItemShownInUi(it)) return false;
         if (it.id === METRIC_WRITEOFF_LOSSES_ID || it.fill_type === "month_money") return false;
+        // Только метрики стороны «магазин» (не Территория по одному workAccess).
+        if (!metricItemHasObjectSide(it, "shop")) return false;
         if (Array.isArray(it.assignments) && it.assignments.length) {
-            if (metricAssignedToDeptTab(it, "shop", category.id)) return true;
-            // Личные workAccess на этой вкладке — колонка нужна, даже если в каталоге другой work_tab.
-            return shopWorkMetricPeople(it.id, category).length > 0;
+            return metricAssignedToDeptTab(it, "shop", category.id);
         }
         return metricDepartmentId(it) === "shop" && metricShowsOnTab(it, category.id);
     }).sort(function (a, b) { return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0); }).forEach(function (it) {
@@ -29100,8 +29199,16 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     const code = isGenericMetricsDept(deptCode) ? deptCode : (deptCode || "shop");
     const tab = workTabId || defaultMetricTabId(code);
     const metricItem = shopMetricCatalogById(mid);
+    const objectSide = code === "shop" ? "shop" : "territory";
+    // Двусторонняя изоляция объектов: чужая сторона — без колонок (workAccess не помогает).
+    if (metricItem && !metricItemHasObjectSide(metricItem, objectSide)) return [];
     // Колонка только в «родной» таблице метрики (объект + вкладка), не в таблице должности сотрудника.
     if (metricItem && !metricHostsOnDeptTab(metricItem, code, tab)) {
+        // Builtin shop-defs не обходят отсутствие shop-назначений у метрики Территории.
+        if (code === "shop" && Array.isArray(metricItem.assignments) && metricItem.assignments.length
+            && !metricAssignedToDeptTab(metricItem, "shop", tab)) {
+            return [];
+        }
         const def = SHOP_WORK_METRIC_DEFS.find(function (d) { return d.id === mid; });
         if (!(def && def.tabs && def.tabs.indexOf(tab) !== -1 && code === "shop")) return [];
     } else if (!metricItem) {
@@ -29149,10 +29256,12 @@ function deptMetricFields(deptCode, tabId) {
     const list = [];
     shopMetricCatalogItems().filter(function (it) {
         if (!it || !shopCatalogItemShownInUi(it)) return false;
+        // Территория: не показывать метрики только магазина (и наоборот через workMetricPeopleForTab).
+        if (!metricItemHasObjectSide(it, "territory")) return false;
         if (Array.isArray(it.assignments) && it.assignments.length) {
+            if (!metricAssignedToDeptTab(it, deptCode, tab)) return false;
             const hasPeople = workMetricPeopleForTab(deptCode, it.id, tab).length > 0;
             if (hasPeople) return true;
-            if (!metricAssignedToDeptTab(it, deptCode, tab)) return false;
             return metricIsChecklist(it);
         }
         if (metricDepartmentId(it) === "shop") return false;

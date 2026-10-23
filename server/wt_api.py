@@ -830,6 +830,11 @@ def _user_can_touch_metric_item(item: dict, codes: set[str]) -> bool:
     return False
 
 
+def _is_territory_assignment_dept(dept: str) -> bool:
+    """Назначение Территории: department_id ∈ office|warehouse|drivers (не shop)."""
+    return str(dept or "").strip() in TERRITORY_CODES
+
+
 def _merge_metric_assignments(
     current_rows: Any, incoming_rows: Any, codes: set[str], emp_dept: dict[str, str]
 ) -> list:
@@ -856,11 +861,20 @@ def _merge_metric_assignments(
         aid = str(row.get("assignment_id") or "").strip()
         if aid and aid in index:
             dest = result[index[aid]]
-            if str(dest.get("department_id") or "").strip() not in codes:
+            dest_dept = str(dest.get("department_id") or "").strip()
+            if dest_dept not in codes:
                 continue
             dest["employee_ids"] = eids
             if row.get("assign_mode") in ("specific", "group_all"):
                 dest["assign_mode"] = row.get("assign_mode")
+            # Территория: сохранять должность и рабочую группу назначения.
+            # Магазин Володарского (department_id=shop): прежнее поведение — только ids/mode.
+            if _is_territory_assignment_dept(dest_dept) and _is_territory_assignment_dept(dept):
+                if "position_id" in row:
+                    dest["position_id"] = str(row.get("position_id") or "")
+                work_tab = str(row.get("work_tab_id") or "").strip()
+                if work_tab:
+                    dest["work_tab_id"] = work_tab
             continue
         if not aid:
             aid = "masg_%d" % (len(result) + 1)
