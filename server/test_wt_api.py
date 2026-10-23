@@ -4589,5 +4589,68 @@ class BootstrapAdminTests(unittest.TestCase):
         self.assertIsNone(calc("pct", 0, 110))
 
 
+class EmployeeCardGuardClientTests(unittest.TestCase):
+    """Защита карточек: черновик до Save, без авто-дедупа/клонирования, метрики не мутируют карточку."""
+
+    def _src(self) -> str:
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_protected_fields_are_draft_until_commit(self):
+        src = self._src()
+        self.assertIn("function stageEmployeeCardField(", src)
+        self.assertIn("EMPLOYEE_CARD_PROTECTED_FIELDS", src)
+        self.assertIn("applyEmployeeCardProtectedDraft", src)
+        self.assertRegex(src, r"stageEmployeeCardField\([^)]*work_tab_id")
+        self.assertRegex(src, r"stageEmployeeCardField\([^)]*position_id")
+        update = src[src.find("function updateEmployee(") : src.find("function setEmployeeTermsField(")]
+        self.assertIn("EMPLOYEE_CARD_PROTECTED_FIELDS[field]", update)
+        self.assertIn("stageEmployeeCardField(employeeId, field, value)", update)
+        self.assertNotIn("setEmployeePrimaryWorkTab(employeeId, value)", update)
+        self.assertNotIn("setEmployeePosition(employee, value", update)
+
+    def test_dangerous_load_helpers_are_report_only(self):
+        src = self._src()
+        dedupe = src[
+            src.find("function dedupeClonedEmployees(") : src.find("function ensureUniqueWorkspaceIds(")
+        ]
+        self.assertIn("possible_name_duplicate", dedupe)
+        self.assertIn("pushEmployeeCardGuardReport", dedupe)
+        self.assertNotIn("removeEmployeeFromWorkspace", dedupe)
+        distribute = src[
+            src.find("function distributeEmployeesPerDepartment(") : src.find("function dedupeClonedEmployees(")
+        ]
+        self.assertIn("distribute_no_clone", distribute)
+        self.assertIn("employee_id_multi_object", distribute)
+        self.assertNotIn("cloneEmployeeRecord", distribute)
+        ensure = src[src.find("function ensurePositionCatalog(") : src.find("function positionCatalogItems(")]
+        self.assertIn("if (e.position_id) return;", ensure)
+        self.assertNotIn("e.position = findById", ensure)
+        bind = src[src.find("function bindEmployeePositionId(") : src.find("function positionUsage(")]
+        self.assertIn("opts.force === true", bind)
+        self.assertIn("if (!force && employee.position_id) return;", bind)
+
+    def test_metric_sync_does_not_mutate_employee_card(self):
+        src = self._src()
+        sync = src[
+            src.find("function syncEmployeeMetricAssignmentsToCatalog(") : src.find("function commitEmployeeCard(")
+        ]
+        self.assertNotIn("setEmployeePosition(", sync)
+        self.assertNotIn("setEmployeePrimaryWorkTab(", sync)
+        self.assertNotIn("employee.position_id =", sync)
+        self.assertNotIn("employee.work_tab_id =", sync)
+        self.assertNotIn("employee.department =", sync)
+
+    def test_admin_move_and_reassign_require_confirm(self):
+        src = self._src()
+        move = src[src.find("function moveEmployeeToDepartment(") : src.find("function updateStats(")]
+        self.assertIn("opts.confirmed", move)
+        self.assertIn("confirm(", move)
+        reassign = src[
+            src.find("function reassignPositionEmployees(") : src.find("function removeCustomPosition(")
+        ]
+        self.assertIn("confirm(", reassign)
+        self.assertIn("usage.employees", reassign)
+
+
 if __name__ == "__main__":
     unittest.main()

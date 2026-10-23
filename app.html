@@ -7273,7 +7273,7 @@ function setEmployeePosition(employee, nextTitle, fromMonth) {
     }
     employee.position = next;
     employee.position_from = from || selectedMonth;
-    bindEmployeePositionId(employee, next, employeeHomeDeptCode(employee.id));
+    bindEmployeePositionId(employee, next, employeeHomeDeptCode(employee.id), { force: true });
 }
 
 function canEditOrgStructure() {
@@ -7401,9 +7401,15 @@ function keepEmployeeIfInDepartment(employeeId, deptCode) {
     if (!deptCode) return employeeId;
     return employeeHomeDeptCode(employeeId) === deptCode ? employeeId : "";
 }
-function setEmployeePrimaryWorkTab(employeeId, tabId) {
+/**
+ * Смена основной рабочей группы карточки.
+ * Вызывать только из явного сохранения карточки или подтверждённого перевода.
+ * Назначения метрик сюда не обращаются.
+ */
+function setEmployeePrimaryWorkTab(employeeId, tabId, opts) {
     const employee = getEmployee(employeeId);
     if (!employee) return;
+    opts = opts || {};
     const next = String(tabId || "");
     const prev = String(employee.work_tab_id || "");
     if (next === prev) return;
@@ -7421,7 +7427,8 @@ function setEmployeePrimaryWorkTab(employeeId, tabId) {
     employee.work_tab_id = next;
     employee.work_group_id = next;
     employee.work_tab_from = next ? selectedMonth : "";
-    if (next) {
+    // work_group_ids: только при явной смене группы (не раздувать из побочных вызовов).
+    if (next && opts.appendGroupIds !== false) {
         if (!Array.isArray(employee.work_group_ids)) employee.work_group_ids = [];
         if (employee.work_group_ids.indexOf(next) === -1) employee.work_group_ids.push(next);
     }
@@ -7496,9 +7503,13 @@ function workTabSelectForDept(employee, deptWs) {
     if (!w) return "";
     const tabs = timesheetGroupFilterTabs(w.code);
     if (!tabs.length) return "";
-    const current = String(employee.work_tab_id || employeePrimaryWorkTabId(employee, w.code) || "");
+    const draft = getEmployeeCardDraft(employee && employee.id);
+    const current = String(
+        (draft && draft.work_tab_id !== undefined) ? draft.work_tab_id
+            : (employee.work_tab_id || employeePrimaryWorkTabId(employee, w.code) || "")
+    );
     const locked = !canEditStaff() && (isSummary() || isAdminEntry());
-    let html = '<select class="emp-work-tab" onchange="updateEmployee(\'' + employee.id + '\',\'work_tab_id\',this.value)"'
+    let html = '<select class="emp-work-tab" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'work_tab_id\',this.value)"'
         + (locked ? " disabled" : "") + ">"
         + '<option value="">Не выбрана</option>';
     tabs.forEach(function (t) {
@@ -9281,23 +9292,26 @@ function ensurePositionCatalog(data) {
         });
         (w.employees || []).forEach(function (e) {
             if (!e) return;
-            if (e.position_id && findById(e.position_id)) {
-                if (!e.position) e.position = findById(e.position_id).name;
-                return;
-            }
+            // Не перезаписывать текст должности и не трогать группу при загрузке справочника.
+            if (e.position_id) return;
             const name = String(e.position || "").replace(/\s+/g, " ").trim();
             if (!name) return;
-            let hit = findByDeptName(w.code, name);
-            if (!hit) {
-                hit = addItem({
-                    position_id: nextPrefixedId("pos", cat.items.map(function (it) { return it && it.position_id; })),
-                    department_id: w.code,
-                    name: name,
-                    active: true,
-                    builtin: false
+            const key = positionNameKey(name);
+            const matches = (cat.items || []).filter(function (it) {
+                return it && it.department_id === w.code && positionNameKey(it.name) === key;
+            });
+            if (matches.length === 1 && matches[0].position_id) {
+                e.position_id = matches[0].position_id;
+            } else if (matches.length > 1) {
+                pushEmployeeCardGuardReport({
+                    type: "ambiguous_position_id",
+                    employee_id: e.id || "",
+                    name: e.name || "",
+                    department: w.code,
+                    position: name,
+                    candidates: matches.map(function (it) { return it.position_id; })
                 });
             }
-            if (hit) e.position_id = hit.position_id;
         });
     });
     return cat;
@@ -9340,8 +9354,16 @@ function syncWorkspaceCustomPositions() {
     });
 }
 
-function bindEmployeePositionId(employee, title, dept) {
+/**
+ * Привязка должности к справочнику.
+ * opts.force === true — только при явном сохранении карточки администратором.
+ * Без force: не меняет существующие position / position_id (загрузка/отображение).
+ */
+function bindEmployeePositionId(employee, title, dept, opts) {
     if (!employee) return;
+    opts = opts || {};
+    const force = opts.force === true;
+    if (!force && employee.position_id) return;
     const code = dept || employeeHomeDeptCode(employee.id) || "";
     const name = String(title || employee.position || "").replace(/\s+/g, " ").trim();
     const aliases = {
@@ -9351,8 +9373,11 @@ function bindEmployeePositionId(employee, title, dept) {
     };
     const mapped = aliases[positionNameKey(name)] || name;
     const hit = positionCatalogByName(code, mapped) || (employee.position_id ? positionCatalogById(employee.position_id) : null);
+    if (!force) {
+        if (!employee.position_id && hit) employee.position_id = hit.position_id;
+        return;
+    }
     employee.position_id = hit ? hit.position_id : (employee.position_id || "");
-    if (hit && !employee.position) employee.position = hit.name;
 }
 
 function positionUsage(positionId) {
@@ -9646,7 +9671,36 @@ function belongsToWorkspace(w, employeeId) {
     return list.some(function (e) { return e && e.id === employeeId; });
 }
 
+/** Отчёт о конфликтах/дублях карточек (без автоисправления). */
+var employeeCardGuardReport = [];
+
+function pushEmployeeCardGuardReport(row) {
+    if (!row || typeof row !== "object") return;
+    if (!Array.isArray(employeeCardGuardReport)) employeeCardGuardReport = [];
+    employeeCardGuardReport.push(row);
+}
+
+function getEmployeeCardGuardReport() {
+    const out = Array.isArray(employeeCardGuardReport) ? employeeCardGuardReport.slice() : [];
+    try {
+        findDuplicateEmployeeIdsAcrossWorkspaces().forEach(function (row) {
+            out.push({
+                type: "employee_id_multi_object",
+                employee_id: row.employee_id,
+                name: row.name || "",
+                departments: row.departments || []
+            });
+        });
+    } catch (err) { /* findDuplicate может быть недоступен на ранней загрузке */ }
+    return out;
+}
+
+function clearEmployeeCardGuardReport() {
+    employeeCardGuardReport = [];
+}
+
 function distributeEmployeesPerDepartment(data) {
+    clearEmployeeCardGuardReport();
     const owned = {};
 
     data.workspaces.forEach(function (w) {
@@ -9660,7 +9714,18 @@ function distributeEmployeesPerDepartment(data) {
         const localIds = {};
         (w.employees || []).forEach(function (e) {
             if (!e || !e.id || localIds[e.id]) return;
-            if (owned[e.id] && owned[e.id] !== w) return;
+            if (owned[e.id] && owned[e.id] !== w) {
+                // Один id в двух объектах — не выбирать принадлежность, не удалять.
+                pushEmployeeCardGuardReport({
+                    type: "employee_id_multi_object",
+                    employee_id: e.id,
+                    name: e.name || "",
+                    departments: [owned[e.id].code, w.code].filter(Boolean)
+                });
+                localIds[e.id] = true;
+                unique.push(e);
+                return;
+            }
             localIds[e.id] = true;
             owned[e.id] = w;
             unique.push(e);
@@ -9670,16 +9735,26 @@ function distributeEmployeesPerDepartment(data) {
         const nextIds = [];
         (w.employeeIds || []).forEach(function (id) {
             if (!id || nextIds.indexOf(id) !== -1) return;
-            if (owned[id] && owned[id] !== w) return;
+            if (owned[id] && owned[id] !== w) {
+                pushEmployeeCardGuardReport({
+                    type: "distribute_id_conflict",
+                    employee_id: id,
+                    target: w.code,
+                    owned_by: owned[id].code || "",
+                    reason: "employeeIds указывает на объект, где карточки нет; клонирование запрещено"
+                });
+                return;
+            }
 
             if (!belongsToWorkspace(w, id)) {
-                const src = (data.employees || []).find(function (e) { return e.id === id; });
-                if (!src) return;
-                if (owned[id] && owned[id] !== w) return;
-                const copy = cloneEmployeeRecord(src);
-                copy.id = src.id;
-                w.employees.push(copy);
-                owned[id] = w;
+                // Запрет авто-клонирования сотрудника в другой объект/подразделение.
+                pushEmployeeCardGuardReport({
+                    type: "distribute_no_clone",
+                    employee_id: id,
+                    target: w.code,
+                    reason: "employeeIds без локальной карточки — копия не создаётся"
+                });
+                return;
             }
             nextIds.push(id);
         });
@@ -9692,8 +9767,11 @@ function distributeEmployeesPerDepartment(data) {
     dedupeClonedEmployees(data);
 }
 
+/**
+ * Ранее удалял «дубли» по ФИО+должность+ставка. Теперь только отчёт — записи не трогаем.
+ */
 function dedupeClonedEmployees(data) {
-    const depts = data.workspaces.filter(function (w) { return w.type !== "summary"; });
+    const depts = (data.workspaces || []).filter(function (w) { return w && w.type !== "summary"; });
     const groups = {};
 
     depts.forEach(function (w) {
@@ -9701,28 +9779,17 @@ function dedupeClonedEmployees(data) {
             const key = employeeFingerprint(e);
             if (!key) return;
             if (!groups[key]) groups[key] = [];
-            groups[key].push({ w: w, e: e });
+            groups[key].push({ code: w.code, id: e.id, name: e.name || "" });
         });
     });
 
     Object.keys(groups).forEach(function (key) {
         const items = groups[key];
         if (items.length < 2) return;
-
-        let best = items[0];
-        let bestScore = timesheetFillCount(best.w, best.e.id);
-        items.forEach(function (item, index) {
-            if (index === 0) return;
-            const score = timesheetFillCount(item.w, item.e.id);
-            if (score > bestScore) {
-                best = item;
-                bestScore = score;
-            }
-        });
-
-        items.forEach(function (item) {
-            if (item.w === best.w && item.e.id === best.e.id) return;
-            removeEmployeeFromWorkspace(item.w, item.e.id);
+        pushEmployeeCardGuardReport({
+            type: "possible_name_duplicate",
+            fingerprint: key,
+            employees: items
         });
     });
 }
@@ -9851,8 +9918,8 @@ function repairFourDepartments(data) {
         if (!w.timesheet || typeof w.timesheet !== "object") w.timesheet = {};
         w.employees.forEach(function (e) {
             if (!e) return;
-            const names = DEPT_DEFAULTS.map(function (d) { return d.name; }).concat(LEGACY_DEPT_NAMES);
-            if (!e.department || names.indexOf(e.department) !== -1) e.department = def.name;
+            // Не перезаписывать уже заданный текст отдела при загрузке.
+            if (!String(e.department || "").trim()) e.department = def.name;
         });
     });
 
@@ -11169,13 +11236,8 @@ function commitEmployeeCard(employeeId) {
         }
     }
     try {
-        const tabSel = card && card.querySelector(".emp-work-tab");
-        if (tabSel) {
-            const tab = tabSel.value;
-            if (tab !== String(employee.work_tab_id || "")) {
-                setEmployeePrimaryWorkTab(employeeId, tab);
-            }
-        }
+        applyEmployeeCardProtectedDraft(employeeId, card);
+        clearEmployeeCardDraft(employeeId);
         if (!employee.employee_id) employee.employee_id = employee.id;
         const meetBox = card && card.querySelector(".emp-spu-meet");
         if (meetBox) {
@@ -14770,19 +14832,37 @@ function findDuplicateEmployeeIdsAcrossWorkspaces() {
 
 function employeeDuplicateIdsReportHtml() {
     const rows = findDuplicateEmployeeIdsAcrossWorkspaces();
-    if (!rows.length) return "";
-    let html = '<div class="note" style="border:1px solid #a67c00;background:#fffbeb;padding:10px;margin:0 0 12px;border-radius:8px">'
-        + "<strong>Обнаружены сотрудники с одним id в нескольких подразделениях (" + rows.length + ").</strong>"
-        + "<div style=\"margin-top:6px\">Автоматически не переносим и не удаляем. Домашнее подразделение берётся через employeeHome; "
-        + "смена модели (явное home_department) — только после согласования.</div>"
-        + '<ul style="margin:8px 0 0;padding-left:18px;max-height:140px;overflow:auto">';
-    rows.slice(0, 30).forEach(function (r) {
-        html += "<li>" + escapeHtml(r.name || r.employee_id)
-            + ' <span class="mgmt-src">' + escapeHtml(r.employee_id) + " → "
-            + escapeHtml((r.departments || []).join(", ")) + "</span></li>";
+    let guard = [];
+    try { guard = getEmployeeCardGuardReport() || []; } catch (err) { guard = []; }
+    const nameDupes = guard.filter(function (r) { return r && r.type === "possible_name_duplicate"; });
+    const noClone = guard.filter(function (r) {
+        return r && (r.type === "distribute_no_clone" || r.type === "distribute_id_conflict");
     });
-    if (rows.length > 30) html += "<li>… и ещё " + (rows.length - 30) + "</li>";
-    html += "</ul></div>";
+    if (!rows.length && !nameDupes.length && !noClone.length) return "";
+    let html = '<div class="note" style="border:1px solid #a67c00;background:#fffbeb;padding:10px;margin:0 0 12px;border-radius:8px">';
+    if (rows.length) {
+        html += "<strong>Обнаружены сотрудники с одним id в нескольких подразделениях (" + rows.length + ").</strong>"
+            + "<div style=\"margin-top:6px\">Автоматически не переносим и не удаляем. Домашнее подразделение берётся через employeeHome; "
+            + "смена модели (явное home_department) — только после согласования.</div>"
+            + '<ul style="margin:8px 0 0;padding-left:18px;max-height:140px;overflow:auto">';
+        rows.slice(0, 30).forEach(function (r) {
+            html += "<li>" + escapeHtml(r.name || r.employee_id)
+                + ' <span class="mgmt-src">' + escapeHtml(r.employee_id) + " → "
+                + escapeHtml((r.departments || []).join(", ")) + "</span></li>";
+        });
+        if (rows.length > 30) html += "<li>… и ещё " + (rows.length - 30) + "</li>";
+        html += "</ul>";
+    }
+    if (nameDupes.length) {
+        html += "<div style=\"margin-top:10px\"><strong>Возможные дубли по ФИО/должности/ставке (" + nameDupes.length
+            + ") — записи не удалялись.</strong></div>";
+    }
+    if (noClone.length) {
+        html += "<div style=\"margin-top:8px\"><strong>Отклонённые авто-клоны/переносы между объектами (" + noClone.length
+            + ").</strong></div>";
+    }
+    html += '<div class="mgmt-src" style="margin-top:8px">Полный отчёт: getEmployeeCardGuardReport() в консоли.</div>';
+    html += "</div>";
     return html;
 }
 
@@ -30355,7 +30435,7 @@ function renderFio() {
             + fieldBlock("Должность", positionSelect(employee), "emp-field-pos")
             + (tabSel ? fieldBlock("Основная группа", tabSel, "emp-field-tab") : "")
             + shopExtraFunctionsHtml(employee)
-            + fieldBlock("Отдел в карточке", '<input value="' + escapeAttribute(employee.department || "") + '" onchange="updateEmployee(\'' + employee.id + '\',\'department\',this.value)">', "emp-field-dept")
+            + fieldBlock("Отдел в карточке", '<input class="emp-department-input" value="' + escapeAttribute((getEmployeeCardDraft(employee.id) && getEmployeeCardDraft(employee.id).department !== undefined) ? getEmployeeCardDraft(employee.id).department : (employee.department || "")) + '" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'department\',this.value)">', "emp-field-dept")
             + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value)">', "emp-field-time")
             + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value)">', "emp-field-time")
             + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff()), "emp-field-status")
@@ -30697,6 +30777,18 @@ function reassignPositionEmployees(fromId) {
         return;
     }
     const usage = positionUsage(fromId);
+    const count = (usage.employees || []).length;
+    if (!count) {
+        toast("Нет сотрудников с этой должностью.", "error");
+        return;
+    }
+    if (!confirm(
+        "Переназначить должность у " + count + " сотрудник(ов)?\n"
+        + "«" + (from.name || fromId) + "» → «" + (to.name || toId) + "».\n"
+        + "Это массовое административное действие."
+    )) {
+        return;
+    }
     usage.employees.forEach(function (e) {
         setEmployeePosition(e, to.name, selectedMonth);
         e.position_id = to.position_id;
@@ -30720,9 +30812,12 @@ function removeCustomPosition(index) {
 function positionSelect(employee, dept) {
     const ws = dept || workspace();
     const code = (ws && ws.code) || employeeHomeDeptCode(employee && employee.id) || "";
-    const currentId = (employee && employee.position_id) || "";
+    const draft = getEmployeeCardDraft(employee && employee.id);
+    const currentId = (draft && draft.position_id !== undefined)
+        ? draft.position_id
+        : ((employee && employee.position_id) || "");
     const currentName = String((employee && employee.position) || "").replace(/\s+/g, " ").trim();
-    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'position_id\',this.value)">'
+    return '<select class="emp-position-id" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'position_id\',this.value)">'
         + positionCatalogOptionsHtml(code, currentId || currentName, false)
         + "</select>";
 }
@@ -31018,6 +31113,71 @@ function addEmployee() {
     openEmployeeCreateForm();
 }
 
+/** Черновик полей карточки до кнопки «Сохранить». */
+var employeeCardDraftById = Object.create(null);
+
+function getEmployeeCardDraft(employeeId) {
+    if (!employeeId || !employeeCardDraftById) return null;
+    return employeeCardDraftById[employeeId] || null;
+}
+
+function stageEmployeeCardField(employeeId, field, value) {
+    if (!employeeId || !field) return;
+    if (!employeeCardDraftById || typeof employeeCardDraftById !== "object") {
+        employeeCardDraftById = Object.create(null);
+    }
+    if (!employeeCardDraftById[employeeId]) employeeCardDraftById[employeeId] = {};
+    employeeCardDraftById[employeeId][field] = value;
+    // Не мутируем сохранённую карточку и не вызываем saveApp.
+}
+
+function clearEmployeeCardDraft(employeeId) {
+    if (!employeeId || !employeeCardDraftById) return;
+    delete employeeCardDraftById[employeeId];
+}
+
+/** Поля карточки, которые пишутся только через commitEmployeeCard / явное админ-действие. */
+var EMPLOYEE_CARD_PROTECTED_FIELDS = {
+    department: true,
+    position: true,
+    position_id: true,
+    work_tab_id: true,
+    work_group_id: true,
+    work_group_ids: true
+};
+
+function applyEmployeeCardProtectedDraft(employeeId, card) {
+    const employee = getEmployee(employeeId);
+    if (!employee) return;
+    const draft = getEmployeeCardDraft(employeeId) || {};
+    const tabSel = card && card.querySelector(".emp-work-tab");
+    const posSel = card && card.querySelector(".emp-position-id");
+    const deptInp = card && card.querySelector(".emp-department-input");
+    const nextTab = tabSel ? tabSel.value
+        : (Object.prototype.hasOwnProperty.call(draft, "work_tab_id") ? draft.work_tab_id : undefined);
+    if (nextTab !== undefined && String(nextTab) !== String(employee.work_tab_id || "")) {
+        setEmployeePrimaryWorkTab(employeeId, nextTab);
+    }
+    const nextPosId = posSel ? posSel.value
+        : (Object.prototype.hasOwnProperty.call(draft, "position_id") ? draft.position_id : undefined);
+    if (nextPosId !== undefined && String(nextPosId) !== String(employee.position_id || "")) {
+        const item = positionCatalogById(nextPosId);
+        setEmployeePosition(employee, item ? item.name : "", selectedMonth);
+        if (item) employee.position_id = item.position_id;
+        else if (!nextPosId) {
+            employee.position_id = "";
+        }
+    } else if (Object.prototype.hasOwnProperty.call(draft, "position")
+        && String(draft.position) !== String(employee.position || "")) {
+        setEmployeePosition(employee, draft.position, selectedMonth);
+    }
+    const nextDept = deptInp ? deptInp.value
+        : (Object.prototype.hasOwnProperty.call(draft, "department") ? draft.department : undefined);
+    if (nextDept !== undefined && String(nextDept) !== String(employee.department || "")) {
+        employee.department = String(nextDept || "");
+    }
+}
+
 function updateEmployee(employeeId, field, value) {
     if (shopUiQuiet) return;
     if (isSummary() && !canEditStaff() && !(isRepPercentField(field) && canEditRepSales())) return;
@@ -31039,19 +31199,13 @@ function updateEmployee(employeeId, field, value) {
         setEmployeeTermsField(employeeId, field, value);
         return;
     }
+    // Защищённые поля карточки — только черновик до «Сохранить».
+    if (EMPLOYEE_CARD_PROTECTED_FIELDS[field]) {
+        stageEmployeeCardField(employeeId, field, value);
+        return;
+    }
     if (field === "jobStatus") {
         employee.jobStatus = value === "fired" ? "fired" : "working";
-    } else if (field === "work_tab_id") {
-        setEmployeePrimaryWorkTab(employeeId, value);
-        // Смена группы меняет доступный набор из общего каталога; назначения не перезаписываем.
-        saveApp();
-        return;
-    } else if (field === "position") {
-        setEmployeePosition(employee, value, selectedMonth);
-    } else if (field === "position_id") {
-        const item = positionCatalogById(value);
-        setEmployeePosition(employee, item ? item.name : "", selectedMonth);
-        if (item) employee.position_id = item.position_id;
     } else if (field === "participates_in_spu_meetings") {
         employee.participates_in_spu_meetings = value === true || value === "true";
         employee.meeting_participant = employee.participates_in_spu_meetings;
@@ -31157,10 +31311,12 @@ function summaryDirectoryGroups() {
 }
 
 function workplaceSelect(employee, dept) {
-    let html = '<select onchange="moveEmployeeToDepartment(\'' + employee.id + '\', this.value)">';
+    let html = '<select onchange="moveEmployeeToDepartment(\'' + employee.id + '\', this.value)">'
+        + '<option value="' + (dept && dept.code ? dept.code : "") + '" selected>'
+        + escapeHtml(dept ? officialName(dept) : "—") + "</option>";
     DEPT_DEFAULTS.forEach(function (d) {
-        html += '<option value="' + d.code + '"' + (dept && dept.code === d.code ? " selected" : "") + ">"
-            + escapeHtml(d.name) + "</option>";
+        if (dept && dept.code === d.code) return;
+        html += '<option value="' + d.code + '">' + escapeHtml(d.name) + "</option>";
     });
     return html + "</select>";
 }
@@ -31268,11 +31424,29 @@ function addSummaryEmployee() {
     addEmployee();
 }
 
-function moveEmployeeToDepartment(employeeId, deptCode) {
+function moveEmployeeToDepartment(employeeId, deptCode, opts) {
+    opts = opts || {};
     const from = employeeHome(employeeId);
     const to = findWorkspaceByCode(deptCode);
     const employee = from ? findEmployeeIn(from, employeeId) : null;
     if (!from || !to || !employee || from === to) return;
+
+    // Перевод только как отдельное админ-действие с подтверждением (не при загрузке/метриках).
+    if (!opts.confirmed) {
+        const ok = confirm(
+            "Перевести «" + (employee.name || employeeId) + "» из «"
+            + officialName(from) + "» в «" + officialName(to) + "»?\n"
+            + "Это административное действие. При отмене карточка не изменится."
+        );
+        if (!ok) {
+            if (isSummary() || isAdminEntry()) renderSummaryStaff();
+            else {
+                try { renderFio(); } catch (err) { /* */ }
+                try { renderEmployees(); } catch (err2) { /* */ }
+            }
+            return;
+        }
+    }
 
     const wasAssigned = isAssignedTo(from, employeeId);
     from.employees = (from.employees || []).filter(function (x) { return x.id !== employeeId; });
@@ -31788,10 +31962,12 @@ function saveStaffOrgEditor(employeeId) {
     e.meeting_participant = e.participates_in_spu_meetings === true;
     e.spu_sort_order = Number((document.getElementById("orgEmpSort") || {}).value || 0);
     e.jobStatus = (document.getElementById("orgEmpActive") && document.getElementById("orgEmpActive").checked) ? "working" : "fired";
-    if (nextDept && home && home.code !== nextDept) moveEmployeeToDepartment(e.id, nextDept);
+    if (nextDept && home && home.code !== nextDept) {
+        moveEmployeeToDepartment(e.id, nextDept, { confirmed: true });
+    }
     const homeAfter = employeeHome(e.id);
     if (homeAfter && posItem && posItem.department_id !== homeAfter.code) {
-        bindEmployeePositionId(e, pos, homeAfter.code);
+        bindEmployeePositionId(e, pos, homeAfter.code, { force: true });
     }
     const selected = [];
     const boxes = document.querySelectorAll(".org-spu-on");
