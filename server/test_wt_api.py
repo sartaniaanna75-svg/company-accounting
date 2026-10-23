@@ -4743,6 +4743,333 @@ class EmployeeIdAllocationTests(unittest.TestCase):
         }
         self.assertIsNone(wt_api.employee_id_put_denied(current, moved))
 
+    def test_admin_merge_keeps_other_admins_new_employee(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "warehouse",
+                    "employees": [
+                        {"id": "emp_keep", "name": "Old"},
+                        {"id": "T-S-000001", "name": "AdminA", "work_tab_id": "loaders", "position": "Грузчик"},
+                    ],
+                    "employeeIds": ["emp_keep", "T-S-000001"],
+                }
+            ]
+        }
+        # Устаревший снимок админа B без карточки A.
+        incoming = {
+            "workspaces": [
+                {
+                    "code": "warehouse",
+                    "employees": [
+                        {"id": "emp_keep", "name": "Old"},
+                        {"id": "T-S-000002", "name": "AdminB", "work_tab_id": "loaders", "position": "Грузчик"},
+                    ],
+                    "employeeIds": ["emp_keep", "T-S-000002"],
+                }
+            ]
+        }
+        merged = wt_api._merge_admin_payload(current, incoming)
+        wh = next(w for w in merged["workspaces"] if w["code"] == "warehouse")
+        ids = [e["id"] for e in wh["employees"]]
+        self.assertIn("T-S-000001", ids)
+        self.assertIn("T-S-000002", ids)
+        self.assertIn("emp_keep", ids)
+
+    def test_admin_merge_explicit_removal_deletes(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "warehouse",
+                    "employees": [
+                        {"id": "emp_keep", "name": "Old"},
+                        {"id": "T-S-000001", "name": "Gone"},
+                    ],
+                    "employeeIds": ["emp_keep", "T-S-000001"],
+                }
+            ]
+        }
+        incoming = {
+            "workspaces": [
+                {
+                    "code": "warehouse",
+                    "employees": [{"id": "emp_keep", "name": "Old"}],
+                    "employeeIds": ["emp_keep"],
+                }
+            ],
+            "employeeRemovals": [{"department_id": "warehouse", "employee_id": "T-S-000001"}],
+        }
+        merged = wt_api._merge_admin_payload(current, incoming)
+        wh = next(w for w in merged["workspaces"] if w["code"] == "warehouse")
+        ids = [e["id"] for e in wh["employees"]]
+        self.assertEqual(ids, ["emp_keep"])
+        self.assertNotIn("employeeRemovals", merged)
+
+    def test_admin_merge_cross_dept_stale_put_keeps_both(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [
+                        {"id": "e_shop", "name": "Cash"},
+                        {"id": "V-000001", "name": "NewShop", "work_tab_id": "cashiers", "position_id": "p1"},
+                    ],
+                },
+                {
+                    "code": "office",
+                    "employees": [{"id": "e_off", "name": "Off"}],
+                },
+            ]
+        }
+        incoming = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [{"id": "e_shop", "name": "Cash"}],
+                },
+                {
+                    "code": "office",
+                    "employees": [
+                        {"id": "e_off", "name": "Off"},
+                        {"id": "T-O-000001", "name": "NewOffice", "work_tab_id": "office", "position": "Менеджер"},
+                    ],
+                },
+            ]
+        }
+        merged = wt_api._merge_admin_payload(current, incoming)
+        shop = next(w for w in merged["workspaces"] if w["code"] == "shop")
+        office = next(w for w in merged["workspaces"] if w["code"] == "office")
+        self.assertIn("V-000001", [e["id"] for e in shop["employees"]])
+        self.assertIn("T-O-000001", [e["id"] for e in office["employees"]])
+
+
+class ConcurrentEmployeeCreateApiTests(StoreApiTests):
+    """Создание сотрудников через POST /api/employees + admin merge (FakeConn, без Timeweb)."""
+
+    def _emp_ids(self, dept):
+        ws = next(w for w in self.store["payload"]["workspaces"] if w["code"] == dept)
+        return [e["id"] for e in (ws.get("employees") or []) if e and e.get("id")]
+
+    def test_two_admins_create_same_dept_both_saved(self):
+        cookie, _ = self.login()
+        status1, data1, *_ = call(
+            "POST",
+            "/api/employees",
+            {
+                "department_id": "warehouse",
+                "name": "Сотрудник А",
+                "position": "Грузчик",
+                "work_tab_id": "loaders",
+                "client_request_id": "req-a-1",
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status1.startswith("200"), status1)
+        status2, data2, *_ = call(
+            "POST",
+            "/api/employees",
+            {
+                "department_id": "warehouse",
+                "name": "Сотрудник Б",
+                "position": "Грузчик",
+                "work_tab_id": "loaders",
+                "client_request_id": "req-b-1",
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status2.startswith("200"), status2)
+        self.assertNotEqual(data1["employee_id"], data2["employee_id"])
+        ids = self._emp_ids("warehouse")
+        self.assertIn(data1["employee_id"], ids)
+        self.assertIn(data2["employee_id"], ids)
+        self.assertTrue(str(data1["employee_id"]).startswith("T-S-"))
+        self.assertTrue(str(data2["employee_id"]).startswith("T-S-"))
+        wh = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "warehouse")
+        a = next(e for e in wh["employees"] if e["id"] == data1["employee_id"])
+        b = next(e for e in wh["employees"] if e["id"] == data2["employee_id"])
+        self.assertEqual(a["name"], "Сотрудник А")
+        self.assertEqual(b["name"], "Сотрудник Б")
+        self.assertEqual(a.get("work_tab_id"), "loaders")
+        self.assertEqual(b.get("position"), "Грузчик")
+
+    def test_two_admins_create_different_depts(self):
+        self.store["payload"]["workspaces"].append(
+            {"id": "ws_office", "code": "office", "name": "Офис", "employees": [], "employeeIds": []}
+        )
+        self.store["payload"]["workspaces"].append(
+            {"id": "ws_drivers", "code": "drivers", "name": "Логистика", "employees": [], "employeeIds": []}
+        )
+        cookie, _ = self.login()
+        status1, data1, *_ = call(
+            "POST",
+            "/api/employees",
+            {"department_id": "shop", "name": "Shop New", "work_tab_id": "cashiers", "client_request_id": "req-shop"},
+            cookie=cookie,
+        )
+        status2, data2, *_ = call(
+            "POST",
+            "/api/employees",
+            {"department_id": "office", "name": "Office New", "work_tab_id": "office", "client_request_id": "req-office"},
+            cookie=cookie,
+        )
+        status3, data3, *_ = call(
+            "POST",
+            "/api/employees",
+            {"department_id": "drivers", "name": "Driver New", "work_tab_id": "drivers", "client_request_id": "req-drv"},
+            cookie=cookie,
+        )
+        self.assertTrue(status1.startswith("200"), status1)
+        self.assertTrue(status2.startswith("200"), status2)
+        self.assertTrue(status3.startswith("200"), status3)
+        self.assertTrue(str(data1["employee_id"]).startswith("V-"))
+        self.assertTrue(str(data2["employee_id"]).startswith("T-O-"))
+        self.assertTrue(str(data3["employee_id"]).startswith("T-L-"))
+        self.assertIn(data1["employee_id"], self._emp_ids("shop"))
+        self.assertIn(data2["employee_id"], self._emp_ids("office"))
+        self.assertIn(data3["employee_id"], self._emp_ids("drivers"))
+
+    def test_create_then_stale_admin_put_does_not_drop(self):
+        cookie, _ = self.login()
+        status, created, *_ = call(
+            "POST",
+            "/api/employees",
+            {
+                "department_id": "warehouse",
+                "name": "Keep Me",
+                "position": "Грузчик",
+                "work_tab_id": "loaders",
+                "client_request_id": "req-keep",
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        eid = created["employee_id"]
+        # Устаревший PUT без новой карточки (как второй админ со старым снимком).
+        stale = json.loads(json.dumps(SAMPLE_APP))
+        status_put, *_ = call(
+            "PUT",
+            "/api/state",
+            {"version": int(self.store["version"]), "payload": stale},
+            cookie=cookie,
+        )
+        self.assertTrue(status_put.startswith("200"), status_put)
+        self.assertIn(eid, self._emp_ids("warehouse"))
+
+    def test_create_and_explicit_delete_other(self):
+        cookie, _ = self.login()
+        status, created, *_ = call(
+            "POST",
+            "/api/employees",
+            {
+                "department_id": "warehouse",
+                "name": "Stay",
+                "client_request_id": "req-stay",
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        version = int(self.store["version"])
+        status_put, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "workspaces": [
+                        {
+                            "code": "warehouse",
+                            "employees": [
+                                {"id": created["employee_id"], "name": "Stay"},
+                            ],
+                        }
+                    ],
+                    "employeeRemovals": [
+                        {"department_id": "warehouse", "employee_id": "e_wh"},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status_put.startswith("200"), status_put)
+        ids = self._emp_ids("warehouse")
+        self.assertIn(created["employee_id"], ids)
+        self.assertNotIn("e_wh", ids)
+
+    def test_idempotent_retry_same_client_request_id(self):
+        cookie, _ = self.login()
+        body = {
+            "department_id": "warehouse",
+            "name": "Once Only",
+            "position": "Грузчик",
+            "work_tab_id": "loaders",
+            "client_request_id": "req-idem-1",
+        }
+        status1, data1, *_ = call("POST", "/api/employees", body, cookie=cookie)
+        self.assertTrue(status1.startswith("200"), status1)
+        status2, data2, *_ = call("POST", "/api/employees", body, cookie=cookie)
+        self.assertTrue(status2.startswith("200"), status2)
+        self.assertEqual(data1["employee_id"], data2["employee_id"])
+        self.assertTrue(data2.get("idempotent"))
+        self.assertEqual(self._emp_ids("warehouse").count(data1["employee_id"]), 1)
+
+    def test_create_with_historical_emp_010_duplicate(self):
+        wh = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "warehouse")
+        wh["employees"] = [
+            {"id": "emp_010", "name": "A"},
+            {"id": "emp_010", "name": "B"},
+            {"id": "e_wh", "name": "Кладовщик"},
+        ]
+        cookie, _ = self.login()
+        status, data, *_ = call(
+            "POST",
+            "/api/employees",
+            {
+                "department_id": "warehouse",
+                "name": "After Hist",
+                "client_request_id": "req-hist",
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertTrue(str(data["employee_id"]).startswith("T-S-"))
+        ids = self._emp_ids("warehouse")
+        self.assertEqual(ids.count("emp_010"), 2)
+        self.assertIn(data["employee_id"], ids)
+
+    def test_edit_existing_while_other_creates(self):
+        cookie, _ = self.login()
+        status, created, *_ = call(
+            "POST",
+            "/api/employees",
+            {"department_id": "warehouse", "name": "Created", "client_request_id": "req-ed"},
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        version = int(self.store["version"])
+        status_put, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "workspaces": [
+                        {
+                            "code": "warehouse",
+                            "employees": [
+                                {"id": "e_wh", "name": "Кладовщик Renamed", "rate": 1800},
+                            ],
+                        }
+                    ]
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status_put.startswith("200"), status_put)
+        wh = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "warehouse")
+        names = {e["id"]: e["name"] for e in wh["employees"]}
+        self.assertEqual(names.get("e_wh"), "Кладовщик Renamed")
+        self.assertEqual(names.get(created["employee_id"]), "Created")
+
 
 if __name__ == "__main__":
     unittest.main()

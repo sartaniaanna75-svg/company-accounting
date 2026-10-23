@@ -1678,9 +1678,115 @@ def _empty_wipe(val: Any, existing: Any) -> bool:
     return False
 
 
+def _normalize_employee_removals(raw: Any) -> list[dict[str, str]]:
+    """Явные удаления: [{department_id, employee_id}, ...]. Без этого карточки не удаляются."""
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        dept = str(
+            item.get("department_id") or item.get("dept") or item.get("code") or ""
+        ).strip()
+        eid = str(item.get("employee_id") or item.get("id") or "").strip()
+        if not dept or not eid or dept == "summary":
+            continue
+        key = (dept, eid)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"department_id": dept, "employee_id": eid})
+    return out
+
+
+def apply_employee_removals(payload: dict, removals: Any, allowed_depts: set[str] | None = None) -> None:
+    """Удаляет карточки только по явному списку. Не трогает чужие отделы вне allowed_depts."""
+    if not isinstance(payload, dict):
+        return
+    for item in _normalize_employee_removals(removals):
+        dept = item["department_id"]
+        eid = item["employee_id"]
+        if allowed_depts is not None and dept not in allowed_depts:
+            continue
+        ws = _find_workspace(payload.get("workspaces"), dept)
+        if not isinstance(ws, dict):
+            continue
+        emps = ws.get("employees")
+        if isinstance(emps, list):
+            ws["employees"] = [
+                row
+                for row in emps
+                if not (isinstance(row, dict) and str(row.get("id") or "").strip() == eid)
+            ]
+        ids = ws.get("employeeIds")
+        if isinstance(ids, list):
+            ws["employeeIds"] = [x for x in ids if str(x).strip() != eid]
+
+
+def _trim_employee_create_idempotency(payload: dict, keep: int = 300) -> None:
+    raw = payload.get("employeeCreateIdempotency")
+    if not isinstance(raw, dict) or len(raw) <= keep:
+        return
+    # dict сохраняет порядок вставки — выкидываем самые старые.
+    overflow = len(raw) - keep
+    for key in list(raw.keys())[:overflow]:
+        raw.pop(key, None)
+
+
+def find_employee_in_payload(payload: dict, dept: str, employee_id: str) -> dict | None:
+    ws = _find_workspace((payload or {}).get("workspaces"), dept)
+    if not isinstance(ws, dict):
+        return None
+    eid = str(employee_id or "").strip()
+    for row in ws.get("employees") or []:
+        if isinstance(row, dict) and str(row.get("id") or "").strip() == eid:
+            return row
+    return None
+
+
+def build_created_employee_record(employee_id: str, data: dict, dept_code: str, dept_name: str) -> dict:
+    """Карточка нового сотрудника для атомарного POST /api/employees."""
+    eid = str(employee_id).strip()
+    name = str(data.get("name") or "").strip()
+    position = str(data.get("position") or "").strip()
+    position_id = str(data.get("position_id") or "").strip()
+    work_tab_id = str(data.get("work_tab_id") or data.get("work_group_id") or "").strip()
+    job_status = "fired" if str(data.get("jobStatus") or "") == "fired" else "working"
+    meet_on = data.get("participates_in_spu_meetings") is True or data.get("meeting_participant") is True
+    rec = {
+        "id": eid,
+        "employee_id": eid,
+        "external_1c_id": "",
+        "name": name,
+        "last_name": str(data.get("last_name") or "").strip(),
+        "first_name": str(data.get("first_name") or "").strip(),
+        "middle_name": str(data.get("middle_name") or "").strip(),
+        "position": position,
+        "position_id": position_id,
+        "work_tab_id": work_tab_id,
+        "work_tab_from": str(data.get("work_tab_from") or "").strip(),
+        "work_tab_history": [],
+        "department": dept_name or str(data.get("department") or "").strip(),
+        "start": str(data.get("start") or "08:00"),
+        "end": str(data.get("end") or "17:00"),
+        "rate": 0,
+        "taxiDaily": 0,
+        "jobStatus": job_status,
+        "participates_in_spu_meetings": meet_on,
+        "meeting_participant": meet_on,
+        "terms": {},
+    }
+    return rec
+
+
 def _merge_admin_payload(current: dict, incoming: dict) -> dict:
     stored = _clone(current)
     for key, val in incoming.items():
+        if key in ("employeeRemovals", "employeeCreateIdempotency"):
+            # Removals применяются отдельно; idempotency — только серверный словарь.
+            continue
         if key == "employeeIdCounters":
             stored["employeeIdCounters"] = merge_employee_id_counters(
                 stored.get("employeeIdCounters"), val
@@ -1708,9 +1814,32 @@ def _merge_admin_payload(current: dict, incoming: dict) -> dict:
                         current_ws[index_by_code[code]] = _clone(item)
                         continue
                     for ws_key, ws_val in item.items():
+                        if ws_key in ("removedEmployeeIds", "employeeRemovals"):
+                            continue
                         if _empty_wipe(ws_val, dest.get(ws_key)):
                             continue
+                        # employees: upsert по id — не затираем карточки другого админа.
+                        if ws_key == "employees" and isinstance(ws_val, list):
+                            dest["employees"] = _merge_dept_employees(
+                                dest.get("employees"), ws_val, True
+                            )
+                            continue
+                        if ws_key == "employeeIds" and isinstance(ws_val, list):
+                            dest["employeeIds"] = _merge_dept_employee_ids(
+                                dest.get("employeeIds"), ws_val, dest.get("employees")
+                            )
+                            continue
                         dest[ws_key] = _clone(ws_val)
+                    # Явные удаления внутри workspace (дополнительно к employeeRemovals).
+                    local_rm = item.get("removedEmployeeIds")
+                    if isinstance(local_rm, list) and local_rm:
+                        apply_employee_removals(
+                            {"workspaces": [dest]},
+                            [
+                                {"department_id": code, "employee_id": x}
+                                for x in local_rm
+                            ],
+                        )
                 else:
                     current_ws.append(_clone(item))
             stored["workspaces"] = current_ws
@@ -1753,12 +1882,22 @@ def _merge_admin_payload(current: dict, incoming: dict) -> dict:
             continue
         else:
             stored[key] = _clone(val)
+    # Удаление только по явному employeeRemovals — иначе чужие новые карточки не затираются.
+    apply_employee_removals(stored, incoming.get("employeeRemovals"), None)
+    stored.pop("employeeRemovals", None)
     return hash_pins_in_payload(stored, current)
 
 
 def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
     codes = user_dept_codes(user)
     for key, val in incoming.items():
+        if key == "employeeRemovals":
+            if not can_write_dept_employees(user):
+                return True
+            for item in _normalize_employee_removals(val):
+                if item["department_id"] not in codes:
+                    return True
+            continue
         if key == "workspaces":
             if not isinstance(val, list):
                 return True
@@ -1801,6 +1940,12 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
                             isinstance(item, bool) or not isinstance(item, (str, int))
                             for item in field_val
                         ):
+                            return True
+                        continue
+                    if field == "removedEmployeeIds":
+                        if not can_write_dept_employees(user):
+                            return True
+                        if field_val is not None and not isinstance(field_val, list):
                             return True
                         continue
                     if not _same(field_val, cur_ws.get(field)):
@@ -1912,6 +2057,15 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
                     cur_ws["employeeIds"] = _merge_dept_employee_ids(
                         cur_ws.get("employeeIds"), in_ws.get("employeeIds"), cur_ws.get("employees")
                     )
+                local_rm = in_ws.get("removedEmployeeIds")
+                if isinstance(local_rm, list) and local_rm:
+                    apply_employee_removals(
+                        stored,
+                        [{"department_id": code, "employee_id": x} for x in local_rm],
+                        set(codes),
+                    )
+    if can_write_dept_employees(user) and "employeeRemovals" in incoming:
+        apply_employee_removals(stored, incoming.get("employeeRemovals"), set(user_dept_codes(user)))
     if "management" in incoming and _can_write_any_management(user):
         incoming_m = incoming.get("management")
         cur_m = stored.get("management") if isinstance(stored.get("management"), dict) else {}
@@ -3154,6 +3308,154 @@ def handle_reserve_employee_id(environ):
         conn.close()
 
 
+def _idempotency_key_from_request(environ, data: dict) -> str:
+    headers = environ or {}
+    for hk in ("HTTP_X_IDEMPOTENCY_KEY", "HTTP_IDEMPOTENCY_KEY"):
+        raw = str(headers.get(hk) or "").strip()
+        if raw:
+            return raw[:160]
+    return str(
+        (data or {}).get("client_request_id")
+        or (data or {}).get("idempotency_key")
+        or ""
+    ).strip()[:160]
+
+
+def handle_create_employee(environ):
+    """
+    Атомарное создание сотрудника: reserve ID + запись карточки в одной транзакции (FOR UPDATE).
+    Повтор с тем же client_request_id / Idempotency-Key не создаёт вторую карточку.
+    """
+    raw = read_body(environ)
+    try:
+        data = json.loads(raw.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return json_bytes({"error": "invalid json"}, "400 Bad Request")
+    if not isinstance(data, dict):
+        return json_bytes({"error": "body must be an object"}, "400 Bad Request")
+    dept = str(data.get("department_id") or data.get("dept") or data.get("code") or "").strip()
+    if not employee_id_prefix_for_dept(dept):
+        return json_bytes({"error": "invalid department"}, "400 Bad Request")
+    name = str(data.get("name") or "").strip()
+    if not name:
+        return json_bytes({"error": "name is required"}, "400 Bad Request")
+    client_req = _idempotency_key_from_request(environ, data)
+    if not client_req:
+        return json_bytes({"error": "client_request_id is required"}, "400 Bad Request")
+    user_id, err = require_session(environ)
+    if err:
+        return err
+    if not db_configured():
+        return db_unavailable()
+    try:
+        conn = connect()
+    except Exception:
+        return db_unavailable()
+    try:
+        with conn.cursor() as cur:
+            state = fetch_state_for_update(cur)
+            payload = state.get("payload") if isinstance(state.get("payload"), dict) else {}
+            payload = _clone(payload) if payload else {}
+            user = current_user_from_state(environ, payload, user_id)
+            if not user:
+                conn.rollback()
+                return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
+            if not is_app_admin(user):
+                if not can_write_dept_employees(user):
+                    conn.rollback()
+                    return json_bytes({"error": "forbidden"}, "403 Forbidden")
+                if dept not in user_dept_codes(user):
+                    conn.rollback()
+                    return json_bytes({"error": "forbidden"}, "403 Forbidden")
+
+            idem = payload.get("employeeCreateIdempotency")
+            if not isinstance(idem, dict):
+                idem = {}
+            else:
+                idem = dict(idem)
+            prev = idem.get(client_req)
+            if isinstance(prev, dict) and prev.get("employee_id") and prev.get("department_id"):
+                prev_dept = str(prev.get("department_id"))
+                prev_eid = str(prev.get("employee_id"))
+                existing = find_employee_in_payload(payload, prev_dept, prev_eid)
+                if existing:
+                    try:
+                        version = int(state.get("version") or 0)
+                    except (TypeError, ValueError):
+                        version = 0
+                    conn.rollback()
+                    return json_bytes({
+                        "ok": True,
+                        "idempotent": True,
+                        "employee_id": prev_eid,
+                        "department_id": prev_dept,
+                        "employee": _clone(existing),
+                        "version": version,
+                        "employeeIdCounters": payload.get("employeeIdCounters") or {},
+                    })
+                # Ключ был, карточки уже нет (удалили) — не переиспользуем ключ для нового человека.
+
+            ws = _find_workspace(payload.get("workspaces"), dept)
+            if not isinstance(ws, dict):
+                conn.rollback()
+                return json_bytes({"error": "department not found"}, "400 Bad Request")
+            dept_name = str(ws.get("name") or data.get("department") or dept).strip()
+            eid, alloc_err = allocate_employee_id_in_payload(payload, dept)
+            if alloc_err or not eid:
+                conn.rollback()
+                return json_bytes({"error": alloc_err or "allocate failed"}, "400 Bad Request")
+            # Глобальная уникальность: id не должен уже быть в любом отделе.
+            counts = collect_employee_id_dept_counts(payload)
+            if eid in counts:
+                conn.rollback()
+                return json_bytes({"error": "duplicate employee id"}, "400 Bad Request")
+            employee = build_created_employee_record(eid, data, dept, dept_name)
+            if not isinstance(ws.get("employees"), list):
+                ws["employees"] = []
+            if not isinstance(ws.get("employeeIds"), list):
+                ws["employeeIds"] = []
+            ws["employees"].append(employee)
+            if employee.get("jobStatus") != "fired" and eid not in [str(x) for x in ws["employeeIds"]]:
+                ws["employeeIds"].append(eid)
+            idem[client_req] = {
+                "employee_id": eid,
+                "department_id": dept,
+            }
+            payload["employeeCreateIdempotency"] = idem
+            _trim_employee_create_idempotency(payload)
+            try:
+                expected = int(state.get("version") or 0)
+            except (TypeError, ValueError):
+                expected = 0
+            updated_by = str(user.get("user_id") or "")[:120]
+            row = persist_payload(cur, payload, expected, updated_by)
+            if not row:
+                conn.rollback()
+                return json_bytes(
+                    {"error": "conflict", "message": "Повторите создание сотрудника."},
+                    "409 Conflict",
+                )
+            conn.commit()
+            version = int(row[0] or 0)
+            return json_bytes({
+                "ok": True,
+                "idempotent": False,
+                "employee_id": eid,
+                "department_id": dept,
+                "employee": employee,
+                "version": version,
+                "employeeIdCounters": payload.get("employeeIdCounters") or {},
+            })
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return db_unavailable()
+    finally:
+        conn.close()
+
+
 def application(environ, start_response):
     method = (environ.get("REQUEST_METHOD") or "GET").upper()
     path = environ.get("PATH_INFO") or "/"
@@ -3179,6 +3481,8 @@ def application(environ, start_response):
             status, headers, body = handle_put_state(environ)
         elif method == "POST" and path == "/api/employee-id/reserve":
             status, headers, body = handle_reserve_employee_id(environ)
+        elif method == "POST" and path == "/api/employees":
+            status, headers, body = handle_create_employee(environ)
         elif method == "OPTIONS" and path.startswith("/api/"):
             status, headers, body = "204 No Content", [("Content-Length", "0")], b""
         elif method == "GET":

@@ -10716,10 +10716,49 @@ function payloadForServerPut() {
             ? wtPutPayloadOverride()
             : wtPutPayloadOverride;
         if (!slice || typeof slice !== "object") return null;
-        return wtCloneJson(slice);
+        const out = wtCloneJson(slice);
+        if (appData && Array.isArray(appData.employeeRemovals) && appData.employeeRemovals.length) {
+            out.employeeRemovals = wtCloneJson(appData.employeeRemovals);
+        }
+        return out;
     }
-    if (isAppAdmin()) return wtCloneJson(appData);
-    return buildStaffPutPayload();
+    if (isAppAdmin()) {
+        const out = wtCloneJson(appData);
+        // Idempotency map — только серверная; клиент не перезаписывает.
+        if (out && typeof out === "object") delete out.employeeCreateIdempotency;
+        return out;
+    }
+    const staff = buildStaffPutPayload();
+    if (!staff) return null;
+    if (appData && Array.isArray(appData.employeeRemovals) && appData.employeeRemovals.length) {
+        staff.employeeRemovals = wtCloneJson(appData.employeeRemovals);
+    }
+    return staff;
+}
+
+function queueEmployeeRemoval(deptCode, employeeId) {
+    const dept = String(deptCode || "").trim();
+    const eid = String(employeeId || "").trim();
+    if (!dept || !eid || dept === "summary") return;
+    if (!appData.employeeRemovals || !Array.isArray(appData.employeeRemovals)) {
+        appData.employeeRemovals = [];
+    }
+    const exists = appData.employeeRemovals.some(function (row) {
+        return row
+            && String(row.department_id || row.dept || "") === dept
+            && String(row.employee_id || row.id || "") === eid;
+    });
+    if (!exists) {
+        appData.employeeRemovals.push({ department_id: dept, employee_id: eid });
+    }
+}
+
+function clearQueuedEmployeeRemovals() {
+    if (appData) appData.employeeRemovals = [];
+}
+
+function newEmployeeClientRequestId() {
+    return "cr_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 12);
 }
 
 /**
@@ -10927,6 +10966,7 @@ function putServerStateOnce() {
             wtSaveMark("parse-response", tParse);
             if (state && state.version != null) wtStateVersion = Number(state.version) || wtStateVersion;
             stripLocalSecretsAfterSave();
+            clearQueuedEmployeeRemovals();
             try {
                 const tSnap = wtSaveNow();
                 if (sentSliceKeys && sentSliceKeys.length && wtLastLoadedPayload && typeof wtLastLoadedPayload === "object") {
@@ -10938,6 +10978,9 @@ function putServerStateOnce() {
                     });
                 } else {
                     wtLastLoadedPayload = wtCloneJson(appData);
+                }
+                if (wtLastLoadedPayload && typeof wtLastLoadedPayload === "object") {
+                    delete wtLastLoadedPayload.employeeRemovals;
                 }
                 wtSaveMark("update-last-loaded", tSnap);
             } catch (err) {}
@@ -31533,6 +31576,8 @@ function openEmployeeCreateForm() {
         toast("Окно сотрудника не найдено.", "error");
         return;
     }
+    saveEmployeeCreateForm.busy = false;
+    saveEmployeeCreateForm._reqId = "";
     const w = staffTargetWorkspace();
     if (!w || w.code === "summary" || w.type === "summary") {
         toast("Сначала выберите отдел: Магазин Володарского, Офис, Склад или Логистика + Торговые.", "error");
@@ -31573,12 +31618,88 @@ function openEmployeeCreateForm() {
     }, 30);
 }
 
+function applyCreatedEmployeeToLocalState(body) {
+    if (!body || !body.employee_id || !appData) return null;
+    const dept = String(body.department_id || "").trim();
+    const w = findWorkspaceByCode(dept);
+    if (!w || w.type === "summary") return null;
+    let employee = body.employee && typeof body.employee === "object"
+        ? JSON.parse(JSON.stringify(body.employee))
+        : null;
+    if (!employee) {
+        employee = { id: body.employee_id, employee_id: body.employee_id, name: "" };
+    }
+    employee.id = body.employee_id;
+    employee.employee_id = body.employee_id;
+    if (!Array.isArray(w.employees)) w.employees = [];
+    if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
+    const idx = w.employees.findIndex(function (e) { return e && e.id === body.employee_id; });
+    if (idx >= 0) w.employees[idx] = employee;
+    else w.employees.push(employee);
+    if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
+        w.employeeIds.push(employee.id);
+    }
+    if (body.version != null) wtStateVersion = Number(body.version) || wtStateVersion;
+    if (body.employeeIdCounters && typeof body.employeeIdCounters === "object") {
+        appData.employeeIdCounters = body.employeeIdCounters;
+    }
+    try {
+        if (wtLastLoadedPayload) {
+            wtLastLoadedPayload = wtCloneJson(appData);
+            delete wtLastLoadedPayload.employeeRemovals;
+        }
+    } catch (err) {}
+    return employee;
+}
+
+function createEmployeeOnServer(payload, clientRequestId) {
+    const headers = {
+        "Content-Type": "application/json",
+        "X-Idempotency-Key": String(clientRequestId || "")
+    };
+    const body = Object.assign({}, payload, { client_request_id: clientRequestId });
+    const timeoutMs = 60000;
+    const canAbort = typeof AbortController !== "undefined";
+    const ctrl = canAbort ? new AbortController() : null;
+    let timer = null;
+    if (ctrl) {
+        timer = setTimeout(function () {
+            try { ctrl.abort(); } catch (err) {}
+        }, timeoutMs);
+    }
+    const opts = {
+        method: "POST",
+        credentials: "same-origin",
+        headers: headers,
+        body: JSON.stringify(body)
+    };
+    if (ctrl) opts.signal = ctrl.signal;
+    return fetch("/api/employees", opts).then(function (res) {
+        if (timer) clearTimeout(timer);
+        if (res.status === 401) return { error: "unauthorized", status: 401 };
+        if (res.status === 409) return { error: "conflict", status: 409, retry: true };
+        if (!res.ok) {
+            return res.json().then(function (b) {
+                return { error: (b && b.error) || "create failed", status: res.status };
+            }, function () {
+                return { error: "create failed", status: res.status };
+            });
+        }
+        return res.json();
+    }).catch(function (err) {
+        if (timer) clearTimeout(timer);
+        if (err && err.name === "AbortError") return { error: "timeout", status: 0 };
+        return { error: "network", status: 0 };
+    });
+}
+
 function saveEmployeeCreateForm() {
-    // busy сразу — защита от двойного клика до генерации ID.
+    // busy сразу — защита от двойного клика.
     if (saveEmployeeCreateForm.busy) return;
     saveEmployeeCreateForm.busy = true;
-    function unlockCreate() {
+    function unlockCreate(resetRequestId) {
         saveEmployeeCreateForm.busy = false;
+        if (resetRequestId) saveEmployeeCreateForm._reqId = "";
         const btn = document.querySelector("#employeeCreateModal .btn-primary");
         if (btn) {
             btn.disabled = false;
@@ -31587,14 +31708,14 @@ function saveEmployeeCreateForm() {
     }
     try {
         if (!canEditStaff()) {
-            unlockCreate();
+            unlockCreate(true);
             toast("Нет права добавлять сотрудников.", "error");
             return;
         }
         const nameEl = document.getElementById("empFormName");
         const fullName = nameEl ? nameEl.value : "";
         if (isBlankName(fullName)) {
-            unlockCreate();
+            unlockCreate(true);
             toast("Введите ФИО сотрудника", "error");
             if (nameEl) nameEl.focus();
             return;
@@ -31604,12 +31725,12 @@ function saveEmployeeCreateForm() {
             || ((staffTargetWorkspace() && staffTargetWorkspace().code) || "");
         const w = findWorkspaceByCode(deptCode) || staffTargetWorkspace();
         if (!w || w.code === "summary" || w.type === "summary") {
-            unlockCreate();
+            unlockCreate(true);
             toast("Не выбран отдел для сотрудника.", "error");
             return;
         }
         if (!employeeIdPrefixForDept(w.code)) {
-            unlockCreate();
+            unlockCreate(true);
             toast("Нельзя создать сотрудника в этом разделе.", "error");
             return;
         }
@@ -31631,91 +31752,117 @@ function saveEmployeeCreateForm() {
         const meetOn = !!(document.getElementById("empFormSpuMeet") && document.getElementById("empFormSpuMeet").checked);
         const jobStatus = (statusEl && statusEl.value === "fired") ? "fired" : "working";
 
-        obtainNewEmployeeId(w.code).then(function (res) {
-            if (!res || res.error || !res.employee_id) {
-                unlockCreate();
-                if (res && res.error === "unauthorized") {
-                    toast("Сессия истекла. Войдите снова.", "error");
-                } else if (res && res.error === "forbidden") {
-                    toast("Нет права создавать сотрудников в этом отделе.", "error");
-                } else {
-                    toast("Не удалось получить уникальный ID сотрудника. Повторите сохранение.", "error");
-                }
-                return null;
-            }
-            const occupied = {};
-            allEmployeeIdsFrom(appData).forEach(function (id) { if (id) occupied[id] = true; });
-            if (occupied[res.employee_id]) {
-                unlockCreate();
-                toast("ID " + res.employee_id + " уже занят. Повторите создание.", "error");
-                return null;
-            }
-            const employee = {
-                id: res.employee_id,
-                employee_id: res.employee_id,
-                external_1c_id: "",
-                name: "",
-                last_name: "",
-                first_name: "",
-                middle_name: "",
-                position: posName,
-                position_id: posItem ? posItem.position_id : "",
-                work_tab_id: tab || "",
-                work_tab_from: tab ? selectedMonth : "",
-                work_tab_history: [],
-                department: officialName(w),
-                start: "08:00",
-                end: "17:00",
-                rate: 0,
-                taxiDaily: 0,
-                jobStatus: jobStatus,
-                participates_in_spu_meetings: meetOn,
-                meeting_participant: meetOn,
-                terms: {}
-            };
-            applyEmployeeFullName(employee, fullName);
-            employee.employee_id = employee.id;
-            if (!Array.isArray(w.employees)) w.employees = [];
-            if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
-            w.employees.push(employee);
-            if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
-                w.employeeIds.push(employee.id);
-            }
-            justAddedEmployeeId = employee.id;
-            return Promise.resolve(saveApp()).then(function (ok) {
-                return { ok: ok, employee: employee };
-            });
-        }).then(function (result) {
-            if (!result) return;
-            const employee = result.employee;
-            const ok = result.ok;
-            if (ok === "timeout") {
-                unlockCreate();
-                toast("Ответ сервера не получен. Не создавайте сотрудника повторно сразу — проверьте список после обновления данных.", "error");
-                try { refreshAfterEmployeeCreate(); } catch (err) {}
-                return;
-            }
-            if (!ok) {
-                w.employees = (w.employees || []).filter(function (item) { return !item || item.id !== employee.id; });
-                w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employee.id; });
-                if (justAddedEmployeeId === employee.id) justAddedEmployeeId = "";
-                unlockCreate();
-                try { refreshAfterEmployeeCreate(); } catch (err) {}
-                toast("Не удалось сохранить сотрудника. Запись на сервере не подтверждена.", "error");
-                return;
-            }
-            unlockCreate();
+        // Один client_request_id на попытку формы — повтор после сети не создаёт вторую карточку.
+        if (!saveEmployeeCreateForm._reqId) {
+            saveEmployeeCreateForm._reqId = newEmployeeClientRequestId();
+        }
+        const clientReqId = saveEmployeeCreateForm._reqId;
+        const createPayload = {
+            department_id: w.code,
+            name: String(fullName || "").replace(/\s+/g, " ").trim(),
+            position: posName,
+            position_id: posItem ? posItem.position_id : "",
+            work_tab_id: tab || "",
+            work_tab_from: tab ? selectedMonth : "",
+            department: officialName(w),
+            jobStatus: jobStatus,
+            participates_in_spu_meetings: meetOn,
+            meeting_participant: meetOn
+        };
+
+        function finishOk(body) {
+            const employee = applyCreatedEmployeeToLocalState(body);
+            justAddedEmployeeId = (employee && employee.id) || body.employee_id || "";
+            unlockCreate(true);
             closeEmployeeCreateForm();
             try { refreshAfterEmployeeCreate(); } catch (err) { console.error(err); }
-            toast("Сотрудник сохранён.");
-        }).catch(function (err) {
+            toast(body && body.idempotent ? "Сотрудник уже был сохранён." : "Сотрудник сохранён.");
+        }
+
+        function createOnce() {
+            if (!wtServerMode) {
+                const eid = generateEmployeeIdForDept(w.code);
+                const employee = {
+                    id: eid,
+                    employee_id: eid,
+                    external_1c_id: "",
+                    name: "",
+                    last_name: "",
+                    first_name: "",
+                    middle_name: "",
+                    position: posName,
+                    position_id: posItem ? posItem.position_id : "",
+                    work_tab_id: tab || "",
+                    work_tab_from: tab ? selectedMonth : "",
+                    work_tab_history: [],
+                    department: officialName(w),
+                    start: "08:00",
+                    end: "17:00",
+                    rate: 0,
+                    taxiDaily: 0,
+                    jobStatus: jobStatus,
+                    participates_in_spu_meetings: meetOn,
+                    meeting_participant: meetOn,
+                    terms: {}
+                };
+                applyEmployeeFullName(employee, fullName);
+                if (!Array.isArray(w.employees)) w.employees = [];
+                if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
+                w.employees.push(employee);
+                if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
+                    w.employeeIds.push(employee.id);
+                }
+                justAddedEmployeeId = employee.id;
+                return Promise.resolve(saveApp()).then(function (ok) {
+                    if (!ok) {
+                        w.employees = (w.employees || []).filter(function (item) { return !item || item.id !== employee.id; });
+                        w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employee.id; });
+                        unlockCreate(true);
+                        toast("Не удалось сохранить сотрудника.", "error");
+                        return;
+                    }
+                    unlockCreate(true);
+                    closeEmployeeCreateForm();
+                    try { refreshAfterEmployeeCreate(); } catch (err) { console.error(err); }
+                    toast("Сотрудник сохранён.");
+                });
+            }
+            return createEmployeeOnServer(createPayload, clientReqId).then(function (body) {
+                if (!body || body.error) {
+                    if (body && body.retry) {
+                        return createEmployeeOnServer(createPayload, clientReqId).then(function (body2) {
+                            if (body2 && !body2.error && body2.employee_id) {
+                                finishOk(body2);
+                                return;
+                            }
+                            unlockCreate(false);
+                            toast("Конфликт версий при создании. Нажмите «Сохранить» ещё раз — повтор безопасен.", "error");
+                        });
+                    }
+                    unlockCreate(body && (body.error === "timeout" || body.error === "network") ? false : true);
+                    if (body && body.error === "unauthorized") {
+                        toast("Сессия истекла. Войдите снова.", "error");
+                    } else if (body && body.error === "forbidden") {
+                        toast("Нет права создавать сотрудников в этом отделе.", "error");
+                    } else if (body && body.error === "timeout") {
+                        toast("Ответ сервера не получен. Нажмите «Сохранить» ещё раз — повтор не создаст дубликат.", "error");
+                    } else if (body && body.error === "network") {
+                        toast("Нет связи с сервером. Нажмите «Сохранить» ещё раз — повтор безопасен.", "error");
+                    } else {
+                        toast("Не удалось сохранить сотрудника. " + ((body && body.error) || ""), "error");
+                    }
+                    return;
+                }
+                finishOk(body);
+            });
+        }
+        createOnce().catch(function (err) {
             console.error(err);
-            unlockCreate();
-            toast("Не удалось сохранить сотрудника. Запись на сервере не подтверждена.", "error");
-            try { refreshAfterEmployeeCreate(); } catch (e) {}
+            unlockCreate(false);
+            toast("Не удалось сохранить сотрудника. Повтор «Сохранить» безопасен.", "error");
         });
     } catch (err) {
-        unlockCreate();
+        unlockCreate(true);
         console.error(err);
         toast("Не удалось сохранить сотрудника: " + (err && err.message ? err.message : String(err)), "error");
     }
@@ -31920,6 +32067,7 @@ function deleteEmployee(employeeId) {
 
     const w = employeeHome(employeeId) || workspace();
     if (!w || w.type === "summary") return;
+    queueEmployeeRemoval(w.code, employeeId);
     w.employees = (w.employees || []).filter(function (x) { return x.id !== employeeId; });
     w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employeeId; });
     Object.keys(w.timesheet || {}).forEach(function (month) {
@@ -32107,6 +32255,7 @@ function moveEmployeeToDepartment(employeeId, deptCode, opts) {
     }
 
     const wasAssigned = isAssignedTo(from, employeeId);
+    queueEmployeeRemoval(from.code, employeeId);
     from.employees = (from.employees || []).filter(function (x) { return x.id !== employeeId; });
     from.employeeIds = (from.employeeIds || []).filter(function (id) { return id !== employeeId; });
     Object.keys(from.timesheet || {}).forEach(function (month) {
