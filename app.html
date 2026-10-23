@@ -2338,6 +2338,62 @@
         #summaryStaffList {
             overflow-x: auto;
         }
+        .rev-modal.employee-dup-modal {
+            width: min(920px, 96vw);
+            max-height: min(88vh, 900px);
+            overflow: auto;
+        }
+        .emp-dup-stats {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 16px;
+            margin: 0 0 12px;
+            font-size: 13px;
+        }
+        .emp-dup-stats span { white-space: nowrap; }
+        .emp-dup-msg {
+            margin: 0 0 12px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #c4a35a;
+            background: #fffbeb;
+            font-size: 13px;
+        }
+        .emp-dup-msg.ok {
+            border-color: #7a9e7e;
+            background: #f0faf1;
+        }
+        .emp-dup-msg.err {
+            border-color: #c07070;
+            background: #fff5f5;
+        }
+        .emp-dup-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+            margin: 8px 0 14px;
+        }
+        .emp-dup-table th,
+        .emp-dup-table td {
+            border: 1px solid #e2e8f0;
+            padding: 6px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        .emp-dup-table th { background: #f8fafc; }
+        .emp-dup-group {
+            margin: 0 0 10px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 6px 10px;
+            background: #fff;
+        }
+        .emp-dup-group summary {
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            padding: 4px 0;
+        }
         .name-parts { display: block; min-width: 0; max-width: 100%; position: relative; z-index: 5; }
         .name-parts input,
         .emp-fio-input {
@@ -5420,6 +5476,11 @@
                                 <input id="staffEmployeeSearch" type="search" maxlength="80" placeholder="ФИО…"
                                     oninput="changeSummaryStaffSearch(this.value)">
                             </div>
+                            <div class="form-group" id="employeeDupCheckBtnWrap" style="display:none;">
+                                <label for="employeeDupCheckBtn">&nbsp;</label>
+                                <button type="button" class="btn btn-secondary" id="employeeDupCheckBtn"
+                                    onclick="openEmployeeDupCheck()">Проверить дубли</button>
+                            </div>
                         </div>
                     </div>
                     <div id="summaryStaffList"></div>
@@ -5866,6 +5927,9 @@
 </div>
 <div id="employeeCreateModalBack" class="rev-modal-back" onclick="if (event.target === this) closeEmployeeCreateForm()">
     <div class="rev-modal employee-create-modal" id="employeeCreateModal" role="dialog" aria-modal="true" aria-labelledby="employeeCreateTitle"></div>
+</div>
+<div id="employeeDupCheckModalBack" class="rev-modal-back" onclick="if (event.target === this) closeEmployeeDupCheck()">
+    <div class="rev-modal employee-dup-modal" id="employeeDupCheckModal" role="dialog" aria-modal="true" aria-labelledby="employeeDupCheckTitle"></div>
 </div>
 <div id="revisionModalBack" class="rev-modal-back" onclick="if (event.target === this) closeRevisionModal()">
     <div class="rev-modal" id="revisionModal" role="dialog" aria-modal="true"></div>
@@ -9332,6 +9396,13 @@ function syncSummarySortControls() {
     const search = document.getElementById("staffEmployeeSearch");
     if (search && document.activeElement !== search) search.value = summaryStaffSearch || "";
     syncSummaryStaffWorkGroupOptions();
+    syncEmployeeDupCheckButton();
+}
+
+function syncEmployeeDupCheckButton() {
+    const wrap = document.getElementById("employeeDupCheckBtnWrap");
+    if (!wrap) return;
+    wrap.style.display = (typeof isAppAdmin === "function" && isAppAdmin()) ? "" : "none";
 }
 
 function loginWorkspaces() {
@@ -15022,6 +15093,293 @@ function findDuplicateEmployeeIdsAcrossWorkspaces() {
     });
     return Object.keys(map).map(function (id) { return map[id]; }).filter(function (row) {
         return row.departments && row.departments.length > 1;
+    });
+}
+
+/** Read-only: нормализация ФИО для сравнения дублей (пробелы + регистр). */
+function normalizeEmployeeNameForDupCheck(name) {
+    return String(name || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+var EMPLOYEE_DUP_CHECK_DEPTS = ["shop", "warehouse", "office", "drivers"];
+
+function employeeDupCheckDeptLabel(code) {
+    const hit = (typeof DEPT_DEFAULTS !== "undefined" ? DEPT_DEFAULTS : []).find(function (d) {
+        return d && d.code === code;
+    });
+    if (hit && hit.name) return hit.name;
+    if (code === "shop") return "Магазин Володарского";
+    if (code === "warehouse") return "Склад";
+    if (code === "office") return "Офис";
+    if (code === "drivers") return "Логистика + Торговые";
+    return String(code || "");
+}
+
+/**
+ * Сбор записей для проверки дублей. Только чтение payload, без мутаций.
+ * Возвращает копии полей (id, name, index) — не ссылки на карточки.
+ */
+function collectEmployeeDupScanEntries(payload) {
+    const deptCounts = {};
+    const entries = [];
+    const workspaces = (payload && Array.isArray(payload.workspaces)) ? payload.workspaces : [];
+    EMPLOYEE_DUP_CHECK_DEPTS.forEach(function (code) {
+        deptCounts[code] = 0;
+        let list = null;
+        for (let i = 0; i < workspaces.length; i++) {
+            const w = workspaces[i];
+            if (!w || w.type === "summary" || w.code !== code) continue;
+            list = Array.isArray(w.employees) ? w.employees : [];
+            break;
+        }
+        if (!list) list = [];
+        deptCounts[code] = list.length;
+        for (let idx = 0; idx < list.length; idx++) {
+            const e = list[idx];
+            if (!e || typeof e !== "object") continue;
+            const id = String(e.id != null ? e.id : "").trim();
+            const name = String(e.name != null ? e.name : "").trim();
+            entries.push({
+                deptCode: code,
+                deptName: employeeDupCheckDeptLabel(code),
+                id: id,
+                name: name,
+                nameKey: normalizeEmployeeNameForDupCheck(name),
+                index: idx
+            });
+        }
+    });
+    return { entries: entries, deptCounts: deptCounts };
+}
+
+/**
+ * Построение отчёта о дублях. Не изменяет payload / appData.
+ * Совпадение ФИО — не доказательство, что это один человек.
+ */
+function buildEmployeeDuplicateReport(payload) {
+    const scanned = collectEmployeeDupScanEntries(payload);
+    const entries = scanned.entries;
+    const byId = {};
+    const byName = {};
+    entries.forEach(function (row) {
+        if (row.id) {
+            if (!byId[row.id]) byId[row.id] = [];
+            byId[row.id].push(row);
+        }
+        if (row.nameKey) {
+            if (!byName[row.nameKey]) byName[row.nameKey] = [];
+            byName[row.nameKey].push(row);
+        }
+    });
+    const idGroups = Object.keys(byId).filter(function (id) {
+        return byId[id].length > 1;
+    }).map(function (id) {
+        return {
+            kind: "id",
+            key: id,
+            label: id,
+            matchType: "Одинаковый ID",
+            count: byId[id].length,
+            rows: byId[id]
+        };
+    }).sort(function (a, b) {
+        return String(a.key).localeCompare(String(b.key), "ru");
+    });
+    const nameGroups = Object.keys(byName).filter(function (k) {
+        return byName[k].length > 1;
+    }).map(function (k) {
+        const rows = byName[k];
+        return {
+            kind: "name",
+            key: k,
+            label: rows[0].name || k,
+            matchType: "Одинаковое ФИО",
+            count: rows.length,
+            rows: rows
+        };
+    }).sort(function (a, b) {
+        return String(a.label).localeCompare(String(b.label), "ru");
+    });
+    const tableRows = [];
+    idGroups.forEach(function (g) {
+        g.rows.forEach(function (r) {
+            tableRows.push({
+                deptName: r.deptName,
+                deptCode: r.deptCode,
+                name: r.name,
+                id: r.id,
+                matchType: "Одинаковый ID",
+                index: r.index,
+                groupKey: "id:" + g.key,
+                groupCount: g.count
+            });
+        });
+    });
+    nameGroups.forEach(function (g) {
+        g.rows.forEach(function (r) {
+            tableRows.push({
+                deptName: r.deptName,
+                deptCode: r.deptCode,
+                name: r.name,
+                id: r.id,
+                matchType: "Одинаковое ФИО",
+                index: r.index,
+                groupKey: "name:" + g.key,
+                groupCount: g.count
+            });
+        });
+    });
+    return {
+        deptCounts: scanned.deptCounts,
+        idGroups: idGroups,
+        nameGroups: nameGroups,
+        tableRows: tableRows,
+        idConflictCount: idGroups.length,
+        nameConflictCount: nameGroups.length,
+        hasConflicts: idGroups.length > 0 || nameGroups.length > 0
+    };
+}
+
+/** Только GET /api/state в server mode. Без PUT/POST. Не трогает appData. */
+function loadPayloadForEmployeeDupCheck() {
+    if (typeof wtServerMode !== "undefined" && wtServerMode) {
+        return fetch("/api/state", { credentials: "same-origin", method: "GET" }).then(function (res) {
+            if (!res.ok) {
+                const err = new Error("unavailable");
+                err.code = "unavailable";
+                throw err;
+            }
+            return res.json();
+        }).then(function (state) {
+            if (!state || !state.payload || typeof state.payload !== "object") {
+                const err = new Error("unavailable");
+                err.code = "unavailable";
+                throw err;
+            }
+            return {
+                payload: JSON.parse(JSON.stringify(state.payload)),
+                source: "server",
+                version: state.version != null ? state.version : null
+            };
+        });
+    }
+    return Promise.resolve({
+        payload: JSON.parse(JSON.stringify(appData || {})),
+        source: "local",
+        version: null
+    });
+}
+
+function closeEmployeeDupCheck() {
+    const back = document.getElementById("employeeDupCheckModalBack");
+    if (back) back.classList.remove("show");
+    const box = document.getElementById("employeeDupCheckModal");
+    if (box) box.innerHTML = "";
+}
+
+function employeeDupCheckGroupHtml(title, groups) {
+    if (!groups || !groups.length) {
+        return '<div class="note" style="margin:0 0 12px;">' + escapeHtml(title) + ": нет</div>";
+    }
+    let html = "<h4 style=\"margin:14px 0 8px;font-size:14px;\">" + escapeHtml(title)
+        + " (" + groups.length + ")</h4>";
+    groups.forEach(function (g, gi) {
+        html += '<details class="emp-dup-group"' + (gi < 3 ? " open" : "") + ">"
+            + "<summary>" + escapeHtml(g.matchType) + ": "
+            + escapeHtml(g.label || g.key)
+            + " — записей: " + g.count + "</summary>"
+            + '<table class="emp-dup-table"><thead><tr>'
+            + "<th>Подразделение</th><th>ФИО сотрудника</th><th>ID</th>"
+            + "<th>Тип совпадения</th><th>Индекс</th></tr></thead><tbody>";
+        g.rows.forEach(function (r) {
+            html += "<tr><td>" + escapeHtml(r.deptName) + "</td>"
+                + "<td>" + escapeHtml(r.name || "—") + "</td>"
+                + "<td>" + escapeHtml(r.id || "—") + "</td>"
+                + "<td>" + escapeHtml(g.matchType) + "</td>"
+                + "<td>" + String(r.index) + "</td></tr>";
+        });
+        html += "</tbody></table></details>";
+    });
+    return html;
+}
+
+function renderEmployeeDupCheckReport(box, pack) {
+    const report = pack.report;
+    const source = pack.source;
+    const version = pack.version;
+    let html = '<h3 id="employeeDupCheckTitle">Проверка дублей сотрудников</h3>';
+    html += '<div class="note" style="margin:0 0 10px;">Только просмотр. Данные не изменяются. '
+        + "Совпадение ФИО не означает, что это один человек.</div>";
+    if (source === "server") {
+        html += '<div class="note" style="margin:0 0 10px;">Источник: сервер'
+            + (version != null ? (", version " + escapeHtml(String(version))) : "")
+            + ".</div>";
+    } else {
+        html += '<div class="note" style="margin:0 0 10px;">Источник: локальные данные (offline). '
+            + "Это не подтверждение состояния рабочей базы Timeweb.</div>";
+    }
+    html += '<div class="emp-dup-stats">';
+    EMPLOYEE_DUP_CHECK_DEPTS.forEach(function (code) {
+        const n = (report.deptCounts && report.deptCounts[code]) || 0;
+        html += "<span><b>" + escapeHtml(employeeDupCheckDeptLabel(code)) + ":</b> " + n + "</span>";
+    });
+    html += "<span><b>Повторяющихся ID (групп):</b> " + report.idConflictCount + "</span>";
+    html += "<span><b>Совпадений ФИО (групп):</b> " + report.nameConflictCount + "</span>";
+    html += "</div>";
+    if (report.hasConflicts) {
+        html += '<div class="emp-dup-msg">Обнаружены совпадения. Перед исправлением необходимо проверить связанные данные сотрудников.</div>';
+    } else {
+        html += '<div class="emp-dup-msg ok">Повторяющихся ID и ФИО не обнаружено.</div>';
+    }
+    if (report.tableRows && report.tableRows.length) {
+        html += "<h4 style=\"margin:12px 0 8px;font-size:14px;\">Сводная таблица</h4>"
+            + '<table class="emp-dup-table"><thead><tr>'
+            + "<th>Подразделение</th><th>ФИО сотрудника</th><th>ID</th>"
+            + "<th>Тип совпадения</th><th>Индекс</th><th>В группе</th></tr></thead><tbody>";
+        report.tableRows.forEach(function (r) {
+            html += "<tr><td>" + escapeHtml(r.deptName) + "</td>"
+                + "<td>" + escapeHtml(r.name || "—") + "</td>"
+                + "<td>" + escapeHtml(r.id || "—") + "</td>"
+                + "<td>" + escapeHtml(r.matchType) + "</td>"
+                + "<td>" + String(r.index) + "</td>"
+                + "<td>" + String(r.groupCount) + "</td></tr>";
+        });
+        html += "</tbody></table>";
+    }
+    html += employeeDupCheckGroupHtml("Группы с одинаковым ID", report.idGroups);
+    html += employeeDupCheckGroupHtml("Группы с одинаковым ФИО", report.nameGroups);
+    html += '<div class="rev-modal-actions">'
+        + '<button type="button" class="btn btn-secondary" onclick="closeEmployeeDupCheck()">Закрыть</button>'
+        + "</div>";
+    box.innerHTML = html;
+}
+
+function openEmployeeDupCheck() {
+    if (typeof isAppAdmin !== "function" || !isAppAdmin()) {
+        toast("Проверка дублей доступна только администратору.", "error");
+        return;
+    }
+    const back = document.getElementById("employeeDupCheckModalBack");
+    const box = document.getElementById("employeeDupCheckModal");
+    if (!back || !box) return;
+    box.innerHTML = '<h3 id="employeeDupCheckTitle">Проверка дублей сотрудников</h3>'
+        + '<div class="note">Загрузка актуальных данных…</div>';
+    back.classList.add("show");
+    loadPayloadForEmployeeDupCheck().then(function (pack) {
+        // Анализ только копии payload; appData не трогаем.
+        const report = buildEmployeeDuplicateReport(pack.payload);
+        renderEmployeeDupCheckReport(box, {
+            report: report,
+            source: pack.source,
+            version: pack.version
+        });
+    }).catch(function (err) {
+        console.error(err);
+        box.innerHTML = '<h3 id="employeeDupCheckTitle">Проверка дублей сотрудников</h3>'
+            + '<div class="emp-dup-msg err">Не удалось получить актуальные данные. Проверка не выполнена.</div>'
+            + '<div class="rev-modal-actions">'
+            + '<button type="button" class="btn btn-secondary" onclick="closeEmployeeDupCheck()">Закрыть</button>'
+            + "</div>";
     });
 }
 
@@ -31622,6 +31980,7 @@ function renderSummaryStaff() {
     if (!isSummary() && !isAdminEntry()) return;
 
     syncSummarySortControls();
+    syncEmployeeDupCheckButton();
     const groups = summaryDirectoryGroups();
     const addBtn = document.getElementById("addSummaryEmployeeBtn");
     if (addBtn) addBtn.style.display = canEditStaff() ? "" : "none";
