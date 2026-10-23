@@ -7407,9 +7407,10 @@ function keepEmployeeIfInDepartment(employeeId, deptCode) {
  * Назначения метрик сюда не обращаются.
  */
 function setEmployeePrimaryWorkTab(employeeId, tabId, opts) {
-    const employee = getEmployee(employeeId);
-    if (!employee) return;
     opts = opts || {};
+    // opts.employee — явная карточка подразделения (не getEmployee «первый по id»).
+    const employee = opts.employee || getEmployee(employeeId);
+    if (!employee) return;
     const next = String(tabId || "");
     const prev = String(employee.work_tab_id || "");
     if (next === prev) return;
@@ -7503,13 +7504,14 @@ function workTabSelectForDept(employee, deptWs) {
     if (!w) return "";
     const tabs = timesheetGroupFilterTabs(w.code);
     if (!tabs.length) return "";
-    const draft = getEmployeeCardDraft(employee && employee.id);
+    const deptCode = w.code || "";
+    const draft = getEmployeeCardDraft(employee && employee.id, deptCode);
     const current = String(
         (draft && draft.work_tab_id !== undefined) ? draft.work_tab_id
             : (employee.work_tab_id || employeePrimaryWorkTabId(employee, w.code) || "")
     );
     const locked = !canEditStaff() && (isSummary() || isAdminEntry());
-    let html = '<select class="emp-work-tab" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'work_tab_id\',this.value)"'
+    let html = '<select class="emp-work-tab" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'work_tab_id\',this.value,\'' + deptCode + '\')"'
         + (locked ? " disabled" : "") + ">"
         + '<option value="">Не выбрана</option>';
     tabs.forEach(function (t) {
@@ -8120,9 +8122,11 @@ function compareEmployeesByStatusThenName(a, b) {
     return compareEmployeeNames(a, b);
 }
 
-function jobStatusSelect(employee, disabled) {
+function jobStatusSelect(employee, disabled, deptCode) {
     const fired = !isWorking(employee);
-    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'jobStatus\',this.value)"'
+    const code = String(deptCode || (workspace() && workspace().code) || "");
+    const deptArg = code ? (",'" + code + "'") : "";
+    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'jobStatus\',this.value' + deptArg + ')"'
         + (disabled ? " disabled" : "") + ">"
         + '<option value="working"' + (fired ? "" : " selected") + ">Работает</option>"
         + '<option value="fired"' + (fired ? " selected" : "") + ">Уволен</option>"
@@ -10892,6 +10896,52 @@ function findEmployeeIn(w, id) {
     return null;
 }
 
+/** Все записи с данным id внутри одного подразделения (для защиты от дублей в одном dept). */
+function findEmployeesInDeptById(deptCode, employeeId) {
+    const w = findWorkspaceByCode(deptCode);
+    if (!w || !employeeId) return [];
+    const out = [];
+    (Array.isArray(w.employees) ? w.employees : []).forEach(function (e) {
+        if (e && e.id === employeeId) out.push(e);
+    });
+    return out;
+}
+
+/**
+ * Карточка по подразделению + id (не «первый найденный» по id).
+ * При нескольких записях в одном dept — error, без выбора случайной.
+ */
+function resolveEmployeeCardForSave(deptCode, employeeId) {
+    const code = String(deptCode || "").trim();
+    const id = String(employeeId || "").trim();
+    if (!code || !id) {
+        return { error: "Не указаны подразделение или сотрудник для сохранения карточки." };
+    }
+    const w = findWorkspaceByCode(code);
+    if (!w || w.type === "summary") {
+        return { error: "Подразделение карточки не найдено: " + code };
+    }
+    const matches = findEmployeesInDeptById(code, id);
+    if (!matches.length) {
+        return { error: "Сотрудник не найден в подразделении «" + (officialName(w) || code) + "»." };
+    }
+    if (matches.length > 1) {
+        return {
+            error: "В подразделении «" + (officialName(w) || code)
+                + "» несколько записей с одним ID (" + id + "). Сохранение остановлено — исправьте дубль вручную."
+        };
+    }
+    return { employee: matches[0], workspace: w, deptCode: code };
+}
+
+function employeeCardDomId(deptCode, employeeId) {
+    return "emp-card-" + String(deptCode || "x") + "-" + String(employeeId || "");
+}
+
+function employeeCardDraftKey(deptCode, employeeId) {
+    return String(deptCode || "") + "|" + String(employeeId || "");
+}
+
 function getEmployee(id) {
     if (!id) return null;
     if (workspace() && workspace().type !== "summary") {
@@ -11093,9 +11143,16 @@ function canTypeEmployeeName(employee) {
     return canEditStaff();
 }
 
-function updateEmployeeFullName(employeeId, value) {
+function updateEmployeeFullName(employeeId, value, deptCode) {
     if (shopUiQuiet) return;
-    const employee = getEmployee(employeeId);
+    let employee = null;
+    if (deptCode) {
+        const resolved = resolveEmployeeCardForSave(deptCode, employeeId);
+        if (resolved.error) return;
+        employee = resolved.employee;
+    } else {
+        employee = getEmployee(employeeId);
+    }
     if (!employee) return;
     if (!canTypeEmployeeName(employee)) return;
     applyEmployeeFullName(employee, value);
@@ -11106,26 +11163,28 @@ function nameFieldLocked(employee) {
     return !canTypeEmployeeName(employee);
 }
 
-function namePartsHtml(employee, disabled) {
+function namePartsHtml(employee, disabled, deptCode) {
+    const code = String(deptCode || (workspace() && workspace().code) || "");
     const full = composeEmployeeName(employee) || String((employee && employee.name) || "");
+    const deptArg = code ? (",'" + code + "'") : "";
     return '<div class="name-parts">'
         + '<input type="text" class="emp-fio-input' + (isBlankName(full) ? " name-missing" : "") + '"'
         + ' placeholder="Иванов Иван Иванович" maxlength="120"'
         + ' autocomplete="name" inputmode="text"'
         + ' value="' + escapeAttribute(full) + '"'
-        + ' oninput="syncNameFieldState(this);updateEmployeeFullName(\'' + employee.id + '\',this.value)"'
-        + " onkeydown=\"if(event.key==='Enter'){event.preventDefault();commitEmployeeCard('" + employee.id + "');}\""
-        + " onchange=\"updateEmployeeFullName('" + employee.id + "',this.value)\""
+        + ' oninput="syncNameFieldState(this);updateEmployeeFullName(\'' + employee.id + '\',this.value' + deptArg + ')"'
+        + " onkeydown=\"if(event.key==='Enter'){event.preventDefault();commitEmployeeCard('" + employee.id + "'" + deptArg + ");}\""
+        + " onchange=\"updateEmployeeFullName('" + employee.id + "',this.value" + deptArg + ")\""
         + ">"
         + "</div>";
 }
 
-function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
+function syncEmployeeMetricAssignmentsToCatalog(employeeId, deptCodeOpt) {
     // Синхронизирует только individual (specific) списки employee_ids с workAccess.
     // Единый корпоративный каталог и строки group_all не меняются при снятии/установке
     // галочки: индивидуальное назначение живёт в workAccess/extraAccess.
     if (!employeeId || !canEditFioWorkMetrics()) return;
-    const home = employeeHomeDeptCode(employeeId);
+    const home = String(deptCodeOpt || "").trim() || employeeHomeDeptCode(employeeId);
     if (!home) return;
     const empTab = employeeWorkTabId(getEmployee(employeeId), home) || defaultMetricTabId(home);
     const assigned = {};
@@ -11181,12 +11240,28 @@ function syncEmployeeMetricAssignmentsToCatalog(employeeId) {
     });
 }
 
-function commitEmployeeCard(employeeId) {
-    const employee = getEmployee(employeeId);
-    if (!employee) {
-        toast("Не найден сотрудник для сохранения.", "error");
+function commitEmployeeCard(employeeId, deptCode) {
+    let card = null;
+    const codeHint = String(deptCode || "").trim();
+    if (codeHint) card = document.getElementById(employeeCardDomId(codeHint, employeeId));
+    if (!card) card = document.getElementById("emp-card-" + employeeId);
+    if (!card && employeeId) {
+        card = document.querySelector(
+            '[data-emp-card="1"][data-emp-id="' + String(employeeId).replace(/"/g, "") + '"]'
+            + (codeHint ? '[data-dept="' + codeHint + '"]' : "")
+        );
+    }
+    const deptFromCard = card && card.getAttribute("data-dept");
+    const dept = String(deptFromCard || codeHint || "").trim()
+        || (workspace() && workspace().type !== "summary" && workspace().code)
+        || "";
+    const resolved = resolveEmployeeCardForSave(dept, employeeId);
+    if (resolved.error) {
+        toast(resolved.error, "error");
         return;
     }
+    const employee = resolved.employee;
+    const cardDept = resolved.deptCode;
     if (!canTypeEmployeeName(employee) && !canEditStaff()) {
         toast("Нет права сохранять сотрудников.", "error");
         return;
@@ -11199,7 +11274,7 @@ function commitEmployeeCard(employeeId) {
         toast("Сохранение приостановлено из-за конфликта версий. Обновите данные с сервера (диалог конфликта) и повторите.", "error");
         return;
     }
-    const card = document.getElementById("emp-card-" + employeeId);
+    if (!card) card = document.getElementById(employeeCardDomId(cardDept, employeeId));
     const nameInput = card && card.querySelector(".emp-fio-input");
     const fullName = nameInput ? nameInput.value : (employee.name || "");
     applyEmployeeFullName(employee, fullName);
@@ -11236,8 +11311,8 @@ function commitEmployeeCard(employeeId) {
         }
     }
     try {
-        applyEmployeeCardProtectedDraft(employeeId, card);
-        clearEmployeeCardDraft(employeeId);
+        applyEmployeeCardProtectedDraft(employeeId, card, cardDept, employee);
+        clearEmployeeCardDraft(employeeId, cardDept);
         if (!employee.employee_id) employee.employee_id = employee.id;
         const meetBox = card && card.querySelector(".emp-spu-meet");
         if (meetBox) {
@@ -11246,9 +11321,9 @@ function commitEmployeeCard(employeeId) {
         }
         // Материализуем месяц workAccess до снимка — иначе пустой объект не отправит галочки.
         if (canEditFioWorkMetrics()) {
-            try { shopMaterializeWorkAccessMonth(selectedMonth, employeeHomeDeptCode(employeeId)); } catch (err) { console.error(err); }
+            try { shopMaterializeWorkAccessMonth(selectedMonth, cardDept); } catch (err) { console.error(err); }
         }
-        store = metricsStoreForEmployee(employeeId);
+        store = metricsStoreForDept(cardDept);
         accessSnap = store ? {
             workAccess: JSON.parse(JSON.stringify(store.workAccess || {})),
             extraAccess: JSON.parse(JSON.stringify(store.extraAccess || {}))
@@ -11259,7 +11334,7 @@ function commitEmployeeCard(employeeId) {
         empSnap = JSON.parse(JSON.stringify(employee));
         if (canEditFioWorkMetrics()) {
             // Не вызываем assignGroupAllMetricsToEmployee: каталог общий, галочки индивидуальные.
-            try { syncEmployeeMetricAssignmentsToCatalog(employeeId); } catch (err) { console.error(err); }
+            try { syncEmployeeMetricAssignmentsToCatalog(employeeId, cardDept); } catch (err) { console.error(err); }
         }
     } catch (err) {
         console.error(err);
@@ -11292,22 +11367,27 @@ function commitEmployeeCard(employeeId) {
     }).then(clearCommitBusy, clearCommitBusy);
 }
 
-function employeeCardActionsHtml(employee) {
+function employeeCardActionsHtml(employee, deptCode) {
     if (!canEditStaff()) return "";
+    const code = String(deptCode || (workspace() && workspace().code) || "");
+    const deptArg = code ? (",'" + code + "'") : "";
     return '<div class="emp-actions">'
-        + '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + '\')">Сохранить</button>'
+        + '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\''
+        + employee.id + "'" + deptArg + ')">Сохранить</button>'
         + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>'
         + "</div>";
 }
 
-function employeeSpuMeetingsFieldHtml(employee, disabled) {
+function employeeSpuMeetingsFieldHtml(employee, disabled, deptCode) {
     if (!employee || !employee.id) return "";
     const on = employee.participates_in_spu_meetings === true;
+    const code = String(deptCode || (workspace() && workspace().code) || "");
+    const deptArg = code ? (",'" + code + "'") : "";
     return fieldBlock(
         "СПУ",
         '<label class="check"><input type="checkbox" class="emp-spu-meet"'
             + (on ? " checked" : "") + (disabled ? " disabled" : "")
-            + ' onchange="updateEmployee(\'' + employee.id + '\',\'participates_in_spu_meetings\',this.checked)">'
+            + ' onchange="updateEmployee(\'' + employee.id + '\',\'participates_in_spu_meetings\',this.checked' + deptArg + ')">'
             + " Участвует в СПУ</label>",
         "emp-field-spu"
     );
@@ -30430,17 +30510,21 @@ function renderFio() {
         const fired = !isWorking(employee);
         const added = employee.id === justAddedEmployeeId;
         const tabSel = workTabSelect(employee);
-        return '<div class="employee-row' + (fired && !added ? " staff-fired" : "") + (added ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-            + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false), "emp-field-name")
-            + fieldBlock("Должность", positionSelect(employee), "emp-field-pos")
+        const deptCode = code || (w && w.code) || "";
+        const draftDept = getEmployeeCardDraft(employee.id, deptCode);
+        return '<div class="employee-row' + (fired && !added ? " staff-fired" : "") + (added ? " just-added" : "")
+            + '" id="' + employeeCardDomId(deptCode, employee.id) + '"'
+            + ' data-emp-card="1" data-dept="' + escapeAttribute(deptCode) + '" data-emp-id="' + escapeAttribute(employee.id) + '">'
+            + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false, deptCode), "emp-field-name")
+            + fieldBlock("Должность", positionSelect(employee, w), "emp-field-pos")
             + (tabSel ? fieldBlock("Основная группа", tabSel, "emp-field-tab") : "")
             + shopExtraFunctionsHtml(employee)
-            + fieldBlock("Отдел в карточке", '<input class="emp-department-input" value="' + escapeAttribute((getEmployeeCardDraft(employee.id) && getEmployeeCardDraft(employee.id).department !== undefined) ? getEmployeeCardDraft(employee.id).department : (employee.department || "")) + '" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'department\',this.value)">', "emp-field-dept")
-            + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value)">', "emp-field-time")
-            + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value)">', "emp-field-time")
-            + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff()), "emp-field-status")
-            + employeeSpuMeetingsFieldHtml(employee, !canEditStaff())
-            + employeeCardActionsHtml(employee)
+            + fieldBlock("Отдел в карточке", '<input class="emp-department-input" value="' + escapeAttribute((draftDept && draftDept.department !== undefined) ? draftDept.department : (employee.department || "")) + '" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'department\',this.value,\'' + deptCode + '\')">', "emp-field-dept")
+            + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value,\'' + deptCode + '\')">', "emp-field-time")
+            + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value,\'' + deptCode + '\')">', "emp-field-time")
+            + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff(), deptCode), "emp-field-status")
+            + employeeSpuMeetingsFieldHtml(employee, !canEditStaff(), deptCode)
+            + employeeCardActionsHtml(employee, deptCode)
             + "</div>";
     }).join("");
     withShopUiQuiet(function () {
@@ -30812,12 +30896,12 @@ function removeCustomPosition(index) {
 function positionSelect(employee, dept) {
     const ws = dept || workspace();
     const code = (ws && ws.code) || employeeHomeDeptCode(employee && employee.id) || "";
-    const draft = getEmployeeCardDraft(employee && employee.id);
+    const draft = getEmployeeCardDraft(employee && employee.id, code);
     const currentId = (draft && draft.position_id !== undefined)
         ? draft.position_id
         : ((employee && employee.position_id) || "");
     const currentName = String((employee && employee.position) || "").replace(/\s+/g, " ").trim();
-    return '<select class="emp-position-id" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'position_id\',this.value)">'
+    return '<select class="emp-position-id" onchange="stageEmployeeCardField(\'' + employee.id + '\',\'position_id\',this.value,\'' + code + '\')">'
         + positionCatalogOptionsHtml(code, currentId || currentName, false)
         + "</select>";
 }
@@ -30857,10 +30941,15 @@ function dismissBlockingOverlays() {
     if (overlay) overlay.style.display = "none";
 }
 
-function focusNewEmployeeCard(employeeId) {
+function focusNewEmployeeCard(employeeId, deptCode) {
     dismissBlockingOverlays();
     setTimeout(function () {
-        const el = document.getElementById("emp-card-" + employeeId);
+        const code = String(deptCode || (workspace() && workspace().code) || "").trim();
+        let el = code ? document.getElementById(employeeCardDomId(code, employeeId)) : null;
+        if (!el) el = document.getElementById("emp-card-" + employeeId);
+        if (!el && employeeId) {
+            el = document.querySelector('[data-emp-card="1"][data-emp-id="' + String(employeeId).replace(/"/g, "") + '"]');
+        }
         if (!el) return;
         if (el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
         const nameInput = el.querySelector(".emp-fio-input") || el.querySelector("input[type='text']") || el.querySelector("input");
@@ -31113,26 +31202,36 @@ function addEmployee() {
     openEmployeeCreateForm();
 }
 
-/** Черновик полей карточки до кнопки «Сохранить». */
+/** Черновик полей карточки до кнопки «Сохранить» (ключ: dept|employeeId). */
 var employeeCardDraftById = Object.create(null);
 
-function getEmployeeCardDraft(employeeId) {
+function getEmployeeCardDraft(employeeId, deptCode) {
     if (!employeeId || !employeeCardDraftById) return null;
-    return employeeCardDraftById[employeeId] || null;
+    const key = employeeCardDraftKey(deptCode, employeeId);
+    if (deptCode && employeeCardDraftById[key]) return employeeCardDraftById[key];
+    // Совместимость со старым ключом только по id (до внедрения dept).
+    if (!deptCode && employeeCardDraftById[employeeId]) return employeeCardDraftById[employeeId];
+    if (deptCode && employeeCardDraftById[employeeId] && !employeeCardDraftById[key]) {
+        return employeeCardDraftById[employeeId];
+    }
+    return employeeCardDraftById[key] || null;
 }
 
-function stageEmployeeCardField(employeeId, field, value) {
+function stageEmployeeCardField(employeeId, field, value, deptCode) {
     if (!employeeId || !field) return;
     if (!employeeCardDraftById || typeof employeeCardDraftById !== "object") {
         employeeCardDraftById = Object.create(null);
     }
-    if (!employeeCardDraftById[employeeId]) employeeCardDraftById[employeeId] = {};
-    employeeCardDraftById[employeeId][field] = value;
+    const code = String(deptCode || (workspace() && workspace().type !== "summary" && workspace().code) || "").trim();
+    const key = code ? employeeCardDraftKey(code, employeeId) : String(employeeId);
+    if (!employeeCardDraftById[key]) employeeCardDraftById[key] = {};
+    employeeCardDraftById[key][field] = value;
     // Не мутируем сохранённую карточку и не вызываем saveApp.
 }
 
-function clearEmployeeCardDraft(employeeId) {
+function clearEmployeeCardDraft(employeeId, deptCode) {
     if (!employeeId || !employeeCardDraftById) return;
+    if (deptCode) delete employeeCardDraftById[employeeCardDraftKey(deptCode, employeeId)];
     delete employeeCardDraftById[employeeId];
 }
 
@@ -31146,17 +31245,20 @@ var EMPLOYEE_CARD_PROTECTED_FIELDS = {
     work_group_ids: true
 };
 
-function applyEmployeeCardProtectedDraft(employeeId, card) {
-    const employee = getEmployee(employeeId);
+function applyEmployeeCardProtectedDraft(employeeId, card, deptCode, employeeObj) {
+    const employee = employeeObj || (deptCode
+        ? (resolveEmployeeCardForSave(deptCode, employeeId).employee || null)
+        : getEmployee(employeeId));
     if (!employee) return;
-    const draft = getEmployeeCardDraft(employeeId) || {};
+    const draft = getEmployeeCardDraft(employeeId, deptCode) || {};
     const tabSel = card && card.querySelector(".emp-work-tab");
     const posSel = card && card.querySelector(".emp-position-id");
     const deptInp = card && card.querySelector(".emp-department-input");
     const nextTab = tabSel ? tabSel.value
         : (Object.prototype.hasOwnProperty.call(draft, "work_tab_id") ? draft.work_tab_id : undefined);
+    // Смена группы не трогает должность; смена должности не трогает группу.
     if (nextTab !== undefined && String(nextTab) !== String(employee.work_tab_id || "")) {
-        setEmployeePrimaryWorkTab(employeeId, nextTab);
+        setEmployeePrimaryWorkTab(employeeId, nextTab, { employee: employee });
     }
     const nextPosId = posSel ? posSel.value
         : (Object.prototype.hasOwnProperty.call(draft, "position_id") ? draft.position_id : undefined);
@@ -31178,10 +31280,24 @@ function applyEmployeeCardProtectedDraft(employeeId, card) {
     }
 }
 
-function updateEmployee(employeeId, field, value) {
+function updateEmployee(employeeId, field, value, deptCode) {
     if (shopUiQuiet) return;
     if (isSummary() && !canEditStaff() && !(isRepPercentField(field) && canEditRepSales())) return;
-    const employee = getEmployee(employeeId);
+    let employee = null;
+    if (deptCode) {
+        const resolved = resolveEmployeeCardForSave(deptCode, employeeId);
+        if (resolved.error) {
+            if (EMPLOYEE_CARD_PROTECTED_FIELDS[field]) {
+                stageEmployeeCardField(employeeId, field, value, deptCode);
+                return;
+            }
+            toast(resolved.error, "error");
+            return;
+        }
+        employee = resolved.employee;
+    } else {
+        employee = getEmployee(employeeId);
+    }
     if (!employee) return;
     if (field === "name") {
         if (isBlankName(value)) {
@@ -31196,12 +31312,12 @@ function updateEmployee(employeeId, field, value) {
         return;
     }
     if (field === "rate" || field === "taxiDaily" || isRepPercentField(field)) {
-        setEmployeeTermsField(employeeId, field, value);
+        setEmployeeTermsField(employeeId, field, value, deptCode);
         return;
     }
     // Защищённые поля карточки — только черновик до «Сохранить».
     if (EMPLOYEE_CARD_PROTECTED_FIELDS[field]) {
-        stageEmployeeCardField(employeeId, field, value);
+        stageEmployeeCardField(employeeId, field, value, deptCode);
         return;
     }
     if (field === "jobStatus") {
@@ -31219,8 +31335,18 @@ function updateEmployee(employeeId, field, value) {
     saveApp();
 }
 
-function setEmployeeTermsField(employeeId, field, value) {
-    const employee = getEmployee(employeeId);
+function setEmployeeTermsField(employeeId, field, value, deptCode) {
+    let employee = null;
+    if (deptCode) {
+        const resolved = resolveEmployeeCardForSave(deptCode, employeeId);
+        if (resolved.error) {
+            toast(resolved.error, "error");
+            return;
+        }
+        employee = resolved.employee;
+    } else {
+        employee = getEmployee(employeeId);
+    }
     if (!employee) return;
     if (isRepPercentField(field)) {
         if (!canEditRepSales()) return;
@@ -31347,8 +31473,10 @@ function renderSummaryStaff() {
             const fired = employee.jobStatus === "fired";
             const locked = !canEditStaff();
             const dis = locked || fired ? " disabled" : "";
-            const statusSel = jobStatusSelect(employee, locked);
-            const isDrivers = g.dept.code === "drivers";
+            const deptCode = g.dept.code || "";
+            const deptArg = ",'" + deptCode + "'";
+            const statusSel = jobStatusSelect(employee, locked, deptCode);
+            const isDrivers = deptCode === "drivers";
             const isRep = isSalesRep(employee);
             const place = locked
                 ? '<input value="' + escapeAttribute(officialName(g.dept)) + '" disabled>'
@@ -31356,35 +31484,37 @@ function renderSummaryStaff() {
             const tabSel = workTabSelectForDept(employee, g.dept);
             const percentBlock = '<div class="form-group rep-accrual"><label>Начисление</label>'
                 + '<div class="rep-accrual-row"><span class="rep-accrual-name">Опт</span>'
-                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentOpt) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentOpt\',this.value)"' + dis + ">"
+                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentOpt) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentOpt\',this.value' + deptArg + ')"' + dis + ">"
                 + '<span class="rep-accrual-unit">%</span></div>'
                 + '<div class="rep-accrual-row"><span class="rep-accrual-name">Крупный опт</span>'
-                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentWholesale) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentWholesale\',this.value)"' + dis + ">"
+                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentWholesale) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentWholesale\',this.value' + deptArg + ')"' + dis + ">"
                 + '<span class="rep-accrual-unit">%</span></div>'
                 + '<div class="rep-accrual-row"><span class="rep-accrual-name">Спеццена</span>'
-                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentSpecial) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentSpecial\',this.value)"' + dis + ">"
+                + '<input class="no-spin" type="text" inputmode="decimal" value="' + formatRepPercent(terms.salesPercentSpecial) + '" onchange="updateEmployee(\'' + employee.id + '\',\'salesPercentSpecial\',this.value' + deptArg + ')"' + dis + ">"
                 + '<span class="rep-accrual-unit">%</span></div>'
                 + "</div>";
-            html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired && employee.id !== justAddedEmployeeId ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "") + '" id="emp-card-' + employee.id + '">'
-                + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false), "emp-field-name")
+            html += '<div class="summary-staff-row' + (isDrivers ? " drivers-staff" : "") + (fired && employee.id !== justAddedEmployeeId ? " staff-fired" : "") + (employee.id === justAddedEmployeeId ? " just-added" : "")
+                + '" id="' + employeeCardDomId(deptCode, employee.id) + '"'
+                + ' data-emp-card="1" data-dept="' + escapeAttribute(deptCode) + '" data-emp-id="' + escapeAttribute(employee.id) + '">'
+                + fieldBlock("ФИО сотрудника *", namePartsHtml(employee, false, deptCode), "emp-field-name")
                 + fieldBlock("Должность", locked
                     ? '<input value="' + escapeAttribute(employee.position || "") + '" disabled>'
                     : positionSelect(employee, g.dept), "emp-field-pos")
                 + fieldBlock("Рабочий отдел", place, "emp-field-dept")
                 + (tabSel ? fieldBlock("Рабочая группа", tabSel, "emp-field-tab") : "")
                 + fieldBlock("Статус", statusSel, "emp-field-status")
-                + employeeSpuMeetingsFieldHtml(employee, locked)
+                + employeeSpuMeetingsFieldHtml(employee, locked, deptCode)
                 + shopExtraFunctionsHtml(employee)
-                + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value)"' + dis + ">", "emp-field-rate")
-                + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value)"' + dis + ">", "emp-field-taxi")
+                + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value' + deptArg + ')"' + dis + ">", "emp-field-rate")
+                + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value' + deptArg + ')"' + dis + ">", "emp-field-taxi")
                 + (isDrivers && isRep ? percentBlock : "")
                 + '<div class="emp-actions">'
-                + (g.dept.code === "shop" && canEditShopPayrollRules()
+                + (deptCode === "shop" && canEditShopPayrollRules()
                     ? '<button type="button" class="btn btn-secondary btn-small" onclick="openShopEmployeeKpiFromStaff(\'' + employee.id + '\')">Настройки зарплаты</button>'
                     : "")
                 + (locked
                     ? ""
-                    : '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + '\')">Сохранить</button>'
+                    : '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + "'" + deptArg + ')">Сохранить</button>'
                         + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>')
                 + "</div>"
                 + "</div>";
@@ -31466,7 +31596,7 @@ function moveEmployeeToDepartment(employeeId, deptCode, opts) {
     const nextTabs = timesheetGroupFilterTabs(to.code);
     if (nextTabs.length) {
         const keep = nextTabs.some(function (t) { return t.id === employee.work_tab_id; });
-        if (!keep) setEmployeePrimaryWorkTab(employeeId, defaultMetricTabId(to.code));
+        if (!keep) setEmployeePrimaryWorkTab(employeeId, defaultMetricTabId(to.code), { employee: employee });
     } else {
         employee.work_tab_id = "";
     }

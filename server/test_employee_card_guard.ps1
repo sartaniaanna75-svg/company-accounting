@@ -37,7 +37,7 @@ Assert-True ($src -match "stageEmployeeCardField\([^)]*position_id") "position_i
 Assert-Contains $src "applyEmployeeCardProtectedDraft" "commit applies draft"
 Assert-True (
     ($src.IndexOf("EMPLOYEE_CARD_PROTECTED_FIELDS[field]") -ge 0) -and
-    ($src.IndexOf("stageEmployeeCardField(employeeId, field, value)") -ge 0)
+    ($src.IndexOf("stageEmployeeCardField(employeeId, field, value") -ge 0)
 ) "updateEmployee stages protected fields"
 
 $syncStart = $src.IndexOf("function syncEmployeeMetricAssignmentsToCatalog")
