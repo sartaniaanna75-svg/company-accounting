@@ -2143,9 +2143,17 @@ function frTerritoryDayAggregate(areaId, periodKey, date) {
     return frAreaDayAggregate(areaId, periodKey, date);
 }
 
+/**
+ * Общий остаток на начало недели.
+ * Магазин Володарского: только счета с «Факт. остаток» (без повторного учёта
+ * контрольных касс, чьи деньги уже в Основной кассе). Территория — без изменений.
+ * Индивидуальные openings доп. касс не трогаем.
+ */
 function frAreaWeekOpening(areaId, periodKey) {
     let sum = 0;
+    const shopMoneyOnly = frIsShopArea(areaId);
     frSources(areaId, true).forEach(function (s) {
+        if (shopMoneyOnly && !frInActualBalance(s)) return;
         sum += frOpeningValue(areaId, periodKey, s.finance_source_id);
     });
     return frRound(sum);
@@ -2441,9 +2449,16 @@ function frAreaTotals(areaId, periodKey) {
         opening: 0, income: 0, non_income: 0, expense: 0, expense_refund: 0, dividend: 0,
         transfer_in: 0, transfer_out: 0, inflow: 0, outflow: 0, closing: 0
     };
+    /* Магазин: в общий денежный остаток (начало/конец) — только счета с «Факт. остаток».
+       Движения по всем счетам сохраняем; Территория без изменений. */
+    const shopMoneyOnly = frIsShopArea(areaId);
     frSources(areaId, true).forEach(function (s) {
         const t = frSourceTotals(areaId, periodKey, s.finance_source_id);
-        acc.opening += t.opening;
+        const inMoneyTotal = !shopMoneyOnly || frInActualBalance(s);
+        if (inMoneyTotal) {
+            acc.opening += t.opening;
+            acc.closing += t.closing;
+        }
         acc.income += t.income;
         acc.non_income += t.non_income;
         acc.expense += t.expense;
@@ -2453,17 +2468,18 @@ function frAreaTotals(areaId, periodKey) {
         acc.transfer_out += t.transfer_out;
         acc.inflow += t.inflow;
         acc.outflow += t.outflow;
-        acc.closing += t.closing;
     });
     Object.keys(acc).forEach(function (k) { acc[k] = frRound(acc[k]); });
     return acc;
 }
 
 function frWeekActualClosing(areaId, periodKey) {
-    /* Сумма конечных РАСЧЁТНЫХ остатков всех счетов (для таблицы движений, не для факта). */
+    /* Сумма конечных РАСЧЁТНЫХ остатков (таблица движений). Магазин: без контрольных касс. */
     const w = frWeek(String(periodKey || "").replace(/^week:/, ""));
     let sum = 0;
+    const shopMoneyOnly = frIsShopArea(areaId);
     frSources(areaId, true).forEach(function (s) {
+        if (shopMoneyOnly && !frInActualBalance(s)) return;
         sum += frDayCalculated(areaId, periodKey, w.end_date, s.finance_source_id).calculated;
     });
     return { value: frRound(sum), hasActual: false };
