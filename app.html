@@ -1178,7 +1178,8 @@
 
         .metrics-table {
             --metrics-h1: 32px;
-            --metrics-h2: 36px;
+            /* Высота строки ФИО: полные имена с переносом, ширина столбцов не меняется. */
+            --metrics-h2: 58px;
             --metrics-date-w: 72px;
             width: max-content;
             min-width: 0;
@@ -1198,7 +1199,7 @@
         .metrics-table col.metrics-col-inv-who { width: 122px; }
         .metrics-table.metrics-managers-table {
             --metrics-h1: 40px;
-            --metrics-h2: 34px;
+            --metrics-h2: 58px;
         }
         .metrics-table.metrics-managers-table col.metrics-col-emp { width: 50px; }
         .metrics-table.metrics-managers-table col.metrics-col-recount-total { width: 58px; }
@@ -1311,10 +1312,19 @@
             overflow: hidden;
             text-overflow: ellipsis;
             max-width: 80px;
+            vertical-align: middle;
         }
 
         .metrics-table thead tr.metrics-head-emps th.metrics-money-col {
             max-width: 108px;
+        }
+
+        /* Ячейки с ФИО: перенос внутри прежней ширины, без многоточия. */
+        .metrics-table thead tr.metrics-head-emps th:has(.metrics-emp-name) {
+            white-space: normal;
+            overflow: hidden;
+            text-overflow: clip;
+            line-height: 1.15;
         }
 
         .metrics-table .metrics-date-col {
@@ -1376,14 +1386,25 @@
         .metrics-emp-name {
             display: block;
             overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            max-width: 50px;
+            text-overflow: clip;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+            max-width: 100%;
             margin: 0 auto;
+            line-height: 1.15;
+            font-weight: 600;
+        }
+
+        .metrics-emp-name .metrics-emp-surname,
+        .metrics-emp-name .metrics-emp-given {
+            display: block;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
 
         .metrics-table thead tr.metrics-head-emps th.metrics-money-col .metrics-emp-name {
-            max-width: 68px;
+            max-width: 100%;
         }
 
         .metrics-table input.metrics-input {
@@ -11668,6 +11689,24 @@ function shopMetricEmployeeCaption(employee) {
     return String(employee.name).replace(/\s+/g, " ").trim();
 }
 
+/**
+ * HTML заголовка ФИО в таблицах метрик: фамилия, затем имя/отчество с новой строки.
+ * Данные карточки не меняются — только отображение.
+ */
+function metricsEmployeeNameHeaderHtml(employee) {
+    const caption = shopMetricEmployeeCaption(employee);
+    if (!caption || caption === "Удалённый" || caption === "Без ФИО" || caption === "Итого") {
+        return '<span class="metrics-emp-name">' + escapeHtml(caption) + "</span>";
+    }
+    const parts = String(caption).split(" ").filter(Boolean);
+    if (parts.length === 1) {
+        return '<span class="metrics-emp-name">' + escapeHtml(parts[0]) + "</span>";
+    }
+    return '<span class="metrics-emp-name"><span class="metrics-emp-surname">'
+        + escapeHtml(parts[0]) + '</span><span class="metrics-emp-given">'
+        + escapeHtml(parts.slice(1).join(" ")) + "</span></span>";
+}
+
 function shopMetricEmployeeTitle(employee) {
     const name = shopMetricEmployeeCaption(employee);
     if (!isWorking(employee)) return name + " (уволен)";
@@ -19840,8 +19879,8 @@ function renderShopCashierMetrics() {
             people.forEach(function (person) {
                 headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(gi)
                     + " metrics-group-start"
-                    + '" title="' + escapeHtml(shopMetricEmployeeTitle(person)) + '"><span class="metrics-emp-name">'
-                    + escapeHtml(shopMetricEmployeeCaption(person)) + "</span></th>";
+                    + '" title="' + escapeHtml(shopMetricEmployeeTitle(person)) + '">'
+                    + metricsEmployeeNameHeaderHtml(person) + "</th>";
             });
             if (!people.length) {
                 headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(gi) + ' metrics-group-start">—</th>';
@@ -20657,8 +20696,8 @@ function renderShopMetrics() {
                     + (ei === 0 ? " metrics-group-start" : "")
                     + shopMetricManagersTailClass(field, people, ei)
                     + (fired ? " metrics-fired" : "")
-                    + '" title="' + escapeHtml(title) + '"><span class="metrics-emp-name">'
-                    + escapeHtml(shopMetricEmployeeCaption(employee)) + "</span></th>";
+                    + '" title="' + escapeHtml(title) + '">'
+                    + metricsEmployeeNameHeaderHtml(employee) + "</th>";
             });
             if (!people.length) {
                 headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</th>';
@@ -31096,8 +31135,8 @@ function fillDeptWorkTable(dept, tab, ids, options) {
                     + (wide ? " metrics-money-col" : "")
                     + (ei === 0 ? " metrics-group-start" : "")
                     + (fired ? " metrics-fired" : "")
-                    + '" title="' + escapeHtml(shopMetricEmployeeCaption(employee)) + '"><span class="metrics-emp-name">'
-                    + escapeHtml(shopMetricEmployeeCaption(employee)) + "</span></th>";
+                    + '" title="' + escapeHtml(shopMetricEmployeeCaption(employee)) + '">'
+                    + metricsEmployeeNameHeaderHtml(employee) + "</th>";
             });
             if (!people.length) {
                 headHtml += '<th class="metrics-emp-col ' + shopMetricGroupClass(fi) + ' metrics-group-start">—</th>';
