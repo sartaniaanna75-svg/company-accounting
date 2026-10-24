@@ -3848,6 +3848,22 @@
         .mc-asg-list { display: flex; flex-direction: column; gap: 8px; }
         .mc-asg-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; background: #f8fafc; }
         .mc-asg-card h4 { margin: 0 0 8px; font-size: 13px; }
+        .mc-asg-extra {
+            margin-top: 10px;
+            padding-top: 8px;
+            border-top: 1px dashed #d1d5db;
+        }
+        .mc-asg-extra-title { font-size: 12px; font-weight: 700; margin: 0 0 6px; }
+        .mc-asg-extra-list { display: flex; flex-direction: column; gap: 4px; margin: 0 0 8px; }
+        .mc-asg-extra-row {
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            padding: 4px 6px; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 12px;
+        }
+        .mc-asg-extra-pick {
+            display: grid; gap: 6px; margin-top: 6px; padding: 8px; background: #fff;
+            border: 1px solid #e5e7eb; border-radius: 8px;
+        }
+        .mc-asg-extra-pick .form-group { margin: 0; }
         .mc-asg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         .mc-asg-people { max-height: 160px; overflow: auto; display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding: 6px; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; }
         .mc-asg-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
@@ -14686,6 +14702,14 @@ function peopleAssignedToMetricOnTab(item, deptCode, tabId) {
         } else {
             employeesForMetricAssignmentRow(row).forEach(add);
         }
+        // Доп. сотрудники из других подразделений — по однозначному ID.
+        (row.extra_employee_ids || []).forEach(function (id) {
+            const resolved = resolveUniqueEmployeeCard(id);
+            if (!resolved.ok || !resolved.employee) return;
+            const e = resolved.employee;
+            if (!isWorking(e) && !deptMetricEmployeeHasData(deptCode, e.id, item.id)) return;
+            add(e);
+        });
     });
     list.sort(compareEmployeesByStatusThenName);
     return list;
@@ -14706,6 +14730,12 @@ function employeeMatchesMetricAssignments(item, employee, workTabId) {
         if (metricDeptObjectSide(row.department_id) !== empSide) return false;
         if (tab && row.work_tab_id !== tab) return false;
         if (row.department_id === "shop" && isTerritoryCode(home)) return false;
+        // Доп. назначение: участие в таблице метрики без смены домашнего подразделения.
+        if ((row.extra_employee_ids || []).indexOf(employee.id) !== -1) {
+            const resolved = resolveUniqueEmployeeCard(employee.id);
+            if (!resolved.ok) return false;
+            return true;
+        }
         if (!employeeInMetricAssignmentDept(employee, row.department_id)) return false;
         // Магазин: только основная группа карточки (поведение не менять).
         if (row.department_id === "shop") {
@@ -14752,14 +14782,69 @@ function normalizeMetricAssignmentRow(row, siblings) {
     (row.employee_ids || []).forEach(function (id) {
         if (id && ids.indexOf(id) === -1) ids.push(id);
     });
+    const extras = normalizeMetricExtraEmployeeIds(row.extra_employee_ids, dept, ids);
     return {
         assignment_id: row.assignment_id || nextMetricAssignmentId(siblings),
         department_id: dept,
         work_tab_id: tab,
         position_id: String(row.position_id || ""),
         assign_mode: row.assign_mode === "specific" ? "specific" : "group_all",
-        employee_ids: ids
+        employee_ids: ids,
+        extra_employee_ids: extras
     };
+}
+
+/** Карточки с данным id по всем подразделениям (диагностика неоднозначных emp_*). */
+function findEmployeeCardsById(employeeId) {
+    const eid = String(employeeId || "").trim();
+    const hits = [];
+    if (!eid) return hits;
+    ((appData && appData.workspaces) || []).forEach(function (w) {
+        if (!w || w.type === "summary" || !w.code) return;
+        ((w.employees) || []).forEach(function (e) {
+            if (e && String(e.id || "") === eid) {
+                hits.push({ deptCode: w.code, deptName: officialName(w), employee: e });
+            }
+        });
+    });
+    return hits;
+}
+
+/**
+ * Однозначная карточка по id. Если id встречается в нескольких подразделениях — ambiguous.
+ * Не выбирает карточку наугад.
+ */
+function resolveUniqueEmployeeCard(employeeId) {
+    const hits = findEmployeeCardsById(employeeId);
+    if (!hits.length) return { ok: false, reason: "missing", hits: hits };
+    if (hits.length > 1) return { ok: false, reason: "ambiguous", hits: hits };
+    return { ok: true, deptCode: hits[0].deptCode, deptName: hits[0].deptName, employee: hits[0].employee, hits: hits };
+}
+
+function metricExtraHomeDeptsAllowed(assignmentDept) {
+    const side = metricDeptObjectSide(assignmentDept);
+    if (side === "shop") return [];
+    if (side === "territory") {
+        return TERRITORY_DEPT_CODES.filter(function (code) { return code !== assignmentDept; });
+    }
+    return [];
+}
+
+function normalizeMetricExtraEmployeeIds(raw, assignmentDept, localIds) {
+    const out = [];
+    const local = {};
+    (localIds || []).forEach(function (id) { if (id) local[String(id)] = true; });
+    const allowedHomes = {};
+    metricExtraHomeDeptsAllowed(assignmentDept).forEach(function (c) { allowedHomes[c] = true; });
+    (Array.isArray(raw) ? raw : []).forEach(function (id) {
+        const eid = String(id || "").trim();
+        if (!eid || out.indexOf(eid) !== -1 || local[eid]) return;
+        const resolved = resolveUniqueEmployeeCard(eid);
+        if (!resolved.ok) return;
+        if (!allowedHomes[resolved.deptCode]) return;
+        out.push(eid);
+    });
+    return out;
 }
 
 function ensureMetricAssignments(item) {
@@ -14813,13 +14898,23 @@ function applyMetricCatalogAssignments(item) {
     const want = {};
     const specificRows = [];
     (item.assignments || []).forEach(function (row) {
-        if (!row || row.assign_mode !== "specific") return;
+        if (!row) return;
+        (row.extra_employee_ids || []).forEach(function (id) {
+            if (id) want[id] = true;
+        });
+        if (row.assign_mode !== "specific") return;
         specificRows.push(row);
         (row.employee_ids || []).forEach(function (id) {
             if (id) want[id] = true;
         });
     });
     if (!specificRows.length) {
+        // group_all + доп. сотрудники: отметить только extras в workAccess (без массовой записи группы).
+        Object.keys(want).forEach(function (id) {
+            const resolved = resolveUniqueEmployeeCard(id);
+            if (!resolved.ok) return;
+            applyShopEmployeeWorkMetric(id, item.id, true);
+        });
         if (metricTerritoryCategory(item) === "common") syncCommonMetricTabsFromAssignments(item);
         return;
     }
@@ -14832,7 +14927,11 @@ function applyMetricCatalogAssignments(item) {
         });
     });
     Object.keys(want).forEach(function (id) {
-        if (!handled[id]) applyShopEmployeeWorkMetric(id, item.id, true);
+        if (!handled[id]) {
+            const resolved = resolveUniqueEmployeeCard(id);
+            if (!resolved.ok) return;
+            applyShopEmployeeWorkMetric(id, item.id, true);
+        }
     });
     if (metricTerritoryCategory(item) === "common") syncCommonMetricTabsFromAssignments(item);
 }
@@ -28741,6 +28840,7 @@ function sanitizeMetricCatalogAssignDraftForCategory(catRaw) {
             row.work_tab_id = (tabs[0] && tabs[0].id) || "";
             row.position_id = "";
             row.employee_ids = [];
+            row.extra_employee_ids = [];
             return;
         }
         const ok = {};
@@ -28748,6 +28848,11 @@ function sanitizeMetricCatalogAssignDraftForCategory(catRaw) {
             if (e && e.id) ok[e.id] = true;
         });
         row.employee_ids = (row.employee_ids || []).filter(function (id) { return !!ok[id]; });
+        row.extra_employee_ids = normalizeMetricExtraEmployeeIds(
+            row.extra_employee_ids,
+            row.department_id,
+            row.employee_ids
+        );
     });
 }
 
@@ -28778,7 +28883,8 @@ function defaultMetricCatalogAssignmentRow() {
         work_tab_id: workTab,
         position_id: positionId,
         assign_mode: "group_all",
-        employee_ids: []
+        employee_ids: [],
+        extra_employee_ids: []
     };
 }
 
@@ -28791,7 +28897,8 @@ function metricAssignmentsFromItem(item) {
                 work_tab_id: row.work_tab_id,
                 position_id: row.position_id || "",
                 assign_mode: row.assign_mode === "specific" ? "specific" : "group_all",
-                employee_ids: (row.employee_ids || []).slice()
+                employee_ids: (row.employee_ids || []).slice(),
+                extra_employee_ids: (row.extra_employee_ids || []).slice()
             };
         });
     }
@@ -28806,7 +28913,8 @@ function metricAssignmentsFromItem(item) {
             work_tab_id: tab,
             position_id: "",
             assign_mode: mode,
-            employee_ids: []
+            employee_ids: [],
+            extra_employee_ids: []
         };
         if (mode === "specific" && item && item.id) {
             row.employee_ids = employeesForMetricAssignmentRow(row).filter(function (e) {
@@ -28844,10 +28952,17 @@ function onMetricCatalogAssignmentField(idx, field, value) {
         row.work_tab_id = "";
         row.position_id = "";
         row.employee_ids = [];
+        row.extra_employee_ids = normalizeMetricExtraEmployeeIds(
+            row.extra_employee_ids,
+            row.department_id,
+            row.employee_ids
+        );
+        row._extraPickOpen = false;
     } else if (field === "work_tab_id") {
         // Таблица отображения сменилась — сбрасываем выбор ФИО (не переносим из другой группы).
         row.position_id = "";
         row.employee_ids = [];
+        // extra_employee_ids сохраняем — доп. назначение к таблице метрики.
     } else if (field === "position_id") {
         const before = (row.employee_ids || []).length;
         const allowed = {};
@@ -28876,10 +28991,193 @@ function onMetricCatalogAssignmentEmployee(idx, employeeId, checked) {
             return e && e.id === employeeId;
         });
         if (!allowed) return;
+        // Не дублировать того же человека в extra_employee_ids.
+        if (Array.isArray(row.extra_employee_ids)) {
+            row.extra_employee_ids = row.extra_employee_ids.filter(function (id) { return id !== employeeId; });
+        }
     }
     const i = row.employee_ids.indexOf(employeeId);
     if (checked && i === -1) row.employee_ids.push(employeeId);
     if (!checked && i !== -1) row.employee_ids.splice(i, 1);
+}
+
+function toggleMetricExtraPicker(idx) {
+    const row = mcAssignDraft[idx];
+    if (!row) return;
+    row._extraPickOpen = !row._extraPickOpen;
+    if (row._extraPickOpen) {
+        const homes = metricExtraHomeDeptsAllowed(row.department_id);
+        row._extraHomeDept = homes[0] || "";
+        row._extraSearch = "";
+        row._extraEmpId = "";
+    }
+    renderMetricCatalogAssignments();
+}
+
+function onMetricExtraHomeDeptChange(idx, deptCode) {
+    const row = mcAssignDraft[idx];
+    if (!row) return;
+    row._extraHomeDept = String(deptCode || "");
+    row._extraEmpId = "";
+    renderMetricCatalogAssignments();
+}
+
+function onMetricExtraSearchInput(idx, value) {
+    const row = mcAssignDraft[idx];
+    if (!row) return;
+    row._extraSearch = String(value || "");
+    row._extraEmpId = "";
+    renderMetricCatalogAssignments();
+}
+
+function onMetricExtraEmpSelect(idx, employeeId) {
+    const row = mcAssignDraft[idx];
+    if (!row) return;
+    row._extraEmpId = String(employeeId || "");
+}
+
+function employeesForMetricExtraPicker(homeDept, search) {
+    const dept = String(homeDept || "");
+    if (!dept) return [];
+    const q = String(search || "").toLowerCase().replace(/\s+/g, " ").trim();
+    return departmentEmployeePool(dept).filter(function (e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return false;
+        if (!isWorking(e)) return false;
+        if (q) {
+            const name = String(e.name || "").toLowerCase();
+            if (name.indexOf(q) === -1 && String(e.id).toLowerCase().indexOf(q) === -1) return false;
+        }
+        return true;
+    }).sort(compareEmployeesByStatusThenName);
+}
+
+function addMetricExtraEmployee(idx) {
+    const row = mcAssignDraft[idx];
+    if (!row) return;
+    const homeDept = String(row._extraHomeDept || "");
+    const eid = String(row._extraEmpId || "").trim();
+    if (!homeDept) {
+        toast("Сначала выберите подразделение сотрудника.", "error");
+        return;
+    }
+    if (!eid) {
+        toast("Выберите сотрудника.", "error");
+        return;
+    }
+    const allowedHomes = metricExtraHomeDeptsAllowed(row.department_id);
+    if (allowedHomes.indexOf(homeDept) === -1) {
+        toast("Нельзя добавить сотрудника этого подразделения к данному назначению.", "error");
+        return;
+    }
+    const resolved = resolveUniqueEmployeeCard(eid);
+    if (!resolved.ok) {
+        if (resolved.reason === "ambiguous") {
+            toast("ID " + eid + " встречается в нескольких карточках. Назначение не выполнено — исправьте дубли отдельно.", "error");
+        } else {
+            toast("Сотрудник не найден.", "error");
+        }
+        return;
+    }
+    if (resolved.deptCode !== homeDept) {
+        toast("Выбранный сотрудник относится к другому подразделению. Обновите список.", "error");
+        return;
+    }
+    if (!Array.isArray(row.extra_employee_ids)) row.extra_employee_ids = [];
+    if (!Array.isArray(row.employee_ids)) row.employee_ids = [];
+    if (row.employee_ids.indexOf(eid) !== -1) {
+        toast("Этот сотрудник уже выбран в основном списке назначения.", "error");
+        return;
+    }
+    if (row.extra_employee_ids.indexOf(eid) !== -1) {
+        toast("Этот сотрудник уже добавлен дополнительно.", "error");
+        return;
+    }
+    row.extra_employee_ids.push(eid);
+    row._extraEmpId = "";
+    row._extraSearch = "";
+    row._extraPickOpen = false;
+    renderMetricCatalogAssignments();
+    toast("Добавлен: " + (resolved.employee.name || eid));
+}
+
+function removeMetricExtraEmployee(idx, employeeId) {
+    const row = mcAssignDraft[idx];
+    if (!row || !Array.isArray(row.extra_employee_ids)) return;
+    row.extra_employee_ids = row.extra_employee_ids.filter(function (id) { return id !== employeeId; });
+    renderMetricCatalogAssignments();
+}
+
+function metricExtraEmployeesBlockHtml(row, idx) {
+    const homes = metricExtraHomeDeptsAllowed(row.department_id);
+    let html = '<div class="mc-asg-extra">'
+        + '<div class="mc-asg-extra-title">Дополнительные сотрудники из других подразделений</div>'
+        + '<div class="note" style="margin:0 0 6px">Участвуют в этой метрике без смены своего подразделения, группы и должности.</div>';
+    if (!homes.length) {
+        html += '<div class="note">Для назначений Магазина Володарского доп. сотрудники из других объектов недоступны (изоляция магазин ↔ территория).</div></div>';
+        return html;
+    }
+    const extras = Array.isArray(row.extra_employee_ids) ? row.extra_employee_ids : [];
+    html += '<div class="mc-asg-extra-list">';
+    if (!extras.length) {
+        html += '<div class="note">Пока никого не добавлено.</div>';
+    }
+    extras.forEach(function (eid) {
+        const resolved = resolveUniqueEmployeeCard(eid);
+        let caption = eid;
+        let warn = "";
+        if (!resolved.ok && resolved.reason === "ambiguous") {
+            warn = " — неоднозначный ID (несколько карточек)";
+            caption = eid;
+        } else if (!resolved.ok) {
+            warn = " — карточка не найдена";
+        } else {
+            caption = (resolved.employee.name || eid)
+                + " (" + (resolved.deptName || resolved.deptCode) + ")";
+        }
+        html += '<div class="mc-asg-extra-row"><span>' + escapeHtml(caption) + escapeHtml(warn) + "</span>"
+            + '<button type="button" class="btn btn-secondary btn-small" onclick="removeMetricExtraEmployee('
+            + idx + ',\'' + escapeAttribute(eid) + '\')">Убрать</button></div>';
+    });
+    html += "</div>";
+    html += '<button type="button" class="btn btn-secondary btn-small" onclick="toggleMetricExtraPicker('
+        + idx + ')">'
+        + (row._extraPickOpen ? "Скрыть форму" : "+ Добавить сотрудника из другого подразделения")
+        + "</button>";
+    if (row._extraPickOpen) {
+        const homeDept = row._extraHomeDept || homes[0] || "";
+        const people = employeesForMetricExtraPicker(homeDept, row._extraSearch);
+        html += '<div class="mc-asg-extra-pick">'
+            + '<div class="form-group"><label>Подразделение сотрудника</label>'
+            + '<select onchange="onMetricExtraHomeDeptChange(' + idx + ', this.value)">';
+        homes.forEach(function (code) {
+            const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
+            html += '<option value="' + escapeAttribute(code) + '"'
+                + (homeDept === code ? " selected" : "") + ">"
+                + escapeHtml((d && d.name) || code) + "</option>";
+        });
+        html += "</select></div>"
+            + '<div class="form-group"><label>Поиск по ФИО</label>'
+            + '<input type="search" maxlength="80" placeholder="ФИО…" value="'
+            + escapeAttribute(row._extraSearch || "") + '"'
+            + ' oninput="onMetricExtraSearchInput(' + idx + ', this.value)"></div>'
+            + '<div class="form-group"><label>Сотрудник</label>'
+            + '<select onchange="onMetricExtraEmpSelect(' + idx + ', this.value)">'
+            + '<option value="">— выбрать —</option>';
+        people.forEach(function (e) {
+            html += '<option value="' + escapeAttribute(e.id) + '"'
+                + (row._extraEmpId === e.id ? " selected" : "") + ">"
+                + escapeHtml(e.name || e.id) + "</option>";
+        });
+        if (!people.length) {
+            html += '<option value="" disabled>Нет сотрудников</option>';
+        }
+        html += "</select></div>"
+            + '<button type="button" class="btn btn-primary btn-small" onclick="addMetricExtraEmployee('
+            + idx + ')">Добавить</button>'
+            + "</div>";
+    }
+    html += "</div>";
+    return html;
 }
 
 function collectMetricCatalogAssignments() {
@@ -28960,6 +29258,7 @@ function renderMetricCatalogAssignments() {
                 + ". Таблица «" + escapeHtml(metricTabLabel(row.department_id, row.work_tab_id) || row.work_tab_id || "—")
                 + "». Сейчас: " + people.length + ".</div>";
         }
+        html += metricExtraEmployeesBlockHtml(row, idx);
         html += "</div>";
         return html;
     }).join("");
