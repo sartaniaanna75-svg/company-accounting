@@ -1782,6 +1782,27 @@
             font-weight: 700;
         }
 
+        /* ИТОГО ПО МАГАЗИНУ — только таблица кассиров, спокойный светлый блок. */
+        .metrics-table.metrics-cashiers-table thead th.metrics-shop-total-head {
+            background: #e8eef4;
+            color: #334155;
+        }
+        .metrics-table.metrics-cashiers-table thead th.metrics-shop-total-col,
+        .metrics-table.metrics-cashiers-table tbody td.metrics-shop-total-col {
+            background: #f4f7fa;
+            color: #1e293b;
+        }
+        .metrics-table.metrics-cashiers-table tbody tr.metrics-weekend td.metrics-shop-total-col {
+            background: #eef2f6;
+        }
+        .metrics-table.metrics-cashiers-table tbody tr.metrics-today td.metrics-shop-total-col {
+            background: #e0e7ef;
+        }
+        .metrics-table.metrics-cashiers-table tbody tr.metrics-totals-row td.metrics-shop-total-col {
+            background: #e2e8f0;
+            font-weight: 700;
+        }
+
         .cashier-summary-table { min-width: 560px; }
         .cashier-summary-table th:not(:first-child),
         .cashier-summary-table td:not(:first-child) { text-align: right; }
@@ -19305,6 +19326,32 @@ function shopCashierPersonTotals(person) {
     return totals;
 }
 
+function shopCashierShopTotalFields() {
+    return [
+        { key: "sales", label: "Продажи", type: "money" },
+        { key: "receipts", label: "Чеки", type: "number" },
+        { key: "avgCheck", label: "Ср. чек", type: "avgCheck" }
+    ];
+}
+
+/** Дневные итоги магазина: все кассовые места таблицы + самообслуживание (без двойного учёта). */
+function shopCashierShopDayTotals(day) {
+    const category = shopMetricCategoryById("cashiers");
+    const persons = shopMetricEmployees(category).concat([SHOP_SELF_CHECKOUT]);
+    let sales = 0;
+    let receipts = 0;
+    persons.forEach(function (person) {
+        const v = shopCashierDayValues(person, day);
+        sales += Number(v.sales || 0);
+        receipts += Number(v.receipts || 0);
+    });
+    return {
+        sales: sales,
+        receipts: receipts,
+        avgCheck: shopMetricAvgCheck(sales, receipts)
+    };
+}
+
 function shopCashierShopTotals() {
     const category = shopMetricCategoryById("cashiers");
     const employees = shopMetricEmployees(category);
@@ -19826,6 +19873,10 @@ function renderShopCashierMetrics() {
                     else cols += '<col class="metrics-col-emp">';
                 });
             });
+            shopCashierShopTotalFields().forEach(function (field) {
+                if (field.type === "money" || field.type === "avgCheck") cols += '<col class="metrics-col-emp metrics-col-money">';
+                else cols += '<col class="metrics-col-emp">';
+            });
         }
         extraFields.forEach(function (field) {
             const people = shopCashierFieldPeople(field, employees, persons);
@@ -19850,6 +19901,10 @@ function renderShopCashierMetrics() {
                     + escapeHtml(shopMetricEmployeeCaption(person)) + "</th>";
                 gi += 1;
             });
+            const shopTotFields = shopCashierShopTotalFields();
+            headHtml += '<th class="metrics-group-head metrics-shop-total-head metrics-group-start" colspan="'
+                + shopTotFields.length + '" title="Итого по магазину">ИТОГО ПО МАГАЗИНУ</th>';
+            gi += 1;
         }
         extraFields.forEach(function (field) {
             const people = shopCashierFieldPeople(field, employees, persons);
@@ -19873,6 +19928,13 @@ function renderShopCashierMetrics() {
             });
             gi += 1;
         });
+        shopCashierShopTotalFields().forEach(function (field) {
+            const wide = field.type === "money" || field.type === "avgCheck";
+            headHtml += '<th class="metrics-emp-col metrics-shop-total-col'
+                + (wide ? " metrics-money-col" : "")
+                + ' metrics-group-start">' + escapeHtml(field.label) + "</th>";
+        });
+        gi += 1;
         }
         extraFields.forEach(function (field) {
             const people = shopCashierFieldPeople(field, employees, persons);
@@ -19926,6 +19988,16 @@ function renderShopCashierMetrics() {
             });
             gi += 1;
         });
+        const shopDay = shopCashierShopDayTotals(day);
+        shopCashierShopTotalFields().forEach(function (field) {
+            const wide = field.type === "money" || field.type === "avgCheck";
+            const val = field.key === "avgCheck" ? shopDay.avgCheck : shopDay[field.key];
+            html += '<td class="metrics-emp-col metrics-shop-total-col'
+                + (wide ? " metrics-money-col" : "")
+                + ' metrics-group-start" id="mshopday-' + day + '-' + field.key + '">'
+                + formatShopMetricField(field, val) + "</td>";
+        });
+        gi += 1;
         }
         extraFields.forEach(function (field) {
             if (field.service === "catalogSum") {
@@ -19975,6 +20047,16 @@ function renderShopCashierMetrics() {
         });
         gi += 1;
     });
+    const shopMonth = shopCashierShopTotals();
+    shopCashierShopTotalFields().forEach(function (field) {
+        const wide = field.type === "money" || field.type === "avgCheck";
+        const val = field.key === "avgCheck" ? shopMonth.avgCheck : shopMonth[field.key];
+        html += '<td class="metrics-emp-col metrics-shop-total-col'
+            + (wide ? " metrics-money-col" : "")
+            + ' metrics-group-start" id="mtot-shop-' + field.key + '">'
+            + formatShopMetricField(field, val) + "</td>";
+    });
+    gi += 1;
     }
     extraFields.forEach(function (field) {
         if (field.service === "catalogSum") {
@@ -21056,6 +21138,7 @@ function refreshShopCashierSummary() {
     if (visTot) visTot.textContent = formatShopMetricField({ type: "number" }, grand.visitors);
 
     const days = daysInMonth();
+    const shopTotFields = shopCashierShopTotalFields();
     persons.forEach(function (person) {
         const totals = shopCashierPersonTotals(person);
         for (let day = 1; day <= days; day++) {
@@ -21075,6 +21158,21 @@ function refreshShopCashierSummary() {
             const val = field.type === "avgCheck" ? totals.avgCheck : totals[field.key];
             cell.textContent = formatShopMetricField(field, val);
         });
+    });
+    for (let day = 1; day <= days; day++) {
+        const shopDay = shopCashierShopDayTotals(day);
+        shopTotFields.forEach(function (field) {
+            const cell = document.getElementById("mshopday-" + day + "-" + field.key);
+            if (!cell) return;
+            const val = field.key === "avgCheck" ? shopDay.avgCheck : shopDay[field.key];
+            cell.textContent = formatShopMetricField(field, val);
+        });
+    }
+    shopTotFields.forEach(function (field) {
+        const cell = document.getElementById("mtot-shop-" + field.key);
+        if (!cell) return;
+        const val = field.key === "avgCheck" ? grand.avgCheck : grand[field.key];
+        cell.textContent = formatShopMetricField(field, val);
     });
 }
 
