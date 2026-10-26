@@ -11469,6 +11469,7 @@ function wtDomainWriterSave(options) {
                         return false;
                     }
                     stripLocalSecretsAfterSave();
+                    try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
                     return true;
                 }
                 // Независимые конфликты — по одному.
@@ -11801,7 +11802,8 @@ function wtSetByPath(root, path, value) {
                 curEmp = curEmp[p];
             }
             const leafEmp = parts[parts.length - 1];
-            if (value === undefined) delete curEmp[leafEmp];
+            // null как на сервере set_path_value — удаление листа (иначе «пусто» залипает и откатывает чужое удаление).
+            if (value === undefined || value === null) delete curEmp[leafEmp];
             else curEmp[leafEmp] = value;
             return root;
         }
@@ -11812,7 +11814,7 @@ function wtSetByPath(root, path, value) {
             cur = cur[p];
         }
         const leaf = parts[parts.length - 1];
-        if (value === undefined) delete cur[leaf];
+        if (value === undefined || value === null) delete cur[leaf];
         else cur[leaf] = value;
         return root;
     }
@@ -11850,7 +11852,7 @@ function wtSetByPath(root, path, value) {
             curU = curU[p];
         }
         const leafU = parts[parts.length - 1];
-        if (value === undefined) delete curU[leafU];
+        if (value === undefined || value === null) delete curU[leafU];
         else curU[leafU] = value;
         return root;
     }
@@ -11861,7 +11863,7 @@ function wtSetByPath(root, path, value) {
         cur = cur[p];
     }
     const leaf = parts[parts.length - 1];
-    if (value === undefined) delete cur[leaf];
+    if (value === undefined || value === null) delete cur[leaf];
     else cur[leaf] = value;
     return root;
 }
@@ -12612,13 +12614,29 @@ function wtSoftApplyServerState(state) {
         });
         if (!exists) appData.users.push(Object.assign({}, wtServerUser));
     }
+    // Снять «залипший» dirty, если draft уже совпал с сервером (иначе чужие удаления/замены не видны).
+    try {
+        const active = wtSoftActiveMetricPath();
+        Object.keys(wtSoftDirtyPaths).forEach(function (p) {
+            if (!wtSoftDirtyPaths[p]) return;
+            if (active && p === active) return; // активный ввод не трогаем
+            try {
+                const sv = wtGetByPath(serverAdopted, p);
+                const dv = wtGetByPath(merged, p);
+                if (wtJsonCanonEqual(sv, dv) || (sv == null && (dv === undefined || dv === null))) {
+                    delete wtSoftDirtyPaths[p];
+                }
+            } catch (err) {}
+        });
+    } catch (err) {}
     const appliedV = state.version != null ? Number(state.version) : NaN;
     if (Number.isFinite(appliedV)) {
-        // Для PUT — актуальная server version сразу после apply в appData.
+        // Данные в appData уже на этой version — всегда поднимаем SoftAppliedVersion,
+        // иначе poll считает «есть обновление» вечно, а повторные чужие правки «залипают».
         wtStateVersion = appliedV;
-        // Полностью «применено» (poll) только вместе с UI; иначе visibility/poll повторят перерисовку.
-        if (!wtSoftHasActiveEdit()) wtSoftAppliedVersion = appliedV;
-        else wtSoftRenderPending = true;
+        wtSoftAppliedVersion = appliedV;
+        // UI можно отложить, пока пользователь в поле; flush на blur/focusout.
+        if (wtSoftHasActiveEdit()) wtSoftRenderPending = true;
     }
     try {
         // База = подтверждённый сервер (не merged с локальным мусором).
@@ -12662,6 +12680,17 @@ function wtSoftFlushPendingRender() {
     if (!wtSoftRenderPending) return;
     if (wtSoftHasActiveEdit()) return;
     wtSoftRefreshUiAfterMerge();
+}
+
+/** После ухода из поля — показать уже применённые soft-изменения без F5. */
+function wtSoftOnFocusOut() {
+    try {
+        if (!wtSoftPollEnabled || !wtServerMode) return;
+        // Дать браузеру сменить activeElement, затем flush.
+        setTimeout(function () {
+            try { wtSoftFlushPendingRender(); } catch (err) {}
+        }, 0);
+    } catch (err) {}
 }
 
 /**
@@ -12745,6 +12774,7 @@ function wtSoftPollStart() {
     wtSoftPollEnabled = true;
     if (!wtSoftVisibilityHooked && typeof document !== "undefined" && document.addEventListener) {
         document.addEventListener("visibilitychange", wtSoftOnVisibility);
+        document.addEventListener("focusout", wtSoftOnFocusOut, true);
         try { window.addEventListener("online", wtSoftOnOnline); } catch (err) {}
         wtSoftVisibilityHooked = true;
     }
@@ -21949,7 +21979,15 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
     const dayKey = String(day);
     if (!store[employeeId][dayKey] || typeof store[employeeId][dayKey] !== "object") store[employeeId][dayKey] = {};
     const rec = store[employeeId][dayKey];
-    rec[field + "Mark"] = mark === "fail" ? "fail" : "done";
+    const nextMark = mark === "fail" ? "fail" : (mark === "done" ? "done" : null);
+    // Повторный клик по тому же состоянию — снять галочку (удаление значения).
+    if (nextMark && rec[field + "Mark"] === nextMark) {
+        delete rec[field + "Mark"];
+    } else if (nextMark) {
+        rec[field + "Mark"] = nextMark;
+    } else {
+        delete rec[field + "Mark"];
+    }
     rec.source = "manual";
     rec.employee_id = employeeId;
     stampAuthOnRecord(rec);
@@ -21957,6 +21995,20 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
     if (spec && spec.metricId) rec[field + "_metric_id"] = spec.metricId;
     if (field === METRIC_SHELF_LABELS_FIELD) rec.metric_id = METRIC_SHELF_LABELS_ID;
     renderShopMetrics();
+    const markPath = wtShopCategoryLeafPath(categoryId, selectedMonth, employeeId, day, field + "Mark");
+    const markVal = Object.prototype.hasOwnProperty.call(rec, field + "Mark") ? rec[field + "Mark"] : null;
+    if (markPath && wtOpsUiEnabled(true) && wtServerMode) {
+        try { wtSoftMarkDirty(markPath); } catch (err) {}
+        wtDomainWriterSave({
+            ops: [{ path: markPath, value: markVal, expected_v: wtRecordVersion(markPath) }]
+        }).then(function (ok) {
+            if (ok) {
+                try { wtSoftClearDirty(markPath); } catch (err) {}
+            }
+            try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
+        });
+        return;
+    }
     saveMetricChange();
 }
 
