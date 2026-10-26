@@ -16,7 +16,8 @@ from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
-from wsgiref.simple_server import make_server
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIServer, make_server
 
 MAX_BODY = 20 * 1024 * 1024
 STATE_ID = 1
@@ -79,6 +80,18 @@ def bind_port() -> int:
 
 
 def dsn() -> str:
+    # Локальный тест: только проверенный DATABASE_URL, без сборки из PG*.
+    try:
+        from wt_local_guard import local_test_mode_enabled
+
+        if local_test_mode_enabled():
+            from wt_local_guard import enforce_local_test_guard
+
+            enforce_local_test_guard()
+            url = _env("DATABASE_URL")
+            return url
+    except ImportError:
+        pass
     url = _env("DATABASE_URL")
     if url:
         return url
@@ -94,6 +107,14 @@ def dsn() -> str:
 
 
 def db_configured() -> bool:
+    try:
+        from wt_local_guard import local_test_mode_enabled
+
+        if local_test_mode_enabled():
+            # В локальном тесте единственный источник — DATABASE_URL.
+            return bool(_env("DATABASE_URL"))
+    except ImportError:
+        pass
     return bool(_env("DATABASE_URL") or _env("PGPASSWORD") or _env("PGUSER"))
 
 
@@ -138,6 +159,13 @@ def static_root() -> Path:
 def connect():
     import psycopg
 
+    try:
+        from wt_local_guard import enforce_local_test_guard, local_test_mode_enabled
+
+        if local_test_mode_enabled():
+            enforce_local_test_guard()
+    except ImportError:
+        pass
     conn = psycopg.connect(dsn(), autocommit=False, connect_timeout=5)
     return conn
 
@@ -1784,8 +1812,8 @@ def build_created_employee_record(employee_id: str, data: dict, dept_code: str, 
 def _merge_admin_payload(current: dict, incoming: dict) -> dict:
     stored = _clone(current)
     for key, val in incoming.items():
-        if key in ("employeeRemovals", "employeeCreateIdempotency"):
-            # Removals применяются отдельно; idempotency — только серверный словарь.
+        if key in WT_OPS_META_KEYS or key in ("employeeRemovals", "employeeCreateIdempotency"):
+            # Removals применяются отдельно; _wt_* / idempotency — только сервер.
             continue
         if key == "employeeIdCounters":
             stored["employeeIdCounters"] = merge_employee_id_counters(
@@ -2199,6 +2227,940 @@ def incoming_admin_pin_duplicate(current: dict, incoming: dict) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Точечные операции сохранения (многопользовательский фундамент).
+# Метаданные живут внутри app_state JSON — без миграции схемы PostgreSQL.
+# ---------------------------------------------------------------------------
+WT_RECORDS_KEY = "_wt_records"
+WT_IDEMPOTENCY_KEY = "_wt_idempotency"
+WT_OPS_META_KEYS = frozenset({WT_RECORDS_KEY, WT_IDEMPOTENCY_KEY})
+WT_PATH_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){0,15}$")
+WT_IDEMPOTENCY_MAX = 300
+
+
+def ops_enabled() -> bool:
+    """WT_OPS_ENABLED=0 отключает POST /api/state/op без потери уже сохранённых данных."""
+    return _env("WT_OPS_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def normalize_op_path(raw: Any) -> str | None:
+    path = str(raw or "").strip()
+    if not path or len(path) > 400:
+        return None
+    if not WT_PATH_RE.match(path):
+        return None
+    top = path.split(".", 1)[0]
+    if top in WT_OPS_META_KEYS or top.startswith("_"):
+        return None
+    return path
+
+
+def _workspace_by_code(workspaces: Any, code: str) -> tuple[int, dict | None]:
+    """workspaces хранится списком; путь ops использует code, не индекс."""
+    if not isinstance(workspaces, list):
+        return -1, None
+    want = str(code or "")
+    for idx, ws in enumerate(workspaces):
+        if isinstance(ws, dict) and str(ws.get("code") or "") == want:
+            return idx, ws
+    return -1, None
+
+
+def _list_item_by_id(items: Any, item_id: str) -> tuple[int, dict | None]:
+    """Список dict с полем id — путь ops использует id, не индекс."""
+    if not isinstance(items, list):
+        return -1, None
+    want = str(item_id or "")
+    for idx, row in enumerate(items):
+        if isinstance(row, dict) and str(row.get("id") or "") == want:
+            return idx, row
+    return -1, None
+
+
+def get_path_value(root: Any, path: str) -> Any:
+    if not path:
+        return None
+    parts = path.split(".")
+    cur = root
+    i = 0
+    while i < len(parts):
+        part = parts[i]
+        # workspaces.<code>.… — список подразделений, не dict по code.
+        if (
+            part == "workspaces"
+            and isinstance(cur, dict)
+            and isinstance(cur.get("workspaces"), list)
+        ):
+            if i + 1 >= len(parts):
+                return cur.get("workspaces")
+            idx, ws = _workspace_by_code(cur.get("workspaces"), parts[i + 1])
+            if idx < 0 or not isinstance(ws, dict):
+                return None
+            cur = ws
+            i += 2
+            continue
+        # …employees.<id>.… — список сотрудников по id.
+        if (
+            part in WT_WORKSPACE_ID_LISTS
+            and isinstance(cur, dict)
+            and isinstance(cur.get(part), list)
+            and i + 1 < len(parts)
+        ):
+            idx, row = _list_item_by_id(cur.get(part), parts[i + 1])
+            if idx < 0 or not isinstance(row, dict):
+                return None
+            cur = row
+            i += 2
+            continue
+        # users.<user_id>.… — список пользователей по user_id.
+        if (
+            part == "users"
+            and isinstance(cur, dict)
+            and isinstance(cur.get("users"), list)
+            and i + 1 < len(parts)
+        ):
+            want = str(parts[i + 1])
+            found = None
+            for row in cur.get("users") or []:
+                if isinstance(row, dict) and str(row.get("user_id") or "") == want:
+                    found = row
+                    break
+            if found is None:
+                return None
+            cur = found
+            i += 2
+            continue
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+            i += 1
+            continue
+        return None
+    return cur
+
+
+def _set_in_id_list(parent: dict, list_key: str, item_id: str, rest: list[str], value: Any, id_field: str = "id") -> bool:
+    """Пишет в parent[list_key] элемент с id_field==item_id. rest — путь внутри элемента (пустой = весь объект)."""
+    items = parent.get(list_key)
+    if not isinstance(items, list):
+        items = []
+    items = _clone(items)
+    idx = -1
+    row = None
+    for i, cand in enumerate(items):
+        if isinstance(cand, dict) and str(cand.get(id_field) or "") == str(item_id):
+            idx = i
+            row = cand
+            break
+    if not rest:
+        if value is None:
+            if idx >= 0:
+                items.pop(idx)
+        elif isinstance(value, dict):
+            cloned = _clone(value)
+            if id_field not in cloned:
+                cloned[id_field] = item_id
+            if idx >= 0:
+                items[idx] = cloned
+            else:
+                items.append(cloned)
+        else:
+            return False
+        parent[list_key] = items
+        return True
+    if idx < 0 or not isinstance(row, dict):
+        if value is None:
+            return True
+        row = {id_field: item_id}
+        items.append(row)
+        idx = len(items) - 1
+    row = _clone(row)
+    cur: Any = row
+    for part in rest[:-1]:
+        nxt = cur.get(part) if isinstance(cur, dict) else None
+        if not isinstance(nxt, dict):
+            nxt = {}
+            if isinstance(cur, dict):
+                cur[part] = nxt
+        cur = nxt
+    leaf = rest[-1]
+    if not isinstance(cur, dict):
+        return False
+    if value is None:
+        cur.pop(leaf, None)
+    else:
+        cur[leaf] = _clone(value)
+    items[idx] = row
+    parent[list_key] = items
+    return True
+
+
+def set_path_value(root: dict, path: str, value: Any) -> dict:
+    out = _clone(root) if isinstance(root, dict) else {}
+    parts = path.split(".")
+    if not parts:
+        return out
+    # Не превращаем список workspaces в dict при записи по code.
+    if parts[0] == "workspaces" and isinstance(out.get("workspaces"), list):
+        if len(parts) < 2:
+            return out
+        code = parts[1]
+        wslist = _clone(out.get("workspaces"))
+        idx, ws = _workspace_by_code(wslist, code)
+        if idx < 0 or not isinstance(ws, dict):
+            # Новое подразделение через op не создаём — только существующие.
+            return out
+        ws = _clone(ws)
+        if len(parts) == 2:
+            if value is None:
+                wslist.pop(idx)
+            elif isinstance(value, dict):
+                wslist[idx] = _clone(value)
+            else:
+                return out
+            out["workspaces"] = wslist
+            return out
+        # workspaces.<code>.employees.<empId>[.…]
+        if len(parts) >= 4 and parts[2] in WT_WORKSPACE_ID_LISTS:
+            ok = _set_in_id_list(ws, parts[2], parts[3], parts[4:], value, "id")
+            if not ok:
+                return out
+            wslist[idx] = ws
+            out["workspaces"] = wslist
+            return out
+        cur: Any = ws
+        for part in parts[2:-1]:
+            nxt = cur.get(part) if isinstance(cur, dict) else None
+            if not isinstance(nxt, dict):
+                nxt = {}
+                if isinstance(cur, dict):
+                    cur[part] = nxt
+            cur = nxt
+        leaf = parts[-1]
+        if not isinstance(cur, dict):
+            return out
+        if value is None:
+            cur.pop(leaf, None)
+        else:
+            cur[leaf] = _clone(value)
+        wslist[idx] = ws
+        out["workspaces"] = wslist
+        return out
+    # users.<user_id>[.…]
+    if parts[0] == "users" and isinstance(out.get("users"), list) and len(parts) >= 2:
+        ok = _set_in_id_list(out, "users", parts[1], parts[2:], value, "user_id")
+        return out if ok else out
+    cur = out
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    leaf = parts[-1]
+    if value is None:
+        cur.pop(leaf, None)
+    else:
+        cur[leaf] = _clone(value)
+    return out
+
+
+def records_map(payload: dict | None) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    raw = payload.get(WT_RECORDS_KEY)
+    return raw if isinstance(raw, dict) else {}
+
+
+def record_version(payload: dict | None, path: str) -> int:
+    meta = records_map(payload).get(path)
+    if not isinstance(meta, dict):
+        return 0
+    try:
+        return int(meta.get("v") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+WT_RECORDS_SOFT_MAX = 5000
+WT_RECORDS_TARGET = 4000
+
+
+def prune_record_meta(payload: dict, meta: dict) -> dict:
+    """
+    Сжимает _wt_records при переполнении.
+
+    Критично: пути, у которых значение ещё есть в payload, НЕ вытесняются.
+    Иначе после очистки record_v снова становится 0 и op с expected_v=0
+    незаметно перезаписывает чужие данные.
+
+    Удаляются только «сироты» (значение по пути отсутствует). Если живых
+    записей больше soft-max — они сохраняются целиком (лимит не режет контроль).
+    """
+    if not isinstance(meta, dict) or len(meta) <= WT_RECORDS_SOFT_MAX:
+        return meta
+    live: dict = {}
+    orphans: list[tuple[str, dict]] = []
+    for path, row in meta.items():
+        if not isinstance(row, dict):
+            continue
+        p = str(path)
+        if get_path_value(payload, p) is not None:
+            live[p] = row
+        else:
+            orphans.append((p, row))
+    # Живые пути никогда не выбрасываем.
+    if len(live) >= WT_RECORDS_SOFT_MAX:
+        return live
+    orphans_sorted = sorted(
+        orphans,
+        key=lambda kv: str((kv[1] or {}).get("updated_at") or ""),
+    )
+    budget = max(0, WT_RECORDS_TARGET - len(live))
+    kept = dict(orphans_sorted[-budget:]) if budget else {}
+    kept.update(live)
+    return kept
+
+
+def bump_record_meta(payload: dict, path: str, user_id: str) -> dict:
+    out = _clone(payload) if isinstance(payload, dict) else {}
+    meta = records_map(out)
+    prev = record_version(out, path)
+    meta[path] = {
+        "v": prev + 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": str(user_id or "")[:120],
+    }
+    meta = prune_record_meta(out, meta)
+    out[WT_RECORDS_KEY] = meta
+    return out
+
+
+def remember_idempotency(payload: dict, key: str, result: dict) -> dict:
+    out = _clone(payload) if isinstance(payload, dict) else {}
+    bag = out.get(WT_IDEMPOTENCY_KEY)
+    if not isinstance(bag, dict):
+        bag = {}
+    bag = dict(bag)
+    bag[str(key)[:160]] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "result": _clone(result),
+    }
+    if len(bag) > WT_IDEMPOTENCY_MAX:
+        ordered = sorted(bag.items(), key=lambda kv: str((kv[1] or {}).get("at") or ""))
+        bag = dict(ordered[-WT_IDEMPOTENCY_MAX:])
+    out[WT_IDEMPOTENCY_KEY] = bag
+    return out
+
+
+def load_idempotency(payload: dict | None, key: str) -> dict | None:
+    if not key or not isinstance(payload, dict):
+        return None
+    bag = payload.get(WT_IDEMPOTENCY_KEY)
+    if not isinstance(bag, dict):
+        return None
+    row = bag.get(str(key)[:160])
+    if not isinstance(row, dict):
+        return None
+    res = row.get("result")
+    return res if isinstance(res, dict) else None
+
+
+# Вершины JSON, которые могут меняться и через PUT, и через /api/state/op.
+# Изменения листьев под ними поднимают record_v, чтобы op видел реальный конфликт.
+WT_OPS_TRACKED_TOPS = frozenset(
+    {
+        "shopMetrics",
+        "deptMetrics",
+        "shopMetricCatalog",
+        "shopPayroll",
+        "salary",
+        "financeRec",
+        "shopSalesPlan",
+        "deptSalesPlans",
+        "shopRevision",
+        "deptRevisions",
+        "orgStructure",
+        "customerReturns",
+        "management",
+        "workspaces",
+        # Админ/справочники — тоже leaf-op, чтобы не тащить широкий PUT.
+        "users",
+        "navLayouts",
+        "positionCatalog",
+        "vacationPlans",
+        "fleetVehicles",
+        "repSales",
+        "shopWriteoffLosses",
+    }
+)
+
+# Списки сущностей внутри workspace, адресуемые по id (не по индексу массива).
+WT_WORKSPACE_ID_LISTS = frozenset({"employees"})
+
+
+def protect_wt_records_on_put(current: dict, stored: dict, incoming: dict) -> dict:
+    """
+    Если точечный API уже обновил путь (server_v > client_v), старый PUT
+    не должен вернуть устаревший лист даже при совпадении глобальной version.
+
+    Клиентский PUT не может завысить _wt_records: карта версий остаётся серверной.
+    Завышенный client_v трактуется как устаревший снимок (лист восстанавливается).
+    """
+    if not isinstance(stored, dict):
+        return stored
+    cur_map = records_map(current)
+    if not cur_map:
+        # Клиентский _wt_records / _wt_idempotency никогда не принимаем как источник истины.
+        out = _clone(stored)
+        out.pop(WT_RECORDS_KEY, None)
+        out.pop(WT_IDEMPOTENCY_KEY, None)
+        if WT_RECORDS_KEY in current:
+            out[WT_RECORDS_KEY] = _clone(current.get(WT_RECORDS_KEY))
+        if WT_IDEMPOTENCY_KEY in current:
+            out[WT_IDEMPOTENCY_KEY] = _clone(current.get(WT_IDEMPOTENCY_KEY))
+        return out
+    in_map = records_map(incoming)
+    out = _clone(stored)
+    for path, meta in cur_map.items():
+        if not isinstance(meta, dict):
+            continue
+        try:
+            server_v = int(meta.get("v") or 0)
+        except (TypeError, ValueError):
+            server_v = 0
+        client_meta = in_map.get(path) if isinstance(in_map.get(path), dict) else {}
+        try:
+            client_v = int(client_meta.get("v") or 0)
+        except (TypeError, ValueError):
+            client_v = 0
+        # Завышенная клиентская версия не даёт право переписать лист.
+        if client_v > server_v:
+            client_v = 0
+        if server_v > client_v:
+            out = set_path_value(out, path, get_path_value(current, path))
+    # Карта версий и идемпотентность — только серверные (PUT их не поднимает и не затирает).
+    out[WT_RECORDS_KEY] = _clone(cur_map)
+    if WT_IDEMPOTENCY_KEY in current:
+        out[WT_IDEMPOTENCY_KEY] = _clone(current.get(WT_IDEMPOTENCY_KEY))
+    return out
+
+
+def _is_trackable_op_path(path: str) -> bool:
+    norm = normalize_op_path(path)
+    if not norm:
+        return False
+    top = norm.split(".", 1)[0]
+    return top in WT_OPS_TRACKED_TOPS
+
+
+def _collect_changed_op_paths(before: Any, after: Any) -> list[str]:
+    """
+    Листья (и списки), изменившиеся между снимками, в нотации путей op.
+    Независимые пути не смешиваются — каждый лист отдельная запись.
+    """
+    changed: list[str] = []
+
+    def walk(left: Any, right: Any, path: str) -> None:
+        if path:
+            top = path.split(".", 1)[0]
+            if top in WT_OPS_META_KEYS or top.startswith("_"):
+                return
+            if top not in WT_OPS_TRACKED_TOPS:
+                return
+        if _same(left, right):
+            return
+
+        if path == "":
+            left_d = left if isinstance(left, dict) else {}
+            right_d = right if isinstance(right, dict) else {}
+            for key in set(left_d) | set(right_d):
+                if key in WT_OPS_META_KEYS or str(key).startswith("_"):
+                    continue
+                if key not in WT_OPS_TRACKED_TOPS:
+                    continue
+                walk(left_d.get(key), right_d.get(key), str(key))
+            return
+
+        if path == "workspaces":
+            left_list = left if isinstance(left, list) else []
+            right_list = right if isinstance(right, list) else []
+            codes: set[str] = set()
+            for ws in list(left_list) + list(right_list):
+                if isinstance(ws, dict) and ws.get("code") not in (None, ""):
+                    codes.add(str(ws.get("code")))
+            for code in codes:
+                _, lws = _workspace_by_code(left_list, code)
+                _, rws = _workspace_by_code(right_list, code)
+                walk(lws, rws, f"workspaces.{code}")
+            return
+
+        # workspaces.<code>.employees — по id, не целиком список.
+        path_parts = path.split(".") if path else []
+        if (
+            len(path_parts) == 3
+            and path_parts[0] == "workspaces"
+            and path_parts[2] in WT_WORKSPACE_ID_LISTS
+        ):
+            left_list = left if isinstance(left, list) else []
+            right_list = right if isinstance(right, list) else []
+            ids: set[str] = set()
+            for row in list(left_list) + list(right_list):
+                if isinstance(row, dict) and row.get("id") not in (None, ""):
+                    ids.add(str(row.get("id")))
+            for eid in ids:
+                _, lrow = _list_item_by_id(left_list, eid)
+                _, rrow = _list_item_by_id(right_list, eid)
+                walk(lrow, rrow, f"{path}.{eid}")
+            return
+
+        # users — по user_id.
+        if path == "users":
+            left_list = left if isinstance(left, list) else []
+            right_list = right if isinstance(right, list) else []
+            uids: set[str] = set()
+            for row in list(left_list) + list(right_list):
+                if isinstance(row, dict) and row.get("user_id") not in (None, ""):
+                    uids.add(str(row.get("user_id")))
+            for uid in uids:
+                lrow = next(
+                    (
+                        r
+                        for r in left_list
+                        if isinstance(r, dict) and str(r.get("user_id") or "") == uid
+                    ),
+                    None,
+                )
+                rrow = next(
+                    (
+                        r
+                        for r in right_list
+                        if isinstance(r, dict) and str(r.get("user_id") or "") == uid
+                    ),
+                    None,
+                )
+                walk(lrow, rrow, f"users.{uid}")
+            return
+
+        if isinstance(left, dict) and isinstance(right, dict):
+            for key in set(left) | set(right):
+                sk = str(key)
+                if sk.startswith("_"):
+                    continue
+                walk(left.get(key), right.get(key), f"{path}.{sk}")
+            return
+
+        # Один dict, другой нет / list / scalar — лист для op.
+        if isinstance(left, dict) and right is None:
+            for key in left:
+                sk = str(key)
+                if sk.startswith("_"):
+                    continue
+                walk(left.get(key), None, f"{path}.{sk}")
+            return
+        if isinstance(right, dict) and left is None:
+            for key in right:
+                sk = str(key)
+                if sk.startswith("_"):
+                    continue
+                walk(None, right.get(key), f"{path}.{sk}")
+            return
+
+        if _is_trackable_op_path(path):
+            changed.append(path)
+
+    walk(before, after, "")
+    return changed
+
+
+def sync_record_versions_after_put(current: dict, stored: dict, user: dict | None) -> dict:
+    """
+    После успешного (с точки зрения protect) PUT поднимает record_v у реально
+    изменившихся путей. Иначе последующий op со старым expected_v перезапишет
+    изменение PUT незаметно.
+
+    Карта _wt_records остаётся серверной: клиентский payload её не задаёт.
+    """
+    if not isinstance(stored, dict):
+        return stored
+    out = stored
+    uid = str((user or {}).get("user_id") or "")[:120]
+    bumped: set[str] = set()
+
+    def bump_if_changed(path: str) -> None:
+        nonlocal out
+        if path in bumped or not _is_trackable_op_path(path):
+            return
+        if _same(get_path_value(current, path), get_path_value(out, path)):
+            return
+        out = bump_record_meta(out, path, uid)
+        bumped.add(path)
+
+    # 1) Уже отслеживаемые пути.
+    for path in set(records_map(current)) | set(records_map(out)):
+        bump_if_changed(str(path))
+    # 2) Новые изменения под tracked tops.
+    for path in _collect_changed_op_paths(current, out):
+        bump_if_changed(path)
+    if WT_IDEMPOTENCY_KEY in current and WT_IDEMPOTENCY_KEY not in out:
+        out = _clone(out)
+        out[WT_IDEMPOTENCY_KEY] = _clone(current.get(WT_IDEMPOTENCY_KEY))
+    return out
+
+
+def _ops_metric_branch_allowed(user: dict, branch: str) -> bool:
+    """Права на конкретную ветку метрик, не на весь префикс shopMetrics/deptMetrics."""
+    if branch in METRIC_ADMIN_META_KEYS:
+        return False
+    if branch in METRIC_SETUP_KEYS:
+        return _can_edit_metric_setup(user)
+    if branch in METRIC_INPUT_KEYS:
+        return _can_edit_metric_input(user) or _can_edit_metric_setup(user)
+    return False
+
+
+def ops_path_allowed(user: dict | None, path: str) -> bool:
+    if not user or not path:
+        return False
+    parts = path.split(".")
+    top = parts[0]
+    if top in WT_OPS_META_KEYS or top.startswith("_"):
+        return False
+    if is_app_admin(user):
+        return True
+    codes = user_dept_codes(user)
+    if top == "shopMetrics":
+        if "shop" not in codes or len(parts) < 2:
+            return False
+        return _ops_metric_branch_allowed(user, parts[1])
+    if top == "deptMetrics":
+        if len(parts) < 3 or parts[1] not in codes:
+            return False
+        return _ops_metric_branch_allowed(user, parts[2])
+    if top == "shopMetricCatalog":
+        return _can_edit_metric_setup(user)
+    if top == "shopPayroll":
+        if "shop" not in codes or not user_has_perm(user, "salary", "edit"):
+            return False
+        # Денежные KPI — только администратор (как в старом PUT).
+        if len(parts) >= 2 and parts[1] in SHOP_PAYROLL_KPI_MONEY_KEYS:
+            return False
+        return True
+    if top == "salary":
+        return user_has_perm(user, "salary", "edit")
+    if top == "financeRec":
+        if len(parts) < 2:
+            return False
+        branch = parts[1]
+        if branch in FINANCE_DATA_KEYS:
+            return user_has_perm(user, "financeRec", "edit")
+        return user_has_perm(user, "financeRecSetup", "edit")
+    if top == "shopSalesPlan":
+        return "shop" in codes and user_has_perm(user, "salesPlan", "edit")
+    if top == "deptSalesPlans":
+        return len(parts) >= 2 and parts[1] in codes and user_has_perm(user, "salesPlan", "edit")
+    if top == "shopRevision":
+        return "shop" in codes and user_has_perm(user, "revision", "edit")
+    if top == "deptRevisions":
+        return len(parts) >= 2 and parts[1] in codes and user_has_perm(user, "revision", "edit")
+    if top == "orgStructure":
+        return user_has_perm(user, "orgStructure", "edit")
+    if top == "customerReturns":
+        return user_has_perm(user, "customerReturns", "edit")
+    if top == "management":
+        if len(parts) < 2:
+            return _can_write_any_management(user)
+        return _can_write_mgmt_key(user, parts[1])
+    if top == "workspaces":
+        if len(parts) < 3 or parts[1] not in codes:
+            return False
+        if parts[2] == "timesheet":
+            return user_has_perm(user, "timesheet", "edit")
+        if parts[2] in ("employees", "employeeIds", "removedEmployeeIds"):
+            return can_write_dept_employees(user)
+        return False
+    if top == "shopWriteoffLosses":
+        return "shop" in codes and (
+            _can_edit_metric_input(user) or _can_edit_metric_setup(user)
+        )
+    if top == "navLayouts":
+        return user_has_perm(user, "settings", "edit")
+    if top == "vacationPlans":
+        return user_has_perm(user, "vacationPlan", "edit") or user_has_perm(user, "salary", "edit")
+    if top in ("positionCatalog", "fleetVehicles", "repSales"):
+        return user_has_perm(user, "settings", "edit") or can_write_dept_employees(user)
+    # users — только admin (ранний return is_app_admin).
+    return False
+
+
+def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, dict | None]:
+    """
+    Применяет одну точечную операцию.
+    Возвращает (new_payload, None) или (None, error_body).
+    """
+    path = normalize_op_path(op.get("path"))
+    if not path:
+        return None, {"error": "invalid path", "message": "Некорректный путь записи."}
+    # workspaces — список: путь workspaces.<code>.… должен указывать на существующий code.
+    if path.startswith("workspaces."):
+        wparts = path.split(".")
+        if len(wparts) < 3:
+            return None, {"error": "invalid path", "message": "Некорректный путь записи."}
+        idx, _ws = _workspace_by_code(
+            payload.get("workspaces") if isinstance(payload, dict) else None,
+            wparts[1],
+        )
+        if idx < 0:
+            return None, {"error": "invalid path", "message": "Подразделение не найдено."}
+    if not ops_path_allowed(user, path):
+        return None, {"error": "forbidden", "message": "Недостаточно прав для этой записи."}
+    try:
+        expected_v = int(op.get("expected_v") if op.get("expected_v") is not None else -1)
+    except (TypeError, ValueError):
+        return None, {"error": "invalid expected_v", "message": "Ожидаемая версия записи должна быть числом."}
+    if expected_v < 0:
+        return None, {"error": "invalid expected_v", "message": "Укажите expected_v (>= 0)."}
+    server_v = record_version(payload, path)
+    server_value = get_path_value(payload, path)
+    your_value = op.get("value")
+    if expected_v != server_v:
+        return None, {
+            "error": "conflict",
+            "message": "Запись уже изменена другим пользователем.",
+            "path": path,
+            "server_v": server_v,
+            "server_value": server_value,
+            "your_value": your_value,
+            "your_expected_v": expected_v,
+        }
+    uid = str(user.get("user_id") or "")
+    next_payload = set_path_value(payload, path, your_value)
+    next_payload = bump_record_meta(next_payload, path, uid)
+    return next_payload, None
+
+
+def handle_post_state_op(environ):
+    """POST /api/state/op — точечное сохранение одной записи с версией пути."""
+    if not ops_enabled():
+        return json_bytes(
+            {"error": "ops disabled", "message": "Точечное сохранение временно отключено."},
+            "503 Service Unavailable",
+        )
+    raw = read_body(environ)
+    try:
+        data = json.loads(raw.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return json_bytes({"error": "invalid json"}, "400 Bad Request")
+    if not isinstance(data, dict):
+        return json_bytes({"error": "body must be an object"}, "400 Bad Request")
+    op = data.get("op")
+    if not isinstance(op, dict):
+        return json_bytes({"error": "op is required"}, "400 Bad Request")
+    idem = str(data.get("idempotency_key") or "").strip()
+    user_id, err = require_session(environ)
+    if err:
+        return err
+    if not db_configured():
+        return db_unavailable()
+    try:
+        conn = connect()
+    except Exception:
+        return db_unavailable()
+    try:
+        with conn.cursor() as cur:
+            state = fetch_state_for_update(cur)
+            payload = state.get("payload") if isinstance(state.get("payload"), dict) else {}
+            user = current_user_from_state(environ, payload, user_id)
+            if not user:
+                conn.rollback()
+                return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
+            if idem:
+                cached = load_idempotency(payload, idem)
+                if cached is not None:
+                    conn.rollback()
+                    return json_bytes(cached, "200 OK")
+            next_payload, op_err = apply_state_op(payload, op, user)
+            if op_err is not None:
+                conn.rollback()
+                status = "409 Conflict" if op_err.get("error") == "conflict" else (
+                    "403 Forbidden" if op_err.get("error") == "forbidden" else "400 Bad Request"
+                )
+                return json_bytes(op_err, status)
+            expected = int(state.get("version") or 0)
+            result_body = {
+                "ok": True,
+                "path": normalize_op_path(op.get("path")),
+                "record_v": record_version(next_payload, normalize_op_path(op.get("path")) or ""),
+                "value": get_path_value(next_payload, normalize_op_path(op.get("path")) or ""),
+            }
+            if idem:
+                next_payload = remember_idempotency(next_payload, idem, result_body)
+            row = persist_payload(cur, next_payload, expected, str(user.get("user_id") or ""))
+            if not row:
+                latest = fetch_state(cur)
+                conn.rollback()
+                return json_bytes(conflict_body(latest), "409 Conflict")
+            conn.commit()
+            version, updated_at, updated_by_row = row[0], row[1], row[2]
+            result_body["version"] = int(version or 0)
+            result_body["updated_at"] = (
+                updated_at.isoformat() if hasattr(updated_at, "isoformat") else (updated_at or "")
+            )
+            result_body["updated_by"] = updated_by_row or ""
+            return json_bytes(result_body, "200 OK")
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return db_unavailable()
+    finally:
+        conn.close()
+
+
+def apply_state_ops_batch(
+    payload: dict, ops: list, user: dict, atomic: bool
+) -> tuple[dict | None, list[dict], dict | None]:
+    """
+    Применяет список точечных операций.
+    atomic=True — все или ничего (первый конфликт/ошибка откатывает весь batch в памяти).
+    atomic=False — независимые пути: успешные применяются, конфликты собираются в results.
+    Возвращает (next_payload|None, results, fatal_error|None).
+    """
+    if not isinstance(ops, list) or not ops:
+        return None, [], {"error": "ops required", "message": "Нужен непустой список ops."}
+    if len(ops) > 200:
+        return None, [], {"error": "too many ops", "message": "Не больше 200 операций за раз."}
+    results: list[dict] = []
+    next_payload = payload
+    for raw_op in ops:
+        if not isinstance(raw_op, dict):
+            err = {"error": "invalid op", "message": "Каждая операция должна быть объектом."}
+            if atomic:
+                return None, [], err
+            results.append({"status": "error", **err})
+            continue
+        applied, op_err = apply_state_op(next_payload, raw_op, user)
+        path = normalize_op_path(raw_op.get("path")) or str(raw_op.get("path") or "")
+        if op_err is not None:
+            row = {"status": op_err.get("error") or "error", "path": path, **op_err}
+            if atomic:
+                return None, [], op_err
+            results.append(row)
+            continue
+        next_payload = applied if applied is not None else next_payload
+        results.append(
+            {
+                "status": "saved",
+                "path": path,
+                "record_v": record_version(next_payload, path),
+                "value": get_path_value(next_payload, path),
+            }
+        )
+    if atomic and any(r.get("status") != "saved" for r in results):
+        return None, results, {"error": "batch failed", "message": "Пакет не применён."}
+    return next_payload, results, None
+
+
+def handle_post_state_op_batch(environ):
+    """
+    POST /api/state/op/batch — несколько точечных записей в одной транзакции БД.
+    Body: { idempotency_key?, atomic?: bool, ops: [{path, expected_v, value}, ...] }
+    atomic=true — связанная операция (например facts+category); иначе независимые пути.
+    """
+    if not ops_enabled():
+        return json_bytes(
+            {"error": "ops disabled", "message": "Точечное сохранение временно отключено."},
+            "503 Service Unavailable",
+        )
+    raw = read_body(environ)
+    try:
+        data = json.loads(raw.decode("utf-8") or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return json_bytes({"error": "invalid json"}, "400 Bad Request")
+    if not isinstance(data, dict):
+        return json_bytes({"error": "body must be an object"}, "400 Bad Request")
+    ops = data.get("ops")
+    if not isinstance(ops, list):
+        return json_bytes({"error": "ops is required"}, "400 Bad Request")
+    atomic = bool(data.get("atomic"))
+    idem = str(data.get("idempotency_key") or "").strip()
+    user_id, err = require_session(environ)
+    if err:
+        return err
+    if not db_configured():
+        return db_unavailable()
+    try:
+        conn = connect()
+    except Exception:
+        return db_unavailable()
+    try:
+        with conn.cursor() as cur:
+            state = fetch_state_for_update(cur)
+            payload = state.get("payload") if isinstance(state.get("payload"), dict) else {}
+            user = current_user_from_state(environ, payload, user_id)
+            if not user:
+                conn.rollback()
+                return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
+            if idem:
+                cached = load_idempotency(payload, idem)
+                if cached is not None:
+                    conn.rollback()
+                    return json_bytes(cached, "200 OK")
+            next_payload, results, fatal = apply_state_ops_batch(payload, ops, user, atomic)
+            if fatal is not None:
+                conn.rollback()
+                status = "409 Conflict" if fatal.get("error") == "conflict" else (
+                    "403 Forbidden" if fatal.get("error") == "forbidden" else "400 Bad Request"
+                )
+                fatal_out = dict(fatal)
+                if results:
+                    fatal_out["results"] = results
+                return json_bytes(fatal_out, status)
+            if next_payload is None:
+                conn.rollback()
+                return json_bytes({"error": "batch empty", "message": "Нечего сохранять."}, "400 Bad Request")
+            saved_any = any(r.get("status") == "saved" for r in results)
+            if not saved_any:
+                conn.rollback()
+                # Все пути с конфликтами/ошибками — 409 если есть conflict, иначе 400.
+                has_conflict = any(r.get("status") == "conflict" or r.get("error") == "conflict" for r in results)
+                return json_bytes(
+                    {"ok": False, "results": results, "message": "Ни одна запись не сохранена."},
+                    "409 Conflict" if has_conflict else "400 Bad Request",
+                )
+            expected = int(state.get("version") or 0)
+            result_body: dict[str, Any] = {
+                "ok": True,
+                "atomic": atomic,
+                "results": results,
+                # Фактическая version подтверждается после persist; для idempotency заранее expected+1.
+                "version": expected + 1,
+            }
+            if idem:
+                next_payload = remember_idempotency(next_payload, idem, result_body)
+            row = persist_payload(cur, next_payload, expected, str(user.get("user_id") or ""))
+            if not row:
+                latest = fetch_state(cur)
+                conn.rollback()
+                return json_bytes(conflict_body(latest), "409 Conflict")
+            conn.commit()
+            version, updated_at, updated_by_row = row[0], row[1], row[2]
+            result_body["version"] = int(version or 0)
+            result_body["updated_at"] = (
+                updated_at.isoformat() if hasattr(updated_at, "isoformat") else (updated_at or "")
+            )
+            result_body["updated_by"] = updated_by_row or ""
+            return json_bytes(result_body, "200 OK")
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return db_unavailable()
+    finally:
+        conn.close()
+
+
 def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict | None, str | None]:
     """Пишем поверх снимка в БД. Запрещённое поле — 403, без частичной записи."""
     if not isinstance(current, dict):
@@ -2211,7 +3173,11 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     if is_app_admin(user):
         if incoming_admin_pin_duplicate(current, incoming):
             return None, "duplicate_pin"
-        return _merge_admin_payload(current, incoming), None
+        stored = _merge_admin_payload(current, incoming)
+        # Старый PUT не должен затирать записи, уже обновлённые точечным API.
+        stored = protect_wt_records_on_put(current, stored, incoming)
+        # Изменения через PUT поднимают record_v — иначе op не увидит конфликт.
+        return sync_record_versions_after_put(current, stored, user), None
     if _staff_put_forbidden(current, incoming, user):
         return None, "forbidden"
     stored = _apply_staff_writes(current, incoming, user)
@@ -2219,6 +3185,8 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     if isinstance(stored, dict) and "employeeIdCounters" not in incoming:
         if isinstance(current.get("employeeIdCounters"), dict):
             stored["employeeIdCounters"] = _clone(current.get("employeeIdCounters"))
+    stored = protect_wt_records_on_put(current, stored, incoming)
+    stored = sync_record_versions_after_put(current, stored, user)
     return stored, None
 
 
@@ -2888,7 +3856,7 @@ def run_bootstrap_cli() -> int:
 
 def handle_health():
     # Живость процесса для Timeweb: без PostgreSQL, без авторизации, без редиректов.
-    return json_bytes({"ok": True})
+    return json_bytes({"ok": True, "ops": ops_enabled()})
 
 
 def load_state_or_error():
@@ -3153,6 +4121,31 @@ def handle_get_state(environ):
     else:
         safe["payload"] = filter_state_payload(payload, user)
     return json_bytes(safe)
+
+
+def handle_get_state_version(environ):
+    """Лёгкий poll: только version/updated_at, без полного payload (для 2–50 клиентов)."""
+    user_id, err = require_session(environ)
+    if err:
+        return err
+    state, err = load_state_or_error()
+    if err:
+        return err
+    payload = state.get("payload") if state else None
+    if not isinstance(payload, dict):
+        payload = {}
+    user = current_user_from_state(environ, payload, user_id)
+    if not user:
+        return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
+    updated_at = state.get("updated_at") or ""
+    if hasattr(updated_at, "isoformat"):
+        updated_at = updated_at.isoformat()
+    return json_bytes(
+        {
+            "version": int(state.get("version") or 0),
+            "updated_at": updated_at or "",
+        }
+    )
 
 
 def handle_put_state(environ):
@@ -3477,8 +4470,16 @@ def application(environ, start_response):
             status, headers, body = handle_directory()
         elif method == "GET" and path == "/api/state":
             status, headers, body = handle_get_state(environ)
+        elif method in ("GET", "HEAD") and path == "/api/state/version":
+            status, headers, body = handle_get_state_version(environ)
+            if method == "HEAD":
+                body = b""
         elif method == "PUT" and path == "/api/state":
             status, headers, body = handle_put_state(environ)
+        elif method == "POST" and path == "/api/state/op":
+            status, headers, body = handle_post_state_op(environ)
+        elif method == "POST" and path == "/api/state/op/batch":
+            status, headers, body = handle_post_state_op_batch(environ)
         elif method == "POST" and path == "/api/employee-id/reserve":
             status, headers, body = handle_reserve_employee_id(environ)
         elif method == "POST" and path == "/api/employees":
@@ -3504,12 +4505,42 @@ def application(environ, start_response):
 
 def main(argv: list[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    # WT_LOCAL_TEST=1: проверка хоста/порта/БД/пользователя и WT_BIND до listen и SQL.
+    try:
+        from wt_local_guard import (
+            LocalTestGuardError,
+            enforce_local_test_guard,
+            local_test_mode_enabled,
+        )
+
+        if local_test_mode_enabled():
+            try:
+                meta = enforce_local_test_guard()
+            except LocalTestGuardError as err:
+                print(f"ABORT (local test guard): {err}", flush=True)
+                raise SystemExit(2) from err
+            print(
+                "Local test mode ON: "
+                f"db={meta.get('database')}@{meta.get('host')}:{meta.get('port')} "
+                f"user={meta.get('user')} bind={meta.get('bind')} "
+                "(password hidden)",
+                flush=True,
+            )
+    except ImportError:
+        pass
     if args[:1] == ["bootstrap"]:
         raise SystemExit(run_bootstrap_cli())
     host = bind_host()
     port = bind_port()
     print(f"WorkTime store API http://{host}:{port}/api/health (UI not connected)", flush=True)
-    httpd = make_server(host, port, application)
+
+    class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
+        """Параллельные клиенты (2–50): иначе backlog однопоточного wsgiref даёт connection refused."""
+
+        daemon_threads = True
+        allow_reuse_address = True
+
+    httpd = make_server(host, port, application, server_class=ThreadingWSGIServer)
     httpd.serve_forever()
 
 

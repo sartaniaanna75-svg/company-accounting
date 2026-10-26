@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
@@ -190,6 +191,12 @@ class FakeCursor:
                 )
             return
         if "SELECT payload, version" in text:
+            # Имитация FOR UPDATE: держим store["lock"] до commit/rollback соединения.
+            if "FOR UPDATE" in text:
+                lock = self.store.get("lock")
+                if lock is not None and not self.store.get("_lock_held"):
+                    lock.acquire()
+                    self.store["_lock_held"] = True
             self._row = (
                 self.store["payload"],
                 self.store["version"],
@@ -216,13 +223,22 @@ class FakeConn:
     def cursor(self):
         return FakeCursor(self.store)
 
+    def _release_row_lock(self):
+        lock = self.store.get("lock")
+        if lock is not None and self.store.get("_lock_held"):
+            self.store["_lock_held"] = False
+            lock.release()
+
     def commit(self):
         self.store["committed"] = True
+        self._release_row_lock()
 
     def rollback(self):
         self.store["rolled_back"] = True
+        self._release_row_lock()
 
     def close(self):
+        self._release_row_lock()
         self.store["closed"] = True
 
 
@@ -311,7 +327,8 @@ class StoreApiTests(unittest.TestCase):
     def test_health_ok(self):
         status, data, *_ = call("GET", "/api/health")
         self.assertTrue(status.startswith("200"))
-        self.assertEqual(data, {"ok": True})
+        self.assertEqual(data.get("ok"), True)
+        self.assertIn("ops", data)
         status_head, _, text, _ = call("HEAD", "/api/health", as_json=False)
         self.assertTrue(status_head.startswith("200"))
         self.assertEqual(text, "")
@@ -323,7 +340,7 @@ class StoreApiTests(unittest.TestCase):
                 status, data, raw, _ = call("GET", "/api/health")
                 mocked.assert_not_called()
             self.assertTrue(status.startswith("200"))
-            self.assertEqual(data, {"ok": True})
+            self.assertEqual(data.get("ok"), True)
             self.assertNotIn("password", raw.lower())
         finally:
             self._patch.start()
@@ -5069,6 +5086,760 @@ class ConcurrentEmployeeCreateApiTests(StoreApiTests):
         names = {e["id"]: e["name"] for e in wh["employees"]}
         self.assertEqual(names.get("e_wh"), "Кладовщик Renamed")
         self.assertEqual(names.get(created["employee_id"]), "Created")
+
+
+class WtOpsFoundationTests(unittest.TestCase):
+    """Точечные операции /api/state/op и защита старого PUT. Без PostgreSQL."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        self.store = {
+            "payload": json.loads(json.dumps(SAMPLE_APP)),
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id="user_admin", pin="5555"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_health_reports_ops(self):
+        status, data, *_ = call("GET", "/api/health")
+        self.assertTrue(status.startswith("200"))
+        self.assertTrue(data.get("ok"))
+        self.assertTrue(data.get("ops"))
+
+    def test_op_saves_independent_paths(self):
+        cookie, _ = self.login()
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "k1",
+                "op": {
+                    "path": "shopMetrics.facts.picker_a",
+                    "expected_v": 0,
+                    "value": 10,
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        self.assertEqual(d1.get("record_v"), 1)
+        v_after = int(self.store["version"])
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "k2",
+                "op": {
+                    "path": "shopMetrics.facts.cashier_b",
+                    "expected_v": 0,
+                    "value": 20,
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        self.assertEqual(d2.get("record_v"), 1)
+        self.assertGreater(int(self.store["version"]), v_after)
+        facts = self.store["payload"]["shopMetrics"]["facts"]
+        self.assertEqual(facts.get("picker_a"), 10)
+        self.assertEqual(facts.get("cashier_b"), 20)
+        self.assertEqual(facts.get("ok"), 1)
+
+    def test_op_real_conflict_same_path(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"idempotency_key": "c1", "op": {"path": "shopMetrics.facts.cell", "expected_v": 0, "value": "A"}},
+            cookie=cookie,
+        )
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"idempotency_key": "c2", "op": {"path": "shopMetrics.facts.cell", "expected_v": 0, "value": "B"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("409"), st)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(data.get("server_value"), "A")
+        self.assertEqual(data.get("your_value"), "B")
+        self.assertEqual(data.get("server_v"), 1)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["cell"], "A")
+
+    def test_op_confirm_replace_after_conflict(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.cell", "expected_v": 0, "value": "A"}},
+            cookie=cookie,
+        )
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.cell", "expected_v": 1, "value": "B"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(data.get("value"), "B")
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["cell"], "B")
+        self.assertEqual(data.get("record_v"), 2)
+
+    def test_op_idempotency(self):
+        cookie, _ = self.login()
+        body = {
+            "idempotency_key": "same-key",
+            "op": {"path": "shopMetrics.facts.once", "expected_v": 0, "value": 7},
+        }
+        st1, d1, *_ = call("POST", "/api/state/op", body, cookie=cookie)
+        ver1 = int(self.store["version"])
+        st2, d2, *_ = call("POST", "/api/state/op", body, cookie=cookie)
+        self.assertTrue(st1.startswith("200"))
+        self.assertTrue(st2.startswith("200"))
+        self.assertEqual(d1.get("value"), 7)
+        self.assertEqual(d2.get("value"), 7)
+        self.assertEqual(int(self.store["version"]), ver1)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["once"], 7)
+
+    def test_stale_put_does_not_wipe_op_value(self):
+        """Пользователь со старым снимком PUT не затирает путь, обновлённый через op."""
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.guarded", "expected_v": 0, "value": "from_op"}},
+            cookie=cookie,
+        )
+        version = int(self.store["version"])
+        # Устаревший клиент: нет _wt_records / v=0, но шлёт старое facts без guarded.
+        st, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "shopMetrics": {"facts": {"ok": 1, "nested_ignore": True}},
+                    "_wt_records": {},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        facts = self.store["payload"]["shopMetrics"]["facts"]
+        self.assertEqual(facts.get("guarded"), "from_op")
+        meta = self.store["payload"].get("_wt_records") or {}
+        self.assertGreaterEqual(int((meta.get("shopMetrics.facts.guarded") or {}).get("v") or 0), 1)
+
+    def test_staff_forbidden_other_dept_op(self):
+        cookie, _ = self.login("usr_001", "1111")
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "deptMetrics.warehouse.facts.secret",
+                    "expected_v": 0,
+                    "value": 99,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+
+    def test_ops_disabled_flag(self):
+        with patch.dict(os.environ, {"WT_OPS_ENABLED": "0"}, clear=False):
+            cookie, _ = self.login()
+            st, data, *_ = call(
+                "POST",
+                "/api/state/op",
+                {"op": {"path": "shopMetrics.facts.x", "expected_v": 0, "value": 1}},
+                cookie=cookie,
+            )
+            self.assertTrue(st.startswith("503"), st)
+            self.assertEqual(data.get("error"), "ops disabled")
+
+    def test_staff_cannot_op_metric_setup_via_path(self):
+        """metricsInput не даёт писать workAccess подстановкой path."""
+        cookie, _ = self.login("usr_001", "1111")
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopMetrics.workAccess.2026-10.e_shop",
+                    "expected_v": 0,
+                    "value": ["m1"],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+
+    def test_staff_cannot_op_metric_admin_meta(self):
+        cookie, _ = self.login("usr_001", "1111")
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.storeMeta.secret", "expected_v": 0, "value": 1}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+
+    def test_forged_client_record_v_cannot_wipe_op(self):
+        """PUT с завышенным _wt_records.v не перезаписывает лист op и не поднимает meta."""
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.guarded", "expected_v": 0, "value": "from_op"}},
+            cookie=cookie,
+        )
+        version = int(self.store["version"])
+        st, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "shopMetrics": {"facts": {"ok": 1, "guarded": "forged"}},
+                    "_wt_records": {"shopMetrics.facts.guarded": {"v": 99}},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        facts = self.store["payload"]["shopMetrics"]["facts"]
+        self.assertEqual(facts.get("guarded"), "from_op")
+        meta = self.store["payload"].get("_wt_records") or {}
+        self.assertEqual(int((meta.get("shopMetrics.facts.guarded") or {}).get("v") or 0), 1)
+
+    def test_workspaces_op_by_code_keeps_list(self):
+        """Путь workspaces.<code> не превращает список подразделений в dict."""
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "workspaces.shop.timesheet.2026-10.e_shop.2",
+                    "expected_v": 0,
+                    "value": "В",
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(data.get("value"), "В")
+        workspaces = self.store["payload"]["workspaces"]
+        self.assertIsInstance(workspaces, list)
+        self.assertEqual(len(workspaces), 2)
+        shop = next(ws for ws in workspaces if ws.get("code") == "shop")
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["2"], "В")
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["1"], "Я")
+        wh = next(ws for ws in workspaces if ws.get("code") == "warehouse")
+        self.assertEqual(wh["timesheet"]["2026-10"]["e_wh"]["1"], "Я")
+
+    def test_third_writer_before_conflict_confirm(self):
+        """Пока A думает подтвердить замену, C успевает записать — expected_v A устаревает."""
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.race", "expected_v": 0, "value": "A"}},
+            cookie=cookie,
+        )
+        # B получает conflict (не проверяем здесь), C пишет поверх v=1.
+        st_c, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.race", "expected_v": 1, "value": "C"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st_c.startswith("200"), st_c)
+        st_a, data_a, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.race", "expected_v": 1, "value": "B"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st_a.startswith("409"), st_a)
+        self.assertEqual(data_a.get("server_value"), "C")
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["race"], "C")
+
+    def test_ops_disabled_keeps_saved_values_for_put(self):
+        """После отключения op уже сохранённые значения остаются и защищены PUT."""
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.kept", "expected_v": 0, "value": "keep_me"}},
+            cookie=cookie,
+        )
+        with patch.dict(os.environ, {"WT_OPS_ENABLED": "0"}, clear=False):
+            st_op, *_ = call(
+                "POST",
+                "/api/state/op",
+                {"op": {"path": "shopMetrics.facts.kept", "expected_v": 1, "value": "nope"}},
+                cookie=cookie,
+            )
+            self.assertTrue(st_op.startswith("503"), st_op)
+            version = int(self.store["version"])
+            st_put, *_ = call(
+                "PUT",
+                "/api/state",
+                {
+                    "version": version,
+                    "payload": {
+                        "shopMetrics": {"facts": {"ok": 1}},
+                        "_wt_records": {},
+                    },
+                },
+                cookie=cookie,
+            )
+            self.assertTrue(st_put.startswith("200"), st_put)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"].get("kept"), "keep_me")
+
+    def test_put_bumps_record_v_so_stale_op_conflicts(self):
+        """PUT изменил лист → op с expected_v=0 получает конфликт, а не silent overwrite."""
+        cookie, _ = self.login()
+        version = int(self.store["version"])
+        st_put, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {"shopMetrics": {"facts": {"ok": 1, "from_put": "PUT_VAL"}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st_put.startswith("200"), st_put)
+        meta = self.store["payload"].get("_wt_records") or {}
+        self.assertGreaterEqual(int((meta.get("shopMetrics.facts.from_put") or {}).get("v") or 0), 1)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"].get("from_put"), "PUT_VAL")
+        st_op, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.from_put", "expected_v": 0, "value": "OP_STALE"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st_op.startswith("409"), st_op)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(data.get("server_value"), "PUT_VAL")
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"].get("from_put"), "PUT_VAL")
+
+    def test_put_then_op_with_fresh_record_v_succeeds(self):
+        cookie, _ = self.login()
+        version = int(self.store["version"])
+        call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {"shopMetrics": {"facts": {"ok": 1, "fresh": "P"}}},
+            },
+            cookie=cookie,
+        )
+        rv = int((self.store["payload"].get("_wt_records") or {}).get("shopMetrics.facts.fresh", {}).get("v") or 0)
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.fresh", "expected_v": rv, "value": "O"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(data.get("value"), "O")
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"].get("fresh"), "O")
+
+    def test_put_independent_paths_do_not_false_conflict(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.keep_a", "expected_v": 0, "value": "A"}},
+            cookie=cookie,
+        )
+        version = int(self.store["version"])
+        call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "shopMetrics": {"facts": {"ok": 1, "keep_a": "A", "only_b": "B"}},
+                    "_wt_records": {
+                        "shopMetrics.facts.keep_a": self.store["payload"]["_wt_records"][
+                            "shopMetrics.facts.keep_a"
+                        ]
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        # keep_a не менялся — версия не обязана расти; only_b новый — op с v=0 на keep_a ок по значению
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.keep_a", "expected_v": 1, "value": "A2"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"].get("only_b"), "B")
+        st_b, data_b, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.only_b", "expected_v": 0, "value": "B2"}},
+            cookie=cookie,
+        )
+        # only_b уже bumped PUT-ом → expected_v=0 conflict
+        self.assertTrue(st_b.startswith("409"), st_b)
+        self.assertEqual(data_b.get("server_value"), "B")
+
+    def test_client_cannot_set_wt_records_via_put(self):
+        cookie, _ = self.login()
+        version = int(self.store["version"])
+        st, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "shopMetrics": {"facts": {"ok": 1, "x": 1}},
+                    "_wt_records": {"shopMetrics.facts.x": {"v": 50}, "forged.path": {"v": 9}},
+                    "_wt_idempotency": {"k": {"at": "t", "result": {"ok": True}}},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        meta = self.store["payload"].get("_wt_records") or {}
+        self.assertNotIn("forged.path", meta)
+        self.assertNotEqual(int((meta.get("shopMetrics.facts.x") or {}).get("v") or 0), 50)
+        self.assertGreaterEqual(int((meta.get("shopMetrics.facts.x") or {}).get("v") or 0), 1)
+        idem = self.store["payload"].get("_wt_idempotency")
+        if isinstance(idem, dict):
+            self.assertNotIn("k", idem)
+
+    def test_prune_does_not_drop_live_paths(self):
+        """Живые пути не вытесняются при переполнении — иначе silent overwrite."""
+        cookie, _ = self.login()
+        # Синтетически наполняем карту живыми путями выше soft-max.
+        payload = self.store["payload"]
+        facts = payload.setdefault("shopMetrics", {}).setdefault("facts", {})
+        meta = {}
+        soft = wt_api.WT_RECORDS_SOFT_MAX
+        for i in range(soft + 50):
+            key = f"cell_{i}"
+            facts[key] = i
+            meta[f"shopMetrics.facts.{key}"] = {
+                "v": 1,
+                "updated_at": f"2020-01-01T00:00:{i % 60:02d}.000000+00:00",
+                "updated_by": "u",
+            }
+        # Сироты (значения нет) — их можно сжать.
+        for i in range(100):
+            meta[f"shopMetrics.facts.orphan_{i}"] = {
+                "v": 1,
+                "updated_at": f"2019-01-01T00:00:{i % 60:02d}.000000+00:00",
+                "updated_by": "u",
+            }
+        payload[wt_api.WT_RECORDS_KEY] = meta
+        pruned = wt_api.prune_record_meta(payload, dict(meta))
+        for i in range(soft + 50):
+            self.assertIn(f"shopMetrics.facts.cell_{i}", pruned)
+        self.assertLessEqual(len(pruned), soft + 50)
+        # После bump нового живого пути старые живые остаются.
+        nxt, _ = wt_api.apply_state_op(
+            payload,
+            {"path": "shopMetrics.facts.cell_0", "expected_v": 1, "value": 999},
+            {"user_id": "user_admin", "role": "admin", "departments": ["shop"], "permissions": {}},
+        )
+        self.assertIsNotNone(nxt)
+        self.assertEqual(nxt["shopMetrics"]["facts"]["cell_0"], 999)
+        self.assertIn("shopMetrics.facts.cell_1", nxt.get(wt_api.WT_RECORDS_KEY) or {})
+        # expected_v для старого пути после «переполнения» не обнуляется.
+        self.assertGreaterEqual(
+            wt_api.record_version(nxt, "shopMetrics.facts.cell_100"),
+            1,
+        )
+
+
+class WtOpsIntegrationTests(unittest.TestCase):
+    """
+    Интеграционные сценарии на FakeConn + threading.Lock (имитация row lock).
+    Настоящая PostgreSQL не требуется; см. test_wt_ops_pg.py для WT_TEST_DATABASE_URL.
+    """
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        self.store = {
+            "payload": json.loads(json.dumps(SAMPLE_APP)),
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+            "lock": threading.Lock(),
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id="user_admin", pin="5555"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_parallel_independent_ops_general_and_shop(self):
+        """«Общая» (admin) и «Магазин» (staff) одновременно — оба значения сохраняются."""
+        admin_c, _ = self.login("user_admin", "5555")
+        staff_c, _ = self.login("usr_001", "1111")
+        results = {}
+
+        def admin_job():
+            st, d, *_ = call(
+                "POST",
+                "/api/state/op",
+                {
+                    "idempotency_key": "admin-ind",
+                    "op": {
+                        "path": "shopMetrics.facts.general_note",
+                        "expected_v": 0,
+                        "value": "FROM_GENERAL",
+                    },
+                },
+                cookie=admin_c,
+            )
+            results["admin"] = (st, d)
+
+        def staff_job():
+            st, d, *_ = call(
+                "POST",
+                "/api/state/op",
+                {
+                    "idempotency_key": "staff-ind",
+                    "op": {
+                        "path": "shopMetrics.facts.shop_note",
+                        "expected_v": 0,
+                        "value": "FROM_SHOP",
+                    },
+                },
+                cookie=staff_c,
+            )
+            results["staff"] = (st, d)
+
+        t1 = threading.Thread(target=admin_job)
+        t2 = threading.Thread(target=staff_job)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        self.assertTrue(results["admin"][0].startswith("200"), results["admin"])
+        self.assertTrue(results["staff"][0].startswith("200"), results["staff"])
+        facts = self.store["payload"]["shopMetrics"]["facts"]
+        self.assertEqual(facts.get("general_note"), "FROM_GENERAL")
+        self.assertEqual(facts.get("shop_note"), "FROM_SHOP")
+
+    def test_parallel_two_ops_same_group_independent_cells(self):
+        cookie, _ = self.login("usr_001", "1111")
+        results = []
+
+        def job(path, val, key):
+            st, d, *_ = call(
+                "POST",
+                "/api/state/op",
+                {"idempotency_key": key, "op": {"path": path, "expected_v": 0, "value": val}},
+                cookie=cookie,
+            )
+            results.append((st, d, path, val))
+
+        threads = [
+            threading.Thread(target=job, args=("shopMetrics.facts.c1", 11, "g1")),
+            threading.Thread(target=job, args=("shopMetrics.facts.c2", 22, "g2")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertTrue(all(r[0].startswith("200") for r in results), results)
+        facts = self.store["payload"]["shopMetrics"]["facts"]
+        self.assertEqual(facts.get("c1"), 11)
+        self.assertEqual(facts.get("c2"), 22)
+
+    def test_parallel_put_and_op_independent(self):
+        admin_c, _ = self.login()
+        results = {}
+
+        def op_job():
+            st, d, *_ = call(
+                "POST",
+                "/api/state/op",
+                {"op": {"path": "shopMetrics.facts.op_side", "expected_v": 0, "value": "OP"}},
+                cookie=admin_c,
+            )
+            results["op"] = (st, d)
+
+        def put_job():
+            # Берём актуальный version под lock внутри handle — может получить 409 и повторить.
+            for _ in range(5):
+                ver = int(self.store["version"])
+                st, d, *_ = call(
+                    "PUT",
+                    "/api/state",
+                    {
+                        "version": ver,
+                        "payload": {"shopMetrics": {"facts": {"ok": 1, "put_side": "PUT"}}},
+                    },
+                    cookie=admin_c,
+                )
+                if st.startswith("200"):
+                    results["put"] = (st, d)
+                    return
+                if st.startswith("409"):
+                    continue
+                results["put"] = (st, d)
+                return
+            results["put"] = ("fail", None)
+
+        t1 = threading.Thread(target=op_job)
+        t2 = threading.Thread(target=put_job)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        self.assertTrue(results["op"][0].startswith("200"), results["op"])
+        self.assertTrue(results["put"][0].startswith("200"), results["put"])
+        facts = self.store["payload"]["shopMetrics"]["facts"]
+        self.assertEqual(facts.get("op_side"), "OP")
+        self.assertEqual(facts.get("put_side"), "PUT")
+
+    def test_parallel_same_record_one_wins(self):
+        cookie, _ = self.login()
+        results = []
+
+        def job(val, key):
+            st, d, *_ = call(
+                "POST",
+                "/api/state/op",
+                {"idempotency_key": key, "op": {"path": "shopMetrics.facts.one", "expected_v": 0, "value": val}},
+                cookie=cookie,
+            )
+            results.append((st, d, val))
+
+        t1 = threading.Thread(target=job, args=("A", "same-a"))
+        t2 = threading.Thread(target=job, args=("B", "same-b"))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        oks = [r for r in results if r[0].startswith("200")]
+        conflicts = [r for r in results if r[0].startswith("409")]
+        self.assertEqual(len(oks), 1, results)
+        self.assertEqual(len(conflicts), 1, results)
+        winner = oks[0][2]
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["one"], winner)
+
+    def test_confirm_replace_rechecks_after_third_writer(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.cell", "expected_v": 0, "value": "A"}},
+            cookie=cookie,
+        )
+        # B видит conflict (expected 0), C пишет на v=1, B confirm с server_v=1 — уже поздно.
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.cell", "expected_v": 1, "value": "C"}},
+            cookie=cookie,
+        )
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.cell", "expected_v": 1, "value": "B"}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("409"), st)
+        self.assertEqual(data.get("server_value"), "C")
+
+    def test_idempotent_retry_after_disconnect(self):
+        cookie, _ = self.login()
+        body = {
+            "idempotency_key": "retry-after-drop",
+            "op": {"path": "shopMetrics.facts.once", "expected_v": 0, "value": 42},
+        }
+        st1, d1, *_ = call("POST", "/api/state/op", body, cookie=cookie)
+        ver = int(self.store["version"])
+        st2, d2, *_ = call("POST", "/api/state/op", body, cookie=cookie)
+        self.assertTrue(st1.startswith("200"))
+        self.assertTrue(st2.startswith("200"))
+        self.assertEqual(d1.get("value"), 42)
+        self.assertEqual(d2.get("value"), 42)
+        self.assertEqual(int(self.store["version"]), ver)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["once"], 42)
+
+    def test_wide_admin_put_keeps_independent_op(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.guarded", "expected_v": 0, "value": "OP_KEEP"}},
+            cookie=cookie,
+        )
+        ver = int(self.store["version"])
+        st, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": ver,
+                "payload": {
+                    "shopMetrics": {"facts": {"ok": 1, "admin_extra": 5}},
+                    "_wt_records": {},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        facts = self.store["payload"]["shopMetrics"]["facts"]
+        self.assertEqual(facts.get("guarded"), "OP_KEEP")
+        self.assertEqual(facts.get("admin_extra"), 5)
 
 
 if __name__ == "__main__":
