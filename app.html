@@ -22254,14 +22254,15 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
     const dayKey = String(day);
     if (!store[employeeId][dayKey] || typeof store[employeeId][dayKey] !== "object") store[employeeId][dayKey] = {};
     const rec = store[employeeId][dayKey];
+    const markKey = field + "Mark";
     const nextMark = mark === "fail" ? "fail" : (mark === "done" ? "done" : null);
-    // Повторный клик по тому же состоянию — снять галочку (удаление значения).
-    if (nextMark && rec[field + "Mark"] === nextMark) {
-        delete rec[field + "Mark"];
+    // Повторный клик по активной ✓/✕ — снять отметку (null удаляет ключ на сервере).
+    if (nextMark && rec[markKey] === nextMark) {
+        metricMarkCleared(rec, markKey);
     } else if (nextMark) {
-        rec[field + "Mark"] = nextMark;
+        rec[markKey] = nextMark;
     } else {
-        delete rec[field + "Mark"];
+        metricMarkCleared(rec, markKey);
     }
     rec.source = "manual";
     rec.employee_id = employeeId;
@@ -22270,8 +22271,8 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
     if (spec && spec.metricId) rec[field + "_metric_id"] = spec.metricId;
     if (field === METRIC_SHELF_LABELS_FIELD) rec.metric_id = METRIC_SHELF_LABELS_ID;
     renderShopMetrics();
-    const markPath = wtShopCategoryLeafPath(categoryId, selectedMonth, employeeId, day, field + "Mark");
-    const markVal = Object.prototype.hasOwnProperty.call(rec, field + "Mark") ? rec[field + "Mark"] : null;
+    const markPath = wtShopCategoryLeafPath(categoryId, selectedMonth, employeeId, day, markKey);
+    const markVal = (rec[markKey] === "done" || rec[markKey] === "fail") ? rec[markKey] : null;
     if (markPath && wtServerMode) {
         try { wtSoftMarkDirty(markPath); } catch (err) {}
     }
@@ -32604,11 +32605,25 @@ function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark, submetric
     const it = shopMetricCatalogById(parsed.metricId);
     if (!it || it.active === false) return;
     const key = metricFactStorageKey(parsed.metricId, parsed.submetricId);
+    const markKey = key + "Mark";
     const rec = ensureDeptMetricDayRec(deptCode, employeeId, day);
-    rec[key + "Mark"] = mark === "fail" ? "fail" : "done";
+    const nextMark = mark === "fail" ? "fail" : (mark === "done" ? "done" : null);
+    // Как в магазине: повторный клик на активную ✓/✕ — пусто; противоположная — смена.
+    if (nextMark && rec[markKey] === nextMark) {
+        metricMarkCleared(rec, markKey);
+    } else if (nextMark) {
+        rec[markKey] = nextMark;
+    } else {
+        metricMarkCleared(rec, markKey);
+    }
     stampAuthOnRecord(rec);
+    if (!(rec[markKey] === "done" || rec[markKey] === "fail")) {
+        clearDeptMetricDayIfEmpty(deptCode, employeeId, day);
+    }
     refreshDeptWorkUi();
-    saveMetricChange();
+    const path = wtDeptFactsLeafPath(deptCode, selectedMonth, employeeId, day, markKey);
+    const markVal = (rec[markKey] === "done" || rec[markKey] === "fail") ? rec[markKey] : null;
+    wtSaveMetricValue(path, markVal);
 }
 
 function deptMetricInputHtml(deptCode, employeeId, day, field) {

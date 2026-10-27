@@ -936,6 +936,30 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("if val is None:", api)
         self.assertIn("base.pop(key, None)", api)
 
+    def test_client_checklist_toggle_clear_shop_and_territory(self):
+        """Повторный клик ✓/✕ снимает Mark; очистка через null (metricMarkCleared)."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        shop = src[
+            src.find("function setShopMetricCheck(")
+            : src.find("function shopCheckCellHtml(")
+        ]
+        self.assertIn("metricMarkCleared(rec, markKey)", shop)
+        self.assertIn("rec[markKey] === nextMark", shop)
+        self.assertIn("markVal", shop)
+        self.assertNotIn("delete rec[field + \"Mark\"]", shop)
+        self.assertNotIn("delete rec[markKey]", shop)
+        dept = src[
+            src.find("function setDeptMetricCheck(")
+            : src.find("function deptMetricInputHtml(")
+        ]
+        self.assertIn("metricMarkCleared(rec, markKey)", dept)
+        self.assertIn("rec[markKey] === nextMark", dept)
+        self.assertIn("wtSaveMetricValue(path, markVal)", dept)
+        self.assertIn("clearDeptMetricDayIfEmpty", dept)
+        # KPI-формулы не трогаем этим изменением.
+        self.assertIn("function shopCheckKpiPayout(", src)
+        self.assertIn("function shopCheckKpiMonthStats(", src)
+
     def test_staff_writes_pickers_and_managers_category_stores(self):
         cookie, _ = self.login("usr_001", "1111")
         status, *_ = call(
