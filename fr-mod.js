@@ -7027,12 +7027,122 @@ function frApplyExpenseImport(text, sourceId, meta) {
     }
 }
 
+/** Пути Финконтроля, которые импорт пишет целиком через OPS. */
+const FR_IMPORT_OPS_PATHS = [
+    "financeRec.operations",
+    "financeRec.import_batches",
+    "financeRec.audit"
+];
+
+function frFinanceRowId(kind, row) {
+    if (!row || typeof row !== "object") return "";
+    if (kind === "operations") {
+        return row.finance_operation_id != null && row.finance_operation_id !== ""
+            ? String(row.finance_operation_id)
+            : "";
+    }
+    if (kind === "import_batches") {
+        return row.import_batch_id != null && row.import_batch_id !== ""
+            ? String(row.import_batch_id)
+            : "";
+    }
+    if (kind === "audit") {
+        return row.audit_id != null && row.audit_id !== "" ? String(row.audit_id) : "";
+    }
+    return "";
+}
+
+function frFinanceRowFingerprint(kind, row) {
+    if (!row || typeof row !== "object") return "";
+    if (kind === "operations" && row.import_fingerprint) return String(row.import_fingerprint);
+    if (kind === "import_batches" && row.batch_key) return String(row.batch_key);
+    return "";
+}
+
+/**
+ * Слияние массивов Финконтроля по устойчивым id.
+ * Новые локальные строки добавляются; существующие id на сервере не перезаписываются
+ * (конфликт правки одной записи — hardConflict).
+ * Возвращает { list, hardConflict }.
+ */
+function frMergeFinanceArrayByIds(kind, remoteList, localExtras) {
+    const remote = Array.isArray(remoteList) ? remoteList.slice() : [];
+    const extras = Array.isArray(localExtras) ? localExtras : [];
+    const byId = {};
+    const byFp = {};
+    remote.forEach(function (row, idx) {
+        if (!row) return;
+        const id = frFinanceRowId(kind, row);
+        const fp = frFinanceRowFingerprint(kind, row);
+        if (id) byId[id] = idx;
+        if (fp) byFp[fp] = idx;
+    });
+    let hardConflict = false;
+    extras.forEach(function (row) {
+        if (!row) return;
+        const id = frFinanceRowId(kind, row);
+        const fp = frFinanceRowFingerprint(kind, row);
+        if (id && Object.prototype.hasOwnProperty.call(byId, id)) {
+            const cur = remote[byId[id]];
+            try {
+                if (JSON.stringify(cur) !== JSON.stringify(row)) hardConflict = true;
+            } catch (err) {
+                hardConflict = true;
+            }
+            return;
+        }
+        if (!id && fp && Object.prototype.hasOwnProperty.call(byFp, fp)) return;
+        remote.push(row);
+        const newIdx = remote.length - 1;
+        if (id) byId[id] = newIdx;
+        if (fp) byFp[fp] = newIdx;
+    });
+    return { list: remote, hardConflict: hardConflict };
+}
+
+function frApplyFinanceRecordVersionsFromPayload(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const map = payload._wt_records;
+    if (!map || typeof map !== "object") return;
+    FR_IMPORT_OPS_PATHS.forEach(function (path) {
+        const meta = map[path];
+        if (!meta || typeof meta !== "object") return;
+        const v = Number(meta.v);
+        if (!Number.isFinite(v) || v < 0) return;
+        try {
+            if (typeof wtSetLocalRecordMeta === "function") wtSetLocalRecordMeta(path, v);
+        } catch (err) {}
+        try {
+            if (typeof wtLastLoadedPayload !== "undefined" && wtLastLoadedPayload) {
+                if (!wtLastLoadedPayload._wt_records || typeof wtLastLoadedPayload._wt_records !== "object") {
+                    wtLastLoadedPayload._wt_records = {};
+                }
+                wtLastLoadedPayload._wt_records[path] = { v: v, updated_at: meta.updated_at || "" };
+            }
+        } catch (err) {}
+    });
+    try {
+        if (appData) {
+            if (!appData._wt_records || typeof appData._wt_records !== "object") appData._wt_records = {};
+            FR_IMPORT_OPS_PATHS.forEach(function (path) {
+                if (map[path] && typeof map[path] === "object") {
+                    appData._wt_records[path] = {
+                        v: Number(map[path].v) || 0,
+                        updated_at: map[path].updated_at || ""
+                    };
+                }
+            });
+        }
+    } catch (err) {}
+}
+
 /**
  * Перед записью импорта: GET /api/state и слить серверные operations/batches/audit
  * с локальным batch, чтобы forcePut/OPS не затёр чужие свежие расходники.
+ * Также поднимает expected_v из _wt_records ответа.
  */
 function frMergeServerFinanceForImportBatch(batchId) {
-    if (!wtServerMode || !appData || !appData.financeRec) return Promise.resolve(true);
+    if (!wtServerMode || !appData || !appData.financeRec) return Promise.resolve({ ok: true });
     const localFr = appData.financeRec;
     const localBatchOps = (localFr.operations || []).filter(function (o) {
         return o && !o.is_deleted && o.import_batch_id === batchId;
@@ -7044,74 +7154,45 @@ function frMergeServerFinanceForImportBatch(batchId) {
     return fetch("/api/state", { credentials: "same-origin" }).then(function (res) {
         if (res.status === 401) {
             try { if (typeof handleWtSaveUnauthorized === "function") handleWtSaveUnauthorized(); } catch (err) {}
-            return false;
+            return { ok: false, unauthorized: true };
         }
-        if (!res.ok) return true; // сеть/сбой чтения — пишем как есть, лучше не молчать об импорте
+        if (!res.ok) return { ok: true }; // сеть/сбой чтения — пишем как есть
         return res.json().then(function (state) {
-            if (!state || !state.payload || typeof state.payload !== "object") return true;
+            if (!state || !state.payload || typeof state.payload !== "object") return { ok: true };
             const remoteFr = (state.payload.financeRec && typeof state.payload.financeRec === "object")
                 ? state.payload.financeRec
                 : {};
-            const remoteOps = Array.isArray(remoteFr.operations) ? remoteFr.operations.slice() : [];
-            const seenId = {};
-            const seenFp = {};
-            remoteOps.forEach(function (o) {
-                if (!o) return;
-                if (o.finance_operation_id) seenId[String(o.finance_operation_id)] = true;
-                if (o.import_fingerprint) seenFp[String(o.import_fingerprint)] = true;
-            });
-            localBatchOps.forEach(function (o) {
-                if (!o) return;
-                const id = o.finance_operation_id ? String(o.finance_operation_id) : "";
-                const fp = o.import_fingerprint ? String(o.import_fingerprint) : "";
-                if ((id && seenId[id]) || (fp && seenFp[fp])) return;
-                remoteOps.push(o);
-                if (id) seenId[id] = true;
-                if (fp) seenFp[fp] = true;
-            });
-            localFr.operations = remoteOps;
-
-            const remoteBatches = Array.isArray(remoteFr.import_batches) ? remoteFr.import_batches.slice() : [];
-            const batchSeen = {};
-            remoteBatches.forEach(function (b) {
-                if (b && b.import_batch_id) batchSeen[String(b.import_batch_id)] = true;
-            });
-            localBatchMeta.forEach(function (b) {
-                if (!b || !b.import_batch_id) return;
-                if (batchSeen[String(b.import_batch_id)]) return;
-                remoteBatches.push(b);
-                batchSeen[String(b.import_batch_id)] = true;
-            });
-            localFr.import_batches = remoteBatches;
-
-            const remoteAudit = Array.isArray(remoteFr.audit) ? remoteFr.audit.slice() : [];
-            const audSeen = {};
-            remoteAudit.forEach(function (a) {
-                if (a && a.audit_id) audSeen[String(a.audit_id)] = true;
-            });
-            localAuditTail.forEach(function (a) {
-                if (!a || !a.audit_id) return;
-                if (audSeen[String(a.audit_id)]) return;
-                remoteAudit.push(a);
-                audSeen[String(a.audit_id)] = true;
-            });
-            localFr.audit = remoteAudit;
+            const opsMerged = frMergeFinanceArrayByIds("operations", remoteFr.operations, localBatchOps);
+            const batchesMerged = frMergeFinanceArrayByIds("import_batches", remoteFr.import_batches, localBatchMeta);
+            const auditMerged = frMergeFinanceArrayByIds("audit", remoteFr.audit, localAuditTail);
+            if (opsMerged.hardConflict || batchesMerged.hardConflict || auditMerged.hardConflict) {
+                return { ok: false, hardConflict: true };
+            }
+            localFr.operations = opsMerged.list;
+            localFr.import_batches = batchesMerged.list;
+            localFr.audit = auditMerged.list;
 
             if (state.version != null && typeof wtStateVersion !== "undefined") {
                 const v = Number(state.version);
                 if (Number.isFinite(v)) wtStateVersion = v;
             }
+            frApplyFinanceRecordVersionsFromPayload(state.payload);
             try {
                 if (typeof wtLastLoadedPayload !== "undefined" && wtLastLoadedPayload) {
                     wtLastLoadedPayload.financeRec = typeof wtCloneJson === "function"
                         ? wtCloneJson(remoteFr)
                         : JSON.parse(JSON.stringify(remoteFr));
+                    if (state.payload._wt_records) {
+                        wtLastLoadedPayload._wt_records = typeof wtCloneJson === "function"
+                            ? wtCloneJson(state.payload._wt_records)
+                            : JSON.parse(JSON.stringify(state.payload._wt_records));
+                    }
                 }
             } catch (err) {}
-            return true;
+            return { ok: true };
         });
     }).catch(function () {
-        return true;
+        return { ok: true };
     });
 }
 
@@ -7125,32 +7206,123 @@ function frMarkFinanceImportDirty() {
     } catch (err) {}
 }
 
+function frFinanceImportExpectedV(path) {
+    if (typeof wtRecordVersion === "function") {
+        const v = Number(wtRecordVersion(path));
+        if (Number.isFinite(v) && v >= 0) return v;
+    }
+    return 0;
+}
+
+/**
+ * OPS batch для трёх массивов Финконтроля без DomainWriter-диалога.
+ * При 409: повторный GET+merge по id и retry (до 3 раз). Hard conflict одной записи — отказ.
+ */
+function frSaveFinanceImportArraysOps(batchId, attempt) {
+    attempt = attempt || 0;
+    if (!appData || !appData.financeRec) return Promise.resolve(false);
+    const fr = appData.financeRec;
+    const ops = [
+        { path: "financeRec.operations", value: fr.operations || [], expected_v: frFinanceImportExpectedV("financeRec.operations") },
+        { path: "financeRec.import_batches", value: fr.import_batches || [], expected_v: frFinanceImportExpectedV("financeRec.import_batches") },
+        { path: "financeRec.audit", value: fr.audit || [], expected_v: frFinanceImportExpectedV("financeRec.audit") }
+    ];
+    let bodyText;
+    try {
+        bodyText = JSON.stringify({
+            atomic: true,
+            idempotency_key: (typeof wtNewIdempotencyKey === "function" ? wtNewIdempotencyKey() : ("frimp_" + Date.now())),
+            ops: ops
+        });
+    } catch (err) {
+        return Promise.resolve(false);
+    }
+    return fetch("/api/state/op/batch", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: bodyText
+    }).then(function (res) {
+        if (res.status === 401) {
+            try { if (typeof handleWtSaveUnauthorized === "function") handleWtSaveUnauthorized(); } catch (err) {}
+            return false;
+        }
+        if (res.status === 503 || res.status === 404 || res.status === 405) {
+            // OPS недоступен — защищённый PUT без ложного успеха при сбое.
+            return Promise.resolve(saveApp({ forcePut: true })).then(function (ok) {
+                return ok === true || ok === "ok";
+            });
+        }
+        return res.text().then(function (raw) {
+            let body = null;
+            if (raw) {
+                try { body = JSON.parse(raw); } catch (err) { return false; }
+            }
+            if (res.status === 409 || (body && (body.error === "conflict" || body.status === "conflict"))) {
+                if (attempt >= 3) return false;
+                return frMergeServerFinanceForImportBatch(batchId).then(function (merged) {
+                    if (!merged || merged.ok === false) return false;
+                    frMarkFinanceImportDirty();
+                    return frSaveFinanceImportArraysOps(batchId, attempt + 1);
+                });
+            }
+            if (!res.ok) return false;
+            if (!(body && body.ok === true)) return false;
+            const results = Array.isArray(body.results) ? body.results : [];
+            if (!results.length || results.some(function (r) { return !r || r.status !== "saved"; })) {
+                return false;
+            }
+            try {
+                results.forEach(function (row) {
+                    if (!row || row.status !== "saved" || !row.path) return;
+                    if (row.record_v != null && typeof wtSetLocalRecordMeta === "function") {
+                        wtSetLocalRecordMeta(row.path, row.record_v);
+                    }
+                    if (typeof wtLastLoadedPayload !== "undefined" && wtLastLoadedPayload && row.path) {
+                        if (typeof wtSetByPath === "function") wtSetByPath(wtLastLoadedPayload, row.path, row.value);
+                    }
+                    if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(row.path);
+                });
+                if (body.version != null && typeof wtStateVersion !== "undefined") {
+                    const opV = Number(body.version);
+                    if (Number.isFinite(opV)) wtStateVersion = opV;
+                }
+            } catch (err) {}
+            return true;
+        });
+    }).catch(function () {
+        return false;
+    });
+}
+
 function frSaveExpenseImportBatch(batchId, okMsg) {
     frMarkFinanceImportDirty();
-    return frMergeServerFinanceForImportBatch(batchId).then(function (ready) {
-        if (ready === false) {
+    return frMergeServerFinanceForImportBatch(batchId).then(function (merged) {
+        if (!merged || merged.unauthorized) {
             toast("Расходники на экране, но сессия истекла — на сервер не записано. Не обновляйте страницу (F5).", "error");
+            try { renderFinanceRec(); } catch (err) {}
+            return false;
+        }
+        if (merged.hardConflict) {
+            toast("Конфликт правки одной записи Финконтроля. Обновите данные и повторите без потери чужих изменений.", "error");
+            try { renderFinanceRec(); } catch (err) {}
+            return false;
+        }
+        if (merged.ok === false) {
+            toast("Расходники на экране, но на сервер не записаны. Не обновляйте страницу (F5).", "error");
             try { renderFinanceRec(); } catch (err) {}
             return false;
         }
         frMarkFinanceImportDirty();
         try { renderFinanceRec(); } catch (err) {}
-        // После merge пишем точечно OPS (3 пути). Fallback forcePut только если OPS выключен.
-        const fr = appData.financeRec;
-        const useOps = typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true)
-            && typeof wtDomainWriterSave === "function";
+        const useOps = typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true);
         const savePromise = useOps
-            ? wtDomainWriterSave({
-                atomic: true,
-                ops: [
-                    { path: "financeRec.operations", value: fr.operations || [], expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("financeRec.operations") : 0 },
-                    { path: "financeRec.import_batches", value: fr.import_batches || [], expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("financeRec.import_batches") : 0 },
-                    { path: "financeRec.audit", value: fr.audit || [], expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("financeRec.audit") : 0 }
-                ]
-            })
-            : Promise.resolve(saveApp({ forcePut: true }));
+            ? frSaveFinanceImportArraysOps(batchId, 0)
+            : Promise.resolve(saveApp({ forcePut: true })).then(function (ok) {
+                return ok === true || ok === "ok";
+            });
         return Promise.resolve(savePromise).then(function (ok) {
-            if (ok === false || ok === "timeout") {
+            if (ok !== true) {
                 toast("Расходники на экране, но на сервер не записаны. Не обновляйте страницу (F5) — повторите импорт или сохранение.", "error");
                 try { renderFinanceRec(); } catch (err) {}
                 return false;

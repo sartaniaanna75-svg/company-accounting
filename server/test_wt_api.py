@@ -3434,6 +3434,317 @@ class StoreApiTests(unittest.TestCase):
         self.assertNotIn("frSetupAreasForUser()", body)
         self.assertNotIn("allowed.indexOf(area)", body)
 
+    def test_staff_get_includes_filtered_wt_records_only(self):
+        """Сотрудник видит _wt_records только по доступным веткам, без чужих данных."""
+        self.store["payload"]["_wt_records"] = {
+            "workspaces.shop.timesheet.2026-10.e_shop.1": {"v": 3, "updated_at": "t1", "updated_by": "x"},
+            "workspaces.warehouse.timesheet.2026-10.e_wh.1": {"v": 9, "updated_by": "y"},
+            "financeRec.audit": {"v": 5, "updated_at": "t2"},
+            "salary.2026-10": {"v": 7},
+        }
+        cookie, _ = self.login("usr_001", "1111")
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        rec = (data.get("payload") or {}).get("_wt_records") or {}
+        self.assertIn("workspaces.shop.timesheet.2026-10.e_shop.1", rec)
+        self.assertEqual(int(rec["workspaces.shop.timesheet.2026-10.e_shop.1"]["v"]), 3)
+        self.assertNotIn("workspaces.warehouse.timesheet.2026-10.e_wh.1", rec)
+        self.assertNotIn("financeRec.audit", rec)
+        self.assertNotIn("salary.2026-10", rec)
+        self.assertNotIn("financeRec", data["payload"])
+        self.assertNotIn("salary", data["payload"])
+
+    def test_finance_staff_get_sees_finance_record_versions(self):
+        self._seed_finance_directory()
+        fr = self.store["payload"]["financeRec"]
+        fr["audit"] = [{"audit_id": "faud_%d" % i, "kind": "seed"} for i in range(25)]
+        fr["operations"] = list(fr.get("operations") or [])
+        fr["import_batches"] = []
+        self.store["payload"]["_wt_records"] = {
+            "financeRec.audit": {"v": 4},
+            "financeRec.operations": {"v": 2},
+            "financeRec.import_batches": {"v": 1},
+            "workspaces.shop.timesheet.2026-10.e_shop.1": {"v": 8},
+        }
+        self.add_user({
+            "user_id": "usr_fin_rec",
+            "display_name": "Финконтроль",
+            "pin": "4811",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "edit"},
+        })
+        cookie, _ = self.login("usr_fin_rec", "4811")
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        payload = data["payload"]
+        self.assertIn("financeRec", payload)
+        self.assertEqual(payload.get("workspaces") or [], [])
+        rec = payload.get("_wt_records") or {}
+        self.assertEqual(int(rec["financeRec.audit"]["v"]), 4)
+        self.assertEqual(int(rec["financeRec.operations"]["v"]), 2)
+        self.assertEqual(int(rec["financeRec.import_batches"]["v"]), 1)
+        self.assertNotIn("workspaces.shop.timesheet.2026-10.e_shop.1", rec)
+
+    def test_finance_two_areas_import_arrays_no_false_conflict(self):
+        """Два сотрудника разных объектов: merge + актуальный expected_v → оба набора сохранены."""
+        self._seed_finance_directory()
+        fr = self.store["payload"]["financeRec"]
+        fr["audit"] = [{"audit_id": "faud_%d" % i, "kind": "seed"} for i in range(25)]
+        fr["operations"] = []
+        fr["import_batches"] = []
+        self.store["payload"]["_wt_records"] = {}
+        self.add_user({
+            "user_id": "fin_shop",
+            "display_name": "Магазин",
+            "pin": "1001",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "edit"},
+        })
+        self.add_user({
+            "user_id": "fin_ter",
+            "display_name": "Территория",
+            "pin": "1002",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "edit"},
+        })
+        ca, _ = self.login("fin_shop", "1001")
+        cb, _ = self.login("fin_ter", "1002")
+        # Noop bump audit → v=1 при 25 элементах (как ложный конфликт до фикса).
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "financeRec.audit", "expected_v": 0, "value": list(fr["audit"])}},
+            cookie=ca,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        # A: GET → актуальный v, append shop
+        stg, dg, *_ = call("GET", "/api/state", cookie=ca)
+        self.assertTrue(stg.startswith("200"), stg)
+        v_audit = int((((dg.get("payload") or {}).get("_wt_records") or {}).get("financeRec.audit") or {}).get("v") or 0)
+        self.assertGreaterEqual(v_audit, 1)
+        audit_a = list((dg["payload"]["financeRec"]["audit"] or []))
+        audit_a.append({
+            "audit_id": "faud_shop",
+            "kind": "expense_import",
+            "finance_area_id": "farea_shop",
+        })
+        ops_a = [{
+            "finance_operation_id": "fop_shop",
+            "finance_area_id": "farea_shop",
+            "amount": 100,
+            "import_batch_id": "fimp_shop",
+            "import_fingerprint": "fp_shop",
+        }]
+        batches_a = [{
+            "import_batch_id": "fimp_shop",
+            "batch_key": "key_shop",
+            "finance_area_id": "farea_shop",
+        }]
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [
+                    {"path": "financeRec.operations", "expected_v": 0, "value": ops_a},
+                    {"path": "financeRec.import_batches", "expected_v": 0, "value": batches_a},
+                    {"path": "financeRec.audit", "expected_v": v_audit, "value": audit_a},
+                ],
+            },
+            cookie=ca,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertTrue(data.get("ok"))
+        # B: GET+merge (как fr-mod) + save
+        stg, dg, *_ = call("GET", "/api/state", cookie=cb)
+        rec = (dg.get("payload") or {}).get("_wt_records") or {}
+        remote_fr = dg["payload"]["financeRec"]
+        remote_ops = list(remote_fr.get("operations") or [])
+        remote_batches = list(remote_fr.get("import_batches") or [])
+        remote_audit = list(remote_fr.get("audit") or [])
+        remote_ops.append({
+            "finance_operation_id": "fop_ter",
+            "finance_area_id": "farea_territory",
+            "amount": 200,
+            "import_batch_id": "fimp_ter",
+            "import_fingerprint": "fp_ter",
+        })
+        remote_batches.append({
+            "import_batch_id": "fimp_ter",
+            "batch_key": "key_ter",
+            "finance_area_id": "farea_territory",
+        })
+        remote_audit.append({
+            "audit_id": "faud_ter",
+            "kind": "expense_import",
+            "finance_area_id": "farea_territory",
+        })
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [
+                    {
+                        "path": "financeRec.operations",
+                        "expected_v": int((rec.get("financeRec.operations") or {}).get("v") or 0),
+                        "value": remote_ops,
+                    },
+                    {
+                        "path": "financeRec.import_batches",
+                        "expected_v": int((rec.get("financeRec.import_batches") or {}).get("v") or 0),
+                        "value": remote_batches,
+                    },
+                    {
+                        "path": "financeRec.audit",
+                        "expected_v": int((rec.get("financeRec.audit") or {}).get("v") or 0),
+                        "value": remote_audit,
+                    },
+                ],
+            },
+            cookie=cb,
+        )
+        self.assertTrue(st.startswith("200"), "%s %s" % (st, data))
+        saved = self.store["payload"]["financeRec"]
+        op_ids = {str(o.get("finance_operation_id")) for o in saved.get("operations") or []}
+        batch_ids = {str(b.get("import_batch_id")) for b in saved.get("import_batches") or []}
+        audit_ids = {str(a.get("audit_id")) for a in saved.get("audit") or []}
+        self.assertIn("fop_shop", op_ids)
+        self.assertIn("fop_ter", op_ids)
+        self.assertIn("fimp_shop", batch_ids)
+        self.assertIn("fimp_ter", batch_ids)
+        self.assertIn("faud_shop", audit_ids)
+        self.assertIn("faud_ter", audit_ids)
+        self.assertEqual(len(saved.get("audit") or []), 27)
+
+    def test_finance_stale_expected_without_get_still_conflicts_then_merge_ok(self):
+        """Устаревший expected_v=0 даёт 409; после GET с версией и merge — сохранение проходит."""
+        self._seed_finance_directory()
+        fr = self.store["payload"]["financeRec"]
+        fr["audit"] = [{"audit_id": "faud_%d" % i, "kind": "seed"} for i in range(25)]
+        self.store["payload"]["_wt_records"] = {}
+        self.add_user({
+            "user_id": "fin_stale",
+            "display_name": "Фин",
+            "pin": "1003",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "edit"},
+        })
+        cookie, _ = self.login("fin_stale", "1003")
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "financeRec.audit", "expected_v": 0, "value": list(fr["audit"])}},
+            cookie=cookie,
+        )
+        stale = list(fr["audit"]) + [{"audit_id": "faud_new", "kind": "expense_import"}]
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "financeRec.audit", "expected_v": 0, "value": stale}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("409"), st)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(len(data.get("server_value") or []), 25)
+        self.assertEqual(len(data.get("your_value") or []), 26)
+        stg, dg, *_ = call("GET", "/api/state", cookie=cookie)
+        v = int((((dg.get("payload") or {}).get("_wt_records") or {}).get("financeRec.audit") or {}).get("v") or 0)
+        merged = list(dg["payload"]["financeRec"]["audit"]) + [{"audit_id": "faud_new", "kind": "expense_import"}]
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "financeRec.audit", "expected_v": v, "value": merged}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        ids = {str(a.get("audit_id")) for a in self.store["payload"]["financeRec"]["audit"]}
+        self.assertIn("faud_new", ids)
+        self.assertEqual(len(self.store["payload"]["financeRec"]["audit"]), 26)
+
+    def test_finance_same_operation_edit_conflict_keeps_server(self):
+        """Правка одной и той же операции разными значениями — 409, серверное значение сохраняется."""
+        self._seed_finance_directory()
+        self.store["payload"]["financeRec"]["operations"] = [{
+            "finance_operation_id": "fop_shared",
+            "finance_area_id": "farea_shop",
+            "amount": 10,
+        }]
+        self.store["payload"]["_wt_records"] = {}
+        self.add_user({
+            "user_id": "fin_e1",
+            "display_name": "E1",
+            "pin": "2001",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "edit"},
+        })
+        self.add_user({
+            "user_id": "fin_e2",
+            "display_name": "E2",
+            "pin": "2002",
+            "role": "user",
+            "is_active": True,
+            "departments": ["financeRec"],
+            "permissions": {"financeRec": "edit"},
+        })
+        c1, _ = self.login("fin_e1", "2001")
+        c2, _ = self.login("fin_e2", "2002")
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "financeRec.operations",
+                    "expected_v": 0,
+                    "value": [{"finance_operation_id": "fop_shared", "amount": 50}],
+                }
+            },
+            cookie=c1,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "financeRec.operations",
+                    "expected_v": 0,
+                    "value": [{"finance_operation_id": "fop_shared", "amount": 99}],
+                }
+            },
+            cookie=c2,
+        )
+        self.assertTrue(st.startswith("409"), st)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(self.store["payload"]["financeRec"]["operations"][0]["amount"], 50)
+
+    def test_fr_mod_import_save_uses_record_versions_and_merge(self):
+        src = Path(__file__).resolve().parents[1].joinpath("fr-mod.js").read_text(encoding="utf-8")
+        self.assertIn("function frApplyFinanceRecordVersionsFromPayload(", src)
+        self.assertIn("function frMergeFinanceArrayByIds(", src)
+        self.assertIn("function frSaveFinanceImportArraysOps(", src)
+        self.assertIn("frApplyFinanceRecordVersionsFromPayload(state.payload)", src)
+        self.assertIn('path: "financeRec.operations"', src)
+        self.assertIn('path: "financeRec.import_batches"', src)
+        self.assertIn('path: "financeRec.audit"', src)
+        self.assertIn("hardConflict", src)
+        # Успех только после реального ok, без toast до проверки.
+        fn = src[src.find("function frSaveExpenseImportBatch(") : src.find("function financeRecFolderCardHtml(")]
+        self.assertIn("if (ok !== true)", fn)
+        success_toast_at = fn.find("toast(okMsg, \"success\")")
+        fail_check_at = fn.find("if (ok !== true)")
+        self.assertGreater(success_toast_at, fail_check_at)
+
     def test_finance_directory_rejected_without_right_and_used_delete(self):
         self._seed_finance_directory()
         cookie, _ = self.login("usr_001", "1111")

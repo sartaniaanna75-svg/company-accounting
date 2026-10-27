@@ -3367,6 +3367,49 @@ def pick_dept_branch(value: Any, allowed_codes: set[str], allow_salary: bool, al
     }
 
 
+def filter_wt_records_meta(payload: dict, filtered: dict, _user: dict | None = None) -> dict:
+    """
+    Версии _wt_records только для путей внутри уже отфильтрованного payload.
+    Не добавляет данные разделов — только meta {v, updated_at} по разрешённым веткам.
+    """
+    raw = records_map(payload)
+    if not raw or not isinstance(filtered, dict):
+        return {}
+    allowed_tops = {
+        str(k)
+        for k in filtered.keys()
+        if k and str(k) not in WT_OPS_META_KEYS and not str(k).startswith("_")
+    }
+    ws_codes: set[str] = set()
+    for ws in filtered.get("workspaces") or []:
+        if isinstance(ws, dict) and ws.get("code") not in (None, ""):
+            ws_codes.add(str(ws.get("code")))
+    out: dict[str, Any] = {}
+    for path, meta in raw.items():
+        if not isinstance(meta, dict):
+            continue
+        norm = normalize_op_path(path) or str(path or "").strip()
+        if not norm:
+            continue
+        parts = norm.split(".")
+        top = parts[0]
+        if top not in allowed_tops:
+            continue
+        if top == "workspaces" and (len(parts) < 2 or parts[1] not in ws_codes):
+            continue
+        try:
+            ver = int(meta.get("v") or 0)
+        except (TypeError, ValueError):
+            ver = 0
+        if ver < 0:
+            ver = 0
+        row: dict[str, Any] = {"v": ver}
+        if meta.get("updated_at") not in (None, ""):
+            row["updated_at"] = meta.get("updated_at")
+        out[norm] = row
+    return out
+
+
 def filter_state_payload(payload: dict, user: dict) -> dict:
     """Сотруднику — только понятные разрешённые ветки. Неизвестное не отдаём."""
     allow_salary = user_has_perm(user, "salary", "view")
@@ -3429,6 +3472,10 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
         out["orgStructure"] = drop_closed_fields(payload.get("orgStructure"), allow_salary, allow_finance)
     if user_has_perm(user, "customerReturns", "view") and "customerReturns" in payload:
         out["customerReturns"] = drop_closed_fields(payload.get("customerReturns"), allow_salary, allow_finance)
+    # Версии точечных путей — только внутри уже разрешённых веток (без чужих данных).
+    records = filter_wt_records_meta(payload, out, user)
+    if records:
+        out[WT_RECORDS_KEY] = records
     return out
 
 
