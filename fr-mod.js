@@ -7015,16 +7015,155 @@ function frApplyExpenseImport(text, sourceId, meta) {
             detail: (meta.file_name || "paste") + " +" + added + " / dup " + skippedDup,
             new_value: added
         });
-        saveApp();
-        closeMgmtModal();
         frUi.workTab = "expense";
         renderFinanceRec();
-        toast("Импортировано расходов: " + added
+        const okMsg = "Импортировано расходов: " + added
             + (skippedDup ? ("; пропущено дублей: " + skippedDup) : "")
-            + (skippedNoAmt ? ("; без суммы: " + skippedNoAmt) : ""), "success");
+            + (skippedNoAmt ? ("; без суммы: " + skippedNoAmt) : "");
+        // Сначала подтянуть чужие свежие операции, затем записать batch (без затирания чужих строк).
+        frSaveExpenseImportBatch(batchId, okMsg);
     } else {
         toast(skippedDup ? "Все строки уже были загружены ранее (дубли)." : "Нечего импортировать.", "error");
     }
+}
+
+/**
+ * Перед записью импорта: GET /api/state и слить серверные operations/batches/audit
+ * с локальным batch, чтобы forcePut/OPS не затёр чужие свежие расходники.
+ */
+function frMergeServerFinanceForImportBatch(batchId) {
+    if (!wtServerMode || !appData || !appData.financeRec) return Promise.resolve(true);
+    const localFr = appData.financeRec;
+    const localBatchOps = (localFr.operations || []).filter(function (o) {
+        return o && !o.is_deleted && o.import_batch_id === batchId;
+    });
+    const localBatchMeta = (localFr.import_batches || []).filter(function (b) {
+        return b && b.import_batch_id === batchId;
+    });
+    const localAuditTail = (localFr.audit || []).slice(-Math.max(8, localBatchOps.length + 2));
+    return fetch("/api/state", { credentials: "same-origin" }).then(function (res) {
+        if (res.status === 401) {
+            try { if (typeof handleWtSaveUnauthorized === "function") handleWtSaveUnauthorized(); } catch (err) {}
+            return false;
+        }
+        if (!res.ok) return true; // сеть/сбой чтения — пишем как есть, лучше не молчать об импорте
+        return res.json().then(function (state) {
+            if (!state || !state.payload || typeof state.payload !== "object") return true;
+            const remoteFr = (state.payload.financeRec && typeof state.payload.financeRec === "object")
+                ? state.payload.financeRec
+                : {};
+            const remoteOps = Array.isArray(remoteFr.operations) ? remoteFr.operations.slice() : [];
+            const seenId = {};
+            const seenFp = {};
+            remoteOps.forEach(function (o) {
+                if (!o) return;
+                if (o.finance_operation_id) seenId[String(o.finance_operation_id)] = true;
+                if (o.import_fingerprint) seenFp[String(o.import_fingerprint)] = true;
+            });
+            localBatchOps.forEach(function (o) {
+                if (!o) return;
+                const id = o.finance_operation_id ? String(o.finance_operation_id) : "";
+                const fp = o.import_fingerprint ? String(o.import_fingerprint) : "";
+                if ((id && seenId[id]) || (fp && seenFp[fp])) return;
+                remoteOps.push(o);
+                if (id) seenId[id] = true;
+                if (fp) seenFp[fp] = true;
+            });
+            localFr.operations = remoteOps;
+
+            const remoteBatches = Array.isArray(remoteFr.import_batches) ? remoteFr.import_batches.slice() : [];
+            const batchSeen = {};
+            remoteBatches.forEach(function (b) {
+                if (b && b.import_batch_id) batchSeen[String(b.import_batch_id)] = true;
+            });
+            localBatchMeta.forEach(function (b) {
+                if (!b || !b.import_batch_id) return;
+                if (batchSeen[String(b.import_batch_id)]) return;
+                remoteBatches.push(b);
+                batchSeen[String(b.import_batch_id)] = true;
+            });
+            localFr.import_batches = remoteBatches;
+
+            const remoteAudit = Array.isArray(remoteFr.audit) ? remoteFr.audit.slice() : [];
+            const audSeen = {};
+            remoteAudit.forEach(function (a) {
+                if (a && a.audit_id) audSeen[String(a.audit_id)] = true;
+            });
+            localAuditTail.forEach(function (a) {
+                if (!a || !a.audit_id) return;
+                if (audSeen[String(a.audit_id)]) return;
+                remoteAudit.push(a);
+                audSeen[String(a.audit_id)] = true;
+            });
+            localFr.audit = remoteAudit;
+
+            if (state.version != null && typeof wtStateVersion !== "undefined") {
+                const v = Number(state.version);
+                if (Number.isFinite(v)) wtStateVersion = v;
+            }
+            try {
+                if (typeof wtLastLoadedPayload !== "undefined" && wtLastLoadedPayload) {
+                    wtLastLoadedPayload.financeRec = typeof wtCloneJson === "function"
+                        ? wtCloneJson(remoteFr)
+                        : JSON.parse(JSON.stringify(remoteFr));
+                }
+            } catch (err) {}
+            return true;
+        });
+    }).catch(function () {
+        return true;
+    });
+}
+
+function frMarkFinanceImportDirty() {
+    try {
+        if (typeof wtSoftMarkDirty === "function") {
+            wtSoftMarkDirty("financeRec.operations");
+            wtSoftMarkDirty("financeRec.import_batches");
+            wtSoftMarkDirty("financeRec.audit");
+        }
+    } catch (err) {}
+}
+
+function frSaveExpenseImportBatch(batchId, okMsg) {
+    frMarkFinanceImportDirty();
+    return frMergeServerFinanceForImportBatch(batchId).then(function (ready) {
+        if (ready === false) {
+            toast("Расходники на экране, но сессия истекла — на сервер не записано. Не обновляйте страницу (F5).", "error");
+            try { renderFinanceRec(); } catch (err) {}
+            return false;
+        }
+        frMarkFinanceImportDirty();
+        try { renderFinanceRec(); } catch (err) {}
+        // После merge пишем точечно OPS (3 пути). Fallback forcePut только если OPS выключен.
+        const fr = appData.financeRec;
+        const useOps = typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true)
+            && typeof wtDomainWriterSave === "function";
+        const savePromise = useOps
+            ? wtDomainWriterSave({
+                atomic: true,
+                ops: [
+                    { path: "financeRec.operations", value: fr.operations || [], expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("financeRec.operations") : 0 },
+                    { path: "financeRec.import_batches", value: fr.import_batches || [], expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("financeRec.import_batches") : 0 },
+                    { path: "financeRec.audit", value: fr.audit || [], expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("financeRec.audit") : 0 }
+                ]
+            })
+            : Promise.resolve(saveApp({ forcePut: true }));
+        return Promise.resolve(savePromise).then(function (ok) {
+            if (ok === false || ok === "timeout") {
+                toast("Расходники на экране, но на сервер не записаны. Не обновляйте страницу (F5) — повторите импорт или сохранение.", "error");
+                try { renderFinanceRec(); } catch (err) {}
+                return false;
+            }
+            try { closeMgmtModal(); } catch (err) {}
+            toast(okMsg, "success");
+            return true;
+        });
+    }).catch(function (err) {
+        console.error(err);
+        toast("Расходники на экране, но сохранение прервалось. Не обновляйте страницу (F5).", "error");
+        return false;
+    });
 }
 
 function financeRecFolderCardHtml() {
