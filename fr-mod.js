@@ -705,6 +705,16 @@ function frInActualBalance(src) {
     return src.in_actual_balance !== false;
 }
 
+/**
+ * Есть ли у счёта собственный входящий остаток недели
+ * (галочка «Участвует в фактическом остатке»).
+ * Без галочки остаток всегда 0 — деньги уже в основной кассе/счёте.
+ */
+function frSourceOwnsIncomingOpening(src) {
+    if (!src) return false;
+    return src.in_actual_balance !== false;
+}
+
 /** Активные счета объекта для блока «Фактические остатки». */
 function frActualBalanceSources(areaId) {
     return frSources(areaId, false).filter(frInActualBalance);
@@ -978,7 +988,7 @@ function frMainCashWeekCalc(areaId, periodKey) {
             incomeBySource: []
         };
     }
-    const opening = frOpeningValue(areaId, periodKey, primaryId);
+    const opening = frWeekIncomingOpening(areaId, periodKey, primaryId);
     const incomeMap = {};
     let cashIncome = 0;
     let cashNonIncome = 0;
@@ -1057,7 +1067,7 @@ function frMainCashDayRows(areaId, periodKey) {
     const primaryId = frPrimaryCashId(areaId);
     const w = frWeek(String(periodKey || "").replace(/^week:/, ""));
     const dates = frWeekDates(w);
-    let opening = primaryId ? frRound(frOpeningValue(areaId, periodKey, primaryId)) : 0;
+    let opening = primaryId ? frRound(frWeekIncomingOpening(areaId, periodKey, primaryId)) : 0;
     const rows = dates.map(function (date) {
         const mv = frMainCashMovements(areaId, periodKey, date);
         const fromCash = mv.cashIncome;
@@ -1108,6 +1118,8 @@ function frWeekEndCalculatedForAccount(areaId, periodKey, endDate, sourceId) {
 
 /** Значение для переноса на следующую неделю: осн. касса — сводная, остальные — дневной расчёт. */
 function frCarryClosingValue(areaId, periodKey, endDate, sourceId) {
+    const src = frSourceByAccountId(areaId, sourceId);
+    if (src && !frSourceOwnsIncomingOpening(src)) return 0;
     const primaryId = frPrimaryCashId(areaId);
     if (primaryId && sourceId === primaryId) {
         return frMainCashWeekCalc(areaId, periodKey).calculated;
@@ -2153,7 +2165,7 @@ function frAreaWeekOpening(areaId, periodKey) {
     const moneyFactOnly = frIsShopArea(areaId) || frIsTerritoryArea(areaId);
     frSources(areaId, true).forEach(function (s) {
         if (moneyFactOnly && !frInActualBalance(s)) return;
-        sum += frOpeningValue(areaId, periodKey, s.finance_source_id);
+        sum += frWeekIncomingOpening(areaId, periodKey, s.finance_source_id);
     });
     return frRound(sum);
 }
@@ -2217,9 +2229,20 @@ function frOpeningRow(areaId, periodKey, sourceId) {
     }) || null;
 }
 
+/** Сырое сохранённое значение opening (в т.ч. устаревшие ненули у контрольных касс). */
 function frOpeningValue(areaId, periodKey, sourceId) {
     const row = frOpeningRow(areaId, periodKey, sourceId);
     return row ? frNum(row.value) : 0;
+}
+
+/**
+ * Входящий остаток недели для расчётов и UI.
+ * Без галочки «Факт. остаток» всегда 0 — старый ненулевой opening в хранилище не участвует.
+ */
+function frWeekIncomingOpening(areaId, periodKey, sourceId) {
+    const src = frSourceByAccountId(areaId, sourceId);
+    if (src && !frSourceOwnsIncomingOpening(src)) return 0;
+    return frOpeningValue(areaId, periodKey, sourceId);
 }
 
 function frPrevPeriodKey(periodKey) {
@@ -2329,11 +2352,11 @@ function frDayMovements(areaId, periodKey, date, sourceId) {
 function frDayOpening(areaId, date, sourceId) {
     const curWeek = frWeek(date);
     if (date === curWeek.start_date) {
-        return frOpeningValue(areaId, curWeek.period_key, sourceId);
+        return frWeekIncomingOpening(areaId, curWeek.period_key, sourceId);
     }
     const prev = frShiftIso(date, -1);
     if (!prev || prev === date) {
-        return frOpeningValue(areaId, curWeek.period_key, sourceId);
+        return frWeekIncomingOpening(areaId, curWeek.period_key, sourceId);
     }
     /* Конечный расчётный остаток предыдущего дня = начало текущего; факт не обязателен. */
     const prevActual = frDayActual(areaId, prev, sourceId);
@@ -2374,11 +2397,15 @@ function frCarryIfNeeded(areaId, periodKey) {
     sources.forEach(function (s) {
         const sid = s.finance_source_id;
         let row = frOpeningRow(areaId, periodKey, sid);
-        if (row && row.is_manual) return;
-        const wedActual = frDayActual(areaId, prevW.end_date, sid);
-        const value = wedActual != null
-            ? wedActual
-            : frCarryClosingValue(areaId, prevKey, prevW.end_date, sid);
+        if (row && row.is_manual && frSourceOwnsIncomingOpening(s)) return;
+        /* Без галочки — всегда 0; старые ненули и факт среды не переносим. */
+        let value = 0;
+        if (frSourceOwnsIncomingOpening(s)) {
+            const wedActual = frDayActual(areaId, prevW.end_date, sid);
+            value = wedActual != null
+                ? wedActual
+                : frCarryClosingValue(areaId, prevKey, prevW.end_date, sid);
+        }
         if (!row) {
             ensureFinanceRec();
             row = {
@@ -2401,7 +2428,7 @@ function frCarryIfNeeded(areaId, periodKey) {
 }
 
 function frSourceTotals(areaId, periodKey, sourceId) {
-    const opening = frOpeningValue(areaId, periodKey, sourceId);
+    const opening = frWeekIncomingOpening(areaId, periodKey, sourceId);
     let income = 0, nonIncome = 0, expense = 0, expenseRefund = 0, dividend = 0, transferIn = 0, transferOut = 0;
     frOps(areaId, periodKey).forEach(function (o) {
         const amt = frNum(o.amount);
@@ -5376,12 +5403,15 @@ function renderFrSettingsHtml(area) {
     html += '<th class="fr-num">Остаток на начало недели</th></tr></thead><tbody>';
     const w = frEnsureWeek();
     frSources(area.finance_area_id, true).forEach(function (s) {
-        const v = frOpeningValue(area.finance_area_id, w.period_key, s.finance_source_id);
+        const owns = frSourceOwnsIncomingOpening(s);
+        const v = frWeekIncomingOpening(area.finance_area_id, w.period_key, s.finance_source_id);
         html += "<tr><td>" + escapeHtml(s.name)
-            + (s.is_active === false ? ' <span class="fr-muted">(неактивен)</span>' : "") + "</td>";
+            + (s.is_active === false ? ' <span class="fr-muted">(неактивен)</span>' : "")
+            + (!owns ? ' <span class="fr-muted">(в основной кассе)</span>' : "")
+            + "</td>";
         if (isTerritory) html += "<td>" + escapeHtml(frRevenueDirLabel(s.revenue_direction || "none")) + "</td>";
         html += '<td class="fr-num">';
-        if (frCanEditData()) {
+        if (frCanEditData() && owns) {
             html += '<input style="width:120px;text-align:right" value="' + escapeAttribute(String(v))
                 + "\" onchange=\"frSaveOpening('" + s.finance_source_id + "',this.value)\">";
         } else html += frMoney(v);
@@ -5435,7 +5465,13 @@ function frSaveOpening(sourceId, value) {
     if (!frCanEditData()) return;
     const area = frActiveArea();
     const w = frEnsureWeek();
-    const old = frOpeningValue(area.finance_area_id, w.period_key, sourceId);
+    const src = frSourceByAccountId(area.finance_area_id, sourceId);
+    if (src && !frSourceOwnsIncomingOpening(src)) {
+        toast("У этой кассы нет собственного входящего остатка — средства учитываются в основной кассе.", "error");
+        renderFinanceRec();
+        return;
+    }
+    const old = frWeekIncomingOpening(area.finance_area_id, w.period_key, sourceId);
     const next = frNum(value);
     let why = "";
     /* Причина нужна только при корректировке уже заданного ненулевого остатка. */
@@ -5676,6 +5712,17 @@ function frToggleInActualBalance(sourceId, enabled) {
     if (!rec) return;
     const snap = frDirectorySnap();
     rec.in_actual_balance = !!enabled;
+    /* Снятие галочки: текущая неделя получает opening 0 (историю прошлых недель не трогаем). */
+    if (!enabled) {
+        const w = frEnsureWeek();
+        const row = frOpeningRow(areaId, w.period_key, sourceId);
+        if (row) {
+            row.value = 0;
+            row.carried = true;
+            row.is_manual = false;
+            row.updated_at = new Date().toISOString();
+        }
+    }
     frAudit("source_actual_flag", {
         finance_area_id: areaId,
         finance_source_id: sourceId,
@@ -6082,10 +6129,13 @@ function frPushCarry(silent) {
     if (!next) return;
     frSources(area.finance_area_id, true).forEach(function (s) {
         const sid = s.finance_source_id;
-        const wedActual = frDayActual(area.finance_area_id, w.end_date, sid);
-        const value = wedActual != null
-            ? wedActual
-            : frCarryClosingValue(area.finance_area_id, w.period_key, w.end_date, sid);
+        let value = 0;
+        if (frSourceOwnsIncomingOpening(s)) {
+            const wedActual = frDayActual(area.finance_area_id, w.end_date, sid);
+            value = wedActual != null
+                ? wedActual
+                : frCarryClosingValue(area.finance_area_id, w.period_key, w.end_date, sid);
+        }
         let row = frOpeningRow(area.finance_area_id, next.period_key, sid);
         if (!row) {
             row = {
@@ -6099,7 +6149,7 @@ function frPushCarry(silent) {
             frNormalizeBalanceRow(row);
             appData.financeRec.openings.push(row);
         }
-        if (row.is_manual && !silent) return;
+        if (row.is_manual && !silent && frSourceOwnsIncomingOpening(s)) return;
         row.value = value;
         row.carried = true;
         row.is_manual = false;

@@ -34,12 +34,26 @@ Ok ($closeBlock.Contains("frIsShopArea(areaId)")) "frWeekActualClosing keeps sho
 Ok ($closeBlock.Contains("frIsTerritoryArea(areaId)")) "frWeekActualClosing includes territory"
 Ok ($closeBlock.Contains("frInActualBalance(s)")) "closing uses fact flag"
 
-Write-Host "=== Carry / individual openings untouched ==="
-$carry = $src.Substring($src.IndexOf("function frCarryIfNeeded("), 900)
-Ok ($carry.Contains("frSources(areaId, true)")) "frCarryIfNeeded still all sources"
-Ok (-not ($carry.Contains("frInActualBalance"))) "frCarryIfNeeded does not filter by fact flag"
-$push = $src.Substring($src.IndexOf("function frPushCarry("), 900)
-Ok ($push.Contains("frSources(area.finance_area_id, true).forEach")) "frPushCarry still all sources"
+Write-Host "=== Carry zeros non-fact incoming openings ==="
+Ok ($src.Contains("function frWeekIncomingOpening(")) "frWeekIncomingOpening helper present"
+Ok ($src.Contains("function frSourceOwnsIncomingOpening(")) "frSourceOwnsIncomingOpening helper present"
+$carry = $src.Substring($src.IndexOf("function frCarryIfNeeded("), 1200)
+Ok ($carry.Contains("frSources(areaId, true)")) "frCarryIfNeeded still visits all sources"
+Ok ($carry.Contains("frSourceOwnsIncomingOpening")) "frCarryIfNeeded uses fact flag"
+Ok ($carry.Contains("let value = 0")) "frCarryIfNeeded defaults non-fact to 0"
+$push = $src.Substring($src.IndexOf("function frPushCarry("), 1200)
+Ok ($push.Contains("frSources(area.finance_area_id, true).forEach")) "frPushCarry still visits all sources"
+Ok ($push.Contains("frSourceOwnsIncomingOpening")) "frPushCarry uses fact flag"
+$incFn = $src.IndexOf("function frWeekIncomingOpening(")
+$incEnd = $src.IndexOf("function frPrevPeriodKey(", $incFn)
+$incBlock = $src.Substring($incFn, $incEnd - $incFn)
+Ok ($incBlock.Contains("frSourceOwnsIncomingOpening(src)")) "week incoming returns 0 without flag"
+$saveFn = $src.IndexOf("function frSaveOpening(")
+$look = 4500
+$beforeSave = if ($saveFn -gt $look) { $src.Substring($saveFn - $look, $look) } else { $src.Substring(0, [Math]::Max(0, $saveFn)) }
+Ok ($beforeSave.Contains("frWeekIncomingOpening(area.finance_area_id, w.period_key")) "UI openings use frWeekIncomingOpening"
+$saveBlock = $src.Substring($saveFn, [Math]::Min(700, $src.Length - $saveFn))
+Ok ($saveBlock.Contains("frSourceOwnsIncomingOpening")) "frSaveOpening blocks non-fact edits"
 
 Write-Host "=== Arithmetic scenario (local) ==="
 $main = 4613975.12
