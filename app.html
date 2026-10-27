@@ -6347,6 +6347,7 @@ let shopSalaryPanel = "table";
 let shopSalaryEditEmployeeId = "";
 let payrollPanelByView = { shop: "table", warehouse: "table", drivers: "table" };
 let payrollEditEmployeeByView = { shop: "", warehouse: "", drivers: "" };
+let payrollRulesModeByView = { shop: "active", warehouse: "active", drivers: "active" };
 const PAYROLL_VIEWS = {
     shop: {
         id: "shop",
@@ -26990,6 +26991,122 @@ function shopKpiDefsForRules(month) {
     return shopPreferPrimaryWriteoffKpi(Object.keys(map).map(function (k) { return map[k]; }));
 }
 
+function shopKpiPeriodBroken(d) {
+    if (!d) return false;
+    const f = shopPeriodMonthKey(d.validFrom || d.valid_from);
+    const t = shopPeriodMonthKey(d.validTo || d.valid_to);
+    return !!(f && t && f > t);
+}
+
+function shopKpiArchiveStatus(def, month) {
+    if (shopKpiPeriodBroken(def)) return "Некорректный период";
+    const m = shopPeriodMonthKey(month || selectedMonth);
+    const f = shopPeriodMonthKey(def && (def.validFrom || def.valid_from));
+    const t = shopPeriodMonthKey(def && (def.validTo || def.valid_to));
+    if (f && m && f > m) return "Начало позже выбранного месяца";
+    if (t && m && m > t) return "Закрыто";
+    if (def && def.active === false) return "Выключено";
+    return "Архив";
+}
+
+function shopKpiDefsArchived(month, view) {
+    view = view || payrollViewFromSection();
+    const m = month || selectedMonth;
+    const activeIds = {};
+    shopKpiDefsForRules(m).forEach(function (d) {
+        if (d && d.kpi_id && kpiDefMatchesView(d, view)) activeIds[d.kpi_id] = true;
+    });
+    const map = {};
+    (ensureShopPayroll().kpiDefs || []).forEach(function (d) {
+        if (!d || !d.kpi_id) return;
+        if (activeIds[d.kpi_id]) return;
+        if (!kpiDefMatchesView(d, view)) return;
+        const prev = map[d.kpi_id];
+        const from = String(d.validFrom || d.valid_from || "");
+        if (!prev || from > String(prev.validFrom || prev.valid_from || "")) map[d.kpi_id] = d;
+    });
+    return Object.keys(map).map(function (k) { return map[k]; });
+}
+
+function setPayrollRulesMode(viewId, mode) {
+    const id = viewId || "shop";
+    payrollRulesModeByView[id] = mode === "archive" ? "archive" : "active";
+    renderShopSalaryRules(PAYROLL_VIEWS[id] || PAYROLL_VIEWS.shop);
+}
+
+function shopKpiFutureVersionConflict(versions, monthKey) {
+    const m = shopPeriodMonthKey(monthKey);
+    return (versions || []).some(function (d) {
+        if (!d) return false;
+        const f = shopPeriodMonthKey(d.validFrom || d.valid_from);
+        return !!(f && m && f > m);
+    });
+}
+
+function reopenShopKpiDef(kpiId) {
+    if (!canEditShopPayrollRules()) return;
+    const payroll = ensureShopPayroll();
+    const monthKey = shopPeriodMonthKey(selectedMonth);
+    const versions = (payroll.kpiDefs || []).filter(function (d) { return d && d.kpi_id === kpiId; });
+    if (!versions.length) {
+        toast("Правило KPI не найдено.", "error");
+        return;
+    }
+    if (shopKpiDefForMonth(kpiId, monthKey)) {
+        toast("Правило уже действует в " + monthLabel(monthKey) + ". Новая версия не создана.", "error");
+        return;
+    }
+    if (shopKpiFutureVersionConflict(versions, monthKey)) {
+        toast("Есть версия с более поздней датой начала. Восстановление с "
+            + monthLabel(monthKey) + " создаст пересечение периодов.", "error");
+        return;
+    }
+    versions.sort(function (a, b) {
+        return String(b.validFrom || b.valid_from || "").localeCompare(String(a.validFrom || a.valid_from || ""));
+    });
+    const src = versions[0];
+    const plan = Number(src.plan || src.limit_value || 0);
+    const budget = shopKpiBudget(src);
+    const msg = "Восстановить правило KPI с " + monthLabel(monthKey) + "?\n\n"
+        + "Название: " + shopKpiName(src) + "\n"
+        + "Месяц: " + monthLabel(monthKey) + "\n"
+        + "План: " + plan + "\n"
+        + "Премия: " + money(budget) + "\n"
+        + "Способ: " + shopKpiCalcKindLabel(src) + "\n\n"
+        + "Будет создана новая версия с тем же kpi_id. Старые версии и назначения не изменятся.";
+    if (!confirm(msg)) return;
+    const copy = shopCloneKpiDefFields(src);
+    const next = stampKpiDef({
+        kpi_id: kpiId,
+        metricId: src.metric_id || src.metricId,
+        submetric_id: src.submetric_id || src.submetricId || "",
+        submetricId: src.submetric_id || src.submetricId || "",
+        department_id: kpiDefDepartment(src),
+        work_tab_id: kpiDefWorkTab(src),
+        validFrom: monthKey,
+        validTo: null,
+        active: true
+    });
+    Object.keys(copy).forEach(function (key) { next[key] = copy[key]; });
+    next.kpi_id = kpiId;
+    next.validFrom = monthKey;
+    next.valid_from = monthKey;
+    next.validTo = null;
+    next.valid_to = null;
+    next.active = true;
+    next.metric_id = canonicalMetricId(src.metric_id || src.metricId);
+    next.metricId = next.metric_id;
+    next.submetric_id = String(src.submetric_id || src.submetricId || "");
+    next.submetricId = next.submetric_id;
+    // Старые версии и assignments не изменяются — только новая строка в kpiDefs.
+    payroll.kpiDefs.push(next);
+    saveApp();
+    const view = payrollViewFromSection();
+    payrollRulesModeByView[view.id] = "active";
+    toast("Правило восстановлено с " + monthLabel(monthKey) + ". Назначьте сотрудникам галочкой.", "success");
+    renderPayrollView(view);
+}
+
 function shopCheckKpiSettingsHtml(def) {
     const kpiId = def.kpi_id;
     const mode = shopCheckKpiAccrualMode(def);
@@ -27081,11 +27198,47 @@ function renderShopSalaryRules(view) {
     view = view || payrollViewFromSection();
     const box = document.getElementById(payrollViewPrefix(view) + "RulesBody");
     if (!box || !canEditShopPayrollRules()) return;
+    const mode = payrollRulesModeByView[view.id] === "archive" ? "archive" : "active";
+    let html = '<div class="metrics-tabs" style="margin:0 0 10px">'
+        + '<button type="button" class="metrics-tab' + (mode === "active" ? " active" : "")
+        + "\" onclick=\"setPayrollRulesMode('" + view.id + "','active')\">Действующие</button>"
+        + '<button type="button" class="metrics-tab' + (mode === "archive" ? " active" : "")
+        + "\" onclick=\"setPayrollRulesMode('" + view.id + "','archive')\">Архив</button>"
+        + "</div>";
+    if (mode === "archive") {
+        const archived = shopKpiDefsArchived(selectedMonth, view);
+        html += '<div class="note" style="margin:0 0 8px">Архив не участвует в начислениях. Восстановление создаёт новую версию с выбранного месяца, старые версии не меняются.</div>';
+        html += '<div class="table-wrapper" style="max-height:none"><table class="shop-kpi-settings-table"><thead><tr>'
+            + "<th>Название</th><th>Метрика</th><th>План</th><th>Премия</th><th>Период</th><th>Статус</th><th></th></tr></thead><tbody>";
+        if (!archived.length) {
+            html += '<tr><td colspan="7"><div class="note">В архиве нет правил для этого раздела и месяца.</div></td></tr>';
+        }
+        archived.forEach(function (def) {
+            const kpiId = def.kpi_id;
+            const metricId = canonicalMetricId(def.metricId || def.metric_id);
+            const from = shopPeriodMonthKey(def.validFrom || def.valid_from) || "—";
+            const toRaw = def.validTo != null && def.validTo !== "" ? def.validTo : def.valid_to;
+            const to = shopPeriodMonthKey(toRaw);
+            const period = from + " — " + (to || "∞");
+            html += "<tr><td><div class=\"shop-kpi-name\">" + escapeHtml(shopKpiName(def)) + "</div>"
+                + '<div class="shop-kpi-mini">' + escapeHtml(shopKpiCalcKindLabel(def)) + "</div></td>"
+                + "<td><div class=\"shop-kpi-mini\">" + escapeHtml(metricId || "—") + "</div></td>"
+                + "<td>" + escapeHtml(String(Number(def.plan || def.limit_value || 0))) + "</td>"
+                + "<td>" + money(shopKpiBudget(def)) + "</td>"
+                + "<td><div class=\"shop-kpi-mini\">" + escapeHtml(period) + "</div></td>"
+                + "<td><div class=\"shop-kpi-mini\">" + escapeHtml(shopKpiArchiveStatus(def, selectedMonth)) + "</div></td>"
+                + '<td><button type="button" class="btn btn-primary btn-small" onclick="reopenShopKpiDef(\''
+                + kpiId + "')\">Восстановить с выбранного месяца</button></td></tr>";
+        });
+        html += "</tbody></table></div>";
+        box.innerHTML = html;
+        return;
+    }
     const defs = shopKpiDefsForRules(selectedMonth).filter(function (d) { return kpiDefMatchesView(d, view); });
-    let html = '<div class="table-wrapper" style="max-height:none"><table class="shop-kpi-settings-table"><thead><tr>'
+    html += '<div class="table-wrapper" style="max-height:none"><table class="shop-kpi-settings-table"><thead><tr>'
         + "<th>Название</th><th>Источник</th><th>План / лимит</th><th>Премия</th><th>Макс. %</th><th>С</th><th></th></tr></thead><tbody>";
     if (!defs.length) {
-        html += '<tr><td colspan="7"><div class="note">Общих правил ещё нет. Создайте KPI один раз — затем включайте его сотрудникам.</div></td></tr>';
+        html += '<tr><td colspan="7"><div class="note">Общих правил ещё нет. Создайте KPI один раз — затем включайте его сотрудникам. Закрытые правила — во вкладке «Архив».</div></td></tr>';
     }
     defs.forEach(function (def) {
         const kpiId = def.kpi_id;
@@ -27303,9 +27456,21 @@ function closeShopKpiDef(kpiId) {
     if (!canEditShopPayrollRules()) return;
     const def = shopKpiDefForMonth(kpiId, selectedMonth);
     if (!def) return;
-    def.validTo = shiftMonth(selectedMonth, -1);
-    def.valid_to = def.validTo;
+    const monthKey = shopPeriodMonthKey(selectedMonth);
+    const from = shopPeriodMonthKey(def.validFrom || def.valid_from || monthKey);
+    const closeTo = shiftMonth(monthKey, -1);
+    // Не переписываем validFrom у существующей версии. Если закрытие в месяце создания
+    // даёт validFrom > validTo, правило уходит в «Архив» (некорректный период) и доступно для восстановления.
+    def.validTo = closeTo;
+    def.valid_to = closeTo;
     saveApp();
+    if (from && closeTo && from > closeTo) {
+        const view = payrollViewFromSection();
+        payrollRulesModeByView[view.id] = "archive";
+        toast("Правило закрыто в месяце создания и доступно во вкладке «Архив».", "info");
+        renderPayrollView(view);
+        return;
+    }
     renderPayrollView(payrollViewFromSection());
 }
 
