@@ -1517,7 +1517,10 @@ def _can_write_top(user: dict, key: str) -> bool:
     if key == "shopMetricCatalog":
         return _can_edit_metric_setup(user)
     if key == "shopPayroll":
-        return "shop" in codes and user_has_perm(user, "salary", "edit")
+        # salary — полный payroll; metricsSetup — связка метрик магазина (деньги KPI режет _shop_payroll_kpi_money_forbidden).
+        return "shop" in codes and (
+            user_has_perm(user, "salary", "edit") or _can_edit_metric_setup(user)
+        )
     if key == "salary":
         return user_has_perm(user, "salary", "edit")
     if key == "financeRec":
@@ -2014,9 +2017,10 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
             if "shop" not in user_dept_codes(user) or not (
                 _can_edit_metric_input(user) or _can_edit_metric_setup(user)
             ):
-                if not _same(val, current.get(key)):
-                    return True
-                continue
+                # Пустой/обрезанный клиентский снимок (нет shop в GET) — не 403.
+                if _empty_wipe(val, current.get(key)) or _same(val, current.get(key)):
+                    continue
+                return True
             if _metric_root_forbidden(current.get(key), val, user):
                 return True
             continue
@@ -2026,9 +2030,9 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
             continue
         if key == "shopPayroll":
             if not _can_write_top(user, key):
-                if not _same(val, current.get(key)):
-                    return True
-                continue
+                if _empty_wipe(val, current.get(key)) or _same(val, current.get(key)):
+                    continue
+                return True
             if _shop_payroll_kpi_money_forbidden(current.get(key), val, user):
                 return True
             allow_sal = user_has_perm(user, "salary", "edit")
@@ -2039,9 +2043,9 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
             if not (
                 user_has_perm(user, "financeRec", "edit") or user_has_perm(user, "financeRecSetup", "edit")
             ):
-                if not _same(val, current.get(key)):
-                    return True
-                continue
+                if _empty_wipe(val, current.get(key)) or _same(val, current.get(key)):
+                    continue
+                return True
             if _finance_directory_forbidden(current.get(key), val, user):
                 return True
             if user_has_perm(user, "financeRec", "edit") and isinstance(val, dict):
@@ -2055,8 +2059,10 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
             if _closed_field_violations(current.get(key), val, allow_sal):
                 return True
             continue
-        if not _same(val, current.get(key)):
-            return True
+        # Нет права на ключ: пустой срез / совпадение — игнор; иное отличие — 403.
+        if _empty_wipe(val, current.get(key)) or _same(val, current.get(key)):
+            continue
+        return True
     return False
 
 
@@ -2839,7 +2845,11 @@ def ops_path_allowed(user: dict | None, path: str) -> bool:
     if top == "shopMetricCatalog":
         return _can_edit_metric_setup(user)
     if top == "shopPayroll":
-        if "shop" not in codes or not user_has_perm(user, "salary", "edit"):
+        if "shop" not in codes:
+            return False
+        if not (
+            user_has_perm(user, "salary", "edit") or _can_edit_metric_setup(user)
+        ):
             return False
         # Денежные KPI — только администратор (как в старом PUT).
         if len(parts) >= 2 and parts[1] in SHOP_PAYROLL_KPI_MONEY_KEYS:

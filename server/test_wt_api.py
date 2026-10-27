@@ -2030,6 +2030,123 @@ class StoreApiTests(unittest.TestCase):
             ["m_keep", "m_drop"],
         )
 
+    def test_metrics_setup_catalog_put_ignores_empty_payroll_slice(self):
+        """Руководитель с metricsSetup без salary: пустой shopPayroll в срезе не даёт 403."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager(
+            "usr_svetlana_sim",
+            {
+                "metricsSetup": "edit",
+                "metricsInput": "edit",
+                "timesheet": "edit",
+                "revision": "edit",
+            },
+        )
+        before_pay = json.loads(json.dumps(self.store["payload"].get("shopPayroll")))
+        items = list((self.store["payload"].get("shopMetricCatalog") or {}).get("items") or [])
+        items = [row for row in items if not (isinstance(row, dict) and row.get("id") == "m_setup_new")]
+        items.append({
+            "id": "m_setup_new",
+            "name": "Новая метрика руководителя",
+            "department_id": "shop",
+            "active": True,
+            "assignments": [],
+        })
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": items},
+                    "shopMetrics": {},
+                    "shopPayroll": {},
+                    "deptMetrics": {},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        ids = {
+            str(row.get("id"))
+            for row in (self.store["payload"].get("shopMetricCatalog") or {}).get("items") or []
+            if isinstance(row, dict)
+        }
+        self.assertIn("m_setup_new", ids)
+        self.assertEqual(self.store["payload"].get("shopPayroll"), before_pay)
+
+    def test_metrics_setup_without_perm_cannot_save_catalog(self):
+        self._seed_metric_access()
+        cookie = self._add_shop_manager(
+            "usr_input_only",
+            {"metricsInput": "edit", "timesheet": "edit"},
+        )
+        items = list((self.store["payload"].get("shopMetricCatalog") or {}).get("items") or [])
+        items = items + [{"id": "m_denied", "name": "Denied", "department_id": "shop", "active": True}]
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetricCatalog": {"items": items}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(data.get("error"), "forbidden")
+        ids = {
+            str(row.get("id"))
+            for row in (self.store["payload"].get("shopMetricCatalog") or {}).get("items") or []
+            if isinstance(row, dict)
+        }
+        self.assertNotIn("m_denied", ids)
+
+    def test_territory_metrics_setup_catalog_with_empty_shop_slice(self):
+        self._seed_metric_access()
+        self.add_user({
+            "user_id": "usr_terr_setup",
+            "display_name": "Территория настройка",
+            "pin": "6666",
+            "role": "manager",
+            "is_active": True,
+            "departments": ["office", "warehouse"],
+            "permissions": {
+                "metricsSetup": "edit",
+                "metricsInput": "edit",
+                "timesheet": "edit",
+            },
+        })
+        cookie, _ = self.login("usr_terr_setup", "6666")
+        items = list((self.store["payload"].get("shopMetricCatalog") or {}).get("items") or [])
+        items = [row for row in items if not (isinstance(row, dict) and row.get("id") == "m_office_new")]
+        items.append({
+            "id": "m_office_new",
+            "name": "Офис метрика",
+            "department_id": "office",
+            "active": True,
+            "assignments": [],
+        })
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": items},
+                    "shopMetrics": {},
+                    "shopPayroll": {},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        ids = {
+            str(row.get("id"))
+            for row in (self.store["payload"].get("shopMetricCatalog") or {}).get("items") or []
+            if isinstance(row, dict)
+        }
+        self.assertIn("m_office_new", ids)
+
     def test_territory_category_metric_assignments_saved(self):
         self._seed_metric_access()
         self.store["payload"]["shopMetricCatalog"]["items"].append({
@@ -3920,6 +4037,11 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("useSlicePut", save)
         self.assertIn("record_updates", save)
         self.assertIn("wtSaveTimingEnabled", src)
+        slice_fn = src[src.find("function metricCatalogPutSlice("):src.find("function saveAppWithPayloadSlice(")]
+        self.assertIn('userHasPerm("metricsSetup", "edit")', slice_fn)
+        self.assertIn("userAccessDeptCodes", slice_fn)
+        self.assertIn("staffMetricSlice", slice_fn)
+        self.assertIn("delete pay.kpiDefs", slice_fn)
         # Передаём функцию-сборщик, не готовый объект — иначе после 409 уходит устаревший срез.
         self.assertIn("saveAppWithPayloadSlice(metricCatalogPutSlice)", src)
         self.assertNotIn("saveAppWithPayloadSlice(metricCatalogPutSlice())", src)

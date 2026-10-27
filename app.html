@@ -8800,7 +8800,7 @@ function userHasPerm(key, min) {
         return key !== "salary";
     }
     if (!isSummary()) {
-        return ["timesheet", "metrics", "metricsInput", "revision", "salesPlan", "discipline"].indexOf(key) !== -1;
+        return ["timesheet", "metrics", "metricsInput", "metricsSetup", "revision", "salesPlan", "discipline"].indexOf(key) !== -1;
     }
     return false;
 }
@@ -10761,7 +10761,8 @@ function buildStaffPutPayload() {
     if (userHasPerm("metricsSetup", "edit") && appData.shopMetricCatalog) {
         out.shopMetricCatalog = appData.shopMetricCatalog;
     }
-    if (userHasPerm("salary", "edit") && appData.shopPayroll) {
+    if ((userHasPerm("salary", "edit") || userHasPerm("metricsSetup", "edit"))
+        && codes.indexOf("shop") !== -1 && appData.shopPayroll) {
         // Денежные KPI (kpiDefs / assignments) на сервере принимает только администратор.
         const pay = wtCloneJson(appData.shopPayroll);
         if (!isAppAdmin() && pay && typeof pay === "object") {
@@ -10879,14 +10880,47 @@ function newEmployeeClientRequestId() {
 
 /**
  * Срез для сохранения справочника метрик: без financeRec/табелей/всего appData.
- * assignments specific могут тронуть shopMetrics/deptMetrics; syncPayroll — shopPayroll.
+ * Ключи только по правам (как buildStaffPutPayload) — иначе пустой shopPayroll/shopMetrics
+ * у сотрудника без salary/shop даёт серверный 403 «Недостаточно прав».
  */
 function metricCatalogPutSlice() {
     const out = {};
-    if (appData && appData.shopMetricCatalog) out.shopMetricCatalog = appData.shopMetricCatalog;
-    if (appData && appData.shopMetrics) out.shopMetrics = appData.shopMetrics;
-    if (appData && appData.deptMetrics) out.deptMetrics = appData.deptMetrics;
-    if (appData && appData.shopPayroll) out.shopPayroll = appData.shopPayroll;
+    const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
+    const codes = typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(u) : [];
+    const metricInput = userHasPerm("metricsInput", "edit") || userHasPerm("metrics", "edit");
+    const metricSetup = userHasPerm("metricsSetup", "edit");
+    if (metricSetup && appData && appData.shopMetricCatalog) {
+        out.shopMetricCatalog = appData.shopMetricCatalog;
+    }
+    if (metricInput || metricSetup) {
+        if (codes.indexOf("shop") !== -1 && appData && appData.shopMetrics) {
+            const metricSlice = typeof staffMetricSlice === "function"
+                ? staffMetricSlice(appData.shopMetrics, metricInput, metricSetup)
+                : appData.shopMetrics;
+            if (metricSlice) out.shopMetrics = metricSlice;
+        }
+        if (appData && appData.deptMetrics && typeof TERRITORY_DEPT_CODES !== "undefined") {
+            const territory = {};
+            TERRITORY_DEPT_CODES.forEach(function (code) {
+                if (codes.indexOf(code) === -1 || !appData.deptMetrics[code]) return;
+                const branch = typeof staffMetricSlice === "function"
+                    ? staffMetricSlice(appData.deptMetrics[code], metricInput, metricSetup)
+                    : appData.deptMetrics[code];
+                if (branch) territory[code] = branch;
+            });
+            if (Object.keys(territory).length) out.deptMetrics = territory;
+        }
+    }
+    /* syncPayrollMetricFromCatalog трогает shopPayroll.metrics; деньги KPI не шлём. */
+    if (codes.indexOf("shop") !== -1 && appData && appData.shopPayroll
+        && (userHasPerm("salary", "edit") || metricSetup)) {
+        const pay = wtCloneJson(appData.shopPayroll);
+        if (!isAppAdmin() && pay && typeof pay === "object") {
+            delete pay.kpiDefs;
+            delete pay.assignments;
+        }
+        out.shopPayroll = pay;
+    }
     if (appData && appData[WT_RECORDS_KEY] && typeof appData[WT_RECORDS_KEY] === "object") {
         out[WT_RECORDS_KEY] = appData[WT_RECORDS_KEY];
     }
