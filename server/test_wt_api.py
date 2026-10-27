@@ -3738,6 +3738,8 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn('path: "financeRec.import_batches"', src)
         self.assertIn('path: "financeRec.audit"', src)
         self.assertIn("hardConflict", src)
+        self.assertIn("function frFinanceBusinessDiffFields(", src)
+        self.assertIn("FR_IMPORT_MERGE_TECH_FIELDS", src)
         self.assertIn("function frCollectExpenseImportDupKeys(", src)
         self.assertIn("function frExpenseImportFileCoverage(", src)
         self.assertIn("function frReconcileFailedExpenseImport(", src)

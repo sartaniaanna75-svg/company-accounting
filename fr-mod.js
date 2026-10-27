@@ -7102,10 +7102,172 @@ function frFinanceRowFingerprint(kind, row) {
 }
 
 /**
- * Слияние массивов Финконтроля по устойчивым id.
- * Новые локальные строки добавляются; существующие id на сервере не перезаписываются
- * (конфликт правки одной записи — hardConflict).
- * Возвращает { list, hardConflict }.
+ * Значимые поля записи (реальный конфликт при расхождении).
+ * Одинаковый fingerprint сам по себе не отменяет сравнение этих полей.
+ */
+const FR_IMPORT_MERGE_BUSINESS_FIELDS = {
+    operations: [
+        "amount",
+        "date",
+        "payee",
+        "comment",
+        "operation",
+        "op_time",
+        "object_id",
+        "finance_area_id",
+        "account_id",
+        "finance_source_id",
+        "is_deleted",
+        "type",
+        "op_type"
+    ],
+    import_batches: [
+        "batch_key",
+        "file_name",
+        "finance_area_id",
+        "object_id",
+        "finance_source_id",
+        "account_id",
+        "data_source"
+    ],
+    audit: [
+        "kind",
+        "finance_area_id",
+        "finance_source_id",
+        "import_batch_id"
+    ]
+};
+
+/** Технические поля повторного импорта — расхождение не даёт hardConflict. */
+const FR_IMPORT_MERGE_TECH_FIELDS = {
+    operations: {
+        created_at: 1,
+        updated_at: 1,
+        import_batch_id: 1,
+        import_fingerprint: 1,
+        finance_operation_id: 1,
+        period_key: 1,
+        finance_category_id: 1,
+        movement_kind: 1,
+        data_source: 1,
+        revenue_direction: 1
+    },
+    import_batches: {
+        at: 1,
+        rows_added: 1,
+        rows_dup: 1,
+        import_batch_id: 1
+    },
+    audit: {
+        at: 1,
+        detail: 1,
+        new_value: 1,
+        old_value: 1,
+        comment: 1,
+        user_id: 1,
+        period_key: 1,
+        audit_id: 1
+    }
+};
+
+function frFinanceNormCompareValue(kind, field, value) {
+    if (value == null) return "";
+    if (kind === "operations" && field === "amount") {
+        const n = Number(value);
+        return Number.isFinite(n) ? String(n) : String(value);
+    }
+    if (typeof value === "boolean") return value ? "1" : "0";
+    if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+    return String(value).trim();
+}
+
+function frFinanceDiffFieldNames(a, b) {
+    const names = {};
+    if (a && typeof a === "object") Object.keys(a).forEach(function (k) { names[k] = 1; });
+    if (b && typeof b === "object") Object.keys(b).forEach(function (k) { names[k] = 1; });
+    const diffs = [];
+    Object.keys(names).forEach(function (k) {
+        let av;
+        let bv;
+        try {
+            av = a ? a[k] : undefined;
+            bv = b ? b[k] : undefined;
+            if (JSON.stringify(av) !== JSON.stringify(bv)) diffs.push(k);
+        } catch (err) {
+            diffs.push(k);
+        }
+    });
+    return diffs.sort();
+}
+
+function frFinanceBusinessDiffFields(kind, a, b) {
+    const fields = FR_IMPORT_MERGE_BUSINESS_FIELDS[kind] || [];
+    const skipAlias = {
+        account_id: 1,
+        finance_source_id: 1,
+        object_id: 1,
+        finance_area_id: 1
+    };
+    const diffs = [];
+    fields.forEach(function (field) {
+        if ((kind === "operations" || kind === "import_batches") && skipAlias[field]) return;
+        const av = frFinanceNormCompareValue(kind, field, a ? a[field] : undefined);
+        const bv = frFinanceNormCompareValue(kind, field, b ? b[field] : undefined);
+        if (av !== bv) diffs.push(field);
+    });
+    if (kind === "operations" || kind === "import_batches") {
+        const aAcc = frFinanceNormCompareValue(kind, "account_id", a && (a.account_id || a.finance_source_id));
+        const bAcc = frFinanceNormCompareValue(kind, "account_id", b && (b.account_id || b.finance_source_id));
+        if (aAcc !== bAcc) diffs.push("account_id");
+    }
+    if (kind === "operations" || kind === "import_batches") {
+        const aObj = frFinanceNormCompareValue(kind, "object_id", a && (a.object_id || a.finance_area_id));
+        const bObj = frFinanceNormCompareValue(kind, "object_id", b && (b.object_id || b.finance_area_id));
+        if (aObj !== bObj) diffs.push("object_id");
+    }
+    return diffs;
+}
+
+function frFinanceConflictIsBusiness(kind, diffFields) {
+    const bizList = FR_IMPORT_MERGE_BUSINESS_FIELDS[kind] || [];
+    const biz = {};
+    bizList.forEach(function (f) { biz[f] = 1; });
+    return (diffFields || []).some(function (f) { return !!biz[f]; });
+}
+
+/**
+ * Безопасный диагностический отчёт hardConflict (без сумм, ФИО, payee).
+ * Пишет в console.warn; доступен как window.__frLastImportConflict.
+ */
+function frLogImportHardConflict(report) {
+    try {
+        const safe = {
+            stage: report && report.stage ? String(report.stage) : "merge",
+            kind: report && report.kind ? String(report.kind) : "",
+            match_by: report && report.match_by ? String(report.match_by) : "id",
+            record_id: report && report.record_id != null ? String(report.record_id) : "",
+            fingerprint: report && report.fingerprint ? String(report.fingerprint) : "",
+            import_batch_id: report && report.import_batch_id != null ? String(report.import_batch_id) : "",
+            diff_fields: Array.isArray(report && report.diff_fields) ? report.diff_fields.slice() : [],
+            business_conflict: !!(report && report.business_conflict),
+            likely_false_positive: !!(report && report.likely_false_positive),
+            note: report && report.note ? String(report.note) : ""
+        };
+        if (typeof window !== "undefined") window.__frLastImportConflict = safe;
+        if (typeof console !== "undefined" && console.warn) {
+            console.warn("[Fincontrol import hardConflict]", safe);
+        }
+    } catch (err) {}
+}
+
+/**
+ * Слияние массивов Финконтроля для импорта расходников.
+ * — Новый id / новый fingerprint → добавить локальную строку.
+ * — Тот же id, бизнес-поля совпадают (техполя могут отличаться) → оставить серверную, без hardConflict.
+ * — Тот же id, бизнес-поля различаются → hardConflict (сервер не перезаписываем).
+ * — Тот же fingerprint уже на сервере (другой id) → не добавлять дубль.
+ * Fingerprint не отменяет hardConflict, если бизнес-поля расходятся.
+ * Возвращает { list, hardConflict, conflict }.
  */
 function frMergeFinanceArrayByIds(kind, remoteList, localExtras) {
     const remote = Array.isArray(remoteList) ? remoteList.slice() : [];
@@ -7120,26 +7282,53 @@ function frMergeFinanceArrayByIds(kind, remoteList, localExtras) {
         if (fp) byFp[fp] = idx;
     });
     let hardConflict = false;
+    let conflictInfo = null;
     extras.forEach(function (row) {
-        if (!row) return;
+        if (!row || hardConflict) return;
         const id = frFinanceRowId(kind, row);
         const fp = frFinanceRowFingerprint(kind, row);
         if (id && Object.prototype.hasOwnProperty.call(byId, id)) {
             const cur = remote[byId[id]];
-            try {
-                if (JSON.stringify(cur) !== JSON.stringify(row)) hardConflict = true;
-            } catch (err) {
+            const bizDiffs = frFinanceBusinessDiffFields(kind, cur, row);
+            const allDiffs = frFinanceDiffFieldNames(cur, row);
+            if (bizDiffs.length) {
                 hardConflict = true;
+                conflictInfo = {
+                    kind: kind,
+                    match_by: "id",
+                    record_id: id,
+                    fingerprint: fp || frFinanceRowFingerprint(kind, cur) || "",
+                    import_batch_id: row.import_batch_id || (cur && cur.import_batch_id) || "",
+                    diff_fields: bizDiffs.slice(),
+                    business_conflict: true,
+                    likely_false_positive: false,
+                    note: "real_edit_same_id"
+                };
+            } else if (allDiffs.length) {
+                // Только техполя / несущественные — серверную запись не трогаем.
+                try {
+                    if (typeof console !== "undefined" && console.info) {
+                        console.info("[Fincontrol import merge] same id, tech-only drift; keep remote", {
+                            kind: kind,
+                            record_id: id,
+                            diff_fields: allDiffs.filter(function (f) {
+                                const tech = FR_IMPORT_MERGE_TECH_FIELDS[kind] || {};
+                                return !!tech[f] || !frFinanceConflictIsBusiness(kind, [f]);
+                            })
+                        });
+                    }
+                } catch (err) {}
             }
             return;
         }
-        if (!id && fp && Object.prototype.hasOwnProperty.call(byFp, fp)) return;
+        // Уже есть строка с тем же fingerprint — не создаём дубль (в т.ч. другой id).
+        if (fp && Object.prototype.hasOwnProperty.call(byFp, fp)) return;
         remote.push(row);
         const newIdx = remote.length - 1;
         if (id) byId[id] = newIdx;
         if (fp) byFp[fp] = newIdx;
     });
-    return { list: remote, hardConflict: hardConflict };
+    return { list: remote, hardConflict: hardConflict, conflict: conflictInfo };
 }
 
 function frApplyFinanceRecordVersionsFromPayload(payload) {
@@ -7208,7 +7397,19 @@ function frMergeServerFinanceForImportBatch(batchId) {
             const batchesMerged = frMergeFinanceArrayByIds("import_batches", remoteFr.import_batches, localBatchMeta);
             const auditMerged = frMergeFinanceArrayByIds("audit", remoteFr.audit, localAuditTail);
             if (opsMerged.hardConflict || batchesMerged.hardConflict || auditMerged.hardConflict) {
-                return { ok: false, hardConflict: true };
+                const hit = opsMerged.hardConflict
+                    ? opsMerged
+                    : (batchesMerged.hardConflict ? batchesMerged : auditMerged);
+                frLogImportHardConflict(Object.assign({
+                    stage: "frMergeServerFinanceForImportBatch",
+                    batchId: batchId
+                }, hit.conflict || { kind: "unknown" }));
+                return {
+                    ok: false,
+                    hardConflict: true,
+                    conflict: hit.conflict || null,
+                    conflictKind: hit.conflict && hit.conflict.kind ? hit.conflict.kind : ""
+                };
             }
             localFr.operations = opsMerged.list;
             localFr.import_batches = batchesMerged.list;
@@ -7531,6 +7732,24 @@ function frSaveExpenseImportBatch(batchId, okMsg, expectedFingerprints) {
         }
         if (merged.hardConflict) {
             return frReconcileFailedExpenseImport(batchId, expectedFp).then(function () {
+                try {
+                    const diag = (typeof window !== "undefined" && window.__frLastImportConflict)
+                        ? window.__frLastImportConflict
+                        : (merged.conflict || null);
+                    if (diag && typeof console !== "undefined" && console.warn) {
+                        console.warn(
+                            "[Fincontrol import] hardConflict toast; см. window.__frLastImportConflict",
+                            {
+                                kind: diag.kind || merged.conflictKind || "",
+                                record_id: diag.record_id || "",
+                                match_by: diag.match_by || "id",
+                                diff_fields: diag.diff_fields || [],
+                                likely_false_positive: !!diag.likely_false_positive,
+                                note: diag.note || ""
+                            }
+                        );
+                    }
+                } catch (err) {}
                 toast("Конфликт правки одной записи Финконтроля. Обновите данные и повторите без потери чужих изменений.", "error");
                 try { renderFinanceRec(); } catch (err) {}
                 return false;
