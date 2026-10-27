@@ -8641,6 +8641,14 @@ function applyServerState(state) {
     } catch (err) {
         wtLastLoadedPayload = null;
     }
+    // Удалённый хост: OPS только если backend подтвердил health.ops (без слепого включения).
+    try {
+        if (typeof wtOpsProbeServerCapability === "function") {
+            wtOpsProbeServerCapability(false).then(function () {
+                try { if (typeof wtSoftPollStart === "function" && wtServerMode) wtSoftPollStart(); } catch (err2) {}
+            }, function () {});
+        }
+    } catch (errProbe) {}
 }
 
 function openServerAdmin(saved) {
@@ -11011,7 +11019,21 @@ function putServerStateOnce() {
         toast("Не удалось подготовить данные для сохранения.", "error");
         return Promise.resolve(false);
     }
-    if (!payload) return Promise.resolve(true);
+    if (!payload) {
+        // Пустой срез при реальных локальных правках — не маскируем как «сохранено».
+        try {
+            if (wtLastLoadedPayload && appData) {
+                const pending = wtCollectChangedLeaves(wtLastLoadedPayload, appData);
+                if (pending && pending.length) {
+                    toast("Изменения не записаны: нет прав на отправку этих полей или срез пуст. Не обновляйте страницу.", "error");
+                    return Promise.resolve(false);
+                }
+            }
+        } catch (err) {}
+        return Promise.resolve(true);
+    }
+    // SoftSync: не дать poll затереть лист, пока PUT в полёте.
+    try { wtSoftProtectPendingLeaves(); } catch (err) {}
     try {
         const tStr = wtSaveNow();
         // Фиксируем version в момент сборки тела — soft-poll не должен менять её во время PUT.
@@ -11095,6 +11117,18 @@ function putServerStateOnce() {
                 if (wtLastLoadedPayload && typeof wtLastLoadedPayload === "object") {
                     delete wtLastLoadedPayload.employeeRemovals;
                 }
+                // Снять dirty там, где локальный снимок уже совпал с базой после PUT.
+                try {
+                    Object.keys(wtSoftDirtyPaths || {}).forEach(function (p) {
+                        try {
+                            const a = wtGetByPath(appData, p);
+                            const b = wtGetByPath(wtLastLoadedPayload, p);
+                            if (wtJsonCanonEqual(a, b) || ((a === undefined || a === null) && (b === undefined || b === null))) {
+                                wtSoftClearDirty(p);
+                            }
+                        } catch (errClr) {}
+                    });
+                } catch (errDirty) {}
                 wtSaveMark("update-last-loaded", tSnap);
             } catch (err) {}
             wtSaveMark("put-total", tAll);
@@ -11306,7 +11340,24 @@ function wtDomainWriterApplyBatchLocal(results) {
 function wtDomainWriterSave(options) {
     options = options || {};
     if (!wtServerMode || !appData) return Promise.resolve(false);
-    if (wtSoftApplying) return Promise.resolve(true);
+    // Soft-apply перерисовывает UI: нельзя сообщать «успех» без записи на сервер.
+    if (wtSoftApplying && !options.forcePut) {
+        const softRetry = Number(options._softRetry || 0);
+        if (softRetry >= 8) {
+            toast("Сохранение отложено из‑за обновления экрана. Повторите ввод или сохраните ещё раз.", "error");
+            return Promise.resolve(false);
+        }
+        return new Promise(function (resolve) {
+            setTimeout(function () {
+                try {
+                    const next = Object.assign({}, options, { _softRetry: softRetry + 1 });
+                    resolve(wtDomainWriterSave(next));
+                } catch (err) {
+                    resolve(false);
+                }
+            }, 40);
+        });
+    }
     if (wtOpsBlockIncidentalPut && wtOpsUiEnabled() && !options.ops && !options.forcePut) {
         return Promise.resolve(true);
     }
@@ -11326,6 +11377,8 @@ function wtDomainWriterSave(options) {
         return Promise.resolve(false);
     }
     if (options.forcePut || !wtOpsUiEnabled(true)) {
+        // SoftSync параллельно: зафиксировать dirty до асинхронного PUT.
+        try { wtSoftProtectPendingLeaves(); } catch (err) {}
         const jobPut = wtPutChain.then(function () { return putServerStateOnce(); });
         wtPutChain = jobPut.then(function () { return true; }, function () { return true; });
         return jobPut;
@@ -11336,6 +11389,16 @@ function wtDomainWriterSave(options) {
         const base = wtLastLoadedPayload || {};
         leaves = wtCollectChangedLeaves(base, appData);
     }
+    // Сразу пометить dirty — SoftSync не сотрёт черновик, пока batch в полёте.
+    try {
+        if (leaves && leaves.length) {
+            leaves.forEach(function (leaf) {
+                if (leaf && leaf.path) wtSoftMarkDirty(leaf.path);
+            });
+        } else {
+            wtSoftProtectPendingLeaves();
+        }
+    } catch (err) {}
     if (!leaves.length) {
         // Removals сотрудников всё ещё через PUT-очередь, если есть.
         if (appData && Array.isArray(appData.employeeRemovals) && appData.employeeRemovals.length) {
@@ -11409,8 +11472,17 @@ function wtDomainWriterSave(options) {
                 return false;
             }
             if (res.status === 503) {
-                toast("Точечное сохранение на сервере отключено. Изменения не записаны.", "error");
-                return false;
+                toast("Точечное сохранение на сервере отключено — сохраняем через полный снимок.", "error");
+                wtOpsServerCapable = false;
+                wtOpsUiEnabledCache = null;
+                return wtDomainWriterSave({ forcePut: true });
+            }
+            if (res.status === 404 || res.status === 405) {
+                toast("Сервер без OPS API — сохраняем через полный снимок. Синхронизация остаётся включённой.", "error");
+                wtOpsServerCapable = false;
+                wtOpsUiEnabledCache = null;
+                // SoftSync НЕ останавливаем: dirty + PUT защищают черновики.
+                return wtDomainWriterSave({ forcePut: true });
             }
             return res.text().then(function (raw) {
                 let body = null;
@@ -11537,10 +11609,15 @@ function saveMetricChange() {
 
 /* ============================================================
    ТОЧЕЧНОЕ СОХРАНЕНИЕ ЗАПИСЕЙ (фундамент многопользовательской работы)
-   По умолчанию ВЫКЛЮЧЕНО для UI разделов (localStorage.wtOps = "1" — включить локально).
-   Сервер: POST /api/state/op. Старый PUT /api/state продолжает работать.
+   Локально: OPS по умолчанию ВКЛ.
+   Timeweb/удалённый хост: OPS только после probe /api/health {ops:true}
+   (без слепого включения). SoftSync работает всегда; dirty защищает черновики.
+   Сервер: POST /api/state/op(+batch). PUT /api/state — fallback.
 ============================================================ */
 let wtOpsUiEnabledCache = null;
+/** null — ещё не проверяли; true/false — ответ /api/health.ops */
+let wtOpsServerCapable = null;
+let wtOpsProbeInFlight = null;
 
 let wtOpsBlockIncidentalPut = false;
 
@@ -11554,9 +11631,15 @@ function wtOpsUiEnabled(forceRefresh) {
             wtOpsUiEnabledCache = false;
         } else if (raw === "1") {
             wtOpsUiEnabledCache = true;
+        } else if (wtOpsIsLocalHost()) {
+            // Локальный WorkTime: OPS включён по умолчанию.
+            wtOpsUiEnabledCache = true;
+        } else if (wtOpsServerCapable === true) {
+            // Удалённый хост: только после подтверждения backend OPS.
+            wtOpsUiEnabledCache = true;
         } else {
-            // Локальный WorkTime: OPS включён по умолчанию (единая архитектура).
-            wtOpsUiEnabledCache = wtOpsIsLocalHost();
+            // До probe или backend без OPS → PUT + SoftSync с dirty-защитой.
+            wtOpsUiEnabledCache = false;
         }
     } catch (err) {
         wtOpsUiEnabledCache = false;
@@ -11564,7 +11647,7 @@ function wtOpsUiEnabled(forceRefresh) {
     return wtOpsUiEnabledCache;
 }
 
-/** Пилот-флаг через URL/индикатор — только локальный хост, не Timeweb. */
+/** Пилот-флаг через URL/индикатор — только локальный хост. */
 function wtOpsIsLocalHost() {
     try {
         const h = String(location.hostname || "").toLowerCase();
@@ -11572,6 +11655,53 @@ function wtOpsIsLocalHost() {
     } catch (err) {
         return false;
     }
+}
+
+/**
+ * Подтверждает, что backend отдаёт OPS (health.ops === true).
+ * Не включает OPS при ошибке сети / старом API — остаёмся на PUT.
+ */
+function wtOpsProbeServerCapability(force) {
+    if (!wtServerMode) return Promise.resolve(false);
+    try {
+        if (localStorage.getItem("wtOps") === "0") {
+            wtOpsServerCapable = false;
+            wtOpsUiEnabledCache = null;
+            return Promise.resolve(false);
+        }
+    } catch (err) {}
+    if (!force && wtOpsServerCapable != null) return Promise.resolve(!!wtOpsServerCapable);
+    if (wtOpsProbeInFlight) return wtOpsProbeInFlight;
+    wtOpsProbeInFlight = fetch("/api/health", { credentials: "same-origin", method: "GET" })
+        .then(function (res) {
+            if (!res.ok) {
+                wtOpsServerCapable = false;
+                return false;
+            }
+            return res.json().then(function (body) {
+                wtOpsServerCapable = !!(body && body.ops === true);
+                return wtOpsServerCapable;
+            }, function () {
+                wtOpsServerCapable = false;
+                return false;
+            });
+        }, function () {
+            wtOpsServerCapable = false;
+            return false;
+        })
+        .then(function (ok) {
+            wtOpsUiEnabledCache = null;
+            try { if (typeof wtOpsRenderLocalBadge === "function") wtOpsRenderLocalBadge(); } catch (err) {}
+            return !!ok;
+        })
+        .then(function (ok) {
+            wtOpsProbeInFlight = null;
+            return ok;
+        }, function (err) {
+            wtOpsProbeInFlight = null;
+            throw err;
+        });
+    return wtOpsProbeInFlight;
 }
 
 /**
@@ -12183,14 +12313,19 @@ function saveTimesheetCellViaOp(employeeId, day) {
  * OPS вкл → только /api/state/op, без тихого fallback на широкий PUT.
  */
 function saveTimesheetDayChange(employeeId, day) {
+    const deptCode = timesheetActiveDeptCode();
+    const path = deptCode ? wtTimesheetDayPath(deptCode, selectedMonth, employeeId, day) : null;
+    // SoftSync: dirty до любого PUT/OPS, иначе poll затрёт ячейку.
+    try { if (path) wtSoftMarkDirty(path); } catch (err) {}
     if (!wtOpsUiEnabled(true)) {
+        try { wtSoftProtectPendingLeaves(); } catch (err) {}
         return Promise.resolve(saveApp()).then(function (ok) {
+            if (ok && path) {
+                try { wtSoftClearDirty(path); } catch (err) {}
+            }
             return { status: ok ? "saved_put" : "error", via: "put" };
         });
     }
-    const deptCode = timesheetActiveDeptCode();
-    const path = deptCode ? wtTimesheetDayPath(deptCode, selectedMonth, employeeId, day) : null;
-    try { if (path) wtSoftMarkDirty(path); } catch (err) {}
     wtOpsBlockIncidentalPut = true;
     return saveTimesheetCellViaOp(employeeId, day).then(function (res) {
         wtOpsBlockIncidentalPut = false;
@@ -12343,12 +12478,16 @@ function wtSaveMetricValue(path, value) {
             return { status: ok ? "saved_put" : "error", via: "put" };
         });
     }
+    try { if (path) wtSoftMarkDirty(path); } catch (err) {}
     if (!wtOpsUiEnabled(true) || !path) {
+        try { wtSoftProtectPendingLeaves(); } catch (err) {}
         return Promise.resolve(saveMetricChange()).then(function (ok) {
+            if (ok && path) {
+                try { wtSoftClearDirty(path); } catch (err) {}
+            }
             return { status: ok ? "saved_put" : "error", via: "put" };
         });
     }
-    try { wtSoftMarkDirty(path); } catch (err) {}
     wtOpsBlockIncidentalPut = true;
     return saveMetricLeafViaOp(path, value).then(function (res) {
         wtOpsBlockIncidentalPut = false;
@@ -12393,6 +12532,23 @@ function wtSoftClearDirty(path) {
 
 function wtSoftClearAllDirty() {
     wtSoftDirtyPaths = Object.create(null);
+}
+
+/**
+ * Пометить dirty все листья, где appData отличается от последнего серверного снимка.
+ * Нужно, чтобы SoftSync не затирал несохранённый ввод до ответа PUT/OPS.
+ * Не заменяет явный mark на edit — дополняет перед save/merge.
+ */
+function wtSoftProtectPendingLeaves() {
+    if (!wtServerMode || !appData || !wtLastLoadedPayload) return;
+    try {
+        const leaves = wtCollectChangedLeaves(wtLastLoadedPayload, appData);
+        if (!leaves || !leaves.length) return;
+        for (let i = 0; i < leaves.length; i++) {
+            const leaf = leaves[i];
+            if (leaf && leaf.path) wtSoftMarkDirty(leaf.path);
+        }
+    } catch (err) {}
 }
 
 function wtSoftHasDirty(path) {
@@ -12491,6 +12647,8 @@ function wtSoftActiveMetricPath() {
 }
 
 function wtSoftDirtyMapForMerge() {
+    // Перед сборкой карты — защитить текущие несохранённые листья (PUT без OPS тоже).
+    try { wtSoftProtectPendingLeaves(); } catch (err) {}
     const dirty = Object.create(null);
     Object.keys(wtSoftDirtyPaths).forEach(function (p) {
         if (wtSoftDirtyPaths[p]) dirty[p] = true;
@@ -12771,6 +12929,8 @@ function wtSoftOnOnline() {
 
 function wtSoftPollStart() {
     if (!wtServerMode) return;
+    // SoftSync всегда при серверном режиме: синхронизация окон. Защита черновиков —
+    // wtSoftMarkDirty / wtSoftProtectPendingLeaves (не отключение poll).
     wtSoftPollEnabled = true;
     if (!wtSoftVisibilityHooked && typeof document !== "undefined" && document.addEventListener) {
         document.addEventListener("visibilitychange", wtSoftOnVisibility);
@@ -20620,8 +20780,13 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
     } else {
         path = wtShopCategoryLeafPath(categoryId, selectedMonth, employeeId, day, field);
     }
+    if (wtServerMode) {
+        try {
+            if (path) wtSoftMarkDirty(path);
+            if (mirrorPath) wtSoftMarkDirty(mirrorPath);
+        } catch (err) {}
+    }
     if (path && mirrorPath && wtOpsUiEnabled(true) && wtServerMode) {
-        try { wtSoftMarkDirty(path); wtSoftMarkDirty(mirrorPath); } catch (err) {}
         wtOpsBlockIncidentalPut = true;
         wtDomainWriterSave({
             atomic: true,
@@ -21997,8 +22162,10 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
     renderShopMetrics();
     const markPath = wtShopCategoryLeafPath(categoryId, selectedMonth, employeeId, day, field + "Mark");
     const markVal = Object.prototype.hasOwnProperty.call(rec, field + "Mark") ? rec[field + "Mark"] : null;
-    if (markPath && wtOpsUiEnabled(true) && wtServerMode) {
+    if (markPath && wtServerMode) {
         try { wtSoftMarkDirty(markPath); } catch (err) {}
+    }
+    if (markPath && wtOpsUiEnabled(true) && wtServerMode) {
         wtDomainWriterSave({
             ops: [{ path: markPath, value: markVal, expected_v: wtRecordVersion(markPath) }]
         }).then(function (ok) {

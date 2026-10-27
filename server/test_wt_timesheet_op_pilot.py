@@ -245,15 +245,18 @@ class WtTimesheetOpPilotUiWiringTests(unittest.TestCase):
     def setUpClass(cls):
         cls.src = APP_HTML.read_text(encoding="utf-8")
 
-    def test_flag_off_by_default(self):
-        self.assertIn('localStorage.getItem("wtOps") === "1"', self.src)
-        self.assertIn("По умолчанию ВЫКЛЮЧЕНО", self.src)
+    def test_ops_enablement_rules(self):
+        """Локально — OPS on; удалённо — только после health.ops; SoftSync всегда."""
+        self.assertIn('localStorage.getItem("wtOps")', self.src)
         self.assertIn("function wtOpsIsLocalHost(", self.src)
         self.assertIn("function wtOpsApplyUrlFlag(", self.src)
+        self.assertIn("function wtOpsProbeServerCapability(", self.src)
+        self.assertIn("wtOpsServerCapable === true", self.src)
         self.assertIn('h === "127.0.0.1" || h === "localhost"', self.src)
         self.assertIn('raw !== "1" && raw !== "0"', self.src)
         self.assertIn("OPS: ВКЛ", self.src)
         self.assertIn("OPS: ВЫКЛ", self.src)
+        self.assertIn('/api/health', self.src)
 
     def test_cell_editors_use_saveTimesheetDayChange(self):
         for name in ("setStatus", "setHours", "setLateMinutes", "setEarlyArrival"):

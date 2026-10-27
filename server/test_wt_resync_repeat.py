@@ -139,6 +139,51 @@ class WtResyncRepeatApiTests(unittest.TestCase):
         self.assertTrue(st4.startswith("200"), (st4, data4))
         self.assertEqual(wt_api.get_path_value(self.store["payload"], path), 30)
 
+    def test_dual_session_softsync_sequence_100_to_400_persists(self):
+        """Окно A/B: 100→200→300→delete→400; каждый шаг читается из store (как после SoftSync/F5)."""
+        a = self.login("user_admin", "5555")
+        b = self.login("usr_001", "1111")
+        path = "shopMetrics.store.2026-10.5.visitors"
+
+        def read_via(cookie):
+            st, data, *_ = call("GET", "/api/state", cookie=cookie)
+            self.assertTrue(st.startswith("200"), st)
+            return wt_api.get_path_value(data.get("payload") or {}, path), int(data.get("version") or 0)
+
+        st, data, *_ = self.op(a, path, 100, 0)
+        self.assertTrue(st.startswith("200"), (st, data))
+        ev = int(data["record_v"])
+        val_b, _ = read_via(b)
+        self.assertEqual(val_b, 100)
+
+        st, data, *_ = self.op(a, path, 200, ev)
+        self.assertTrue(st.startswith("200"), (st, data))
+        ev = int(data["record_v"])
+        val_b, _ = read_via(b)
+        self.assertEqual(val_b, 200)
+
+        st, data, *_ = self.op(b, path, 300, ev)
+        self.assertTrue(st.startswith("200"), (st, data))
+        ev = int(data["record_v"])
+        val_a, _ = read_via(a)
+        self.assertEqual(val_a, 300)
+
+        st, data, *_ = self.op(a, path, None, ev)
+        self.assertTrue(st.startswith("200"), (st, data))
+        ev = int(data["record_v"])
+        val_b, _ = read_via(b)
+        self.assertIsNone(val_b)
+
+        st, data, *_ = self.op(b, path, 400, ev)
+        self.assertTrue(st.startswith("200"), (st, data))
+        val_a, ver_a = read_via(a)
+        val_b, ver_b = read_via(b)
+        self.assertEqual(val_a, 400)
+        self.assertEqual(val_b, 400)
+        self.assertEqual(ver_a, ver_b)
+        # «F5»: повторное чтение state = то же значение из «БД» (store)
+        self.assertEqual(wt_api.get_path_value(self.store["payload"], path), 400)
+
     def test_batch_repeat_null_then_value(self):
         c = self.login()
         path = "shopMetrics.facts.2026-10.e_shop.5.metric_supplier_orders"

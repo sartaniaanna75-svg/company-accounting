@@ -149,6 +149,49 @@ class WtSoftRefreshUiWiringTests(unittest.TestCase):
         lw_block = self.src[lw : self.src.find("\nfunction logout(", lw)]
         self.assertIn("wtSoftPollStop(", lw_block)
 
+    def test_soft_poll_always_starts_in_server_mode(self):
+        """SoftSync не отключается при OPS off — защита черновиков через dirty."""
+        start = self.src.find("function wtSoftPollStart(")
+        self.assertGreater(start, 0)
+        block = self.src[start : self.src.find("\nfunction wtSoftPollStop(", start)]
+        self.assertIn("wtSoftPollEnabled = true", block)
+        self.assertNotIn("wtOpsUiEnabled", block)
+        self.assertIn("wtSoftProtectPendingLeaves", self.src)
+
+    def test_ops_enabled_only_after_health_probe_on_remote(self):
+        self.assertIn("function wtOpsProbeServerCapability(", self.src)
+        self.assertIn("wtOpsServerCapable", self.src)
+        self.assertIn('/api/health', self.src)
+        start = self.src.find("function wtOpsUiEnabled(")
+        block = self.src[start : self.src.find("\nfunction wtOpsIsLocalHost(", start)]
+        self.assertIn("wtOpsServerCapable === true", block)
+        self.assertIn("wtOpsIsLocalHost()", block)
+
+    def test_ops_batch_404_falls_back_to_put_keeps_softsync(self):
+        start = self.src.find("function wtDomainWriterSave(")
+        self.assertGreater(start, 0)
+        block = self.src[start : self.src.find("\nfunction saveApp(", start)]
+        self.assertIn("res.status === 404", block)
+        self.assertIn("forcePut: true", block)
+        self.assertIn("wtOpsServerCapable = false", block)
+        # Не глушим SoftSync и не пишем wtOps=0 навсегда.
+        self.assertNotIn('localStorage.setItem("wtOps", "0")', block)
+        self.assertNotIn("wtSoftPollStop(", block)
+
+    def test_put_empty_payload_not_silent_when_pending(self):
+        start = self.src.find("function putServerStateOnce(")
+        self.assertGreater(start, 0)
+        block = self.src[start : start + 4500]
+        self.assertIn("wtCollectChangedLeaves(wtLastLoadedPayload, appData)", block)
+        self.assertIn('return Promise.resolve(false)', block)
+        self.assertIn("pending && pending.length", block)
+
+    def test_dirty_map_protects_pending_leaves(self):
+        start = self.src.find("function wtSoftDirtyMapForMerge(")
+        self.assertGreater(start, 0)
+        block = self.src[start : self.src.find("\nfunction wtSoftMergePreferServer(", start)]
+        self.assertIn("wtSoftProtectPendingLeaves(", block)
+
     def test_skips_render_while_editing(self):
         self.assertIn("function wtTimesheetHasActiveEdit(", self.src)
         self.assertIn("function wtMetricsHasActiveEdit(", self.src)
@@ -254,6 +297,21 @@ class WtSoftMergePreferServerLogicTests(unittest.TestCase):
         path = "shopMetrics.pickers.2026-10.V-1.9.display"
         merged = self.merge(server, draft, {path: True})
         self.assertEqual(merged["shopMetrics"]["pickers"]["2026-10"]["V-1"]["9"]["display"], 99)
+
+    def test_put_mode_pending_survives_soft_sync(self):
+        """Симуляция Timeweb: SoftSync включён, OPS off, dirty от pending leaf — значение не затирается."""
+        server = {"shopMetrics": {"pickers": {"2026-10": {"V-1": {"9": {"display": None}}}}}}
+        draft = {"shopMetrics": {"pickers": {"2026-10": {"V-1": {"9": {"display": 100}}}}}}
+        path = "shopMetrics.pickers.2026-10.V-1.9.display"
+        # Как wtSoftProtectPendingLeaves + SoftSync merge
+        dirty = {path: True}
+        merged = self.merge(server, draft, dirty)
+        self.assertEqual(merged["shopMetrics"]["pickers"]["2026-10"]["V-1"]["9"]["display"], 100)
+        # После подтверждённой записи сервер = 100, dirty снят — соседнее окно получает 100
+        server2 = {"shopMetrics": {"pickers": {"2026-10": {"V-1": {"9": {"display": 100}}}}}}
+        draft2 = {"shopMetrics": {"pickers": {"2026-10": {"V-1": {"9": {"display": 100}}}}}}
+        merged2 = self.merge(server2, draft2, {})
+        self.assertEqual(merged2["shopMetrics"]["pickers"]["2026-10"]["V-1"]["9"]["display"], 100)
 
     def test_neighbor_leaf_takes_server(self):
         server = {
