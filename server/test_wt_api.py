@@ -1170,6 +1170,41 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("return workMetricPeopleForTab(\"shop\", metricId, catId)", src)
         self.assertIn("return workMetricPeopleForTab(deptCode, metricId, tabId", src)
 
+    def test_client_territory_work_tables_use_home_fact_dept(self):
+        """Хаб и dwork/office читают факты по home сотрудника, колонки — по assignments."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function metricFactDeptForEmployee(", src)
+        self.assertIn("function diagnoseMetricFactDeptSplit(", src)
+        hub = src[
+            src.find("function renderTerritoryMetrics(")
+            : src.find("function renderDeptWorkMetrics(")
+        ]
+        self.assertIn("metricFactDeptForEmployee(employeeId, spec.departmentId", hub)
+        dwork = src[
+            src.find("function renderDeptWorkMetrics(")
+            : src.find("function fillDeptWorkTable(")
+        ]
+        self.assertIn("metricFactDeptForEmployee(employeeId, dept)", dwork)
+        self.assertIn("factDeptFn:", dwork)
+        fill = src[
+            src.find("function fillDeptWorkTable(")
+            : src.find("function fillDeptWorkTable(") + 1200
+        ]
+        self.assertIn("isGenericMetricsDept(dept)", fill)
+        self.assertIn("metricFactDeptForEmployee(employeeId, dept)", fill)
+        office = src[
+            src.find("function renderDeptMetrics(")
+            : src.find("function deptWorkDom(")
+        ]
+        self.assertIn("metricFactDeptForEmployee(employeeId, dept)", office)
+        # Назначения колонок не подменены home-фильтром в peopleAssigned.
+        people = src[
+            src.find("function peopleAssignedToMetricOnTab(")
+            : src.find("function employeeMatchesMetricAssignments(")
+        ]
+        self.assertIn("extra_employee_ids", people)
+        self.assertNotIn("metricFactDeptForEmployee", people)
+
     def test_client_shop_territory_assignment_isolation(self):
         """Магазин Володарского и Территория не смешиваются в назначениях и пулах сотрудников."""
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")

@@ -32701,7 +32701,13 @@ function renderDeptMetrics() {
     if (title) title.textContent = "Метрики — " + officialName(workspace());
     const workCard = document.getElementById("deptMetricsWorkCard");
     if (workCard) workCard.style.display = dept === "office" ? "" : "none";
-    if (dept === "office") fillDeptWorkTable(dept, "main", deptWorkDom("office"));
+    if (dept === "office") {
+        fillDeptWorkTable(dept, "main", deptWorkDom("office"), {
+            factDeptFn: function (employeeId) {
+                return metricFactDeptForEmployee(employeeId, dept);
+            }
+        });
+    }
 }
 
 function deptWorkDom(kind) {
@@ -32967,10 +32973,44 @@ function territoryHubFillViewTab(spec) {
     return "hub:" + ((spec && spec.id) || "office");
 }
 
+/**
+ * Склад фактов сотрудника Территории: основное подразделение (home).
+ * Подразделение/вкладка назначения метрики задают только место колонки в UI.
+ * Хаб и рабочие таблицы (dwork / office) должны использовать один и тот же factDept.
+ */
 function metricFactDeptForEmployee(employeeId, fallbackDept) {
     const home = employeeHomeDeptCode(employeeId);
     if (isGenericMetricsDept(home)) return home;
     return fallbackDept || "office";
+}
+
+/**
+ * Read-only: расхождение одной метрики за день между home-store и store рабочей группы.
+ * Ничего не переносит и не удаляет — только для диагностики.
+ * Возвращает { conflict, homeDept, hostDept, homeValue, hostValue } или null.
+ */
+function diagnoseMetricFactDeptSplit(employeeId, hostDept, day, metricId, month, submetricId) {
+    if (!employeeId || !hostDept || !isGenericMetricsDept(hostDept)) return null;
+    const homeDept = metricFactDeptForEmployee(employeeId, hostDept);
+    if (!homeDept || homeDept === hostDept) return null;
+    const m = month || selectedMonth;
+    const homeValue = getDeptMetricStored(homeDept, employeeId, day, metricId, m, submetricId);
+    const hostValue = getDeptMetricStored(hostDept, employeeId, day, metricId, m, submetricId);
+    const homeN = Number(homeValue || 0);
+    const hostN = Number(hostValue || 0);
+    if (!(Math.abs(homeN) >= 0.0005) && !(Math.abs(hostN) >= 0.0005)) return null;
+    if (Math.abs(homeN - hostN) < 0.0005) return null;
+    return {
+        conflict: true,
+        employeeId: String(employeeId),
+        homeDept: homeDept,
+        hostDept: String(hostDept),
+        day: Number(day) || day,
+        metricId: canonicalMetricId(metricId),
+        month: m,
+        homeValue: homeN,
+        hostValue: hostN
+    };
 }
 
 function territoryHubFields(spec) {
@@ -33157,7 +33197,12 @@ function renderDeptWorkMetrics() {
     const tab = currentDeptMetricTab(dept);
     hideShopOnlyMetricChrome();
     hideDriverStatementHost();
-    fillDeptWorkTable(dept, tab, deptWorkDom("work"));
+    // Факты — по home сотрудника (как в хабе); колонки — по assignments текущей вкладки.
+    fillDeptWorkTable(dept, tab, deptWorkDom("work"), {
+        factDeptFn: function (employeeId) {
+            return metricFactDeptForEmployee(employeeId, dept);
+        }
+    });
     syncDeptWorkAdminBar();
 }
 
@@ -33166,7 +33211,10 @@ function fillDeptWorkTable(dept, tab, ids, options) {
     const peopleOf = options.peopleFn || function (metricId) {
         return workMetricPeopleForTab(dept, metricId, tab);
     };
-    const factDeptOf = options.factDeptFn || function () { return dept; };
+    // Территория: единый factDept = home; иначе (магазин и пр.) — dept таблицы.
+    const factDeptOf = options.factDeptFn || (isGenericMetricsDept(dept)
+        ? function (employeeId) { return metricFactDeptForEmployee(employeeId, dept); }
+        : function () { return dept; });
     const wrap = document.getElementById(ids.wrap);
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
