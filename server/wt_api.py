@@ -4186,6 +4186,7 @@ def handle_put_state(environ):
         current_version = 0
     if expected != current_version:
         return json_bytes(conflict_body(state), "409 Conflict")
+    before_records = records_map(current_payload)
     try:
         stored, denied = prepare_put_payload(current_payload, payload, user)
     except PinPepperMissing:
@@ -4199,6 +4200,28 @@ def handle_put_state(environ):
         )
     if denied or stored is None:
         return json_bytes({"error": "forbidden"}, "403 Forbidden")
+    # Клиенту нужны только поднятые record_v — иначе следующий PUT со старым
+    # _wt_records затирает только что записанный лист через protect_wt_records.
+    after_records = records_map(stored)
+    record_updates: dict[str, Any] = {}
+    for path, meta in after_records.items():
+        if not isinstance(meta, dict):
+            continue
+        prev = before_records.get(path) if isinstance(before_records.get(path), dict) else None
+        try:
+            new_v = int(meta.get("v") or 0)
+        except (TypeError, ValueError):
+            new_v = 0
+        try:
+            old_v = int((prev or {}).get("v") or 0)
+        except (TypeError, ValueError):
+            old_v = 0
+        if new_v != old_v or prev is None:
+            record_updates[str(path)] = {
+                "v": new_v,
+                "updated_at": meta.get("updated_at") or "",
+                "updated_by": meta.get("updated_by") or "",
+            }
     updated_by = str(user.get("user_id") or "")[:120]
     if not db_configured():
         return db_unavailable()
@@ -4212,12 +4235,13 @@ def handle_put_state(environ):
             if row:
                 conn.commit()
                 version, updated_at, updated_by_row = row[0], row[1], row[2]
-                # Клиент после PUT читает только version — полный payload не отдаём (экономия сети/CPU).
+                # Полный payload не отдаём; record_updates — чтобы клиент не слал устаревший expected.
                 return json_bytes({
                     "ok": True,
                     "version": int(version or 0),
                     "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else (updated_at or ""),
                     "updated_by": updated_by_row or "",
+                    "record_updates": record_updates,
                 })
             latest = fetch_state(cur)
             conn.rollback()

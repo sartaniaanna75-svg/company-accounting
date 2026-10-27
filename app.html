@@ -11011,15 +11011,19 @@ function putServerStateOnce() {
     const tAll = wtSaveNow();
     let payload;
     let bodyText;
+    // Сразу блокируем SoftSync: иначе poll поднимет version между stringify и fetch → ложный 409.
+    wtPutInFlight = true;
     try {
         const tPrep = wtSaveNow();
         payload = payloadForServerPut();
         wtSaveMark("prepare-payload", tPrep);
     } catch (err) {
+        wtPutInFlight = false;
         toast("Не удалось подготовить данные для сохранения.", "error");
         return Promise.resolve(false);
     }
     if (!payload) {
+        wtPutInFlight = false;
         // Пустой срез при реальных локальных правках — не маскируем как «сохранено».
         try {
             if (wtLastLoadedPayload && appData) {
@@ -11036,10 +11040,16 @@ function putServerStateOnce() {
     try { wtSoftProtectPendingLeaves(); } catch (err) {}
     try {
         const tStr = wtSaveNow();
-        // Фиксируем version в момент сборки тела — soft-poll не должен менять её во время PUT.
-        bodyText = JSON.stringify({ version: wtStateVersion, payload: payload });
+        // Актуальная version после блокировки SoftSync (не устаревшая с начала редактирования).
+        const putVersion = Math.max(
+            Number(wtStateVersion) || 0,
+            Number(wtSoftAppliedVersion) || 0
+        );
+        wtStateVersion = putVersion;
+        bodyText = JSON.stringify({ version: putVersion, payload: payload });
         wtSaveMark("stringify-body (" + Math.round((bodyText.length || 0) / 1024) + " KB)", tStr);
     } catch (err) {
+        wtPutInFlight = false;
         toast("Не удалось подготовить данные для сохранения.", "error");
         return Promise.resolve(false);
     }
@@ -11062,7 +11072,6 @@ function putServerStateOnce() {
     if (ctrl) fetchOpts.signal = ctrl.signal;
     const tNet = wtSaveNow();
     const sentSliceKeys = wtPutPayloadOverride ? Object.keys(payload) : null;
-    wtPutInFlight = true;
     return fetch("/api/state", fetchOpts).then(function (res) {
         wtSaveMark("network-PUT", tNet);
         if (res.status === 401) return handleWtSaveUnauthorized();
@@ -11100,6 +11109,32 @@ function putServerStateOnce() {
         return res.json().then(function (state) {
             wtSaveMark("parse-response", tParse);
             if (state && state.version != null) wtStateVersion = Number(state.version) || wtStateVersion;
+            if (state && state.version != null) {
+                const putV = Number(state.version);
+                if (Number.isFinite(putV) && putV > Number(wtSoftAppliedVersion || 0)) {
+                    wtSoftAppliedVersion = putV;
+                }
+            }
+            /* Сервер поднял record_v при PUT — иначе следующий срез шлёт устаревший
+               _wt_records и protect_wt_records откатывает только что сохранённый каталог. */
+            try {
+                const updates = state && state.record_updates;
+                if (updates && typeof updates === "object" && appData) {
+                    if (!appData[WT_RECORDS_KEY] || typeof appData[WT_RECORDS_KEY] !== "object") {
+                        appData[WT_RECORDS_KEY] = {};
+                    }
+                    Object.keys(updates).forEach(function (path) {
+                        const meta = updates[path];
+                        if (!path || !meta || typeof meta !== "object") return;
+                        const v = Number(meta.v);
+                        appData[WT_RECORDS_KEY][path] = {
+                            v: Number.isFinite(v) && v >= 0 ? v : 0,
+                            updated_at: meta.updated_at || new Date().toISOString(),
+                            updated_by: meta.updated_by || ""
+                        };
+                    });
+                }
+            } catch (errRec) {}
             stripLocalSecretsAfterSave();
             clearQueuedEmployeeRemovals();
             try {
@@ -11111,6 +11146,9 @@ function putServerStateOnce() {
                             wtLastLoadedPayload[key] = wtCloneJson(appData[key]);
                         } catch (err) {}
                     });
+                    if (appData[WT_RECORDS_KEY]) {
+                        wtLastLoadedPayload[WT_RECORDS_KEY] = wtCloneJson(appData[WT_RECORDS_KEY]);
+                    }
                 } else {
                     wtLastLoadedPayload = wtCloneJson(appData);
                 }
@@ -11340,8 +11378,11 @@ function wtDomainWriterApplyBatchLocal(results) {
 function wtDomainWriterSave(options) {
     options = options || {};
     if (!wtServerMode || !appData) return Promise.resolve(false);
+    // Срез PUT (справочник метрик и т.п.) всегда через PUT — иначе OPS шлёт целый
+    // shopMetricCatalog/shopPayroll и ловит ложный conflict с гигантским JSON.
+    const useSlicePut = wtPutPayloadOverride != null;
     // Soft-apply перерисовывает UI: нельзя сообщать «успех» без записи на сервер.
-    if (wtSoftApplying && !options.forcePut) {
+    if (wtSoftApplying && !options.forcePut && !useSlicePut) {
         const softRetry = Number(options._softRetry || 0);
         if (softRetry >= 8) {
             toast("Сохранение отложено из‑за обновления экрана. Повторите ввод или сохраните ещё раз.", "error");
@@ -11358,7 +11399,7 @@ function wtDomainWriterSave(options) {
             }, 40);
         });
     }
-    if (wtOpsBlockIncidentalPut && wtOpsUiEnabled() && !options.ops && !options.forcePut) {
+    if (wtOpsBlockIncidentalPut && wtOpsUiEnabled() && !options.ops && !options.forcePut && !useSlicePut) {
         return Promise.resolve(true);
     }
     if (wtPutPaused && wtKeepUnsavedDraft) {
@@ -11376,7 +11417,7 @@ function wtDomainWriterSave(options) {
         }
         return Promise.resolve(false);
     }
-    if (options.forcePut || !wtOpsUiEnabled(true)) {
+    if (options.forcePut || useSlicePut || !wtOpsUiEnabled(true)) {
         // SoftSync параллельно: зафиксировать dirty до асинхронного PUT.
         try { wtSoftProtectPendingLeaves(); } catch (err) {}
         const jobPut = wtPutChain.then(function () { return putServerStateOnce(); });
@@ -12153,6 +12194,10 @@ function wtSaveRecordOp(path, value, options) {
  */
 function wtFormatConflictValue(value) {
     if (value == null) return "—";
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (typeof value === "string") {
+        return value.length > 120 ? (value.slice(0, 117) + "…") : value;
+    }
     if (typeof value === "object") {
         try {
             if (value.status != null || value.hours != null || value.lateMinutes != null) {
@@ -12161,11 +12206,24 @@ function wtFormatConflictValue(value) {
                 if (value.hours != null && value.hours !== "") bits.push(String(value.hours) + "ч");
                 if (value.lateMinutes) bits.push("оп:" + String(value.lateMinutes));
                 if (value.early730) bits.push("7:30");
-                return bits.length ? bits.join(" / ") : JSON.stringify(value);
+                return bits.length ? bits.join(" / ") : "ячейка табеля";
             }
-            return JSON.stringify(value);
+            if (Array.isArray(value)) {
+                return "список (" + value.length + " элем.)";
+            }
+            const keys = Object.keys(value);
+            // Справочник метрик / KPI / крупные объекты — без сырого JSON в диалоге.
+            if (keys.indexOf("items") !== -1 || keys.indexOf("kpiDefs") !== -1
+                || keys.indexOf("rows") !== -1 || keys.indexOf("assignments") !== -1
+                || keys.length > 8) {
+                return "крупный блок данных («" + keys.slice(0, 4).join("», «")
+                    + (keys.length > 4 ? "»…" : "»") + ")";
+            }
+            const raw = JSON.stringify(value);
+            if (raw.length > 160) return "данные (" + keys.length + " полей)";
+            return raw;
         } catch (err) {
-            return String(value);
+            return "данные";
         }
     }
     return String(value);
@@ -12175,13 +12233,15 @@ function wtResolveRecordConflict(conflict) {
     if (!conflict || conflict.status !== "conflict") {
         return Promise.resolve("cancel");
     }
+    const pathLabel = conflict.path ? String(conflict.path) : "запись";
     const serverTxt = wtFormatConflictValue(conflict.server_value);
     const yoursTxt = wtFormatConflictValue(conflict.your_value);
-    const msg = "Запись уже изменил другой пользователь.\n\n"
-        + "На сервере сейчас: " + serverTxt + "\n"
-        + "Ваше значение: " + yoursTxt + "\n\n"
-        + "OK — заменить серверное значение вашим (будет повторная проверка).\n"
-        + "Отмена — оставить серверное значение, ваш ввод останется черновиком на экране.";
+    const msg = "Эту запись уже изменили с другого окна или устройства.\n"
+        + "Путь: " + pathLabel + "\n\n"
+        + "На сервере: " + serverTxt + "\n"
+        + "Ваш вариант: " + yoursTxt + "\n\n"
+        + "OK — записать ваш вариант (с повторной проверкой).\n"
+        + "Отмена — оставить серверное значение; ваш ввод останется черновиком на экране.";
     const replace = window.confirm(msg);
     if (!replace) return Promise.resolve("server");
     return wtSaveRecordOp(conflict.path, conflict.your_value, {

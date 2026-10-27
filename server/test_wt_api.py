@@ -546,7 +546,7 @@ class StoreApiTests(unittest.TestCase):
         self.assertNotIn("pin_hash", raw)
 
     def test_put_success_omits_full_payload(self):
-        """Успешный PUT не возвращает весь JSON — только version (ускорение сети)."""
+        """Успешный PUT не возвращает весь appData — только version (+ record_updates)."""
         cookie, _ = self.login()
         version = self.current_version(cookie)
         status, data, raw, _ = call(
@@ -558,8 +558,14 @@ class StoreApiTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), status)
         self.assertEqual(data["version"], version + 1)
         self.assertNotIn("payload", data)
-        self.assertNotIn("shopMetrics", raw)
+        # Полный снимок не отдаём; record_updates — карта v для клиента (пути могут содержать shopMetrics.*).
+        self.assertIn("record_updates", data)
+        self.assertIsInstance(data["record_updates"], dict)
+        self.assertNotIn('"payload"', raw)
+        self.assertNotIn('"shopMetrics": {', raw)
+        self.assertNotIn('"facts"', raw)
         self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["t"], 1)
+        self.assertIn("shopMetrics.facts.t", data["record_updates"])
 
     def test_stale_version_does_not_overwrite(self):
         cookie, _ = self.login()
@@ -3364,6 +3370,8 @@ class StoreApiTests(unittest.TestCase):
             self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"],
             ["m_keep"],
         )
+        # После первого PUT у finance/metrics уже есть record_v — без актуального
+        # _wt_records protect_wt_records откатит лист (как в боевом клиенте с record_updates).
         status, *_ = call(
             "PUT",
             "/api/state",
@@ -3379,6 +3387,7 @@ class StoreApiTests(unittest.TestCase):
                         "object_id": "farea_shop",
                     }]},
                     "shopMetrics": {"workAccess": {"2026-10": {"e_shop2": ["m_two"]}}},
+                    "_wt_records": self.store["payload"].get("_wt_records") or {},
                 },
             },
             cookie=cookie,
@@ -3907,7 +3916,10 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("window.confirm", save)
         self.assertIn("function metricCatalogPutSlice(", save)
         self.assertIn("function saveAppWithPayloadSlice(", save)
-        self.assertIn("wtSaveTimingEnabled", save)
+        self.assertIn("wtSaveMark", save)
+        self.assertIn("useSlicePut", save)
+        self.assertIn("record_updates", save)
+        self.assertIn("wtSaveTimingEnabled", src)
         # Передаём функцию-сборщик, не готовый объект — иначе после 409 уходит устаревший срез.
         self.assertIn("saveAppWithPayloadSlice(metricCatalogPutSlice)", src)
         self.assertNotIn("saveAppWithPayloadSlice(metricCatalogPutSlice())", src)
