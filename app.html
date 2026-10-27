@@ -11404,9 +11404,20 @@ function wtDomainWriterApplyBatchLocal(results) {
     results.forEach(function (row) {
         if (!row || row.status !== "saved" || !row.path) return;
         try {
-            if (appData) wtSetByPath(appData, row.path, row.value);
+            // Не затираем appData ответом более раннего запроса, если пользователь
+            // уже успел изменить тот же путь (вторая подпапка, правка метрики и т.п.).
+            let localNewer = false;
+            if (appData) {
+                const local = wtGetByPath(appData, row.path);
+                if (!wtJsonCanonEqual(local, row.value)) {
+                    localNewer = true;
+                } else {
+                    wtSetByPath(appData, row.path, row.value);
+                }
+            }
             if (row.record_v != null) wtSetLocalRecordMeta(row.path, row.record_v);
             if (wtLastLoadedPayload) {
+                // База для следующего diff — то, что сервер подтвердил.
                 wtSetByPath(wtLastLoadedPayload, row.path, row.value);
                 if (!wtLastLoadedPayload[WT_RECORDS_KEY]) wtLastLoadedPayload[WT_RECORDS_KEY] = {};
                 wtLastLoadedPayload[WT_RECORDS_KEY][row.path] = {
@@ -11414,9 +11425,37 @@ function wtDomainWriterApplyBatchLocal(results) {
                     updated_at: new Date().toISOString()
                 };
             }
-            try { wtSoftClearDirty(row.path); } catch (err) {}
+            if (localNewer) {
+                try { wtSoftMarkDirty(row.path); } catch (err) {}
+            } else {
+                try { wtSoftClearDirty(row.path); } catch (err) {}
+            }
         } catch (err) {}
     });
+}
+
+/** Собрать OPS из листьев с актуальным expected_v (и value из appData при наличии пути). */
+function wtDomainWriterOpsFromLeaves(leaves, preferLiveValues) {
+    const out = [];
+    (leaves || []).forEach(function (leaf) {
+        if (!leaf || !leaf.path) return;
+        const path = leaf.path;
+        let value = leaf.value;
+        if (preferLiveValues && appData) {
+            try {
+                const live = wtGetByPath(appData, path);
+                if (live !== undefined) value = live;
+            } catch (err) {}
+        }
+        const expected = leaf.expected_v != null ? Number(leaf.expected_v) : wtRecordVersion(path);
+        try { wtSoftMarkDirty(path); } catch (err) {}
+        out.push({
+            path: path,
+            expected_v: Number.isFinite(expected) && expected >= 0 ? expected : 0,
+            value: value === undefined ? null : value
+        });
+    });
+    return out;
 }
 
 /**
@@ -11476,22 +11515,26 @@ function wtDomainWriterSave(options) {
         return jobPut;
     }
 
-    let leaves = options.ops;
-    if (!leaves) {
-        const base = wtLastLoadedPayload || {};
-        leaves = wtCollectChangedLeaves(base, appData);
+    // Предварительно пометить dirty по текущему diff — SoftSync не сотрёт черновик,
+    // пока запрос ждёт wtOpsChain. Сами OPS собираем заново внутри очереди.
+    let prelimLeaves = options.ops;
+    if (!prelimLeaves) {
+        try {
+            prelimLeaves = wtCollectChangedLeaves(wtLastLoadedPayload || {}, appData);
+        } catch (err) {
+            prelimLeaves = [];
+        }
     }
-    // Сразу пометить dirty — SoftSync не сотрёт черновик, пока batch в полёте.
     try {
-        if (leaves && leaves.length) {
-            leaves.forEach(function (leaf) {
+        if (prelimLeaves && prelimLeaves.length) {
+            prelimLeaves.forEach(function (leaf) {
                 if (leaf && leaf.path) wtSoftMarkDirty(leaf.path);
             });
         } else {
             wtSoftProtectPendingLeaves();
         }
     } catch (err) {}
-    if (!leaves.length) {
+    if (!(prelimLeaves && prelimLeaves.length) && !(options.ops && options.ops.length)) {
         // Removals сотрудников всё ещё через PUT-очередь, если есть.
         if (appData && Array.isArray(appData.employeeRemovals) && appData.employeeRemovals.length) {
             const jobRem = wtPutChain.then(function () { return putServerStateOnce(); });
@@ -11524,24 +11567,43 @@ function wtDomainWriterSave(options) {
         } catch (err) {}
         return Promise.resolve(true);
     }
-    if (leaves.length > 200) {
-        toast("Слишком много изменений за один раз (" + leaves.length + "). Сохраните частями или обновите страницу.", "error");
-        return Promise.resolve(false);
-    }
 
-    const ops = leaves.map(function (leaf) {
-        const path = leaf.path;
-        const expected = leaf.expected_v != null ? Number(leaf.expected_v) : wtRecordVersion(path);
-        try { wtSoftMarkDirty(path); } catch (err) {}
-        return {
-            path: path,
-            expected_v: Number.isFinite(expected) && expected >= 0 ? expected : 0,
-            value: leaf.value === undefined ? null : leaf.value
-        };
-    });
     const atomic = !!options.atomic;
     const idem = options.idempotency_key || wtNewIdempotencyKey();
+    const explicitOps = options.ops || null;
     const job = wtOpsChain.then(function () {
+        // Актуальный diff / версии — только после предыдущего batch (иначе гонка expected_v и устаревшее тело).
+        let leaves;
+        try {
+            if (explicitOps && explicitOps.length) {
+                leaves = explicitOps.map(function (leaf) {
+                    const path = leaf && leaf.path;
+                    let value = leaf ? leaf.value : null;
+                    if (path && appData) {
+                        try {
+                            const live = wtGetByPath(appData, path);
+                            if (live !== undefined) value = live;
+                        } catch (errLive) {}
+                    }
+                    return {
+                        path: path,
+                        value: value,
+                        expected_v: path ? wtRecordVersion(path) : 0
+                    };
+                }).filter(function (leaf) { return leaf && leaf.path; });
+            } else {
+                leaves = wtCollectChangedLeaves(wtLastLoadedPayload || {}, appData);
+            }
+        } catch (err) {
+            toast("Не удалось подготовить данные для сохранения.", "error");
+            return false;
+        }
+        if (!leaves || !leaves.length) return true;
+        if (leaves.length > 200) {
+            toast("Слишком много изменений за один раз (" + leaves.length + "). Сохраните частями или обновите страницу.", "error");
+            return false;
+        }
+        const ops = wtDomainWriterOpsFromLeaves(leaves, false);
         let bodyText;
         try {
             bodyText = JSON.stringify({
@@ -11586,15 +11648,27 @@ function wtDomainWriterSave(options) {
                 }
                 if (res.status === 409 && body && body.error === "conflict" && !body.results) {
                     // Атомарный batch: один конфликт — как leaf conflict по первому пути.
+                    const conflictPath = body.path || (ops[0] && ops[0].path);
+                    let yourLive = body.your_value;
+                    try {
+                        if (conflictPath && appData) yourLive = wtGetByPath(appData, conflictPath);
+                    } catch (errY) {}
                     return wtResolveRecordConflict({
                         status: "conflict",
-                        path: body.path || (ops[0] && ops[0].path),
+                        path: conflictPath,
                         server_v: body.server_v,
                         server_value: body.server_value,
-                        your_value: body.your_value,
+                        your_value: yourLive,
                         your_expected_v: body.your_expected_v
                     }).then(function (choice) {
-                        if (choice === "yours") return wtDomainWriterSave({ ops: ops, atomic: atomic });
+                        if (choice === "yours") {
+                            // Не вызывать save внутри текущего звена wtOpsChain — взаимная блокировка.
+                            // Свежий diff поставится в очередь после завершения этого batch.
+                            Promise.resolve().then(function () {
+                                try { wtDomainWriterSave({ atomic: atomic }); } catch (errR) {}
+                            });
+                            return true;
+                        }
                         if (choice === "server") {
                             try {
                                 if (appData && body.path) wtSetByPath(appData, body.path, body.server_value);
@@ -11606,6 +11680,7 @@ function wtDomainWriterSave(options) {
                             } catch (err) {}
                             return true;
                         }
+                        // cancel: appData не трогаем — черновик остаётся на экране.
                         toast("Конфликт не разрешён. Черновик на экране не записан.", "error");
                         return false;
                     });
@@ -11636,16 +11711,28 @@ function wtDomainWriterSave(options) {
                     try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
                     return true;
                 }
-                // Независимые конфликты — по одному.
+                // Независимые конфликты — по одному. cancel/server не затирают чужие пути.
                 let chain = Promise.resolve(true);
+                let needRetryYours = false;
                 conflicts.forEach(function (c) {
                     chain = chain.then(function () {
+                        let yourLive = c.your_value;
+                        try {
+                            if (c.path && appData) {
+                                const live = wtGetByPath(appData, c.path);
+                                if (live !== undefined) yourLive = live;
+                            }
+                        } catch (errL) {}
+                        if (yourLive == null) {
+                            const fromOps = ops.find(function (o) { return o.path === c.path; });
+                            if (fromOps) yourLive = fromOps.value;
+                        }
                         return wtResolveRecordConflict({
                             status: "conflict",
                             path: c.path,
                             server_v: c.server_v,
                             server_value: c.server_value,
-                            your_value: c.your_value != null ? c.your_value : (ops.find(function (o) { return o.path === c.path; }) || {}).value,
+                            your_value: yourLive,
                             your_expected_v: c.your_expected_v
                         }).then(function (choice) {
                             if (choice === "server") {
@@ -11655,6 +11742,11 @@ function wtDomainWriterSave(options) {
                                     if (wtLastLoadedPayload) wtSetByPath(wtLastLoadedPayload, c.path, c.server_value);
                                     wtSoftClearDirty(c.path);
                                 } catch (err) {}
+                            } else if (choice === "yours") {
+                                needRetryYours = true;
+                                try { if (c.path) wtSoftMarkDirty(c.path); } catch (errD) {}
+                            } else {
+                                try { if (c.path) wtSoftMarkDirty(c.path); } catch (errD) {}
                             }
                             return true;
                         });
@@ -11662,6 +11754,11 @@ function wtDomainWriterSave(options) {
                 });
                 return chain.then(function () {
                     stripLocalSecretsAfterSave();
+                    if (needRetryYours) {
+                        Promise.resolve().then(function () {
+                            try { wtDomainWriterSave({ atomic: atomic }); } catch (errR) {}
+                        });
+                    }
                     return saved.length > 0 || conflicts.length > 0;
                 });
             });
@@ -27100,11 +27197,18 @@ function reopenShopKpiDef(kpiId) {
     next.submetricId = next.submetric_id;
     // Старые версии и assignments не изменяются — только новая строка в kpiDefs.
     payroll.kpiDefs.push(next);
-    saveApp();
     const view = payrollViewFromSection();
-    payrollRulesModeByView[view.id] = "active";
-    toast("Правило восстановлено с " + monthLabel(monthKey) + ". Назначьте сотрудникам галочкой.", "success");
-    renderPayrollView(view);
+    Promise.resolve(saveApp()).then(function (ok) {
+        if (ok === false) {
+            toast("Восстановление KPI не записано на сервер. Правило на экране — проверьте сохранение.", "error");
+            payrollRulesModeByView[view.id] = "archive";
+            renderPayrollView(view);
+            return;
+        }
+        payrollRulesModeByView[view.id] = "active";
+        toast("Правило восстановлено с " + monthLabel(monthKey) + ". Назначьте сотрудникам галочкой.", "success");
+        renderPayrollView(view);
+    });
 }
 
 function shopCheckKpiSettingsHtml(def) {
