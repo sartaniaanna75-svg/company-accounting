@@ -10769,6 +10769,15 @@ function buildStaffPutPayload() {
             delete pay.kpiDefs;
             delete pay.assignments;
         }
+        // Без salary GET не отдаёт payroll — ensureShopPayroll() даёт пустые salaries/rules.
+        // Их нельзя слать: сервер видел «затирание» закрытых полей → ложный 403.
+        if (!userHasPerm("salary", "edit") && pay && typeof pay === "object") {
+            delete pay.salaries;
+            delete pay.rules;
+            delete pay.manual;
+            delete pay.sharedBudgets;
+            delete pay.sharedBudget;
+        }
         out.shopPayroll = pay;
     }
     if (userHasPerm("salary", "edit") && appData.salary) out.salary = appData.salary;
@@ -10911,13 +10920,20 @@ function metricCatalogPutSlice() {
             if (Object.keys(territory).length) out.deptMetrics = territory;
         }
     }
-    /* syncPayrollMetricFromCatalog трогает shopPayroll.metrics; деньги KPI не шлём. */
+    /* syncPayrollMetricFromCatalog трогает shopPayroll.metrics; деньги KPI и оклады не шлём без salary. */
     if (codes.indexOf("shop") !== -1 && appData && appData.shopPayroll
         && (userHasPerm("salary", "edit") || metricSetup)) {
         const pay = wtCloneJson(appData.shopPayroll);
         if (!isAppAdmin() && pay && typeof pay === "object") {
             delete pay.kpiDefs;
             delete pay.assignments;
+        }
+        if (!userHasPerm("salary", "edit") && pay && typeof pay === "object") {
+            delete pay.salaries;
+            delete pay.rules;
+            delete pay.manual;
+            delete pay.sharedBudgets;
+            delete pay.sharedBudget;
         }
         out.shopPayroll = pay;
     }

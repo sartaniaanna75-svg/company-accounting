@@ -1487,9 +1487,26 @@ class StoreApiTests(unittest.TestCase):
         cookie, _ = self.login("usr_dir", "4444")
         version = int(self.store["version"])
         before = json.loads(json.dumps(self.store["payload"]))
-        cases = [
+        # rate без salary: PUT 200, поле игнорируется (как _overlay_open), данные не меняются.
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": version,
+                "payload": {
+                    "workspaces": [{"code": "shop", "employees": [{"id": "e_shop", "name": "Касса", "rate": 1}]}]
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(self.store["payload"], before)
+        shop_before = next(w for w in before["workspaces"] if w["code"] == "shop")
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        self.assertEqual(shop["employees"][0].get("rate"), shop_before["employees"][0].get("rate"))
+        version = int(self.store["version"])
+        forbid_cases = [
             {"workspaces": [{"code": "warehouse", "employees": [{"id": "e_wh", "name": "Чужой"}]}]},
-            {"workspaces": [{"code": "shop", "employees": [{"id": "e_shop", "name": "Касса", "rate": 1}]}]},
             {"workspaces": [{"code": "shop", "employees": [
                 {"id": "e_shop", "name": "Касса", "employee_id": "e_other"},
                 {"id": "e_new", "name": "Не должен появиться", "employee_id": "e_new", "rate": 900},
@@ -1497,7 +1514,7 @@ class StoreApiTests(unittest.TestCase):
             {"workspaces": [{"code": "shop", "employees": [{"id": "e_new", "name": "С пин", "pin": "9999"}]}]},
             {"users": [{"user_id": "usr_dir", "role": "admin", "pin": "0000"}]},
         ]
-        for body in cases:
+        for body in forbid_cases:
             status, data, *_ = call(
                 "PUT",
                 "/api/state",
@@ -2074,6 +2091,140 @@ class StoreApiTests(unittest.TestCase):
         }
         self.assertIn("m_setup_new", ids)
         self.assertEqual(self.store["payload"].get("shopPayroll"), before_pay)
+
+    def test_metrics_setup_default_ensure_shop_payroll_does_not_403(self):
+        """Клиентский ensureShopPayroll(): salaries/rules пустые при metricsSetup без salary."""
+        self._seed_metric_access()
+        pay = self.store["payload"].setdefault("shopPayroll", {})
+        if not isinstance(pay, dict):
+            pay = {}
+            self.store["payload"]["shopPayroll"] = pay
+        pay["salaries"] = [{"id": "e_shop", "rate": 1500}]
+        pay["rules"] = [{"id": "r_keep", "name": "Правило", "bonus": 100}]
+        pay["manual"] = {"e_shop": {"bonus": 5}}
+        pay["kpiDefs"] = [{"id": "k_keep", "bonus": 50}]
+        before_pay = json.loads(json.dumps(pay))
+        cookie = self._add_shop_manager(
+            "usr_setup_defpay",
+            {
+                "metricsSetup": "edit",
+                "metricsInput": "edit",
+                "timesheet": "edit",
+            },
+        )
+        items = list((self.store["payload"].get("shopMetricCatalog") or {}).get("items") or [])
+        items = [row for row in items if not (isinstance(row, dict) and row.get("id") == "m_defpay")]
+        items.append({
+            "id": "m_defpay",
+            "name": "Метрика с дефолтным payroll",
+            "department_id": "shop",
+            "active": True,
+            "assignments": [],
+        })
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": items},
+                    "shopPayroll": {
+                        "departmentId": "shop",
+                        "salaries": [],
+                        "rules": [],
+                        "manual": {},
+                        "metrics": [{"id": "m_defpay", "name": "Метрика с дефолтным payroll"}],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        ids = {
+            str(row.get("id"))
+            for row in (self.store["payload"].get("shopMetricCatalog") or {}).get("items") or []
+            if isinstance(row, dict)
+        }
+        self.assertIn("m_defpay", ids)
+        after_pay = self.store["payload"].get("shopPayroll") or {}
+        # Оклады, правила расчёта, manual и денежные KPI не затёрты.
+        self.assertEqual(after_pay.get("salaries"), before_pay.get("salaries"))
+        self.assertEqual(after_pay.get("rules"), before_pay.get("rules"))
+        self.assertEqual(after_pay.get("manual"), before_pay.get("manual"))
+        self.assertEqual(after_pay.get("kpiDefs"), before_pay.get("kpiDefs"))
+
+    def test_metrics_setup_ops_cannot_wipe_salary_fields(self):
+        """metricsSetup без salary: OPS/batch не чистят salaries/rules и не меняют rate."""
+        self._seed_metric_access()
+        pay = self.store["payload"].setdefault("shopPayroll", {})
+        pay["salaries"] = [{"id": "e_shop", "rate": 1500}]
+        pay["rules"] = [{"id": "r1", "name": "Правило", "bonus": 100}]
+        pay["manual"] = {"e_shop": {"bonus": 5}}
+        before_pay = json.loads(json.dumps(pay))
+        shop = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        before_rate = shop["employees"][0].get("rate")
+        cookie = self._add_shop_manager(
+            "usr_setup_ops_sal",
+            {"metricsSetup": "edit", "metricsInput": "edit", "timesheet": "edit"},
+        )
+        for path, value in (
+            ("shopPayroll.salaries", []),
+            ("shopPayroll.rules", []),
+            ("shopPayroll.manual", {}),
+            ("salary", {}),
+            ("salary.2026-10.e_shop.rate", 1),
+        ):
+            st, data, *_ = call(
+                "POST",
+                "/api/state/op",
+                {"op": {"path": path, "expected_v": 0, "value": value}},
+                cookie=cookie,
+            )
+            self.assertTrue(st.startswith("403"), "%s %s" % (path, st))
+            self.assertEqual(data.get("error"), "forbidden")
+            self.assertEqual(self.store["payload"].get("shopPayroll"), before_pay)
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "workspaces.shop.employees",
+                    "expected_v": 0,
+                    "value": [{"id": "e_shop", "name": "Касса", "rate": 1}],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        shop_after = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "shop")
+        self.assertEqual(shop_after["employees"][0].get("rate"), before_rate)
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [
+                    {"path": "shopPayroll.salaries", "expected_v": 0, "value": []},
+                    {
+                        "path": "shopPayroll.metrics",
+                        "expected_v": 0,
+                        "value": [{"id": "m_op", "name": "Via OP"}],
+                    },
+                ]
+            },
+            cookie=cookie,
+        )
+        # atomic batch: salaries-op запрещён → пакет не применяется.
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+        self.assertEqual(
+            (self.store["payload"].get("shopPayroll") or {}).get("salaries"),
+            before_pay.get("salaries"),
+        )
+        self.assertNotEqual(
+            (self.store["payload"].get("shopPayroll") or {}).get("metrics"),
+            [{"id": "m_op", "name": "Via OP"}],
+        )
 
     def test_metrics_setup_without_perm_cannot_save_catalog(self):
         self._seed_metric_access()

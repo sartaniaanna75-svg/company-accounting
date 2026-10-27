@@ -760,7 +760,9 @@ def _closed_field_violations(current: Any, incoming: Any, allow_salary: bool = F
         cur = current if isinstance(current, dict) else {}
         for key, val in incoming.items():
             if _is_closed_key(str(key), allow_salary):
-                if not _same(val, cur.get(key)):
+                # Без права на зарплату закрытые поля в payload игнорируем (как _overlay_open),
+                # а не даём 403: клиент без salary часто шлёт пустой ensureShopPayroll().
+                if allow_salary and not _same(val, cur.get(key)):
                     return True
                 continue
             if _closed_field_violations(cur.get(key), val, allow_salary):
@@ -2847,13 +2849,18 @@ def ops_path_allowed(user: dict | None, path: str) -> bool:
     if top == "shopPayroll":
         if "shop" not in codes:
             return False
-        if not (
-            user_has_perm(user, "salary", "edit") or _can_edit_metric_setup(user)
-        ):
+        has_salary = user_has_perm(user, "salary", "edit")
+        has_setup = _can_edit_metric_setup(user)
+        if not (has_salary or has_setup):
             return False
         # Денежные KPI — только администратор (как в старом PUT).
         if len(parts) >= 2 and parts[1] in SHOP_PAYROLL_KPI_MONEY_KEYS:
             return False
+        # metricsSetup без salary: только связка metrics, не оклады/правила/ручные.
+        if not has_salary:
+            if len(parts) < 2:
+                return False
+            return parts[1] == "metrics"
         return True
     if top == "salary":
         return user_has_perm(user, "salary", "edit")
@@ -2902,6 +2909,53 @@ def ops_path_allowed(user: dict | None, path: str) -> bool:
     return False
 
 
+def _ops_closed_salary_value_forbidden(payload: dict, path: str, value: Any, user: dict) -> bool:
+    """
+    OPS пишет value как есть (без _overlay_open). Без salary нельзя подставить
+    закрытые зарплатные поля через workspaces.*.employees (ставка и т.п.).
+    Вершины shopPayroll/salary режет ops_path_allowed.
+    """
+    if is_app_admin(user) or user_has_perm(user, "salary", "edit"):
+        return False
+    parts = [p for p in str(path or "").split(".") if p]
+    if len(parts) >= 3 and parts[0] == "workspaces" and parts[2] == "employees":
+        current = get_path_value(payload, ".".join(parts[:3]))
+        # workspaces.shop.employees.<id>.rate
+        if len(parts) >= 5 and parts[4] in SALARY_FIELD_KEYS:
+            return True
+        if len(parts) == 3 and isinstance(value, list):
+            return _dept_employees_closed_salary_write(current, value)
+        if len(parts) >= 4 and isinstance(value, dict):
+            return _dept_employees_closed_salary_write(current, [value])
+    return False
+
+
+def _dept_employees_closed_salary_write(current: Any, incoming: Any) -> bool:
+    """True, если в OPS-value есть отличие по закрытым зарплатным полям."""
+    if not isinstance(incoming, list):
+        return True
+    current_list = current if isinstance(current, list) else []
+    by_id: dict[str, dict] = {}
+    for row in current_list:
+        if isinstance(row, dict) and row.get("id") not in (None, ""):
+            by_id[str(row.get("id"))] = row
+    for item in incoming:
+        if not isinstance(item, dict):
+            return True
+        emp_id = str(item.get("id") or "").strip()
+        existing = by_id.get(emp_id) if emp_id else None
+        for key, val in item.items():
+            if not _is_closed_key(str(key), False):
+                continue
+            if existing is None:
+                if not _closed_is_blank(val):
+                    return True
+                continue
+            if not _same(val, existing.get(key)):
+                return True
+    return False
+
+
 def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, dict | None]:
     """
     Применяет одну точечную операцию.
@@ -2923,6 +2977,9 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
             return None, {"error": "invalid path", "message": "Подразделение не найдено."}
     if not ops_path_allowed(user, path):
         return None, {"error": "forbidden", "message": "Недостаточно прав для этой записи."}
+    your_value = op.get("value")
+    if _ops_closed_salary_value_forbidden(payload, path, your_value, user):
+        return None, {"error": "forbidden", "message": "Недостаточно прав для этой записи."}
     try:
         expected_v = int(op.get("expected_v") if op.get("expected_v") is not None else -1)
     except (TypeError, ValueError):
@@ -2931,7 +2988,6 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
         return None, {"error": "invalid expected_v", "message": "Укажите expected_v (>= 0)."}
     server_v = record_version(payload, path)
     server_value = get_path_value(payload, path)
-    your_value = op.get("value")
     if expected_v != server_v:
         return None, {
             "error": "conflict",
@@ -3224,6 +3280,10 @@ SALARY_FIELD_KEYS = frozenset(
         "salaries",
         "rate",
         "rates",
+        "rules",
+        "manual",
+        "sharedBudgets",
+        "sharedBudget",
         "taxiDaily",
         "taxi",
         "payroll",
