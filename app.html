@@ -7812,6 +7812,28 @@ function nextPrefixedId(prefix, ids) {
     return prefix + "_" + String(max + 1).padStart(3, "0");
 }
 
+/**
+ * Id новой записи общего списка: два сотрудника, создающие записи одновременно,
+ * не должны получить одинаковый «следующий номер» (иначе слияние по id невозможно).
+ */
+function nextPrefixedUniqueId(prefix, ids) {
+    let max = 0;
+    const used = {};
+    const re = new RegExp("^" + prefix + "_(\\d+)(?:_[a-z0-9]+)?$");
+    (ids || []).forEach(function (id) {
+        const s = String(id || "");
+        used[s] = true;
+        const m = s.match(re);
+        if (m) max = Math.max(max, Number(m[1]));
+    });
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const tail = Math.random().toString(36).slice(2, 7).replace(/[^a-z0-9]/g, "") || String(Date.now() % 100000);
+        const id = prefix + "_" + String(max + 1).padStart(3, "0") + "_" + tail;
+        if (!used[id]) return id;
+    }
+    return prefix + "_" + String(max + 1).padStart(3, "0") + "_" + Date.now().toString(36);
+}
+
 function allEmployeeIdsFrom(data) {
     const ids = [];
     ((data || appData || {}).workspaces || []).forEach(function (w) {
@@ -7962,24 +7984,24 @@ function generateMetricId() {
     return nextPrefixedId("metric", ids);
 }
 
-function generateRevisionGroupId() {
+function generateRevisionGroupId(unique) {
     const ids = [];
     function collect(root) {
         ((root && root.groups) || []).forEach(function (g) { if (g && g.id) ids.push(g.id); });
     }
     collect(appData && appData.shopRevision);
     collect(appData && appData.deptRevisions && appData.deptRevisions.warehouse);
-    return nextPrefixedId("rg", ids);
+    return unique ? nextPrefixedUniqueId("rg", ids) : nextPrefixedId("rg", ids);
 }
 
-function generateRevisionFolderId() {
+function generateRevisionFolderId(unique) {
     const ids = [];
     function collect(root) {
         ((root && root.folders) || []).forEach(function (f) { if (f && f.id) ids.push(f.id); });
     }
     collect(appData && appData.shopRevision);
     collect(appData && appData.deptRevisions && appData.deptRevisions.warehouse);
-    return nextPrefixedId("rf", ids);
+    return unique ? nextPrefixedUniqueId("rf", ids) : nextPrefixedId("rf", ids);
 }
 
 function generateRevisionTaskId() {
@@ -11417,8 +11439,9 @@ function wtDomainWriterApplyBatchLocal(results) {
             }
             if (row.record_v != null) wtSetLocalRecordMeta(row.path, row.record_v);
             if (wtLastLoadedPayload) {
-                // База для следующего diff — то, что сервер подтвердил.
-                wtSetByPath(wtLastLoadedPayload, row.path, row.value);
+                // База для следующего diff — то, что сервер подтвердил. Отдельная копия: общий с appData
+                // объект менялся бы вместе с черновиком, и следующая правка списка не попала бы в diff.
+                wtSetByPath(wtLastLoadedPayload, row.path, row.value == null ? null : wtCloneJson(row.value));
                 if (!wtLastLoadedPayload[WT_RECORDS_KEY]) wtLastLoadedPayload[WT_RECORDS_KEY] = {};
                 wtLastLoadedPayload[WT_RECORDS_KEY][row.path] = {
                     v: Number(row.record_v) || 0,
@@ -11527,6 +11550,7 @@ function wtDomainWriterScheduleDeferred() {
             wtDomainWriterDeferredWaitWarned = false;
             return;
         }
+        try { wtOpsIncidentalWatchdog(); } catch (errW) {}
         const blocked = !!wtSoftApplying
             || (!!wtOpsBlockIncidentalPut && wtOpsUiEnabled() && wtPutPayloadOverride == null);
         if (blocked) {
@@ -11778,7 +11802,7 @@ function wtDomainWriterSave(options) {
             toast("Не удалось подготовить данные для сохранения.", "error");
             return false;
         }
-        return fetch("/api/state/op/batch", {
+        return wtOpsFetchWithTimeout("/api/state/op/batch", {
             method: "POST",
             credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
@@ -11811,42 +11835,20 @@ function wtDomainWriterSave(options) {
                 }
                 if (res.status === 409 && body && body.error === "conflict" && !body.results) {
                     // Атомарный batch: один конфликт — как leaf conflict по первому пути.
+                    // Диалог/повтор — только после выхода из звена wtOpsChain (иначе взаимная блокировка).
                     const conflictPath = body.path || (ops[0] && ops[0].path);
-                    let yourLive = body.your_value;
-                    try {
-                        if (conflictPath && appData) yourLive = wtGetByPath(appData, conflictPath);
-                    } catch (errY) {}
-                    return wtResolveRecordConflict({
-                        status: "conflict",
-                        path: conflictPath,
-                        server_v: body.server_v,
-                        server_value: body.server_value,
-                        your_value: yourLive,
-                        your_expected_v: body.your_expected_v
-                    }).then(function (choice) {
-                        if (choice === "yours") {
-                            // Не вызывать save внутри текущего звена wtOpsChain — взаимная блокировка.
-                            // Свежий diff поставится в очередь после завершения этого batch.
-                            Promise.resolve().then(function () {
-                                try { wtDomainWriterSave({ atomic: atomic }); } catch (errR) {}
-                            });
-                            return true;
-                        }
-                        if (choice === "server") {
-                            try {
-                                if (appData && body.path) wtSetByPath(appData, body.path, body.server_value);
-                                if (body.path && body.server_v != null) wtSetLocalRecordMeta(body.path, body.server_v);
-                                if (wtLastLoadedPayload && body.path) {
-                                    wtSetByPath(wtLastLoadedPayload, body.path, body.server_value);
-                                }
-                                if (body.path) wtSoftClearDirty(body.path);
-                            } catch (err) {}
-                            return true;
-                        }
-                        // cancel: appData не трогаем — черновик остаётся на экране.
-                        toast("Конфликт не разрешён. Черновик на экране не записан.", "error");
-                        return false;
-                    });
+                    try { if (conflictPath) wtSoftMarkDirty(conflictPath); } catch (errD) {}
+                    return {
+                        wtConflicts: [{
+                            path: conflictPath,
+                            server_v: body.server_v,
+                            server_value: body.server_value,
+                            your_value: body.your_value,
+                            your_expected_v: body.your_expected_v
+                        }],
+                        savedCount: 0,
+                        opsPaths: ops.map(function (o) { return o.path; })
+                    };
                 }
                 if (!res.ok && !(body && body.results)) {
                     toast((body && body.message) || ("Не удалось сохранить (HTTP " + res.status + "). Изменения не записаны."), "error");
@@ -11857,6 +11859,9 @@ function wtDomainWriterSave(options) {
                     return r && (r.status === "conflict" || r.error === "conflict");
                 });
                 const saved = results.filter(function (r) { return r && r.status === "saved"; });
+                const failed = results.filter(function (r) {
+                    return r && r.status !== "saved" && r.status !== "conflict" && r.error !== "conflict";
+                });
                 wtDomainWriterApplyBatchLocal(saved);
                 if (body && body.version != null) {
                     const opV = Number(body.version);
@@ -11865,73 +11870,422 @@ function wtDomainWriterSave(options) {
                         if (opV > Number(wtSoftAppliedVersion || 0)) wtSoftAppliedVersion = opV;
                     }
                 }
+                stripLocalSecretsAfterSave();
+                if (failed.length) {
+                    failed.forEach(function (r) {
+                        try { if (r.path) wtSoftMarkDirty(r.path); } catch (errF) {}
+                    });
+                    toast((failed[0] && failed[0].message) || "Часть изменений не записана на сервер.", "error");
+                }
                 if (!conflicts.length) {
                     if (!saved.length && !res.ok) {
                         toast((body && body.message) || "Изменения не записаны.", "error");
                         return false;
                     }
-                    stripLocalSecretsAfterSave();
                     try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
-                    return true;
+                    return !failed.length;
                 }
-                // Независимые конфликты — по одному. cancel/server не затирают чужие пути.
-                let chain = Promise.resolve(true);
-                let needRetryYours = false;
                 conflicts.forEach(function (c) {
-                    chain = chain.then(function () {
-                        let yourLive = c.your_value;
-                        try {
-                            if (c.path && appData) {
-                                const live = wtGetByPath(appData, c.path);
-                                if (live !== undefined) yourLive = live;
-                            }
-                        } catch (errL) {}
-                        if (yourLive == null) {
-                            const fromOps = ops.find(function (o) { return o.path === c.path; });
-                            if (fromOps) yourLive = fromOps.value;
-                        }
-                        return wtResolveRecordConflict({
-                            status: "conflict",
-                            path: c.path,
-                            server_v: c.server_v,
-                            server_value: c.server_value,
-                            your_value: yourLive,
-                            your_expected_v: c.your_expected_v
-                        }).then(function (choice) {
-                            if (choice === "server") {
-                                try {
-                                    if (appData) wtSetByPath(appData, c.path, c.server_value);
-                                    if (c.server_v != null) wtSetLocalRecordMeta(c.path, c.server_v);
-                                    if (wtLastLoadedPayload) wtSetByPath(wtLastLoadedPayload, c.path, c.server_value);
-                                    wtSoftClearDirty(c.path);
-                                } catch (err) {}
-                            } else if (choice === "yours") {
-                                needRetryYours = true;
-                                try { if (c.path) wtSoftMarkDirty(c.path); } catch (errD) {}
-                            } else {
-                                try { if (c.path) wtSoftMarkDirty(c.path); } catch (errD) {}
-                            }
-                            return true;
-                        });
-                    });
+                    try { if (c.path) wtSoftMarkDirty(c.path); } catch (errD) {}
                 });
-                return chain.then(function () {
-                    stripLocalSecretsAfterSave();
-                    if (needRetryYours) {
-                        Promise.resolve().then(function () {
-                            try { wtDomainWriterSave({ atomic: atomic }); } catch (errR) {}
-                        });
-                    }
-                    return saved.length > 0 || conflicts.length > 0;
-                });
+                return {
+                    wtConflicts: conflicts,
+                    savedCount: saved.length,
+                    failedCount: failed.length,
+                    opsPaths: ops.map(function (o) { return o.path; })
+                };
             });
-        }, function () {
-            toast("Нет соединения с сервером. Изменения не записаны.", "error");
+        }, function (err) {
+            if (err && err.name === "AbortError") {
+                toast("Сервер не ответил за " + Math.round(WT_OPS_FETCH_TIMEOUT_MS / 1000) + " с. Изменения могли не записаться — не обновляйте страницу, сохранение будет повторено.", "error");
+            } else {
+                toast("Нет соединения с сервером. Изменения не записаны.", "error");
+            }
             return false;
         });
     });
     wtOpsChain = job.then(function () { return true; }, function () { return true; });
-    return job;
+    // Разрешение конфликтов — вне звена очереди: повторные записи встают в wtOpsChain после него.
+    return job.then(function (outcome) {
+        if (outcome && typeof outcome === "object" && Array.isArray(outcome.wtConflicts)) {
+            return wtDomainWriterResolveConflicts(outcome, atomic, options._conflictChoice || "");
+        }
+        return outcome;
+    });
+}
+
+/** Тайм-аут сетевых OPS-запросов: зависший запрос не должен навсегда держать wtOpsChain. */
+const WT_OPS_FETCH_TIMEOUT_MS = 30000;
+
+function wtOpsFetchWithTimeout(url, opts) {
+    const canAbort = typeof AbortController !== "undefined";
+    const ctrl = canAbort ? new AbortController() : null;
+    const fetchOpts = Object.assign({}, opts || {});
+    if (ctrl) fetchOpts.signal = ctrl.signal;
+    return new Promise(function (resolve, reject) {
+        let settled = false;
+        const timer = setTimeout(function () {
+            if (settled) return;
+            settled = true;
+            try { if (ctrl) ctrl.abort(); } catch (err) {}
+            const abortErr = new Error("OPS timeout");
+            abortErr.name = "AbortError";
+            reject(abortErr);
+        }, WT_OPS_FETCH_TIMEOUT_MS);
+        fetch(url, fetchOpts).then(function (res) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(res);
+        }, function (err) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(err);
+        });
+    });
+}
+
+/**
+ * Общие списки: целый массив — один лист OPS. Устаревший локальный список не должен
+ * заменять серверный; при 409 — слияние по id только в безопасных случаях.
+ */
+const WT_KEYED_LIST_PATHS = {
+    "customerReturns.items": "return_id",
+    "shopRevision.groups": "id",
+    "shopRevision.folders": "id"
+};
+
+function wtKeyedListKey(path) {
+    return Object.prototype.hasOwnProperty.call(WT_KEYED_LIST_PATHS, path) ? WT_KEYED_LIST_PATHS[path] : "";
+}
+
+/** Сравнение записей без учёта пустых значений по умолчанию ("" / null / false / 0 / [] / {}). */
+function wtRecordSemNorm(value) {
+    if (Array.isArray(value)) return value.map(wtRecordSemNorm);
+    if (value && typeof value === "object") {
+        const out = {};
+        Object.keys(value).sort().forEach(function (k) {
+            const v = wtRecordSemNorm(value[k]);
+            if (v === undefined || v === null || v === "" || v === false || v === 0) return;
+            if (Array.isArray(v) && !v.length) return;
+            if (v && typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) return;
+            out[k] = v;
+        });
+        return out;
+    }
+    return value;
+}
+
+function wtRecordSemEqual(a, b) {
+    if (a == null || b == null) return a == null && b == null;
+    return wtJsonCanonEqual(wtRecordSemNorm(a), wtRecordSemNorm(b));
+}
+
+/**
+ * Трёхстороннее слияние списка по ключу.
+ * Безопасно: изменения только с одной стороны, разные новые записи, одинаковые правки.
+ * Конфликт: обе стороны изменили запись; удаление против изменения; разные записи с одним новым id.
+ * resolveConflicts: "" — не решать; "mine" / "server" — чей вариант брать для конфликтных записей.
+ */
+function wtKeyedListMerge3(baseList, localList, serverList, key, resolveConflicts) {
+    const base = Array.isArray(baseList) ? baseList : [];
+    const local = Array.isArray(localList) ? localList : [];
+    const server = Array.isArray(serverList) ? serverList : [];
+    function index(list) {
+        const map = {};
+        for (let i = 0; i < list.length; i++) {
+            const row = list[i];
+            if (!row || typeof row !== "object" || row[key] == null || row[key] === "") return null;
+            const id = String(row[key]);
+            if (Object.prototype.hasOwnProperty.call(map, id)) return null;
+            map[id] = row;
+        }
+        return map;
+    }
+    const B = index(base);
+    const Lm = index(local);
+    const S = index(server);
+    if (!B || !Lm || !S) return { ok: false, unkeyed: true, merged: null, conflicts: [] };
+    const has = function (m, id) { return Object.prototype.hasOwnProperty.call(m, id); };
+    const conflicts = [];
+    const pick = {};
+    const ids = [];
+    const seen = {};
+    server.concat(local).forEach(function (row) {
+        const id = String(row[key]);
+        if (!seen[id]) { seen[id] = true; ids.push(id); }
+    });
+    Object.keys(B).forEach(function (id) {
+        if (!seen[id]) { seen[id] = true; ids.push(id); }
+    });
+    ids.forEach(function (id) {
+        const inB = has(B, id);
+        const inL = has(Lm, id);
+        const inS = has(S, id);
+        let kind = "";
+        let take;
+        if (inB) {
+            const lSame = inL && wtRecordSemEqual(Lm[id], B[id]);
+            const sSame = inS && wtRecordSemEqual(S[id], B[id]);
+            if (inL && inS) {
+                if (lSame) take = S[id];
+                else if (sSame) take = Lm[id];
+                else if (wtRecordSemEqual(Lm[id], S[id])) take = S[id];
+                else kind = "both_changed";
+            } else if (!inL && inS) {
+                if (sSame) take = null;
+                else kind = "local_deleted_server_changed";
+            } else if (inL && !inS) {
+                if (lSame) take = null;
+                else kind = "server_deleted_local_changed";
+            } else {
+                take = null;
+            }
+        } else if (inL && inS) {
+            if (wtRecordSemEqual(Lm[id], S[id])) take = S[id];
+            else kind = "both_added_different";
+        } else if (inL) {
+            take = Lm[id];
+        } else if (inS) {
+            take = S[id];
+        }
+        if (kind) {
+            conflicts.push({ id: id, kind: kind, local: inL ? Lm[id] : null, server: inS ? S[id] : null });
+            if (resolveConflicts === "mine") take = inL ? Lm[id] : null;
+            else if (resolveConflicts === "server") take = inS ? S[id] : null;
+            else take = undefined;
+        }
+        pick[id] = take;
+    });
+    if (conflicts.length && !resolveConflicts) {
+        return { ok: false, unkeyed: false, merged: null, conflicts: conflicts };
+    }
+    const out = [];
+    const used = {};
+    server.forEach(function (row) {
+        const id = String(row[key]);
+        if (used[id]) return;
+        used[id] = true;
+        if (pick[id]) out.push(wtCloneJson(pick[id]));
+    });
+    local.forEach(function (row) {
+        const id = String(row[key]);
+        if (used[id]) return;
+        used[id] = true;
+        if (pick[id]) out.push(wtCloneJson(pick[id]));
+    });
+    return { ok: true, unkeyed: false, merged: out, conflicts: conflicts };
+}
+
+/** Резервная копия варианта, который пользователь заменяет при разрешении конфликта. */
+function wtConflictBackupSave(path, label, value) {
+    try {
+        const raw = localStorage.getItem("wtConflictBackups");
+        let list = [];
+        try { list = raw ? JSON.parse(raw) : []; } catch (errP) { list = []; }
+        if (!Array.isArray(list)) list = [];
+        list.push({
+            at: new Date().toISOString(),
+            user_id: (typeof currentAuthUserId === "function" ? currentAuthUserId() : "") || "",
+            path: String(path || ""),
+            label: String(label || ""),
+            value: value === undefined ? null : value
+        });
+        while (list.length > 50) list.shift();
+        localStorage.setItem("wtConflictBackups", JSON.stringify(list));
+        return true;
+    } catch (err) {
+        try { console.warn("[wt-conflict-backup]", path, label, value); } catch (errC) {}
+        return false;
+    }
+}
+
+function wtKeyedListConflictLabel(path) {
+    if (path === "customerReturns.items") return "Возвраты";
+    if (path === "shopRevision.groups") return "Ревизия — группы";
+    if (path === "shopRevision.folders") return "Ревизия — подпапки";
+    return path;
+}
+
+function wtKeyedListRowCaption(path, row, id) {
+    if (!row) return id;
+    const name = row.product_name || row.name || row.client_name || "";
+    return name ? (id + " «" + String(name).slice(0, 40) + "»") : id;
+}
+
+/**
+ * 409 по общему списку: base = последний подтверждённый сервером список, от которого
+ * строился черновик; local = черновик; server = текущий серверный список.
+ * Возвращает "merged" (appData/база/версия подготовлены — нужна запись), "server_same", "cancel".
+ */
+function wtKeyedListResolveConflict(c) {
+    const path = c.path;
+    const key = wtKeyedListKey(path);
+    const base = wtGetByPath(wtLastLoadedPayload || {}, path);
+    const local = wtGetByPath(appData, path);
+    const server = c.server_value;
+    let res = wtKeyedListMerge3(base, local, server, key, "");
+    if (res.unkeyed) {
+        toast(wtKeyedListConflictLabel(path) + ": список изменил другой сотрудник, а записи без идентификаторов нельзя объединить автоматически. Ваш вариант остаётся на экране и не записан.", "error");
+        wtConflictBackupSave(path, "local_unkeyed", local);
+        return "cancel";
+    }
+    if (!res.ok) {
+        const lines = res.conflicts.slice(0, 8).map(function (x) {
+            const kindTxt = x.kind === "both_changed" ? "изменена и вами, и другим сотрудником"
+                : x.kind === "local_deleted_server_changed" ? "вы удалили, другой сотрудник изменил"
+                    : x.kind === "server_deleted_local_changed" ? "другой сотрудник удалил, вы изменили"
+                        : "разные записи с одним номером";
+            return "• " + wtKeyedListRowCaption(path, x.local || x.server, x.id) + " — " + kindTxt;
+        });
+        const more = res.conflicts.length > 8 ? ("\n… и ещё " + (res.conflicts.length - 8)) : "";
+        const mine = window.confirm(
+            wtKeyedListConflictLabel(path) + ": конфликт с изменениями другого сотрудника.\n"
+            + lines.join("\n") + more + "\n\n"
+            + "Новые записи обоих сотрудников сохранятся в любом случае.\n"
+            + "OK — записать ВАШ вариант этих записей.\n"
+            + "Отмена — выбрать другое действие."
+        );
+        let mode = mine ? "mine" : "";
+        if (!mine) {
+            const takeServer = window.confirm(
+                "Принять вариант другого сотрудника для этих записей?\n"
+                + "OK — заменить ваш вариант серверным (ваш вариант сохранится в резервной копии браузера).\n"
+                + "Отмена — ничего не записывать: ваш вариант остаётся на экране, вариант сервера не меняется."
+            );
+            if (!takeServer) {
+                wtConflictBackupSave(path, "unresolved_local", local);
+                toast("Конфликт не разрешён: ваш вариант остаётся на экране и НЕ записан. Не обновляйте страницу.", "error");
+                return "cancel";
+            }
+            mode = "server";
+        }
+        if (mode === "mine") {
+            wtConflictBackupSave(path, "replaced_server_rows", res.conflicts.map(function (x) { return { id: x.id, server: x.server }; }));
+        } else {
+            wtConflictBackupSave(path, "replaced_local_rows", res.conflicts.map(function (x) { return { id: x.id, local: x.local }; }));
+        }
+        res = wtKeyedListMerge3(base, local, server, key, mode);
+    }
+    // База = подтверждённый сервер; версия = серверная. Запись слитого списка — отдельной операцией в очереди.
+    if (wtLastLoadedPayload) wtSetByPath(wtLastLoadedPayload, path, server == null ? null : wtCloneJson(server));
+    if (c.server_v != null) {
+        wtSetLocalRecordMeta(path, c.server_v);
+        if (wtLastLoadedPayload) {
+            if (!wtLastLoadedPayload[WT_RECORDS_KEY]) wtLastLoadedPayload[WT_RECORDS_KEY] = {};
+            wtLastLoadedPayload[WT_RECORDS_KEY][path] = { v: Number(c.server_v) || 0, updated_at: new Date().toISOString() };
+        }
+    }
+    wtSetByPath(appData, path, res.merged);
+    if (wtJsonCanonEqual(res.merged, server)) {
+        try { wtSoftClearDirty(path); } catch (errC) {}
+        return "server_same";
+    }
+    try { wtSoftMarkDirty(path); } catch (errD) {}
+    return "merged";
+}
+
+/** Применить подтверждённое серверное значение пути (без записи). */
+function wtDomainWriterAdoptServerValue(c) {
+    try {
+        if (appData) wtSetByPath(appData, c.path, c.server_value);
+        if (c.server_v != null) wtSetLocalRecordMeta(c.path, c.server_v);
+        if (wtLastLoadedPayload) {
+            wtSetByPath(wtLastLoadedPayload, c.path, c.server_value == null ? null : wtCloneJson(c.server_value));
+            if (c.server_v != null) {
+                if (!wtLastLoadedPayload[WT_RECORDS_KEY]) wtLastLoadedPayload[WT_RECORDS_KEY] = {};
+                wtLastLoadedPayload[WT_RECORDS_KEY][c.path] = { v: Number(c.server_v) || 0, updated_at: new Date().toISOString() };
+            }
+        }
+        wtSoftClearDirty(c.path);
+    } catch (err) {}
+}
+
+/**
+ * Разрешение конфликтов batch — строго вне звена wtOpsChain.
+ * true — всё, что было на экране, подтверждено сервером; false — есть незаписанное.
+ */
+function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice) {
+    const conflicts = outcome.wtConflicts || [];
+    let allWritten = !outcome.failedCount;
+    const retryPaths = {};
+    let chosenYours = presetChoice === "yours";
+    let chain = Promise.resolve();
+    conflicts.forEach(function (c) {
+        chain = chain.then(function () {
+            if (!c || !c.path) { allWritten = false; return; }
+            let live;
+            try { live = appData ? wtGetByPath(appData, c.path) : undefined; } catch (errL) { live = undefined; }
+            // Запрос мог пройти до тайм-аута/повтора: сервер уже хранит ровно наш вариант.
+            if (wtJsonCanonEqual(live, c.server_value)) {
+                wtDomainWriterAdoptServerValue(c);
+                return;
+            }
+            if (wtKeyedListKey(c.path)) {
+                const r = wtKeyedListResolveConflict(c);
+                if (r === "merged") retryPaths[c.path] = true;
+                else if (r !== "server_same") allWritten = false;
+                return;
+            }
+            const conflictArg = {
+                status: "conflict",
+                path: c.path,
+                server_v: c.server_v,
+                server_value: c.server_value,
+                your_value: live === undefined ? c.your_value : live,
+                your_expected_v: c.your_expected_v
+            };
+            // Атомарная группа (ячейка метрики + зеркало) — одно значение: выбор «мой вариант»
+            // уже сделан для первой ячейки, второй раз не спрашиваем.
+            const decided = (atomic && presetChoice === "yours")
+                ? wtSaveRecordOp(c.path, conflictArg.your_value, {
+                    expected_v: c.server_v,
+                    forceEnable: true,
+                    idempotency_key: wtNewIdempotencyKey()
+                }).then(function (res) {
+                    return res && res.status === "saved" ? "yours" : wtResolveRecordConflict(conflictArg);
+                })
+                : wtResolveRecordConflict(conflictArg);
+            return decided.then(function (choice) {
+                if (choice === "yours") {
+                    chosenYours = true;
+                    // Записано wtSaveRecordOp; в атомарном batch остальные листья — повтором.
+                    if (atomic) {
+                        (outcome.opsPaths || []).forEach(function (p) { retryPaths[p] = true; });
+                    }
+                    return;
+                }
+                if (choice === "server") {
+                    wtDomainWriterAdoptServerValue(c);
+                    allWritten = false;
+                    return;
+                }
+                try { wtSoftMarkDirty(c.path); } catch (errD) {}
+                allWritten = false;
+            });
+        });
+    });
+    return chain.then(function () {
+        try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
+        // Повторяем только то, что ещё расходится с подтверждённым сервером; явные ops не блокируются
+        // флагом той же записи метрики (wtOpsBlockIncidentalPut) и встают в очередь после текущего звена.
+        const pending = Object.keys(retryPaths).filter(function (p) {
+            try {
+                return !wtJsonCanonEqual(wtGetByPath(appData, p), wtGetByPath(wtLastLoadedPayload || {}, p));
+            } catch (err) {
+                return true;
+            }
+        });
+        if (!pending.length) return allWritten;
+        return Promise.resolve(wtDomainWriterSave({
+            atomic: atomic,
+            ops: pending.map(function (p) { return { path: p }; }),
+            _conflictChoice: (atomic && chosenYours) ? "yours" : ""
+        })).then(function (ok) {
+            return ok === true && allWritten;
+        });
+    });
 }
 
 function saveApp(options) {
@@ -11972,6 +12326,53 @@ let wtOpsServerCapable = null;
 let wtOpsProbeInFlight = null;
 
 let wtOpsBlockIncidentalPut = false;
+let wtOpsIncidentalCount = 0;
+let wtOpsIncidentalSince = 0;
+
+/**
+ * Пока идёт точечная запись ячейки/метрики, побочные saveApp откладываются.
+ * Флаг снимается при успехе, ошибке, исключении и тайм-ауте (fetch ограничен WT_OPS_FETCH_TIMEOUT_MS).
+ */
+function wtOpsWithIncidentalBlock(fn) {
+    if (wtOpsIncidentalCount <= 0) wtOpsIncidentalSince = Date.now();
+    wtOpsIncidentalCount += 1;
+    wtOpsBlockIncidentalPut = true;
+    let released = false;
+    function release() {
+        if (released) return;
+        released = true;
+        wtOpsIncidentalCount = Math.max(0, wtOpsIncidentalCount - 1);
+        if (wtOpsIncidentalCount === 0) {
+            wtOpsBlockIncidentalPut = false;
+            wtOpsIncidentalSince = 0;
+        }
+    }
+    let p;
+    try {
+        p = Promise.resolve(fn());
+    } catch (err) {
+        release();
+        return Promise.reject(err);
+    }
+    return p.then(function (res) {
+        release();
+        return res;
+    }, function (err) {
+        release();
+        throw err;
+    });
+}
+
+/** Страховка: флаг не может держать SoftSync и отложенные записи дольше двух тайм-аутов OPS. */
+function wtOpsIncidentalWatchdog() {
+    if (!wtOpsBlockIncidentalPut || !wtOpsIncidentalSince) return;
+    const limit = (typeof WT_OPS_FETCH_TIMEOUT_MS === "number" ? WT_OPS_FETCH_TIMEOUT_MS : 30000) * 2 + 5000;
+    if (Date.now() - wtOpsIncidentalSince < limit) return;
+    try { console.warn("[wt-ops] wtOpsBlockIncidentalPut снят сторожем через", Date.now() - wtOpsIncidentalSince, "мс"); } catch (err) {}
+    wtOpsIncidentalCount = 0;
+    wtOpsIncidentalSince = 0;
+    wtOpsBlockIncidentalPut = false;
+}
 
 function wtOpsUiEnabled(forceRefresh) {
     if (forceRefresh) wtOpsUiEnabledCache = null;
@@ -12392,7 +12793,7 @@ function wtSaveRecordOp(path, value, options) {
                 message: "Не удалось сформировать запрос сохранения (stringify)."
             };
         }
-        return fetch("/api/state/op", {
+        return wtOpsFetchWithTimeout("/api/state/op", {
             method: "POST",
             credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
@@ -12452,7 +12853,7 @@ function wtSaveRecordOp(path, value, options) {
                         wtSetByPath(appData, body.path, body.value);
                     }
                     if (wtLastLoadedPayload && body && body.path) {
-                        wtSetByPath(wtLastLoadedPayload, body.path, body.value);
+                        wtSetByPath(wtLastLoadedPayload, body.path, body.value == null ? null : wtCloneJson(body.value));
                         if (!wtLastLoadedPayload[WT_RECORDS_KEY]) wtLastLoadedPayload[WT_RECORDS_KEY] = {};
                         wtLastLoadedPayload[WT_RECORDS_KEY][body.path] = {
                             v: body.record_v,
@@ -12552,9 +12953,18 @@ function wtResolveRecordConflict(conflict) {
         + "На сервере: " + serverTxt + "\n"
         + "Ваш вариант: " + yoursTxt + "\n\n"
         + "OK — записать ваш вариант (с повторной проверкой).\n"
-        + "Отмена — оставить серверное значение; ваш ввод останется черновиком на экране.";
+        + "Отмена — выбрать другое действие.";
     const replace = window.confirm(msg);
-    if (!replace) return Promise.resolve("server");
+    if (!replace) {
+        const takeServer = window.confirm(
+            "Заменить ваш ввод значением с сервера?\n"
+            + "OK — заменить (ваш вариант сохранится в резервной копии браузера).\n"
+            + "Отмена — ничего не записывать: ваш вариант остаётся черновиком на экране."
+        );
+        if (!takeServer) return Promise.resolve("cancel");
+        wtConflictBackupSave(conflict.path, "replaced_local_value", conflict.your_value);
+        return Promise.resolve("server");
+    }
     return wtSaveRecordOp(conflict.path, conflict.your_value, {
         expected_v: conflict.server_v,
         forceEnable: true,
@@ -12697,15 +13107,14 @@ function saveTimesheetDayChange(employeeId, day) {
             return { status: ok ? "saved_put" : "error", via: "put" };
         });
     }
-    wtOpsBlockIncidentalPut = true;
-    return saveTimesheetCellViaOp(employeeId, day).then(function (res) {
-        wtOpsBlockIncidentalPut = false;
+    return wtOpsWithIncidentalBlock(function () {
+        return saveTimesheetCellViaOp(employeeId, day);
+    }).then(function (res) {
         if (path && res && (res.status === "saved" || res.status === "conflict_kept_server")) {
             try { wtSoftClearDirty(path); } catch (err) {}
         }
         return res || { status: "error", error: "empty" };
     }, function (err) {
-        wtOpsBlockIncidentalPut = false;
         const res = { status: "error", error: "promise", message: String((err && err.message) || err || "reject") };
         wtTimesheetSaveErrorToast(res);
         return res;
@@ -12859,9 +13268,9 @@ function wtSaveMetricValue(path, value) {
             return { status: ok ? "saved_put" : "error", via: "put" };
         });
     }
-    wtOpsBlockIncidentalPut = true;
-    return saveMetricLeafViaOp(path, value).then(function (res) {
-        wtOpsBlockIncidentalPut = false;
+    return wtOpsWithIncidentalBlock(function () {
+        return saveMetricLeafViaOp(path, value);
+    }).then(function (res) {
         if (res && (res.status === "saved" || res.status === "conflict_kept_server")) {
             try { wtSoftClearDirty(path); } catch (err) {}
         }
@@ -12869,7 +13278,6 @@ function wtSaveMetricValue(path, value) {
         try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
         return res || { status: "error", error: "empty" };
     }, function (err) {
-        wtOpsBlockIncidentalPut = false;
         const res = { status: "error", error: "promise", message: String((err && err.message) || err || "reject") };
         wtMetricSaveErrorToast(res);
         return res;
@@ -13119,6 +13527,7 @@ function wtSoftApplyServerState(state) {
         return false;
     }
     const draft = appData;
+    const prevBase = wtLastLoadedPayload;
     let serverAdopted;
     try {
         serverAdopted = adoptServerPayload(state.payload);
@@ -13127,16 +13536,39 @@ function wtSoftApplyServerState(state) {
         return false;
     }
     let merged;
+    let keyedDirty = [];
     try {
         const dirty = wtSoftDirtyMapForMerge();
         const dirtyCount = Object.keys(dirty).length;
         if (dirtyCount) merged = wtSoftMergePreferServer(serverAdopted, draft, dirty, "");
         else merged = wtCloneJson(serverAdopted);
+        keyedDirty = Object.keys(WT_KEYED_LIST_PATHS).filter(function (p) { return !!dirty[p]; });
     } catch (err) {
         console.error(err);
         return false;
     }
+    // Черновик общего списка: сохранить его исходную базу и версию. Иначе следующая запись
+    // уйдёт с серверной версией и молча заменит чужие записи (без 409 и слияния).
+    const keyedKeep = [];
+    keyedDirty.forEach(function (p) {
+        try {
+            if (wtJsonCanonEqual(wtGetByPath(merged, p), wtGetByPath(serverAdopted, p))) return;
+            const draftRecords = draft && draft[WT_RECORDS_KEY];
+            keyedKeep.push({
+                path: p,
+                base: prevBase ? wtCloneJson(wtGetByPath(prevBase, p) === undefined ? null : wtGetByPath(prevBase, p)) : null,
+                meta: draftRecords && draftRecords[p] ? wtCloneJson(draftRecords[p]) : null
+            });
+        } catch (errK) {}
+    });
     appData = merged;
+    keyedKeep.forEach(function (k) {
+        try {
+            if (!appData[WT_RECORDS_KEY] || typeof appData[WT_RECORDS_KEY] !== "object") appData[WT_RECORDS_KEY] = {};
+            if (k.meta) appData[WT_RECORDS_KEY][k.path] = k.meta;
+            else delete appData[WT_RECORDS_KEY][k.path];
+        } catch (errM) {}
+    });
     if (wtServerUser && wtServerUser.user_id) {
         const exists = (appData.users || []).some(function (u) {
             return u && u.user_id === wtServerUser.user_id;
@@ -13170,6 +13602,15 @@ function wtSoftApplyServerState(state) {
     try {
         // База = подтверждённый сервер (не merged с локальным мусором).
         wtLastLoadedPayload = wtCloneJson(serverAdopted);
+        // Кроме черновиков общих списков: база = список, от которого строился черновик (для слияния при 409).
+        keyedKeep.forEach(function (k) {
+            wtSetByPath(wtLastLoadedPayload, k.path, k.base);
+            if (!wtLastLoadedPayload[WT_RECORDS_KEY] || typeof wtLastLoadedPayload[WT_RECORDS_KEY] !== "object") {
+                wtLastLoadedPayload[WT_RECORDS_KEY] = {};
+            }
+            if (k.meta) wtLastLoadedPayload[WT_RECORDS_KEY][k.path] = wtCloneJson(k.meta);
+            else delete wtLastLoadedPayload[WT_RECORDS_KEY][k.path];
+        });
     } catch (err) {
         wtLastLoadedPayload = null;
     }
@@ -13227,6 +13668,7 @@ function wtSoftOnFocusOut() {
  */
 function wtSoftPollTick(force) {
     if (!wtSoftPollEnabled || !wtServerMode) return;
+    try { wtOpsIncidentalWatchdog(); } catch (errW) {}
     if (wtSoftPollInFlight) return;
     if (wtPutInFlight) return;
     if (typeof wtOpsBlockIncidentalPut !== "undefined" && wtOpsBlockIncidentalPut) return;
@@ -21158,15 +21600,15 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
         } catch (err) {}
     }
     if (path && mirrorPath && wtOpsUiEnabled(true) && wtServerMode) {
-        wtOpsBlockIncidentalPut = true;
-        wtDomainWriterSave({
-            atomic: true,
-            ops: [
-                { path: path, value: opVal, expected_v: wtRecordVersion(path) },
-                { path: mirrorPath, value: opVal, expected_v: wtRecordVersion(mirrorPath) }
-            ]
+        wtOpsWithIncidentalBlock(function () {
+            return wtDomainWriterSave({
+                atomic: true,
+                ops: [
+                    { path: path, value: opVal, expected_v: wtRecordVersion(path) },
+                    { path: mirrorPath, value: opVal, expected_v: wtRecordVersion(mirrorPath) }
+                ]
+            });
         }).then(function (ok) {
-            wtOpsBlockIncidentalPut = false;
             if (ok) {
                 try { wtSoftClearDirty(path); wtSoftClearDirty(mirrorPath); } catch (err) {}
             }
@@ -21175,7 +21617,7 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
                 toast("Метрика не записана на сервер. Значение осталось черновиком на экране — не обновляйте страницу.", "error");
             }
         }, function () {
-            wtOpsBlockIncidentalPut = false;
+            toast("Метрика не записана на сервер. Значение осталось черновиком на экране — не обновляйте страницу.", "error");
         });
         return;
     }
@@ -24266,7 +24708,7 @@ function renderRevisionStaffPanel() {
 function addRevisionGroup() {
     const root = revisionRoot();
     const sort = root.groups.reduce(function (m, g) { return Math.max(m, Number(g.sort || 0)); }, 0) + 1;
-    const id = generateRevisionGroupId();
+    const id = generateRevisionGroupId(true);
     root.groups.push({
         id: id,
         revision_group_id: id,
@@ -24315,7 +24757,7 @@ function addRevisionFolder(groupId) {
     const root = revisionRoot();
     const sort = root.folders.filter(function (f) { return f.groupId === groupId; })
         .reduce(function (m, f) { return Math.max(m, Number(f.sort || 0)); }, 0) + 1;
-    const id = generateRevisionFolderId();
+    const id = generateRevisionFolderId(true);
     root.folders.push({
         id: id,
         revision_folder_id: id,
@@ -47870,10 +48312,10 @@ function crNormalizeItem(it, store) {
     return it;
 }
 
-function crNextReturnId(store) {
+function crNextReturnId(store, unique) {
     const root = store || (appData && appData.customerReturns) || { items: [] };
     const ids = (root.items || []).map(function (x) { return x && x.return_id; });
-    return nextPrefixedId("ret", ids);
+    return unique ? nextPrefixedUniqueId("ret", ids) : nextPrefixedId("ret", ids);
 }
 
 function crIsoWeek(iso) {
@@ -50805,9 +51247,9 @@ function closeCrModal() {
     if (modal) modal.classList.remove("cr-modal-sm");
 }
 
-function crNextGroupId() {
+function crNextGroupId(unique) {
     const ids = (crStore().items || []).map(function (x) { return x && x.return_group_id; });
-    return nextPrefixedId("rgrp", ids);
+    return unique ? nextPrefixedUniqueId("rgrp", ids) : nextPrefixedId("rgrp", ids);
 }
 
 function crParseQty(value, fallback) {
@@ -51280,7 +51722,7 @@ function crSaveCreateBatch() {
     const plate = String((document.getElementById("crVehPlate") || {}).value || "").trim();
     if (plate) crAddVehicle();
     const store = crStore();
-    const groupId = crNextGroupId();
+    const groupId = crNextGroupId(true);
     const headerComment = String((document.getElementById("crComment") || {}).value || "").trim();
     const header = {
         date: String((document.getElementById("crDate") || {}).value || new Date().toISOString().slice(0, 10)),
@@ -51297,7 +51739,7 @@ function crSaveCreateBatch() {
     };
     header.cashier_name = header.cashier_employee_id ? crEmpName(header.cashier_employee_id) : "";
     lines.forEach(function (line, i) {
-        const it = crNormalizeItem({ return_id: crNextReturnId() });
+        const it = crNormalizeItem({ return_id: crNextReturnId(null, true) });
         it.return_group_id = groupId;
         it.date = header.date;
         it.sales_author_employee_id = header.sales_author_employee_id;
@@ -51335,10 +51777,23 @@ function crSaveCreateBatch() {
         });
         store.items.push(it);
     });
-    saveApp();
+    const saving = saveApp();
     closeCrModal();
     renderTerritoryReturns();
-    toast("Сохранён возврат: " + lines.length + " товарных позиций.");
+    crToastAfterServerSave(saving, "Сохранён возврат: " + lines.length + " товарных позиций.");
+}
+
+/** «Сохранено» — только после подтверждённой записи на сервер. */
+function crToastAfterServerSave(saving, okText) {
+    Promise.resolve(saving).then(function (ok) {
+        if (ok === true) {
+            toast(okText);
+            return;
+        }
+        toast("Возврат не записан на сервер. Не обновляйте страницу — данные пока только на этом экране; повторите сохранение.", "error");
+    }, function () {
+        toast("Возврат не записан на сервер. Не обновляйте страницу — данные пока только на этом экране; повторите сохранение.", "error");
+    });
 }
 
 function crSaveEditor(id) {
@@ -51358,7 +51813,7 @@ function crSaveEditor(id) {
     let it = crFind(id);
     let createdNew = false;
     if (!it) {
-        it = crNormalizeItem({ return_id: crNextReturnId() });
+        it = crNormalizeItem({ return_id: crNextReturnId(null, true) });
         store.items.push(it);
         createdNew = true;
     }
@@ -51399,10 +51854,10 @@ function crSaveEditor(id) {
     it.extra_on_register = String((document.getElementById("crExtra") || {}).value || "") === "1";
     it.comment = String((document.getElementById("crComment") || {}).value || "").trim();
     crPushHistory(it, "updated", crActiveQueue(it) || "saved");
-    saveApp();
+    const saving = saveApp();
     closeCrModal();
     renderTerritoryReturns();
-    toast("Возврат сохранён.");
+    crToastAfterServerSave(saving, "Возврат сохранён.");
 }
 
 function crReadCashierEmployeeId() {
