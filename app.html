@@ -25882,6 +25882,8 @@ function shopRuleFromKpiDef(def, employeeId) {
         maxCoefPercent: shopKpiMaxCoef(def),
         controlTime: shopKpiControlTime(def),
         control_time: shopKpiControlTime(def),
+        distribution_mode: def.distribution_mode || "",
+        shared_fund: shopKpiSharedFund(def),
         validFrom: def.validFrom,
         validTo: def.validTo,
         enabled: true,
@@ -26048,6 +26050,7 @@ function shopKpiCalcType(rule) {
 }
 
 function shopKpiCalcKindLabel(rule) {
+    if (isShopKpiSharedBudget(rule)) return "Общий бюджет";
     if (isShopMaxLimitKpi(rule)) return "Не более лимита";
     if (isShopCheckKpi(rule)) return "Сделано / Не сделано";
     const id = canonicalMetricId(rule && (rule.metricId || rule.metric_id));
@@ -26399,6 +26402,8 @@ function renderShopKpiMetricPicker() {
     if (!canEditShopPayrollRules()) return;
     const pick = ensureKpiMetricPick();
     const view = payrollViewFromSection();
+    pick.dept = view.departmentId;
+    pick.section = kpiPickSectionOfDept(view.departmentId) || pick.section;
     const depts = (pick.section ? kpiPickDeptCodesForSection(pick.section) : DEPT_DEFAULTS.map(function (d) { return d.code; }))
         .map(function (code) {
             const d = DEPT_DEFAULTS.find(function (x) { return x.code === code; });
@@ -26429,14 +26434,14 @@ function renderShopKpiMetricPicker() {
             : "Выберите существующую метрику из справочника. Фильтры сужают список по назначениям metric_id. Новую метрику здесь создать нельзя.")
         + "</div>"
         + '<div class="note" style="margin-bottom:10px">Контекст: ' + escapeHtml(view.title || view.id)
-        + ". Фильтры можно изменить вручную.</div>"
+        + ". Подразделение закреплено за разделом зарплаты; рабочую группу, должность и сотрудника можно изменить.</div>"
         + '<div class="mc-filters">'
-        + '<div class="form-group"><label>Раздел</label><select onchange="setKpiMetricPickFilter(\'section\',this.value)">'
+        + '<div class="form-group"><label>Раздел</label><select disabled onchange="setKpiMetricPickFilter(\'section\',this.value)">'
         + '<option value="">Все</option>'
         + '<option value="shop"' + (pick.section === "shop" ? " selected" : "") + ">Магазин Володарского</option>"
         + '<option value="territory"' + (pick.section === "territory" ? " selected" : "") + ">Территория</option>"
         + "</select></div>"
-        + '<div class="form-group"><label>Отдел</label><select onchange="setKpiMetricPickFilter(\'dept\',this.value)">'
+        + '<div class="form-group"><label>Отдел</label><select disabled onchange="setKpiMetricPickFilter(\'dept\',this.value)">'
         + '<option value="">Все</option>';
     depts.forEach(function (d) {
         html += '<option value="' + escapeAttribute(d.code) + '"'
@@ -26475,6 +26480,7 @@ function renderShopKpiMetricPicker() {
         + escapeAttribute(pick.search || "") + '" '
         + "oninput=\"setKpiMetricPickFilter('search',this.value)\"></div>"
         + "</div>"
+        + (isRestore ? "" : shopKpiPickModeHtml(pick))
         + '<div class="note">Метрик в выборке: ' + metrics.length + "</div>"
         + '<div class="kpi-metric-pick-list">';
     if (!metrics.length) {
@@ -26500,6 +26506,32 @@ function renderShopKpiMetricPicker() {
     });
     html += '</div><div class="rev-modal-actions"><button type="button" class="btn btn-secondary" onclick="closeShopPayModal()">Отмена</button></div>';
     openShopPayModal(html);
+}
+
+function shopKpiPickModeHtml(pick) {
+    const shared = pick && pick.distribution_mode === SHOP_KPI_SHARED_BUDGET_MODE;
+    return '<div class="mc-filters">'
+        + '<div class="form-group"><label>Способ начисления</label>'
+        + "<select onchange=\"setKpiMetricPickSharedBudget('mode',this.value)\">"
+        + '<option value=""' + (shared ? "" : " selected") + ">Действующий расчёт — без изменений</option>"
+        + '<option value="' + SHOP_KPI_SHARED_BUDGET_MODE + '"' + (shared ? " selected" : "") + ">Общий бюджет</option>"
+        + "</select></div>"
+        + (shared
+            ? '<div class="form-group"><label>Общий фонд</label><input class="num-7" type="number" min="0" step="1" value="'
+                + blankZeroInt(Number(pick.shared_fund || 0))
+                + "\" onchange=\"setKpiMetricPickSharedBudget('fund',this.value)\"></div>"
+            : "")
+        + "</div>";
+}
+
+function setKpiMetricPickSharedBudget(key, value) {
+    const pick = ensureKpiMetricPick();
+    if (key === "mode") {
+        pick.distribution_mode = value === SHOP_KPI_SHARED_BUDGET_MODE ? SHOP_KPI_SHARED_BUDGET_MODE : "";
+        renderShopKpiMetricPicker();
+    } else if (key === "fund") {
+        pick.shared_fund = Math.max(0, Math.round(parseMoney(value, 0)));
+    }
 }
 
 function pickShopKpiSource(templateId, participationRole) {
@@ -26910,6 +26942,7 @@ function shopBonusMetricFact(rule, employeeId, month) {
 }
 
 function shopKpiPayout(rule, fact, plan, employeeId, month) {
+    if (isShopKpiSharedBudget(rule)) return shopKpiSharedBudgetPayout(rule, employeeId, month);
     const metricId = canonicalMetricId(rule && (rule.metricId || rule.metric_id));
     if (metricId === "metric_receiving" && isShopReceivingShared() && !(Number(rule && rule.plan) > 0)) {
         return shopReceivingSharedPayout(employeeId, month, fact);
@@ -26955,12 +26988,101 @@ function shopReceivingSharedPayout(employeeId, month, personalFact) {
     return { coef: coef, amount: Math.round(budget * coef), budget: budget, shared: true };
 }
 
+const SHOP_KPI_SHARED_BUDGET_MODE = "shared_budget";
+
+function isShopKpiSharedBudgetEligible(rule) {
+    if (!rule) return false;
+    const mid = canonicalMetricId(rule.metricId || rule.metric_id);
+    if (mid === METRIC_WRITEOFF_LOSSES_ID || mid === METRIC_SHELF_LABELS_ID
+        || mid === "metric_arrival_730" || mid === "metric_revision") return false;
+    if (isShopTimesheet730Kpi(rule) || isShopMaxLimitKpi(rule) || isShopCheckKpi(rule)) return false;
+    const source = shopKpiSourceType(rule);
+    if (source === "timesheet" || source === "revision" || source === "derived" || source === "store_month") return false;
+    const calc = shopKpiCalcType(rule);
+    return calc === "budget_ratio" || calc === "quantity" || calc === "percent";
+}
+
+function isShopKpiSharedBudget(rule) {
+    return !!rule && rule.distribution_mode === SHOP_KPI_SHARED_BUDGET_MODE && isShopKpiSharedBudgetEligible(rule);
+}
+
+function shopReceivingRulesAllSharedBudget(month) {
+    const defs = shopKpiDefsCurrent(month || selectedMonth).filter(function (d) {
+        return canonicalMetricId(d.metricId || d.metric_id) === "metric_receiving";
+    });
+    return defs.length > 0 && defs.every(isShopKpiSharedBudget);
+}
+
+function shopKpiSharedFund(rule) {
+    const n = Math.round(Number(rule && rule.shared_fund) || 0);
+    return n > 0 ? n : 0;
+}
+
+function shopKpiSharedBudgetAllocation(kpiId, month) {
+    const m = month || selectedMonth;
+    const def = shopKpiDefsCurrent(m).find(function (d) { return d.kpi_id === kpiId; }) || null;
+    const fund = def ? shopKpiSharedFund(def) : 0;
+    const out = { fund: fund, total: 0, facts: {}, amounts: {} };
+    if (!def || !isShopKpiSharedBudget(def)) return out;
+    const people = [];
+    const seen = {};
+    const keep = selectedMonth;
+    selectedMonth = m;
+    try {
+        (ensureShopPayroll().assignments || []).forEach(function (a) {
+            const eid = a && (a.employee_id || a.employeeId);
+            if (!eid || seen[eid] || a.kpi_id !== kpiId) return;
+            seen[eid] = true;
+            const e = getEmployee(eid);
+            if (!e || eid === SHOP_SELF_CHECKOUT_ID || isSalesRep(e) || !includeInMonthPayroll(e)) return;
+            if (!shopKpiAssigned(eid, kpiId, m)) return;
+            const fact = Math.max(0, Number(shopBonusMetricFact(shopRuleFromKpiDef(def, eid), eid, m).fact) || 0);
+            out.facts[eid] = fact;
+            out.total += fact;
+            people.push(eid);
+        });
+    } finally {
+        selectedMonth = keep;
+    }
+    people.forEach(function (eid) { out.amounts[eid] = 0; });
+    if (!(out.total > 0) || !fund) return out;
+    let given = 0;
+    const parts = people.map(function (eid) {
+        const exact = fund * out.facts[eid] / out.total;
+        const base = Math.floor(exact);
+        given += base;
+        out.amounts[eid] = base;
+        return { eid: eid, rest: exact - base, fact: out.facts[eid] };
+    });
+    parts.sort(function (a, b) {
+        return (b.rest - a.rest) || (b.fact - a.fact) || String(a.eid).localeCompare(String(b.eid));
+    });
+    for (let i = 0; i < parts.length && given < fund; i++) {
+        if (!(parts[i].fact > 0)) continue;
+        out.amounts[parts[i].eid] += 1;
+        given += 1;
+    }
+    return out;
+}
+
+function shopKpiSharedBudgetPayout(rule, employeeId, month) {
+    const alloc = shopKpiSharedBudgetAllocation(rule.kpi_id, month);
+    const fact = Number(alloc.facts[employeeId] || 0);
+    return {
+        coef: alloc.total > 0 ? fact / alloc.total : 0,
+        amount: Number(alloc.amounts[employeeId] || 0),
+        budget: alloc.fund,
+        shared: true
+    };
+}
+
 function shopEmployeeBonusLines(employeeId, month) {
     const m = month || selectedMonth;
     return shopEmployeeActiveRules(employeeId, m).map(function (rule) {
         const src = shopBonusMetricFact(rule, employeeId, m);
         const check = isShopCheckKpi(rule) || !!src.checkKpi;
-        const plan = check ? shopCheckKpiPlanDays(rule) : (Number(rule.plan || 0) || Number(src.planAuto || 0));
+        const plan = check ? shopCheckKpiPlanDays(rule)
+            : (isShopKpiSharedBudget(rule) ? 0 : (Number(rule.plan || 0) || Number(src.planAuto || 0)));
         const fact = Number(src.fact || 0);
         const pay = shopKpiPayout(rule, fact, plan, employeeId, m);
         return {
@@ -27266,7 +27388,8 @@ function renderShopSalarySettings(view) {
             + " onclick=\"toggleShopKpiAssignment('" + employee.id + "','" + def.kpi_id + "',this.checked)\">"
             + "<span><strong>" + escapeHtml(shopKpiName(def)) + "</strong>"
             + '<div class="shop-kpi-mini">'
-            + (check ? "План: " + (shopCheckKpiPlanDays(def) || "—") + " дн. · "
+            + (isShopKpiSharedBudget(def) ? "Общий бюджет · фонд: " + money(shopKpiSharedFund(def)) : (
+            (check ? "План: " + (shopCheckKpiPlanDays(def) || "—") + " дн. · "
                 + (shopCheckKpiAccrualMode(def) === "per_completed_day"
                     ? ("За день" + (shopCheckKpiDailyRate(def) == null ? "" : (" · " + moneyFlex(shopCheckKpiDailyRate(def)) + "/день")))
                     : ("За месяц · " + moneyFlex(shopCheckKpiMonthlyBonus(def))))
@@ -27275,7 +27398,7 @@ function renderShopSalarySettings(view) {
                 : (isShopMaxLimitKpi(def)
                 ? ("Лимит: " + money(def.plan || def.limit_value || 0))
                 : ("План: " + Number(def.plan || 0).toLocaleString("ru-RU")))))
-            + (check ? "" : (" · Премия: " + money(shopKpiBudget(def))))
+            + (check ? "" : (" · Премия: " + money(shopKpiBudget(def))))))
             + (on ? "" : " · не выбран, не начисляется")
             + "</div></span></label>";
     });
@@ -27295,7 +27418,9 @@ function renderShopSalarySettings(view) {
             + "</span></label>";
     });
     html += "</div>";
-    if (view.id === "shop") {
+    if (view.id === "shop" && shopReceivingRulesAllSharedBudget(selectedMonth)) {
+        html += '<div class="shop-kpi-mini" style="margin-top:8px">Приёмка рассчитывается по правилу KPI „Общий бюджет“</div>';
+    } else if (view.id === "shop") {
         html += '<div class="shop-kpi-mini" style="margin-top:8px">Приёмка: '
             + '<select onchange="setShopReceivingShared(this.value)">'
             + '<option value="no"' + (isShopReceivingShared() ? "" : " selected") + ">индивидуально</option>"
@@ -27910,6 +28035,15 @@ function shopKpiDefCalcSelectHtml(def) {
     return html;
 }
 
+function shopKpiDefModeSelectHtml(def) {
+    if (!isShopKpiSharedBudgetEligible(def)) return "";
+    const shared = isShopKpiSharedBudget(def);
+    return '<select style="margin-top:4px;max-width:220px" onchange="setShopKpiDefField(\'' + def.kpi_id + "','distributionMode',this.value)\">"
+        + '<option value=""' + (shared ? "" : " selected") + ">Действующий расчёт — без изменений</option>"
+        + '<option value="' + SHOP_KPI_SHARED_BUDGET_MODE + '"' + (shared ? " selected" : "") + ">Общий бюджет</option>"
+        + "</select>";
+}
+
 function renderShopSalaryRules(view) {
     view = view || payrollViewFromSection();
     const box = document.getElementById(payrollViewPrefix(view) + "RulesBody");
@@ -27964,12 +28098,13 @@ function renderShopSalaryRules(view) {
         const check = isShopCheckKpi(def);
         const ts730 = isShopTimesheet730Kpi(def);
         const inactive = def.active === false;
+        const sharedBudget = isShopKpiSharedBudget(def);
         html += "<tr><td><div class=\"shop-kpi-name\">" + escapeHtml(shopKpiName(def)) + "</div>"
             + '<div class="shop-kpi-mini">' + escapeHtml(shopKpiCalcKindLabel(def))
             + (isShopMaxLimitKpi(def) ? " · лимит персонально по ответственному за пересчёт" : "")
             + (ts730 ? " · тип: автоматический KPI" : "")
             + (inactive ? " · выключен" : "") + "</div>"
-            + (check ? "" : shopKpiDefCalcSelectHtml(def))
+            + (check ? "" : shopKpiDefModeSelectHtml(def) + (sharedBudget ? "" : shopKpiDefCalcSelectHtml(def)))
             + (ts730
                 ? '<label class="shop-kpi-mini" style="display:block;margin-top:4px">Время <input type="time" value="'
                     + shopKpiControlTime(def)
@@ -27990,6 +28125,12 @@ function renderShopSalaryRules(view) {
             + "</td>"
             + (check
                 ? '<td colspan="3" class="kpi-check-cell">' + shopCheckKpiSettingsHtml(def) + "</td>"
+                : sharedBudget
+                ? '<td><div class="shop-kpi-mini">не используется</div></td>'
+                    + '<td><div class="shop-kpi-mini">Общий фонд</div><input class="num-7" type="number" min="0" step="1" value="'
+                    + blankZeroInt(shopKpiSharedFund(def))
+                    + "\" onchange=\"setShopKpiDefField('" + kpiId + "','sharedFund',this.value)\"></td>"
+                    + '<td><div class="shop-kpi-mini">—</div></td>'
                 : '<td><input class="num-7" type="number" min="0" step="0.01" value="' + blankZero(def.plan || 0)
                     + "\" onchange=\"setShopKpiDefField('" + kpiId + "','plan',this.value)\"></td>"
             + '<td><input class="num-7" type="number" min="0" step="1" value="' + blankZeroInt(shopKpiBudget(def))
@@ -28028,6 +28169,8 @@ function shopCloneKpiDefFields(def) {
         accrual_mode: def.accrual_mode || def.accrualMode || "",
         daily_rate: def.daily_rate != null ? def.daily_rate : def.dailyRate,
         monthly_bonus: def.monthly_bonus != null ? def.monthly_bonus : shopKpiBudget(def),
+        distribution_mode: def.distribution_mode,
+        shared_fund: def.shared_fund,
         department_id: kpiDefDepartment(def),
         work_tab_id: kpiDefWorkTab(def),
         active: def.active !== false,
@@ -28060,7 +28203,7 @@ function mutateShopKpiDef(kpiId, patch) {
         && (patch.plan != null || patch.limit_value != null || patch.budget != null || patch.amount != null
             || patch.calcType != null || patch.calculation_type != null || patch.name != null || patch.active != null
             || patch.accrual_mode != null || patch.daily_rate !== undefined || patch.monthly_bonus != null
-            || patch.plan_days != null);
+            || patch.plan_days != null || patch.distribution_mode != null || patch.shared_fund != null);
     if (versionForNewMonth) {
         def.validTo = shiftMonth(month, -1);
         def.valid_to = def.validTo;
@@ -28163,6 +28306,10 @@ function setShopKpiDefField(kpiId, field, value) {
     } else if (field === "participationRole") {
         patch.participationRole = value === "derived_recipient" ? "derived_recipient" : "manual_source";
         patch.sourceType = patch.participationRole === "derived_recipient" ? "derived" : "manual";
+    } else if (field === "distributionMode") {
+        patch.distribution_mode = value === SHOP_KPI_SHARED_BUDGET_MODE ? SHOP_KPI_SHARED_BUDGET_MODE : "";
+    } else if (field === "sharedFund") {
+        patch.shared_fund = Math.max(0, Math.round(parseMoney(value, 0)));
     }
     mutateShopKpiDef(kpiId, patch);
     renderShopSalaryRules(payrollViewFromSection());
@@ -28208,9 +28355,15 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
     }
     const shelf = metricId === METRIC_SHELF_LABELS_ID;
     const role = participationRole === "derived_recipient" ? "derived_recipient" : (shelf ? "manual_source" : "");
+    const uniqueAcrossDepts = shelf || metricId === "metric_arrival_730" || metricId === "metric_receiving"
+        || metricId === METRIC_WRITEOFF_LOSSES_ID || metricId === "metric_revision"
+        || tpl.calcType === "max_limit" || tpl.calcType === "timesheet_730" || tpl.calcType === "checklist"
+        || canonicalSourceType(tpl.sourceType) === "revision" || isShopCheckKpi({ metricId: metricId });
+    const newDept = (kpiMetricPick && kpiMetricPick.dept) || metricDept || view.departmentId;
     const exists = (ensureShopPayroll().kpiDefs || []).some(function (d) {
         if (!d || canonicalMetricId(d.metricId || d.metric_id) !== metricId) return false;
         if (kpiSourceSubmetricId(d) !== sid) return false;
+        if (!uniqueAcrossDepts && kpiDefDepartment(d) !== newDept) return false;
         if (metricId === "metric_arrival_730") return true;
         if (shelf) return shopShelfParticipation(d) === role;
         return true;
@@ -28232,7 +28385,7 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
         const allowedTabs = metricTabsForDept(resolvedDept).map(function (t) { return t.id; });
         if (allowedTabs.indexOf(resolvedTab) === -1) resolvedTab = view.workTabId || allowedTabs[0] || "";
     }
-    ensureShopPayroll().kpiDefs.push(stampKpiDef({
+    const newDef = stampKpiDef({
         kpi_id: generateKpiId(),
         metricId: metricId,
         submetric_id: sid,
@@ -28261,10 +28414,19 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
         validFrom: selectedMonth,
         validTo: null,
         active: true
-    }));
+    });
+    const wantShared = !!(kpiMetricPick && kpiMetricPick.distribution_mode === SHOP_KPI_SHARED_BUDGET_MODE);
+    if (wantShared && isShopKpiSharedBudgetEligible(newDef)) {
+        newDef.distribution_mode = SHOP_KPI_SHARED_BUDGET_MODE;
+        newDef.shared_fund = Math.max(0, Math.round(Number(kpiMetricPick.shared_fund) || 0));
+    }
+    ensureShopPayroll().kpiDefs.push(newDef);
     saveApp();
     closeShopPayModal();
     renderShopSalaryRules();
+    if (wantShared && !newDef.distribution_mode) {
+        toast("Для этой метрики «Общий бюджет» недоступен — KPI создан с действующим расчётом.", "info");
+    }
 }
 
 function toggleShopKpiAssignment(employeeId, kpiId, on) {
@@ -29954,9 +30116,49 @@ function metricControlKpiDef(employeeId, metricId, month, submetricId) {
     return found;
 }
 
+/**
+ * Территория: подразделение строки назначения, где сотрудник явно указан в «Дополнительных сотрудниках»
+ * метрики другого подразделения. Если у метрики есть строка его основного подразделения — "" (своя таблица).
+ */
+function metricControlExtraFactDept(employeeId, metricId) {
+    const eid = String(employeeId || "");
+    const home = eid ? employeeHomeDeptCode(eid) : "";
+    if (!home || !isTerritoryCode(home)) return "";
+    const it = metricControlCatalogItem(metricId);
+    const rows = (it && Array.isArray(it.assignments)) ? it.assignments : [];
+    if (rows.some(function (row) { return row && row.department_id === home; })) return "";
+    let found = "";
+    rows.some(function (row) {
+        const dept = row ? String(row.department_id || "") : "";
+        if (!dept || dept === home || !isTerritoryCode(dept)) return false;
+        if ((row.extra_employee_ids || []).indexOf(eid) === -1) return false;
+        if (metricExtraHomeDeptsAllowed(dept).indexOf(home) === -1) return false;
+        const resolved = resolveUniqueEmployeeCard(eid);
+        if (!resolved.ok || resolved.deptCode !== home) return false;
+        found = dept;
+        return true;
+    });
+    return found;
+}
+
+function metricControlFactDept(employeeId, metricId) {
+    return metricControlExtraFactDept(employeeId, metricId) || employeeHomeDeptCode(employeeId);
+}
+
+function metricControlExtraMetricIds(employeeId) {
+    const out = [];
+    shopMetricCatalogItems().forEach(function (it) {
+        if (!it || it.active === false) return;
+        const mid = canonicalMetricId(it.id);
+        if (!mid || out.indexOf(mid) !== -1) return;
+        if (metricControlExtraFactDept(employeeId, mid)) out.push(mid);
+    });
+    return out;
+}
+
 function metricControlCheckDayState(employeeId, metricId, day, month) {
     const mid = canonicalMetricId(metricId);
-    const home = employeeHomeDeptCode(employeeId);
+    const home = metricControlFactDept(employeeId, mid);
     if (home && home !== "shop") return deptMetricCheckState(home, employeeId, day, mid, month) || "";
     const it = metricControlCatalogItem(mid);
     const cat = (it && (it.section_id || it.metric_tab_id)) || "";
@@ -29968,7 +30170,7 @@ function metricControlCheckDayState(employeeId, metricId, day, month) {
 function metricControlNumericHasFact(employeeId, metricId, day, month, submetricId) {
     const mid = parseMetricFactKey(metricId, submetricId).metricId;
     const sid = parseMetricFactKey(metricId, submetricId).submetricId;
-    const home = employeeHomeDeptCode(employeeId);
+    const home = metricControlFactDept(employeeId, mid);
     if (home && home !== "shop") {
         const rec = (deptMetricFactsMonth(home, month)[employeeId] || {})[String(day)];
         const key = metricFactStorageKey(mid, sid);
@@ -30048,7 +30250,7 @@ function metricControlCheckStats(employeeId, metricId, month) {
 
 function metricControlNumericStats(employeeId, metricId, month, submetricId) {
     const m = month || selectedMonth;
-    const home = employeeHomeDeptCode(employeeId);
+    const home = metricControlFactDept(employeeId, metricId);
     const keep = selectedMonth;
     selectedMonth = m;
     const fact = home && home !== "shop"
@@ -30074,7 +30276,8 @@ function metricControlNumericStats(employeeId, metricId, month, submetricId) {
         else empty += 1;
     });
     const def = metricControlKpiDef(employeeId, metricId, m, submetricId);
-    const plan = def ? Number(def.plan || def.limit_value || 0) : 0;
+    const sharedBudget = !!def && isShopKpiSharedBudget(shopRuleFromKpiDef(def, employeeId));
+    const plan = def && !sharedBudget ? Number(def.plan || def.limit_value || 0) : 0;
     const maxLimit = def && isShopMaxLimitKpi(shopRuleFromKpiDef(def, employeeId));
     let rate = null;
     if (plan > 0) {
@@ -30093,6 +30296,7 @@ function metricControlNumericStats(employeeId, metricId, month, submetricId) {
         eligibleDays: eligible,
         maxLimit: !!maxLimit,
         hasKpiPlan: plan > 0,
+        sharedBudget: sharedBudget,
         rateForAvg: plan > 0 ? rate : null,
         violations: plan > 0 && rate != null && rate < 1 ? 1 : 0
     };
@@ -30280,24 +30484,39 @@ function metricControlEmployeeReport(employee, month) {
     const m = month || selectedMonth;
     const ids = shopEmployeeWorkMetricIds(employee.id, m);
     const work = [];
+    const shown = {};
+    function pushLines(id, extraDept) {
+        const it = shopMetricCatalogById(id);
+        shown[canonicalMetricId(id)] = true;
+        const lineExtraDept = extraDept || metricControlExtraFactDept(employee.id, id);
+        function add(line) {
+            if (lineExtraDept) line.extraDept = lineExtraDept;
+            work.push(line);
+        }
+        if (it && metricStructureType(it) === "with_submetrics") {
+            const subs = metricSubmetrics(it, true);
+            if (!subs.length) {
+                add(metricControlBuildLine(employee.id, id, m));
+                return;
+            }
+            subs.forEach(function (sub) {
+                add(metricControlBuildLine(employee.id, id, m, sub.id));
+            });
+            return;
+        }
+        add(metricControlBuildLine(employee.id, id, m));
+    }
     ids.forEach(function (id) {
         const it = shopMetricCatalogById(id);
         if (!isCompanyWideCatalogMode() && !isSummary()) {
             const dept = workspace() && workspace().code;
             if (dept && it && metricDepartmentId(it) !== dept) return;
         }
-        if (it && metricStructureType(it) === "with_submetrics") {
-            const subs = metricSubmetrics(it, true);
-            if (!subs.length) {
-                work.push(metricControlBuildLine(employee.id, id, m));
-                return;
-            }
-            subs.forEach(function (sub) {
-                work.push(metricControlBuildLine(employee.id, id, m, sub.id));
-            });
-            return;
-        }
-        work.push(metricControlBuildLine(employee.id, id, m));
+        pushLines(id, "");
+    });
+    metricControlExtraMetricIds(employee.id).forEach(function (id) {
+        if (shown[id]) return;
+        pushLines(id, metricControlExtraFactDept(employee.id, id));
     });
     const sales = metricControlSalesLine(employee.id, m);
     const all = work.concat(sales ? [sales] : []);
@@ -30414,6 +30633,7 @@ function metricControlLineStatusLabel(line) {
             : "Нет данных";
     }
     if (line.status === "mid") return "Ниже плана";
+    if (line.sharedBudget) return "Общий бюджет";
     if (line.rate != null && line.rate >= 1) return "Выполнено";
     if (line.rate != null && line.rate >= 0.9) return "Хорошо";
     if (line.status === "fail") return "Проблема";
@@ -30738,12 +30958,16 @@ function metricControlLineRowHtml(employeeId, line, showJump) {
         : (line.kind === "numeric" && !line.hasKpiPlan
             ? ("заполнение " + metricControlFmtPct(line.fillRate))
             : metricControlFmtPct(line.rate));
-    const jump = showJump && !isSummary()
+    const jump = showJump && !isSummary() && !line.extraDept
         ? '<button type="button" class="btn btn-secondary btn-small" onclick="metricControlOpenSource(\''
             + line.metricId + "','" + employeeId + "')\">Открыть</button>"
         : "";
     let extra = "";
-    if (line.kind === "numeric" && !line.hasKpiPlan) {
+    if (line.sharedBudget && (line.kind === "numeric" || line.kind === "month")) {
+        extra = '<div class="note">Общий бюджет — без плана'
+            + (line.kind === "numeric" ? (" · заполнено " + line.filledDays + " из " + line.eligibleDays + " раб. дн.") : "")
+            + "</div>";
+    } else if (line.kind === "numeric" && !line.hasKpiPlan) {
         extra = '<div class="note">План KPI не назначен · заполнено ' + line.filledDays + " из " + line.eligibleDays + " раб. дн.</div>";
     }
     if (line.kind === "revision") {
@@ -30787,6 +31011,10 @@ function metricControlLineRowHtml(employeeId, line, showJump) {
             });
             extra += "</div>";
         }
+    }
+    if (line.extraDept) {
+        extra = '<div class="note">Дополнительный участник · '
+            + escapeHtml(officialName(findWorkspaceByCode(line.extraDept)) || line.extraDept) + "</div>" + extra;
     }
     return '<tr class="mc-line-' + tone + '"><td>' + title + extra + "</td>"
         + "<td>" + metricControlLineDoneText(line) + "</td>"
