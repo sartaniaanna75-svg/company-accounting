@@ -11953,7 +11953,8 @@ function wtOpsFetchWithTimeout(url, opts) {
 const WT_KEYED_LIST_PATHS = {
     "customerReturns.items": "return_id",
     "shopRevision.groups": "id",
-    "shopRevision.folders": "id"
+    "shopRevision.folders": "id",
+    "financeRec.operations": "finance_operation_id"
 };
 
 function wtKeyedListKey(path) {
@@ -12105,11 +12106,17 @@ function wtKeyedListConflictLabel(path) {
     if (path === "customerReturns.items") return "Возвраты";
     if (path === "shopRevision.groups") return "Ревизия — группы";
     if (path === "shopRevision.folders") return "Ревизия — подпапки";
+    if (path === "financeRec.operations") return "Финконтроль — операции";
     return path;
 }
 
 function wtKeyedListRowCaption(path, row, id) {
     if (!row) return id;
+    if (path === "financeRec.operations") {
+        const parts = [row.date || "", row.amount != null ? String(row.amount) : "", String(row.payee || row.comment || "").slice(0, 40)]
+            .filter(function (x) { return x !== ""; });
+        return parts.length ? (id + " «" + parts.join(", ") + "»") : id;
+    }
     const name = row.product_name || row.name || row.client_name || "";
     return name ? (id + " «" + String(name).slice(0, 40) + "»") : id;
 }

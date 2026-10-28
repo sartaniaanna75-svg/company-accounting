@@ -1447,7 +1447,7 @@ function frCreateTransferOp(areaId, fromId, toId, amount, date, comment, extra) 
     ensureFinanceRec();
     const opWeek = frWeek(date);
     const rec = {
-        finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) {
+        finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) {
             return x && x.finance_operation_id;
         })),
         period_key: (opWeek && opWeek.period_key) || "",
@@ -1814,7 +1814,7 @@ function frSetGridCell(areaId, sourceId, date, amount, dataSource, opKind) {
     }
 
     const rec = {
-        finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
+        finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
         period_key: opWeek.period_key,
         date: want,
         type: "in",
@@ -2074,7 +2074,7 @@ function frSetNonIncomeCell(areaId, lineKey, comment, date, amount, dataSource, 
 
     if (!rec) {
         rec = {
-            finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
+            finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
             period_key: opWeek.period_key,
             date: want,
             type: "in",
@@ -4615,7 +4615,7 @@ function saveFrDividend() {
     }) : null;
     if (!rec) {
         rec = {
-            finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) {
+            finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) {
                 return x && x.finance_operation_id;
             })),
             created_at: new Date().toISOString()
@@ -4962,7 +4962,7 @@ function frQuickAddTransfer(date) {
     ensureFinanceRec();
     const opWeek = frWeek(date);
     const rec = {
-        finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
+        finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
         period_key: opWeek.period_key || w.period_key,
         date: date,
         type: "transfer",
@@ -5012,7 +5012,7 @@ function frQuickAddOp(kind, date) {
     const opWeek = frWeek(date);
     const objectId = area.object_id || area.finance_area_id;
     const rec = {
-        finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
+        finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
         period_key: opWeek.period_key || w.period_key,
         date: date,
         type: movement_kind === "expense" ? "out" : "in",
@@ -5053,7 +5053,7 @@ function frQuickAddRefund(date) {
     if (!src) { toast("Выберите счёт, куда вернулись деньги", "error"); return; }
     ensureFinanceRec();
     const rec = {
-        finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
+        finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
         period_key: opWeek.period_key,
         date: frNormDate(date) || date,
         type: "expense_refund",
@@ -5544,7 +5544,7 @@ function saveFrOp() {
     let rec = id ? (appData.financeRec.operations || []).find(function (o) { return o && o.finance_operation_id === id; }) : null;
     const old = rec ? rec.amount : null;
     if (!rec) {
-        rec = { finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })) };
+        rec = { finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })) };
         appData.financeRec.operations.push(rec);
     }
     const movement_kind = ((document.getElementById("frOpKind") || {}).value || "expense");
@@ -5593,8 +5593,16 @@ function frDeleteOp(id) {
     rec.deleted_at = new Date().toISOString();
     rec.deleted_by = typeof currentAuthUserId === "function" ? currentAuthUserId() : "";
     frAudit("op_delete", { finance_operation_id: id, old_value: rec.amount, finance_source_id: rec.finance_source_id, detail: rec.comment || "" });
-    saveApp();
     renderFinanceRec();
+    return Promise.resolve(saveApp()).then(function (ok) {
+        if (ok === true) {
+            toast("Операция удалена", "success");
+        } else if (wtServerMode) {
+            toast("Удаление не записано на сервер. Не обновляйте страницу — пометка удаления пока только на этом экране.", "error");
+        }
+        try { renderFinanceRec(); } catch (err) {}
+        return ok;
+    });
 }
 
 function frOnSourceDragStart(e, accountId) {
@@ -6218,7 +6226,7 @@ function saveFrTransfer() {
     ensureFinanceRec();
     let rec = id ? (appData.financeRec.operations || []).find(function (o) { return o && o.finance_operation_id === id; }) : null;
     if (!rec) {
-        rec = { finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })) };
+        rec = { finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })) };
         appData.financeRec.operations.push(rec);
     }
     const opWeek = frWeek(date);
@@ -7018,7 +7026,7 @@ function frApplyExpenseImport(text, sourceId, meta) {
         existingFp[fpOld] = true;
         const opWeek = frWeek(r.date);
         const rec = {
-            finance_operation_id: nextPrefixedId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
+            finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
             period_key: opWeek.period_key || w.period_key,
             date: r.date,
             op_time: r.op_time || "",
