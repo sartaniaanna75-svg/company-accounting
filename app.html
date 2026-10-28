@@ -11458,12 +11458,156 @@ function wtDomainWriterOpsFromLeaves(leaves, preferLiveValues) {
     return out;
 }
 
+/** Отложенный DomainWriter: не терять черновик, если save вызван во время SoftSync/OPS-leaf. */
+let wtDomainWriterDeferredTimer = null;
+let wtDomainWriterDeferredPending = false;
+let wtDomainWriterDeferredWaitStartedAt = 0;
+let wtDomainWriterDeferredWaitWarned = false;
+let wtDomainWriterDeferredFailStreak = 0;
+/** SoftSync GET ~12 МБ на Timeweb до ~10 с + refreshAll — ждём дольше 8 с, dirty не сбрасываем. */
+const WT_DOMAIN_DEFERRED_WARN_MS = 8000;
+const WT_DOMAIN_DEFERRED_MAX_MS = 60000;
+const WT_DOMAIN_DEFERRED_MAX_FAIL = 5;
+
+function wtDomainWriterLeavesFromDirty() {
+    const out = [];
+    const dirty = wtSoftDirtyPaths || {};
+    const baseRoot = wtLastLoadedPayload || {};
+    Object.keys(dirty).forEach(function (path) {
+        if (!dirty[path] || !path) return;
+        let live;
+        let base;
+        try {
+            live = appData ? wtGetByPath(appData, path) : undefined;
+            base = wtGetByPath(baseRoot, path);
+        } catch (err) {
+            return;
+        }
+        if (wtJsonCanonEqual(live, base)) return;
+        out.push({ path: path, value: live === undefined ? null : live });
+    });
+    return out;
+}
+
+function wtDomainWriterMarkPendingDraft() {
+    wtDomainWriterDeferredPending = true;
+    try { wtSoftProtectPendingLeaves(); } catch (err) {}
+}
+
+function wtDomainWriterHasPendingDraft() {
+    if (wtDomainWriterDeferredPending) return true;
+    try {
+        const dirty = wtSoftDirtyPaths || {};
+        if (Object.keys(dirty).some(function (p) { return !!dirty[p]; })) return true;
+        const leaves = wtCollectChangedLeaves(wtLastLoadedPayload || {}, appData) || [];
+        return leaves.length > 0;
+    } catch (err) {
+        return !!wtDomainWriterDeferredPending;
+    }
+}
+
+/**
+ * Одно отложенное сохранение после снятия softApplying / incidental OPS.
+ * Не плодит параллельные записи: один таймер, свежий diff внутри wtDomainWriterSave.
+ * Пока экран занят SoftSync — продолжаем ждать (предупреждение с 8 с), dirty сохраняем.
+ */
+function wtDomainWriterScheduleDeferred() {
+    if (!wtServerMode) return;
+    wtDomainWriterMarkPendingDraft();
+    if (!wtDomainWriterDeferredWaitStartedAt) {
+        wtDomainWriterDeferredWaitStartedAt = Date.now();
+        wtDomainWriterDeferredWaitWarned = false;
+    }
+    if (wtDomainWriterDeferredTimer != null) return;
+    function flushDeferred() {
+        wtDomainWriterDeferredTimer = null;
+        if (!wtServerMode || !appData) {
+            wtDomainWriterDeferredPending = false;
+            wtDomainWriterDeferredWaitStartedAt = 0;
+            wtDomainWriterDeferredWaitWarned = false;
+            return;
+        }
+        const blocked = !!wtSoftApplying
+            || (!!wtOpsBlockIncidentalPut && wtOpsUiEnabled() && wtPutPayloadOverride == null);
+        if (blocked) {
+            const waited = Date.now() - (wtDomainWriterDeferredWaitStartedAt || Date.now());
+            if (waited >= WT_DOMAIN_DEFERRED_WARN_MS && !wtDomainWriterDeferredWaitWarned) {
+                wtDomainWriterDeferredWaitWarned = true;
+                toast("Есть несохранённые изменения. Ждём окончания обновления экрана — не обновляйте страницу (F5).", "error");
+            }
+            if (waited >= WT_DOMAIN_DEFERRED_MAX_MS) {
+                // Останавливаем автоповтор, но dirty/pending оставляем — SoftSync не сотрёт, пользователь может повторить.
+                toast("Изменения всё ещё не записаны (синхронизация дольше минуты). Не нажимайте F5 — повторите действие или сохраните ещё раз.", "error");
+                wtDomainWriterDeferredWaitStartedAt = 0;
+                wtDomainWriterDeferredWaitWarned = false;
+                wtDomainWriterMarkPendingDraft();
+                return;
+            }
+            wtDomainWriterDeferredTimer = setTimeout(flushDeferred, waited >= WT_DOMAIN_DEFERRED_WARN_MS ? 250 : 100);
+            return;
+        }
+        wtDomainWriterDeferredWaitStartedAt = 0;
+        wtDomainWriterDeferredWaitWarned = false;
+        wtDomainWriterDeferredPending = false;
+        Promise.resolve(wtDomainWriterSave({ _fromDeferred: true })).then(function (ok) {
+            let still = [];
+            try {
+                still = wtCollectChangedLeaves(wtLastLoadedPayload || {}, appData) || [];
+                if (!still.length) still = wtDomainWriterLeavesFromDirty();
+            } catch (err) {
+                still = [];
+            }
+            if (!still.length) {
+                wtDomainWriterDeferredFailStreak = 0;
+                return;
+            }
+            wtDomainWriterMarkPendingDraft();
+            if (ok === false) {
+                wtDomainWriterDeferredFailStreak += 1;
+                toast("Изменения не записаны на сервер. Не обновляйте страницу — данные пока только на экране.", "error");
+                if (wtDomainWriterDeferredFailStreak > WT_DOMAIN_DEFERRED_MAX_FAIL) {
+                    wtDomainWriterDeferredFailStreak = 0;
+                    // Dirty остаётся — можно вызвать saveApp снова вручную.
+                    return;
+                }
+            } else {
+                wtDomainWriterDeferredFailStreak = 0;
+            }
+            // Дописать оставшийся хвост (localNewer) одним таймером — без параллельных OPS.
+            if (!wtDomainWriterDeferredTimer) {
+                if (!wtDomainWriterDeferredWaitStartedAt) {
+                    wtDomainWriterDeferredWaitStartedAt = Date.now();
+                    wtDomainWriterDeferredWaitWarned = false;
+                }
+                wtDomainWriterDeferredTimer = setTimeout(flushDeferred, ok === false ? 400 : 120);
+            }
+        }, function () {
+            toast("Изменения не записаны на сервер. Не обновляйте страницу — данные пока только на экране.", "error");
+            wtDomainWriterMarkPendingDraft();
+            wtDomainWriterDeferredFailStreak += 1;
+            if (wtDomainWriterDeferredFailStreak > WT_DOMAIN_DEFERRED_MAX_FAIL) {
+                wtDomainWriterDeferredFailStreak = 0;
+                return;
+            }
+            if (!wtDomainWriterDeferredTimer) {
+                if (!wtDomainWriterDeferredWaitStartedAt) {
+                    wtDomainWriterDeferredWaitStartedAt = Date.now();
+                    wtDomainWriterDeferredWaitWarned = false;
+                }
+                wtDomainWriterDeferredTimer = setTimeout(flushDeferred, 400);
+            }
+        });
+    }
+    wtDomainWriterDeferredTimer = setTimeout(flushDeferred, 80);
+}
+
 /**
  * options:
  *  - forcePut: true — явный широкий PUT (admin/recovery)
  *  - atomic: true — все ops атомарно
  *  - ops: [{path,value,expected_v?}] — явный список (без diff)
  *  - silent: true — без toast об «нечего сохранять»
+ *  - _fromDeferred: внутренний повтор после softApplying / incidental OPS
  */
 function wtDomainWriterSave(options) {
     options = options || {};
@@ -11474,8 +11618,13 @@ function wtDomainWriterSave(options) {
     // Soft-apply перерисовывает UI: нельзя сообщать «успех» без записи на сервер.
     if (wtSoftApplying && !options.forcePut && !useSlicePut) {
         const softRetry = Number(options._softRetry || 0);
+        // Сразу защитить черновик — SoftSync не сотрёт folders/KPI до отложенной записи.
+        wtDomainWriterMarkPendingDraft();
         if (softRetry >= 8) {
-            toast("Сохранение отложено из‑за обновления экрана. Повторите ввод или сохраните ещё раз.", "error");
+            wtDomainWriterScheduleDeferred();
+            if (!options._fromDeferred) {
+                toast("Сохранение отложено: идёт обновление экрана. Запись выполнится автоматически.", "error");
+            }
             return Promise.resolve(false);
         }
         return new Promise(function (resolve) {
@@ -11484,13 +11633,16 @@ function wtDomainWriterSave(options) {
                     const next = Object.assign({}, options, { _softRetry: softRetry + 1 });
                     resolve(wtDomainWriterSave(next));
                 } catch (err) {
+                    wtDomainWriterScheduleDeferred();
                     resolve(false);
                 }
             }, 40);
         });
     }
     if (wtOpsBlockIncidentalPut && wtOpsUiEnabled() && !options.ops && !options.forcePut && !useSlicePut) {
-        return Promise.resolve(true);
+        // Нельзя возвращать true: иначе ревизия/KPI думают, что всё записано.
+        wtDomainWriterScheduleDeferred();
+        return Promise.resolve(false);
     }
     if (wtPutPaused && wtKeepUnsavedDraft) {
         toast("Сессия истекла. Войдите снова, чтобы сохранить изменения.", "error");
@@ -11524,6 +11676,14 @@ function wtDomainWriterSave(options) {
         } catch (err) {
             prelimLeaves = [];
         }
+    }
+    // UI-изменение есть (dirty), а collect пуст — восстановить листья с dirty-путей.
+    if (!(prelimLeaves && prelimLeaves.length) && !(options.ops && options.ops.length)) {
+        try { wtSoftProtectPendingLeaves(); } catch (errP) {}
+        try {
+            const fromDirty = wtDomainWriterLeavesFromDirty();
+            if (fromDirty && fromDirty.length) prelimLeaves = fromDirty;
+        } catch (errD) {}
     }
     try {
         if (prelimLeaves && prelimLeaves.length) {
@@ -11593,6 +11753,9 @@ function wtDomainWriterSave(options) {
                 }).filter(function (leaf) { return leaf && leaf.path; });
             } else {
                 leaves = wtCollectChangedLeaves(wtLastLoadedPayload || {}, appData);
+                if (!leaves || !leaves.length) {
+                    leaves = wtDomainWriterLeavesFromDirty();
+                }
             }
         } catch (err) {
             toast("Не удалось подготовить данные для сохранения.", "error");
