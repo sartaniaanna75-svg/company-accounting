@@ -8659,6 +8659,8 @@ function applyServerState(state) {
         });
         if (!exists) appData.users.push(Object.assign({}, wtServerUser));
     }
+    // Нормализация справочника до baseline: иначе ensure после загрузки даёт ложный diff positionCatalog.items.
+    try { ensurePositionCatalog(appData); } catch (errEns) {}
     try {
         wtLastLoadedPayload = JSON.parse(JSON.stringify(appData));
     } catch (err) {
@@ -10668,6 +10670,107 @@ function canWriteDeptStaffCards() {
     return userHasPerm("timesheet", "edit");
 }
 
+/** Как ops_path_allowed(positionCatalog) на сервере: settings:edit или manager+табель. Не расширяет права. */
+function wtCanWritePositionCatalog() {
+    if (isAppAdmin()) return true;
+    if (userHasPerm("settings", "edit")) return true;
+    return canWriteDeptStaffCards();
+}
+
+function wtIsPositionCatalogPath(path) {
+    const p = String(path || "");
+    return p === "positionCatalog" || p.indexOf("positionCatalog.") === 0;
+}
+
+function wtPositionCatalogPathIsDirty() {
+    const d = wtSoftDirtyPaths || {};
+    if (d.positionCatalog || d["positionCatalog.items"]) return true;
+    return Object.keys(d).some(function (p) {
+        return !!d[p] && String(p).indexOf("positionCatalog.") === 0;
+    });
+}
+
+/**
+ * Посев/привязка position_id из ensurePositionCatalog не должны считаться правкой пользователя.
+ * Черновик уполномоченного (dirty + право записи) не затираем в baseline.
+ */
+function wtAbsorbPositionCatalogNormalize() {
+    if (!appData) return;
+    const beforeIds = {};
+    (appData.workspaces || []).forEach(function (w) {
+        if (!w || !w.code) return;
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id) return;
+            beforeIds[String(w.code) + "\0" + String(e.id)] = e.position_id ? String(e.position_id) : "";
+        });
+    });
+    const catalogDirty = wtPositionCatalogPathIsDirty();
+    const canWrite = wtCanWritePositionCatalog();
+    try { ensurePositionCatalog(appData); } catch (err) {}
+    if (!wtLastLoadedPayload) return;
+    if (!canWrite || !catalogDirty) {
+        try {
+            wtLastLoadedPayload.positionCatalog = wtCloneJson(appData.positionCatalog);
+        } catch (err2) {}
+        try {
+            wtSoftClearDirty("positionCatalog");
+            wtSoftClearDirty("positionCatalog.items");
+            Object.keys(wtSoftDirtyPaths || {}).forEach(function (p) {
+                if (String(p).indexOf("positionCatalog.") === 0) delete wtSoftDirtyPaths[p];
+            });
+        } catch (err3) {}
+    }
+    (appData.workspaces || []).forEach(function (w) {
+        if (!w || !w.code) return;
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id) return;
+            const key = String(w.code) + "\0" + String(e.id);
+            const prev = beforeIds[key] || "";
+            const next = e.position_id ? String(e.position_id) : "";
+            if (prev || !next || prev === next) return;
+            const path = "workspaces." + w.code + ".employees." + e.id + ".position_id";
+            try {
+                wtSetByPath(wtLastLoadedPayload, path, next);
+                wtSoftClearDirty(path);
+            } catch (err4) {}
+        });
+    });
+}
+
+/** Сброс ложного/запрещённого черновика справочника должностей без потери прочих dirty. */
+function wtAbsorbPositionCatalogUnauthorized() {
+    if (!appData) return;
+    try { ensurePositionCatalog(appData); } catch (err) {}
+    if (wtLastLoadedPayload) {
+        try {
+            wtLastLoadedPayload.positionCatalog = wtCloneJson(appData.positionCatalog);
+        } catch (err2) {}
+    }
+    try {
+        wtSoftClearDirty("positionCatalog");
+        wtSoftClearDirty("positionCatalog.items");
+        Object.keys(wtSoftDirtyPaths || {}).forEach(function (p) {
+            if (String(p).indexOf("positionCatalog.") === 0) delete wtSoftDirtyPaths[p];
+        });
+    } catch (err3) {}
+}
+
+function wtFilterPositionCatalogLeavesForSession(leaves) {
+    const list = leaves || [];
+    if (!list.length || wtCanWritePositionCatalog()) return list;
+    const out = [];
+    let dropped = false;
+    list.forEach(function (leaf) {
+        if (leaf && wtIsPositionCatalogPath(leaf.path)) {
+            dropped = true;
+            return;
+        }
+        out.push(leaf);
+    });
+    if (dropped) wtAbsorbPositionCatalogUnauthorized();
+    return out;
+}
+
 function staffEmployeeCardForPut(emp, allowSalary) {
     if (!emp || typeof emp !== "object") return null;
     const out = {};
@@ -11710,6 +11813,9 @@ function wtDomainWriterSave(options) {
         } catch (errD) {}
     }
     try {
+        prelimLeaves = wtFilterPositionCatalogLeavesForSession(prelimLeaves || []);
+    } catch (errFilt) {}
+    try {
         if (prelimLeaves && prelimLeaves.length) {
             prelimLeaves.forEach(function (leaf) {
                 if (leaf && leaf.path) wtSoftMarkDirty(leaf.path);
@@ -11785,6 +11891,9 @@ function wtDomainWriterSave(options) {
             toast("Не удалось подготовить данные для сохранения.", "error");
             return false;
         }
+        try {
+            leaves = wtFilterPositionCatalogLeavesForSession(leaves || []);
+        } catch (errFilt2) {}
         if (!leaves || !leaves.length) return true;
         if (leaves.length > 200) {
             toast("Слишком много изменений за один раз (" + leaves.length + "). Сохраните частями или обновите страницу.", "error");
@@ -11859,7 +11968,7 @@ function wtDomainWriterSave(options) {
                     return r && (r.status === "conflict" || r.error === "conflict");
                 });
                 const saved = results.filter(function (r) { return r && r.status === "saved"; });
-                const failed = results.filter(function (r) {
+                let failed = results.filter(function (r) {
                     return r && r.status !== "saved" && r.status !== "conflict" && r.error !== "conflict";
                 });
                 wtDomainWriterApplyBatchLocal(saved);
@@ -11872,10 +11981,22 @@ function wtDomainWriterSave(options) {
                 }
                 stripLocalSecretsAfterSave();
                 if (failed.length) {
+                    const keptFailed = [];
                     failed.forEach(function (r) {
+                        const msg = r && (r.message || r.error) ? String(r.message || r.error) : "";
+                        const isForbidden = r && (r.error === "forbidden" || r.status === "forbidden"
+                            || msg.indexOf("Недостаточно прав") !== -1);
+                        if (r && isForbidden && wtIsPositionCatalogPath(r.path)) {
+                            try { wtAbsorbPositionCatalogUnauthorized(); } catch (errAbsF) {}
+                            return;
+                        }
                         try { if (r.path) wtSoftMarkDirty(r.path); } catch (errF) {}
+                        keptFailed.push(r);
                     });
-                    toast((failed[0] && failed[0].message) || "Часть изменений не записана на сервер.", "error");
+                    failed = keptFailed;
+                    if (failed.length) {
+                        toast((failed[0] && failed[0].message) || "Часть изменений не записана на сервер.", "error");
+                    }
                 }
                 if (!conflicts.length) {
                     if (!saved.length && !res.ok) {
@@ -12233,6 +12354,12 @@ function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice) {
                 const r = wtKeyedListResolveConflict(c);
                 if (r === "merged") retryPaths[c.path] = true;
                 else if (r !== "server_same") allWritten = false;
+                return;
+            }
+            // Без права записи справочника: не показывать окно перезаписи, принять сервер и снять ложный dirty.
+            if (wtIsPositionCatalogPath(c.path) && !wtCanWritePositionCatalog()) {
+                wtDomainWriterAdoptServerValue(c);
+                try { wtAbsorbPositionCatalogNormalize(); } catch (errAbsC) {}
                 return;
             }
             const conflictArg = {
@@ -12952,6 +13079,13 @@ function wtResolveRecordConflict(conflict) {
     if (!conflict || conflict.status !== "conflict") {
         return Promise.resolve("cancel");
     }
+    if (wtIsPositionCatalogPath(conflict.path) && !wtCanWritePositionCatalog()) {
+        try {
+            wtDomainWriterAdoptServerValue(conflict);
+            wtAbsorbPositionCatalogNormalize();
+        } catch (err) {}
+        return Promise.resolve("server");
+    }
     const pathLabel = conflict.path ? String(conflict.path) : "запись";
     const serverTxt = wtFormatConflictValue(conflict.server_value);
     const yoursTxt = wtFormatConflictValue(conflict.your_value);
@@ -13625,6 +13759,8 @@ function wtSoftApplyServerState(state) {
         wtPutPaused = false;
         wtAllowConflictRetry = false;
     }
+    // SoftSync: посев/привязка ensure не должна снова помечать positionCatalog как черновик.
+    try { wtAbsorbPositionCatalogNormalize(); } catch (errAbs) {}
     return true;
 }
 
