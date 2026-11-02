@@ -19651,14 +19651,18 @@ function deptTimesheetStatus(deptCode, employeeId, day, month) {
     return rec && rec.status ? rec.status : "";
 }
 
-function deptTimesheetLockLabel(deptCode, employeeId, day, month) {
-    const st = deptTimesheetStatus(deptCode, employeeId, day, month);
-    if (st === "В") return "Выходной";
-    if (st === "Б") return "Больничный";
-    if (st === "ОТ") return "Отпуск";
-    if (st === "П") return "Прогул";
-    if (st === "Л") return "Лишение";
+/** Подпись отсутствия в ячейках метрик (не меняет коды табеля). «Л» → «ЛО». */
+function timesheetMetricsAbsenceLabel(status) {
+    if (status === "В") return "В";
+    if (status === "Б") return "Б";
+    if (status === "ОТ") return "ОТ";
+    if (status === "П") return "П";
+    if (status === "Л") return "ЛО";
     return "";
+}
+
+function deptTimesheetLockLabel(deptCode, employeeId, day, month) {
+    return timesheetMetricsAbsenceLabel(deptTimesheetStatus(deptCode, employeeId, day, month));
 }
 
 function refreshMetricsUi() {
@@ -23617,13 +23621,7 @@ function shopTimesheetIsDayOff(employeeId, day, month) {
 }
 
 function shopTimesheetLockLabel(employeeId, day, month) {
-    const st = shopTimesheetStatus(employeeId, day, month);
-    if (st === "В") return "Выходной";
-    if (st === "Б") return "Больничный";
-    if (st === "ОТ") return "Отпуск";
-    if (st === "П") return "Прогул";
-    if (st === "Л") return "Лишение";
-    return "";
+    return timesheetMetricsAbsenceLabel(shopTimesheetStatus(employeeId, day, month));
 }
 
 function shopMetricFieldIsCheck(field) {
@@ -23703,7 +23701,7 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
 
 function shopCheckCellHtml(categoryId, employeeId, day, field, canEdit) {
     const lock = shopTimesheetLockLabel(employeeId, day);
-    if (lock === "Выходной") {
+    if (lock === "В") {
         return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
     }
     if (lock) {
@@ -34678,7 +34676,7 @@ function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark, submetric
 
 function deptMetricInputHtml(deptCode, employeeId, day, field) {
     const lock = deptTimesheetLockLabel(deptCode, employeeId, day);
-    if (lock === "Выходной") {
+    if (lock === "В") {
         return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
     }
     if (lock) return '<span class="metrics-dayoff" title="По табелю">' + escapeHtml(lock) + "</span>";
