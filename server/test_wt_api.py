@@ -6594,8 +6594,11 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
             src.find("function wtDomainWriterSave(")
             : src.find("function wtDomainWriterSave(") + 12000
         ]
-        self.assertIn("!explicitOps && prelimLeaves && prelimLeaves.length > 200", dw)
+        self.assertIn("!hasExplicitOps && prelimLeaves && prelimLeaves.length > 200", dw)
         self.assertIn("Отказ ДО dirty", dw)
+        self.assertIn("const hasExplicitOps = !!(options.ops && options.ops.length)", dw)
+        self.assertIn("const explicitOps = options.ops || null", dw)
+        self.assertEqual(dw.count("const explicitOps"), 1)
 
     def test_admin_creates_two_kpi_defs_via_ops(self):
         cookie, _ = self.login()

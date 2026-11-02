@@ -11923,7 +11923,8 @@ function wtDomainWriterSave(options) {
     // Предварительно пометить dirty по текущему diff — SoftSync не сотрёт черновик,
     // пока запрос ждёт wtOpsChain. Сами OPS собираем заново внутри очереди.
     // Явные ops (KPI и т.п.) — только их пути; полный collect не раздувает dirty.
-    const explicitOps = !!(options.ops && options.ops.length);
+    // hasExplicitOps — булев признак; explicitOps ниже — сам массив ops (не путать имена).
+    const hasExplicitOps = !!(options.ops && options.ops.length);
     let prelimLeaves = options.ops;
     if (!prelimLeaves) {
         try {
@@ -11933,7 +11934,7 @@ function wtDomainWriterSave(options) {
         }
     }
     // UI-изменение есть (dirty), а collect пуст — восстановить листья с dirty-путей.
-    if (!(prelimLeaves && prelimLeaves.length) && !explicitOps) {
+    if (!(prelimLeaves && prelimLeaves.length) && !hasExplicitOps) {
         try { wtSoftProtectPendingLeaves(); } catch (errP) {}
         try {
             const fromDirty = wtDomainWriterLeavesFromDirty();
@@ -11944,7 +11945,7 @@ function wtDomainWriterSave(options) {
         prelimLeaves = wtFilterPositionCatalogLeavesForSession(prelimLeaves || []);
     } catch (errFilt) {}
     // Отказ ДО dirty: иначе SoftSync закрепляет сотни ложных листьев после toast >200.
-    if (!explicitOps && prelimLeaves && prelimLeaves.length > 200) {
+    if (!hasExplicitOps && prelimLeaves && prelimLeaves.length > 200) {
         toast("Слишком много изменений за один раз (" + prelimLeaves.length + "). Сохраните частями или обновите страницу.", "error");
         return Promise.resolve(false);
     }
@@ -11953,7 +11954,7 @@ function wtDomainWriterSave(options) {
             prelimLeaves.forEach(function (leaf) {
                 if (leaf && leaf.path) wtSoftMarkDirty(leaf.path);
             });
-        } else if (!explicitOps) {
+        } else if (!hasExplicitOps) {
             wtSoftProtectPendingLeaves();
         }
     } catch (err) {}

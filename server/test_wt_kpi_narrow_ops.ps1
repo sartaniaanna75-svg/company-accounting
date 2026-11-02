@@ -17,8 +17,10 @@ Ok ($html.Contains("function saveShopPayrollKpiDefs(")) "saveShopPayrollKpiDefs"
 Ok ($html.Contains("function saveShopPayrollKpiAssignments(")) "saveShopPayrollKpiAssignments"
 Ok ($html.Contains('WT_SHOP_PAYROLL_KPI_DEFS_PATH = "shopPayroll.kpiDefs"')) "kpiDefs path const"
 Ok ($html.Contains('WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH = "shopPayroll.assignments"')) "assignments path const"
-Ok ($html.Contains("!explicitOps && prelimLeaves && prelimLeaves.length > 200")) "DomainWriter reject before dirty"
-Ok ($html.Contains("explicitOps")) "explicitOps flag in DomainWriter"
+Ok ($html.Contains("!hasExplicitOps && prelimLeaves && prelimLeaves.length > 200")) "DomainWriter reject before dirty"
+Ok ($html.Contains("const hasExplicitOps = !!(options.ops && options.ops.length)")) "hasExplicitOps boolean"
+$explicitConstMatches = [regex]::Matches($html, 'const explicitOps\b')
+Ok ($explicitConstMatches.Count -eq 1) "single const explicitOps (array)"
 Ok ($html.Contains("isKpiMoneyPath")) "KPI conflict path handling"
 
 $createStart = $html.IndexOf("function createShopKpiDef(")
