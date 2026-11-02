@@ -6077,6 +6077,53 @@ function wtSaveMark(label, t0) {
 function wtSaveNow() {
     return (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
 }
+/** Диагностика производительности (консоль). Вкл: localStorage.wtPerfTiming = "1". По умолчанию выкл. */
+function wtPerfTimingEnabled() {
+    try { return localStorage.getItem("wtPerfTiming") === "1"; } catch (err) { return false; }
+}
+function wtPerfMark(stage, t0, extra) {
+    if (!wtPerfTimingEnabled() || t0 == null) return;
+    try {
+        const ms = Math.round(wtSaveNow() - t0);
+        if (extra != null && typeof extra === "object") {
+            console.info("[wt-perf]", stage, ms + "ms", extra);
+        } else {
+            console.info("[wt-perf]", stage, ms + "ms");
+        }
+    } catch (err) {}
+}
+/** Только размер в KB: Content-Length или длина уже собранной строки. Без содержимого. */
+function wtPerfKbFromResponse(res) {
+    try {
+        const h = res && res.headers && res.headers.get ? res.headers.get("content-length") : "";
+        const n = Number(h);
+        if (Number.isFinite(n) && n > 0) return Math.round(n / 1024);
+    } catch (err) {}
+    return null;
+}
+function wtPerfKbFromText(text) {
+    try {
+        if (text == null) return null;
+        const n = typeof text === "string" ? text.length : 0;
+        return n ? Math.round(n / 1024) : 0;
+    } catch (err) {}
+    return null;
+}
+/** Конфликт сохранения: только статус/версии/длительность, без payload и ПДн. */
+function wtPerfConflict(info) {
+    if (!wtPerfTimingEnabled() || !info) return;
+    try {
+        const safe = {
+            op: String(info.op || ""),
+            status: Number(info.status) || 0,
+            ms: info.ms != null ? Number(info.ms) : null,
+            localVersion: info.localVersion != null ? Number(info.localVersion) : null,
+            serverVersion: info.serverVersion != null ? Number(info.serverVersion) : null,
+            putPaused: !!info.putPaused
+        };
+        console.info("[wt-perf]", "conflict", safe);
+    } catch (err) {}
+}
 let wtDirectoryUsers = [];
 let wtDirectoryReady = false;
 let wtDirectoryError = "";
@@ -8650,6 +8697,7 @@ function adoptServerPayload(payload) {
 }
 
 function applyServerState(state) {
+    const tApply = wtSaveNow();
     wtServerMode = true;
     wtStateVersion = state && state.version != null ? Number(state.version) || 0 : 0;
     appData = adoptServerPayload(state && state.payload);
@@ -8661,11 +8709,14 @@ function applyServerState(state) {
     }
     // Нормализация справочника до baseline: иначе ensure после загрузки даёт ложный diff positionCatalog.items.
     try { ensurePositionCatalog(appData); } catch (errEns) {}
+    const tClone = wtSaveNow();
     try {
         wtLastLoadedPayload = JSON.parse(JSON.stringify(appData));
     } catch (err) {
         wtLastLoadedPayload = null;
     }
+    wtPerfMark("boot.apply.cloneBaseline", tClone);
+    wtPerfMark("boot.apply", tApply, { version: Number(wtStateVersion) || 0 });
     // Удалённый хост: OPS только если backend подтвердил health.ops (без слепого включения).
     try {
         if (typeof wtOpsProbeServerCapability === "function") {
@@ -8689,16 +8740,32 @@ function openServerAdmin(saved) {
 function loadServerStateThenEnter(entryCode, errorCode, saved) {
     const code = entryCode || "admin";
     const errCode = errorCode || code;
+    const tBoot = wtSaveNow();
+    const tNet = wtSaveNow();
     return fetch("/api/state", { credentials: "same-origin" }).then(function (res) {
+        const headerKb = wtPerfKbFromResponse(res);
         if (res.status === 401) {
+            wtPerfMark("boot.state.network", tNet, { status: 401, kb: headerKb });
             showLoginError(errCode, "Сессия истекла. Войдите снова.");
             return null;
         }
         if (!res.ok) {
+            wtPerfMark("boot.state.network", tNet, { status: Number(res.status) || 0, kb: headerKb });
             showLoginError(errCode, "Не удалось загрузить данные с сервера.");
             return null;
         }
-        return res.json();
+        return res.json().then(function (state) {
+            let kb = headerKb;
+            if (kb == null && wtPerfTimingEnabled()) {
+                try { kb = wtPerfKbFromText(JSON.stringify(state)); } catch (errKb) { kb = null; }
+            }
+            wtPerfMark("boot.state.network", tNet, {
+                status: 200,
+                kb: kb,
+                version: state && state.version != null ? Number(state.version) : null
+            });
+            return state;
+        });
     }).then(function (state) {
         if (!state) return false;
         if (wtKeepUnsavedDraft && appData) {
@@ -8717,10 +8784,15 @@ function loadServerStateThenEnter(entryCode, errorCode, saved) {
         if (saved && saved.section) pendingOpenSection = saved.section;
         if (saved && saved.territoryMetricsHubId) territoryMetricsHubId = saved.territoryMetricsHubId;
         currentEntry = code;
+        const tUi = wtSaveNow();
         if (!enterAsUser(wtServerUser, code)) {
+            wtPerfMark("boot.firstUi", tUi, { ok: false });
+            wtPerfMark("boot.total", tBoot, { ok: false });
             showLoginError(errCode, "Не удалось открыть раздел.");
             return false;
         }
+        wtPerfMark("boot.firstUi", tUi, { ok: true, section: String(currentSection || "") });
+        wtPerfMark("boot.total", tBoot, { ok: true, section: String(currentSection || "") });
         return true;
     });
 }
@@ -11129,6 +11201,16 @@ function handleWtSaveUnauthorized() {
 
 function handleWtSaveConflict(data) {
     wtPutPaused = true;
+    try {
+        wtPerfConflict({
+            op: "PUT /api/state",
+            status: 409,
+            ms: null,
+            localVersion: Number(wtStateVersion) || 0,
+            serverVersion: data && data.version != null ? Number(data.version) : null,
+            putPaused: true
+        });
+    } catch (errPerf) {}
     const draft = wtCloneJson(appData);
     const base = wtLastLoadedPayload ? wtCloneJson(wtLastLoadedPayload) : null;
     const sliceMode = wtPutPayloadOverride != null;
@@ -11252,7 +11334,31 @@ function putServerStateOnce() {
         wtSaveMark("network-PUT", tNet);
         if (res.status === 401) return handleWtSaveUnauthorized();
         if (res.status === 409) {
-            return res.json().then(handleWtSaveConflict, function () {
+            const localV = Number(wtStateVersion) || 0;
+            const putMs = Math.round(wtSaveNow() - tNet);
+            return res.json().then(function (body) {
+                try {
+                    wtPerfConflict({
+                        op: "PUT /api/state",
+                        status: 409,
+                        ms: putMs,
+                        localVersion: localV,
+                        serverVersion: body && body.version != null ? Number(body.version) : null,
+                        putPaused: true
+                    });
+                } catch (errPerf) {}
+                return handleWtSaveConflict(body);
+            }, function () {
+                try {
+                    wtPerfConflict({
+                        op: "PUT /api/state",
+                        status: 409,
+                        ms: putMs,
+                        localVersion: localV,
+                        serverVersion: null,
+                        putPaused: true
+                    });
+                } catch (errPerf2) {}
                 toast("Конфликт версий. Изменения на экране не сброшены и не записаны.", "error");
                 wtPutPaused = true;
                 return false;
@@ -11782,6 +11888,16 @@ function wtDomainWriterSave(options) {
     if (wtPutPaused) {
         if (Date.now() - wtPauseToastAt > 4000) {
             wtPauseToastAt = Date.now();
+            try {
+                wtPerfConflict({
+                    op: "saveApp.blocked",
+                    status: 409,
+                    ms: 0,
+                    localVersion: Number(wtStateVersion) || 0,
+                    serverVersion: null,
+                    putPaused: true
+                });
+            } catch (errPerf) {}
             toast("Сохранение приостановлено из-за конфликта. Загрузите свежие данные с сервера, затем повторите изменения.", "error");
         }
         return Promise.resolve(false);
@@ -13661,10 +13777,12 @@ function wtSoftMergeWorkspaceList(serverList, draftList, dirty, pathPrefix) {
 function wtSoftApplyServerState(state) {
     if (!state || !state.payload || typeof state.payload !== "object") return false;
     if (!appData) return false;
+    const tMerge = wtSaveNow();
     const incomingV = state.version != null ? Number(state.version) : NaN;
     const knownV = Math.max(Number(wtStateVersion || 0), Number(wtSoftAppliedVersion || 0));
     // Устаревший in-flight GET (начат до OPS) не должен откатывать свежие точечные записи.
     if (Number.isFinite(incomingV) && Number.isFinite(knownV) && incomingV < knownV) {
+        wtPerfMark("soft.apply", tMerge, { skipped: "stale", incoming: incomingV, known: knownV });
         return false;
     }
     const draft = appData;
@@ -13674,18 +13792,21 @@ function wtSoftApplyServerState(state) {
         serverAdopted = adoptServerPayload(state.payload);
     } catch (err) {
         console.error(err);
+        wtPerfMark("soft.apply", tMerge, { ok: false });
         return false;
     }
     let merged;
     let keyedDirty = [];
+    let dirtyCount = 0;
     try {
         const dirty = wtSoftDirtyMapForMerge();
-        const dirtyCount = Object.keys(dirty).length;
+        dirtyCount = Object.keys(dirty).length;
         if (dirtyCount) merged = wtSoftMergePreferServer(serverAdopted, draft, dirty, "");
         else merged = wtCloneJson(serverAdopted);
         keyedDirty = Object.keys(WT_KEYED_LIST_PATHS).filter(function (p) { return !!dirty[p]; });
     } catch (err) {
         console.error(err);
+        wtPerfMark("soft.apply", tMerge, { ok: false });
         return false;
     }
     // Черновик общего списка: сохранить его исходную базу и версию. Иначе следующая запись
@@ -13761,16 +13882,29 @@ function wtSoftApplyServerState(state) {
     }
     // SoftSync: посев/привязка ensure не должна снова помечать positionCatalog как черновик.
     try { wtAbsorbPositionCatalogNormalize(); } catch (errAbs) {}
+    wtPerfMark("soft.apply", tMerge, {
+        ok: true,
+        version: Number.isFinite(incomingV) ? incomingV : null,
+        dirtyPaths: dirtyCount
+    });
     return true;
 }
 
 function wtSoftRefreshUiAfterMerge() {
     if (wtSoftHasActiveEdit()) {
         wtSoftRenderPending = true;
+        if (wtPerfTimingEnabled()) {
+            try {
+                console.info("[wt-perf]", "soft.refreshAll", "deferred", {
+                    section: String(currentSection || "")
+                });
+            } catch (errDef) {}
+        }
         return;
     }
     wtSoftRenderPending = false;
     wtSoftApplying = true;
+    const tUi = wtSaveNow();
     try {
         if (typeof refreshAll === "function") {
             refreshAll();
@@ -13786,6 +13920,7 @@ function wtSoftRefreshUiAfterMerge() {
         console.error(err);
     } finally {
         wtSoftApplying = false;
+        wtPerfMark("soft.refreshAll", tUi, { deferred: false, section: String(currentSection || "") });
     }
 }
 
@@ -13818,36 +13953,62 @@ function wtSoftPollTick(force) {
     if (!force && typeof document !== "undefined" && document.hidden) return;
     try { wtSoftFlushPendingRender(); } catch (flushErr) {}
     wtSoftPollInFlight = true;
+    const tVer = wtSaveNow();
     fetch("/api/state/version", { credentials: "same-origin", method: "GET" }).then(function (res) {
         if (res.status === 401) {
+            wtPerfMark("soft.version.network", tVer, { status: 401 });
             wtSoftPollInFlight = false;
             try { handleWtSaveUnauthorized(); } catch (err) {}
             return null;
         }
         if (!res.ok) {
+            wtPerfMark("soft.version.network", tVer, { status: Number(res.status) || 0 });
             wtSoftPollInFlight = false;
             return null;
         }
         return res.json();
     }).then(function (meta) {
         if (!meta) return;
+        const remoteV = Number(meta.version);
+        const localV = Number(wtSoftAppliedVersion || wtStateVersion || 0);
+        wtPerfMark("soft.version.network", tVer, {
+            status: 200,
+            remoteVersion: Number.isFinite(remoteV) ? remoteV : null,
+            localVersion: localV,
+            changed: Number.isFinite(remoteV) && remoteV > localV
+        });
         if (wtPutInFlight || (typeof wtOpsBlockIncidentalPut !== "undefined" && wtOpsBlockIncidentalPut)) {
             wtSoftPollInFlight = false;
             return;
         }
-        const remoteV = Number(meta.version);
-        const localV = Number(wtSoftAppliedVersion || wtStateVersion || 0);
         if (!Number.isFinite(remoteV) || remoteV <= localV) {
             wtSoftPollInFlight = false;
             return;
         }
+        const tState = wtSaveNow();
         return fetch("/api/state", { credentials: "same-origin", method: "GET" }).then(function (res) {
+            const headerKb = wtPerfKbFromResponse(res);
             if (res.status === 401) {
+                wtPerfMark("soft.state.network", tState, { status: 401, kb: headerKb });
                 try { handleWtSaveUnauthorized(); } catch (err) {}
                 return null;
             }
-            if (!res.ok) return null;
-            return res.json();
+            if (!res.ok) {
+                wtPerfMark("soft.state.network", tState, { status: Number(res.status) || 0, kb: headerKb });
+                return null;
+            }
+            return res.json().then(function (state) {
+                let kb = headerKb;
+                if (kb == null && wtPerfTimingEnabled()) {
+                    try { kb = wtPerfKbFromText(JSON.stringify(state)); } catch (errKb) { kb = null; }
+                }
+                wtPerfMark("soft.state.network", tState, {
+                    status: 200,
+                    kb: kb,
+                    version: state && state.version != null ? Number(state.version) : null
+                });
+                return state;
+            });
         }).then(function (state) {
             wtSoftPollInFlight = false;
             if (!state) return;
@@ -16809,8 +16970,10 @@ function loadWorkspace() {
         try { applyModeUI(); } catch (err) { console.error(err); }
         try { syncSummarySortControls(); } catch (err) { console.error(err); }
         try { renderMonthTabs(); } catch (err) { console.error(err); }
+        const tBootUi = wtSaveNow();
         try { showSection(currentSection); } catch (err) { console.error(err); }
         try { refreshAll(); } catch (err) { console.error(err); }
+        wtPerfMark("boot.workspaceUi", tBootUi, { section: String(currentSection || "") });
         try { renderFio(); } catch (err) { console.error(err); }
         try { renderEmployees(); } catch (err) { console.error(err); }
         try { renderSummaryStaff(); } catch (err) { console.error(err); }
@@ -16821,6 +16984,7 @@ function loadWorkspace() {
 }
 
 function showSection(id, button) {
+    const tSection = wtSaveNow();
     try {
     if (id === "metrics") id = "metrics-pickers";
     const requestedSection = id;
@@ -16965,6 +17129,7 @@ function showSection(id, button) {
     try {
         if (typeof wtSoftPollTick === "function") wtSoftPollTick(true);
     } catch (softErr) {}
+    wtPerfMark("ui.showSection", tSection, { section: String(currentSection || id || "") });
 }
 
 function changeMonth(month) {
@@ -16976,6 +17141,7 @@ function changeMonth(month) {
 }
 
 function refreshAll() {
+    const tRefresh = wtSaveNow();
     function run(fn) { try { fn(); } catch (err) { console.error(err); } }
     run(renderTimesheet);
     if (isSummary()) {
@@ -17013,6 +17179,10 @@ function refreshAll() {
         run(renderStaffOrgAdmin);
     }
     run(updateStats);
+    wtPerfMark("ui.refreshAll", tRefresh, {
+        section: String(currentSection || ""),
+        dept: workspace() && workspace().code ? String(workspace().code) : ""
+    });
 }
 
 
@@ -23646,12 +23816,21 @@ function shopManagerRecountServiceFields() {
 }
 
 function renderShopMetrics() {
+    const tRender = wtSaveNow();
     const section = document.getElementById("metrics");
-    if (!section) return;
-    if (!workspace() || workspace().code !== "shop") return;
+    if (!section) {
+        wtPerfMark("ui.renderShopMetrics", tRender, { skipped: "no-section" });
+        return;
+    }
+    if (!workspace() || workspace().code !== "shop") {
+        wtPerfMark("ui.renderShopMetrics", tRender, { skipped: "not-shop" });
+        return;
+    }
     restoreShopMetricChrome();
     if (currentShopMetricCategory().id === "cashiers") {
+        const tCash = wtSaveNow();
         renderShopCashierMetrics();
+        wtPerfMark("ui.renderShopMetrics", tRender, { category: "cashiers", nestedMs: Math.round(wtSaveNow() - tCash) });
         return;
     }
 
@@ -23731,7 +23910,10 @@ function renderShopMetrics() {
 
     const head = document.getElementById("metricsHead");
     const body = document.getElementById("metricsBody");
-    if (!body) return;
+    if (!body) {
+        wtPerfMark("ui.renderShopMetrics", tRender, { category: String(category.id || ""), skipped: "no-body" });
+        return;
+    }
 
     if (!fields.length) {
         if (head) head.innerHTML = "<tr><th class=\"metrics-date-col\">Дата</th></tr>";
@@ -23743,6 +23925,12 @@ function renderShopMetrics() {
         renderShopShelfMetric();
         renderShopMetricAccessPanel();
         renderShopDayRoles();
+        wtPerfMark("ui.renderShopMetrics", tRender, {
+            category: String(category.id || ""),
+            fields: 0,
+            people: employees.length,
+            days: daysInMonth()
+        });
         return;
     }
 
@@ -23755,6 +23943,12 @@ function renderShopMetrics() {
         renderShopShelfMetric();
         renderShopMetricAccessPanel();
         renderShopDayRoles();
+        wtPerfMark("ui.renderShopMetrics", tRender, {
+            category: String(category.id || ""),
+            fields: fields.length,
+            people: 0,
+            days: daysInMonth()
+        });
         return;
     }
 
@@ -24023,6 +24217,13 @@ function renderShopMetrics() {
     renderShopShelfMetric();
     renderShopMetricAccessPanel();
     renderShopDayRoles();
+    wtPerfMark("ui.renderShopMetrics", tRender, {
+        category: String(category && category.id || ""),
+        fields: fields.length,
+        people: employees.length,
+        days: days,
+        inputCols: inputCols
+    });
 }
 
 function renderShopMetricCards(category, grand) {
