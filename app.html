@@ -7666,7 +7666,15 @@ function timesheetEmployeesForView() {
         // Как в зарплате: employeeIds + employees. Магазин не берёт территориальных.
         if (w.code === "shop" && isTerritoryCode(home)) return;
         if (!belongsToWorkspace(w, e.id) && assignedIds(w).indexOf(e.id) === -1) return;
-        if (tab && !employeeBelongsToWorkGroup(e, w.code, tab, selectedMonth)) return;
+        // Склад: вкладки табеля — только основная группа карточки (не накопленные work_group_ids).
+        // Магазин и прочие отделы — прежний membership через employeeBelongsToWorkGroup.
+        if (tab) {
+            if (w.code === "warehouse") {
+                if (!employeeMatchesFioWorkGroupFilter(e, w.code, tab, selectedMonth)) return;
+            } else if (!employeeBelongsToWorkGroup(e, w.code, tab, selectedMonth)) {
+                return;
+            }
+        }
         seen[e.id] = true;
         list.push(e);
     }
