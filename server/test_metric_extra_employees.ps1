@@ -67,10 +67,19 @@ Ok ($allowSlice.Contains('return ["shop"]') -or $allowSlice.Contains("return ['s
 Ok ($allowSlice.Contains("TERRITORY_DEPT_CODES.filter")) "territory allowlist unchanged"
 
 Ok ($src.Contains("function shopEmployeeIsMetricExtraOnTab(")) "shop extra-on-tab helper"
+Ok ($src.Contains("function shopPeopleAssignedToMetricOnTab(")) "shop assignment people helper"
+Ok ($src.Contains("function shopMetricParticipantPeople(")) "shop participant people helper"
 $wmp = $src.IndexOf("function workMetricPeopleForTab(")
-$wmpSlice = $src.Substring($wmp, [Math]::Min(3200, $src.Length - $wmp))
-Ok ($wmpSlice.Contains("shopEmployeeIsMetricExtraOnTab")) "shop people uses extra exception"
+$wmpSlice = $src.Substring($wmp, [Math]::Min(4200, $src.Length - $wmp))
+Ok ($wmpSlice.Contains("shopPeopleAssignedToMetricOnTab")) "shop people uses assignment helper"
+Ok ($wmpSlice.Contains("shopEmployeeIsMetricExtraOnTab")) "legacy shop extra exception kept"
 Ok ($wmpSlice.Contains('code !== "shop" && metricItem') -or $wmpSlice.Contains("code !== 'shop' && metricItem")) "territory assignment branch kept"
+$shopPeople = $src.IndexOf("function shopPeopleAssignedToMetricOnTab(")
+$shopPeopleSlice = $src.Substring($shopPeople, [Math]::Min(2800, $src.Length - $shopPeople))
+Ok ($shopPeopleSlice.Contains("extra_employee_ids")) "shop assignment people reads extras"
+Ok ($shopPeopleSlice.Contains("shopEmployeeHasWorkMetric")) "shop assignment people requires workAccess"
+Ok ($shopPeopleSlice.Contains('department_id !== "shop"') -or $shopPeopleSlice.Contains("department_id !== 'shop'")) "shop assignment people shop-only rows"
+Ok ($shopPeopleSlice.Contains('!== "shop"')) "shop assignment people rejects non-shop home"
 
 $extraStart = $src.IndexOf("function findEmployeeCardsById(")
 $extraEnd = $src.IndexOf("`nfunction ensureMetricAssignments(")

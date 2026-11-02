@@ -1150,23 +1150,34 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn('base["workAccess"] = _merge_access_map(', api)
 
     def test_client_work_access_drives_metric_table_people(self):
-        """Магазин: workAccess + основная группа; Территория с assignments: peopleAssignedToMetricOnTab."""
+        """Магазин: assignments+workAccess; Территория: peopleAssignedToMetricOnTab."""
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
         self.assertIn("function metricHostsOnDeptTab(", src)
         self.assertIn("function metricAssignmentPlaceCaption(", src)
         self.assertIn("function peopleAssignedToMetricOnTab(", src)
+        self.assertIn("function shopPeopleAssignedToMetricOnTab(", src)
+        self.assertIn("function shopMetricParticipantPeople(", src)
         people_fn = src[
             src.find("function workMetricPeopleForTab(") : src.find("function deptMetricFields(")
         ]
         self.assertIn("peopleAssignedToMetricOnTab", people_fn)
+        self.assertIn("shopPeopleAssignedToMetricOnTab", people_fn)
         self.assertIn("shopEmployeeHasWorkMetric", people_fn)
         self.assertIn("metricHostsOnDeptTab", people_fn)
         self.assertIn("TERRITORY_DEPT_CODES.forEach", people_fn)
         self.assertIn('metricItemHasObjectSide(metricItem, objectSide)', people_fn)
-        # Магазин Володарского: основная группа карточки обязательна для колонки.
+        # Магазин с assignments: список из shopPeopleAssignedToMetricOnTab.
+        self.assertIn('shopPeopleAssignedToMetricOnTab(metricItem, tab, mid)', people_fn)
+        # Legacy без assignments: фильтр основной группы карточки сохраняется.
         self.assertIn('code === "shop" && employeeCardWorkGroupId(e, "shop") !== tab', people_fn)
         self.assertNotIn("employeeBelongsToWorkGroup", people_fn)
         self.assertNotIn("employeeMatchesMetricAssignments", people_fn)
+        store_total = src[
+            src.find("function shopMetricStoreMonthTotal(")
+            : src.find("function getShopMetricValue(", src.find("function shopMetricStoreMonthTotal("))
+        ]
+        self.assertIn("shopMetricParticipantPeople", store_total)
+        self.assertNotIn("shopMetricContributorIds", store_total)
         shop_emp = src[
             src.find("function shopMetricEmployees(") : src.find("function parseShopMetricNumber(")
         ]

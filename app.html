@@ -17598,6 +17598,59 @@ function peopleAssignedToMetricOnTab(item, deptCode, tabId) {
     return list;
 }
 
+/**
+ * Магазин Володарского: колонки метрики по строке assignments на вкладке.
+ * employee_ids ∪ extra_employee_ids; домашняя группа карточки не меняется.
+ * Нужен уже существующий workAccess — новые права здесь не выдаются.
+ * Чужой объект (Территория) и ID без живой shop-карточки не входят.
+ */
+function shopPeopleAssignedToMetricOnTab(item, tabId, metricId) {
+    if (!item || !tabId) return [];
+    const mid = canonicalMetricId(metricId || item.id);
+    if (!mid) return [];
+    const list = [];
+    const seen = {};
+    function add(e) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        if (employeeHomeDeptCode(e.id) !== "shop") return;
+        if (isTerritoryEmployee(e)) return;
+        if (!employeeInMetricAssignmentDept(e, "shop")) return;
+        // Не выдаём доступ: только уже согласованный workAccess.
+        if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
+        if (!isWorking(e) && !shopMetricPersonalMonthTotal(e.id, mid)
+            && !shopMetricEmployeeHasMonthData(shopEmployeeHomeCategoryId(e) || tabId, e.id)) {
+            return;
+        }
+        seen[e.id] = true;
+        list.push(e);
+    }
+    function addById(id) {
+        if (!id) return;
+        const resolved = resolveUniqueEmployeeCard(id);
+        if (resolved.ok && resolved.employee) {
+            if (resolved.deptCode && resolved.deptCode !== "shop") return;
+            add(resolved.employee);
+            return;
+        }
+        const e = getEmployee(id);
+        if (e) add(e);
+    }
+    let matched = false;
+    (item.assignments || []).forEach(function (row) {
+        if (!row || row.department_id !== "shop" || row.work_tab_id !== tabId) return;
+        matched = true;
+        if (row.assign_mode === "specific") {
+            (row.employee_ids || []).forEach(addById);
+        } else {
+            employeesForMetricAssignmentRow(row).forEach(add);
+        }
+        (row.extra_employee_ids || []).forEach(addById);
+    });
+    if (!matched) return [];
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
 function employeeMatchesMetricAssignments(item, employee, workTabId) {
     if (!item || !employee) return false;
     const home = employeeHomeDeptCode(employee.id);
@@ -20513,10 +20566,20 @@ function shopMetricStoredFact(employeeId, day, metricId, month, submetricId) {
 }
 
 function shopRecountDayExecutorTotal(day, month) {
+    // Итог только по действующим участникам метрики на вкладке Товароразборщики
+    // (основная группа + extra_employee_ids). Старые ID без карточки не входят.
+    const m = month || selectedMonth;
+    const prevMonth = selectedMonth;
     let sum = 0;
-    shopRecountExecutorIds(month).forEach(function (id) {
-        sum += shopMetricStoredFact(id, day, "metric_recount", month);
-    });
+    try {
+        if (m && m !== selectedMonth) selectedMonth = m;
+        workMetricPeopleForTab("shop", "metric_recount", "pickers").forEach(function (e) {
+            if (!e || !e.id) return;
+            sum += shopMetricStoredFact(e.id, day, "metric_recount", m);
+        });
+    } finally {
+        if (selectedMonth !== prevMonth) selectedMonth = prevMonth;
+    }
     return sum;
 }
 
@@ -21494,6 +21557,45 @@ function shopMetricContributorIds(metricId, month) {
     });
 }
 
+/**
+ * Действующие участники магазинной метрики по всем её вкладкам shop-assignments
+ * (без сирот и без чужого объекта). workAccess не выдаётся.
+ */
+function shopMetricParticipantPeople(metricId, month) {
+    const mid = canonicalMetricId(metricId);
+    if (!mid) return [];
+    const m = month || selectedMonth;
+    const item = shopMetricCatalogById(mid);
+    const prevMonth = selectedMonth;
+    const seen = {};
+    const list = [];
+    function add(e) {
+        if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        seen[e.id] = true;
+        list.push(e);
+    }
+    try {
+        if (m && m !== selectedMonth) selectedMonth = m;
+        const tabs = [];
+        if (item && Array.isArray(item.assignments) && item.assignments.length) {
+            item.assignments.forEach(function (row) {
+                if (!row || row.department_id !== "shop" || !row.work_tab_id) return;
+                if (tabs.indexOf(row.work_tab_id) === -1) tabs.push(row.work_tab_id);
+            });
+        }
+        if (!tabs.length) {
+            const fallback = (item && (item.metric_tab_id || item.section_id)) || "pickers";
+            tabs.push(fallback);
+        }
+        tabs.forEach(function (tab) {
+            workMetricPeopleForTab("shop", mid, tab).forEach(add);
+        });
+    } finally {
+        if (selectedMonth !== prevMonth) selectedMonth = prevMonth;
+    }
+    return list;
+}
+
 function shopMetricStoreMonthTotal(metricId, month) {
     const mid = canonicalMetricId(metricId);
     if (mid === "metric_recount") {
@@ -21502,12 +21604,13 @@ function shopMetricStoreMonthTotal(metricId, month) {
         for (let day = 1; day <= days; day++) sum += shopRecountDayExecutorTotal(day, month);
         return sum;
     }
+    // Итог месяца = сумма фактов действующих участников метрики (не сырые keys facts).
     let sum = 0;
     const seen = {};
-    shopMetricContributorIds(mid, month).forEach(function (id) {
-        if (seen[id]) return;
-        seen[id] = true;
-        sum += shopMetricPersonalMonthTotal(id, mid, month);
+    shopMetricParticipantPeople(mid, month).forEach(function (e) {
+        if (!e || !e.id || seen[e.id]) return;
+        seen[e.id] = true;
+        sum += shopMetricPersonalMonthTotal(e.id, mid, month);
     });
     return sum;
 }
@@ -33684,9 +33787,13 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
         if (def && code !== "shop") return [];
     }
     // Территория: при наличии assignments — разные work_tab_id → разные списки ФИО.
-    // Магазин Володарского сюда не входит (отдельная логика ниже).
     if (code !== "shop" && metricItem && Array.isArray(metricItem.assignments) && metricItem.assignments.length) {
         return peopleAssignedToMetricOnTab(metricItem, code, tab);
+    }
+    // Магазин: при наличии assignments на этой вкладке — employee_ids ∪ extra (нужен workAccess).
+    if (code === "shop" && metricItem && Array.isArray(metricItem.assignments) && metricItem.assignments.length
+        && metricAssignedToDeptTab(metricItem, "shop", tab)) {
+        return shopPeopleAssignedToMetricOnTab(metricItem, tab, mid);
     }
     const list = [];
     const seen = {};
@@ -33694,8 +33801,8 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
         // Legacy без assignments / магазин: личное workAccess.
         if (!shopEmployeeHasWorkMetric(e.id, mid)) return;
-        // Магазин: основная группа карточки = эта таблица.
-        // Узкое исключение: явно в extra_employee_ids назначения этой метрики на этой вкладке.
+        // Legacy магазин без строки assignments: основная группа карточки = эта таблица.
+        // Узкое исключение: явно в extra_employee_ids (на случай частичных данных).
         if (code === "shop" && employeeCardWorkGroupId(e, "shop") !== tab) {
             if (!shopEmployeeIsMetricExtraOnTab(metricItem, e.id, tab)) return;
         }
