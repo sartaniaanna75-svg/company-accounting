@@ -1122,21 +1122,33 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("if (fioSection)", fn)
         self.assertIn("Не удалось сохранить назначение метрики на сервер", fn)
         self.assertIn('ok === "timeout"', fn)
-        # В карточке (fio) нет PUT на каждый клик — иначе очередь блокирует Save.
+        self.assertIn("wtBuildWorkAccessSaveOps(", fn)
+        self.assertIn("wtDomainWriterSave({ ops: waOps, atomic: true })", fn)
+        # В карточке (fio) нет записи на каждый клик — иначе очередь блокирует Save.
         apply_at = fn.find("applyShopEmployeeWorkMetric(")
         fio_branch = fn.find("if (fioSection)", apply_at)
-        save_at = fn.find("Promise.resolve(saveApp())", apply_at)
+        ops_at = fn.find("wtBuildWorkAccessSaveOps(", apply_at)
         self.assertGreater(fio_branch, apply_at)
-        self.assertGreater(save_at, fio_branch)
+        self.assertGreater(ops_at, fio_branch)
         paint_before_return = fn.find("paintWorkMetrics();", fio_branch)
-        self.assertGreater(save_at, paint_before_return)
+        self.assertGreater(ops_at, paint_before_return)
         commit = src[src.find("function commitEmployeeCard("):src.find("function employeeCardActionsHtml(")]
         self.assertIn("clearCommitBusy", commit)
         self.assertIn("commitEmployeeCard.busy = true", commit)
-        self.assertIn("shopMaterializeWorkAccessMonth(", commit)
+        self.assertIn("shopMaterializeWorkAccessEmployee(", commit)
+        self.assertNotIn("shopMaterializeWorkAccessMonth(", commit)
+        self.assertIn("wtBuildEmployeeCardSaveOps(", commit)
+        self.assertIn("wtDomainWriterSave({ ops: cardOps, atomic: true })", commit)
+        # saveApp только для локального режима; сервер — узкий OPS.
+        self.assertIn("!wtServerMode", commit)
+        self.assertLess(commit.find("!wtServerMode"), commit.find("Promise.resolve(saveApp())"))
+        self.assertLess(commit.find("Promise.resolve(saveApp())"), commit.find("wtBuildEmployeeCardSaveOps("))
         self.assertIn("Сохранение ещё выполняется", commit)
         self.assertIn('ok === "timeout"', commit)
         self.assertIn("refreshMetricsUi()", commit)
+        self.assertIn("function wtBuildEmployeeCardSaveOps(", src)
+        self.assertIn("function wtEmployeeCardWorkAccessPath(", src)
+        self.assertIn("function shopMaterializeWorkAccessEmployee(", src)
         # busy ставится до тяжёлых снимков JSON.
         busy_at = commit.find("commitEmployeeCard.busy = true")
         snap_at = commit.find("JSON.parse(JSON.stringify(store.workAccess")
@@ -1261,7 +1273,14 @@ class StoreApiTests(unittest.TestCase):
         self.assertNotIn("code !== \"shop\" && home === \"shop\"", pool)
         self.assertIn("function metricsDeptCodeForEmployee(", src)
         self.assertIn("function buildWarehouseStaffDiagnostics(", src)
-        self.assertIn("shopMaterializeWorkAccessMonth(selectedMonth, metricsDeptCodeForEmployee(employeeId))", src)
+        # Узкая материализация одного сотрудника: dept берётся через metricsDeptCodeForEmployee.
+        self.assertIn("function shopMaterializeWorkAccessEmployee(", src)
+        apply_wa = src[
+            src.find("function applyShopEmployeeWorkMetric(")
+            : src.find("function wtBuildWorkAccessSaveOps(")
+        ]
+        self.assertIn("metricsDeptCodeForEmployee(employeeId)", apply_wa)
+        self.assertIn("shopMaterializeWorkAccessEmployee(selectedMonth, deptCode, employeeId)", apply_wa)
         asg_people = src[
             src.find("function employeeInMetricAssignmentDept(") : src.find("function employeeMatchesMetricAssignments(")
         ]
@@ -4837,7 +4856,8 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn('userHasPerm("metricsSetup", "edit")', slice_fn)
         self.assertIn("userAccessDeptCodes", slice_fn)
         self.assertIn("staffMetricSlice", slice_fn)
-        self.assertIn("delete pay.kpiDefs", slice_fn)
+        self.assertIn("staffMetricSlice(appData.shopMetrics, false, true)", slice_fn)
+        self.assertNotIn("out.shopPayroll", slice_fn)
         # Передаём функцию-сборщик, не готовый объект — иначе после 409 уходит устаревший срез.
         self.assertIn("saveAppWithPayloadSlice(metricCatalogPutSlice)", src)
         self.assertNotIn("saveAppWithPayloadSlice(metricCatalogPutSlice())", src)
@@ -4846,6 +4866,7 @@ class StaticPagesTests(unittest.TestCase):
         cat_save = cat_save[: cat_save.find("function getDeptMetricStored(")]
         self.assertIn('ok === "timeout"', cat_save)
         self.assertIn("Нет подтверждения сохранения", cat_save)
+        self.assertIn('"shopPayroll.metrics"', cat_save)
         timeout_branch = cat_save.split('ok === "timeout"')[1].split('ok === "conflict_review"')[0]
         self.assertNotIn("closeMetricCatalogModal", timeout_branch)
         self.assertNotIn("Метрика сохранена", timeout_branch)
@@ -6860,6 +6881,194 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
         self.assertTrue(st.startswith("4"), st)
         self.assertEqual(data.get("error"), "too many ops")
         self.assertNotIn("cap_0", self.store["payload"]["shopMetrics"]["facts"])
+
+
+class WtEmployeeCardOpsTests(unittest.TestCase):
+    """Узкое сохранение карточки: workAccess/extraAccess/employee без широкого diff."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        self.store = {
+            "payload": json.loads(json.dumps(SAMPLE_APP)),
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        metrics = self.store["payload"].setdefault("shopMetrics", {})
+        metrics["workAccess"] = {"2026-11": {"e_shop": ["metric_assembly"], "e_other": ["metric_assembly"]}}
+        metrics["extraAccess"] = {"e_shop": [], "e_other": []}
+        metrics["facts"] = {}
+        # >200 посторонних листьев-фактов: узкий OPS карточки не должен их трогать.
+        for i in range(220):
+            metrics["facts"]["noise_%s" % i] = i
+        shop = None
+        for w in self.store["payload"].get("workspaces") or []:
+            if w and w.get("code") == "shop":
+                shop = w
+                break
+        if shop is None:
+            shop = {"code": "shop", "type": "dept", "employees": [], "employeeIds": [], "timesheet": {}}
+            self.store["payload"].setdefault("workspaces", []).append(shop)
+        emps = shop.setdefault("employees", [])
+        if not any(e and e.get("id") == "e_shop" for e in emps):
+            emps.append({
+                "id": "e_shop",
+                "employee_id": "e_shop",
+                "name": "Тест Сотрудник",
+                "work_tab_id": "pickers",
+                "participates_in_spu_meetings": False,
+            })
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id="user_admin", pin="5555"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_work_access_op_keeps_other_employee(self):
+        cookie, _ = self.login()
+        path = "shopMetrics.workAccess.2026-11.e_shop"
+        st, body, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "emp-wa-1",
+                "op": {
+                    "path": path,
+                    "expected_v": 0,
+                    "value": ["metric_assembly", "metric_recount"],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, body))
+        wa = self.store["payload"]["shopMetrics"]["workAccess"]["2026-11"]
+        self.assertEqual(wa["e_shop"], ["metric_assembly", "metric_recount"])
+        self.assertEqual(wa["e_other"], ["metric_assembly"])
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_0"], 0)
+
+    def test_employee_card_batch_atomic_with_noise_facts(self):
+        cookie, _ = self.login()
+        st, body, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "idempotency_key": "emp-card-1",
+                "ops": [
+                    {
+                        "path": "shopMetrics.workAccess.2026-11.e_shop",
+                        "expected_v": 0,
+                        "value": ["metric_display_positions"],
+                    },
+                    {
+                        "path": "shopMetrics.extraAccess.e_shop",
+                        "expected_v": 0,
+                        "value": [],
+                    },
+                    {
+                        "path": "workspaces.shop.employees.e_shop",
+                        "expected_v": 0,
+                        "value": {
+                            "id": "e_shop",
+                            "employee_id": "e_shop",
+                            "name": "Тест Сотрудник",
+                            "work_tab_id": "pickers",
+                            "participates_in_spu_meetings": True,
+                            "meeting_participant": True,
+                        },
+                    },
+                ],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, body))
+        wa = self.store["payload"]["shopMetrics"]["workAccess"]["2026-11"]
+        self.assertEqual(wa["e_shop"], ["metric_display_positions"])
+        self.assertEqual(wa["e_other"], ["metric_assembly"])
+        emp = None
+        for row in self.store["payload"]["workspaces"]:
+            if row and row.get("code") == "shop":
+                for e in row.get("employees") or []:
+                    if e and e.get("id") == "e_shop":
+                        emp = e
+                        break
+        self.assertIsNotNone(emp)
+        self.assertTrue(emp.get("participates_in_spu_meetings"))
+        self.assertEqual(len(self.store["payload"]["shopMetrics"]["facts"]), 220)
+
+    def test_client_helpers_paths_and_no_full_pool_materialize_in_commit(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn('return "shopMetrics.workAccess."', src)
+        self.assertIn('return "deptMetrics."', src)
+        self.assertIn("shopMetricCatalog.items", src)
+        build = src[src.find("function wtBuildEmployeeCardSaveOps("):src.find("function syncShopExtraAccessFromWork(")]
+        # Не материал изует весь пул внутри builder.
+        self.assertNotIn("shopMaterializeWorkAccessMonth(", build)
+        self.assertIn("wtEmployeeCardRecordPath(", build)
+
+    def test_metric_catalog_put_slice_excludes_facts(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        slice_fn = src[
+            src.find("function metricCatalogPutSlice(")
+            : src.find("function saveAppWithPayloadSlice(")
+        ]
+        self.assertIn("staffMetricSlice(appData.shopMetrics, false, true)", slice_fn)
+        self.assertNotIn("metricInput, metricSetup", slice_fn)
+        self.assertNotIn("out.shopPayroll", slice_fn)
+        self.assertIn("shopPayroll.metrics", src[src.find("function saveMetricCatalogForm("):src.find("function getDeptMetricStored(")])
+
+    def test_extra_metric_outside_card_uses_narrow_ops(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        fn = src[
+            src.find("function setShopEmployeeExtraMetric(")
+            : src.find("function metricCatalogItemUsesGroupAll(")
+        ]
+        self.assertIn("wtBuildWorkAccessSaveOps(", fn)
+        self.assertIn("wtDomainWriterSave({ ops: waOps, atomic: true })", fn)
+        self.assertIn("function wtBuildWorkAccessSaveOps(", src)
+        self.assertIn("shopMaterializeWorkAccessEmployee(", src[
+            src.find("function applyShopEmployeeWorkMetric(")
+            : src.find("function canViewFioWorkMetrics(")
+        ])
+
+    def test_metric_catalog_list_actions_use_narrow_ops(self):
+        """Вкл/выкл, удаление, drag и подметрики — не широкий saveApp."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function wtPersistMetricCatalogListChange(", src)
+        for name, end in (
+            ("function setShopMetricCatalogActive(", "function deleteShopMetricCatalogItem("),
+            ("function deleteShopMetricCatalogItem(", "function shopCatalogPositionOptions("),
+            ("function onMetricCatalogDrop(", "function setShopMetricCatalogActive("),
+            ("function addMetricSubmetric(", "function renameMetricSubmetric("),
+            ("function renameMetricSubmetric(", "function setMetricSubmetricOrder("),
+            ("function setMetricSubmetricOrder(", "function setMetricSubmetricActive("),
+            ("function setMetricSubmetricActive(", "function onMetricCatalogDrag("),
+        ):
+            block = src[src.find(name) : src.find(end)]
+            self.assertIn("wtPersistMetricCatalogListChange(", block, name)
+            self.assertNotIn("saveApp();", block, name)
+        active = src[
+            src.find("function setShopMetricCatalogActive(")
+            : src.find("function deleteShopMetricCatalogItem(")
+        ]
+        self.assertIn("wtPersistMetricCatalogListChange(needPay)", active)
 
 
 class WtOpsIntegrationTests(unittest.TestCase):

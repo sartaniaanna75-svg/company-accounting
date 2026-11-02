@@ -7089,8 +7089,13 @@ function setMetricWorkGroupInclude(metricId, tabId, on) {
     if (!item || !metricRollupEnabled(item) || metricDepartmentId(item) === "shop") return;
     if (!item.work_group_include || typeof item.work_group_include !== "object") item.work_group_include = {};
     item.work_group_include[tabId] = !!on;
-    saveApp();
-    if (typeof refreshMetricsUi === "function") refreshMetricsUi();
+    Promise.resolve(wtSaveShopMetricCatalogItemsOp()).then(function (ok) {
+        if (!ok) toast("Не удалось сохранить настройку группы метрики.", "error");
+        if (typeof refreshMetricsUi === "function") refreshMetricsUi();
+    }, function () {
+        toast("Не удалось сохранить настройку группы метрики.", "error");
+        if (typeof refreshMetricsUi === "function") refreshMetricsUi();
+    });
 }
 
 function toggleMetricRollupGroup(metricId, tabId) {
@@ -11094,16 +11099,17 @@ function metricCatalogPutSlice() {
     const out = {};
     const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
     const codes = typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(u) : [];
-    const metricInput = userHasPerm("metricsInput", "edit") || userHasPerm("metrics", "edit");
     const metricSetup = userHasPerm("metricsSetup", "edit");
     if (metricSetup && appData && appData.shopMetricCatalog) {
         out.shopMetricCatalog = appData.shopMetricCatalog;
     }
-    if (metricInput || metricSetup) {
+    // Только workAccess/extraAccess (metricSetup). НЕ facts/cashiers/pickers —
+    // иначе сохранение справочника перезаписывает весь ввод метрик.
+    if (metricSetup) {
         if (codes.indexOf("shop") !== -1 && appData && appData.shopMetrics) {
             const metricSlice = typeof staffMetricSlice === "function"
-                ? staffMetricSlice(appData.shopMetrics, metricInput, metricSetup)
-                : appData.shopMetrics;
+                ? staffMetricSlice(appData.shopMetrics, false, true)
+                : null;
             if (metricSlice) out.shopMetrics = metricSlice;
         }
         if (appData && appData.deptMetrics && typeof TERRITORY_DEPT_CODES !== "undefined") {
@@ -11111,30 +11117,15 @@ function metricCatalogPutSlice() {
             TERRITORY_DEPT_CODES.forEach(function (code) {
                 if (codes.indexOf(code) === -1 || !appData.deptMetrics[code]) return;
                 const branch = typeof staffMetricSlice === "function"
-                    ? staffMetricSlice(appData.deptMetrics[code], metricInput, metricSetup)
-                    : appData.deptMetrics[code];
+                    ? staffMetricSlice(appData.deptMetrics[code], false, true)
+                    : null;
                 if (branch) territory[code] = branch;
             });
             if (Object.keys(territory).length) out.deptMetrics = territory;
         }
     }
-    /* syncPayrollMetricFromCatalog трогает shopPayroll.metrics; деньги KPI и оклады не шлём без salary. */
-    if (codes.indexOf("shop") !== -1 && appData && appData.shopPayroll
-        && (userHasPerm("salary", "edit") || metricSetup)) {
-        const pay = wtCloneJson(appData.shopPayroll);
-        if (!isAppAdmin() && pay && typeof pay === "object") {
-            delete pay.kpiDefs;
-            delete pay.assignments;
-        }
-        if (!userHasPerm("salary", "edit") && pay && typeof pay === "object") {
-            delete pay.salaries;
-            delete pay.rules;
-            delete pay.manual;
-            delete pay.sharedBudgets;
-            delete pay.sharedBudget;
-        }
-        out.shopPayroll = pay;
-    }
+    // shopPayroll целиком в PUT не шлём: admin merge заменяет объект и может затереть KPI/оклады.
+    // Связка catalog→payroll.metrics — отдельным OPS после успешного PUT (см. saveMetricCatalogForm).
     if (appData && appData[WT_RECORDS_KEY] && typeof appData[WT_RECORDS_KEY] === "object") {
         out[WT_RECORDS_KEY] = appData[WT_RECORDS_KEY];
     }
@@ -14615,9 +14606,14 @@ function commitEmployeeCard(employeeId, deptCode) {
             employee.participates_in_spu_meetings = !!meetBox.checked;
             employee.meeting_participant = employee.participates_in_spu_meetings;
         }
-        // Материализуем месяц workAccess до снимка — иначе пустой объект не отправит галочки.
+        // Материализуем workAccess только текущего сотрудника — не весь пул отдела.
         if (canEditFioWorkMetrics()) {
-            try { shopMaterializeWorkAccessMonth(selectedMonth, cardDept); } catch (err) { console.error(err); }
+            try {
+                shopMaterializeWorkAccessEmployee(selectedMonth, cardDept, employeeId);
+                if (!(typeof isGenericMetricsDept === "function" && isGenericMetricsDept(cardDept))) {
+                    syncShopExtraAccessFromWork(employeeId, selectedMonth);
+                }
+            } catch (err) { console.error(err); }
         }
         store = metricsStoreForDept(cardDept);
         accessSnap = store ? {
@@ -14638,7 +14634,32 @@ function commitEmployeeCard(employeeId, deptCode) {
         toast("Не удалось подготовить карточку сотрудника к сохранению.", "error");
         return;
     }
-    Promise.resolve(saveApp()).then(function (ok) {
+    // Узкий OPS: не collect всего appData (иначе 415 при лимите 200).
+    let savePromise;
+    if (!wtServerMode) {
+        savePromise = Promise.resolve(saveApp());
+    } else {
+        let cardOps = [];
+        try { cardOps = wtBuildEmployeeCardSaveOps(employeeId, cardDept) || []; } catch (errOps) {
+            console.error(errOps);
+            clearCommitBusy();
+            toast("Не удалось подготовить назначения сотрудника к сохранению.", "error");
+            return;
+        }
+        if (!cardOps.length) {
+            savePromise = Promise.resolve(true);
+        } else if (cardOps.length > 200) {
+            // Не дробим посторонний diff: отказ как при широком save.
+            toast("Слишком много изменений за один раз (" + cardOps.length + "). Сохраните частями или обновите страницу.", "error");
+            restoreCommitDraft();
+            paintEmployeeCard();
+            clearCommitBusy();
+            return;
+        } else {
+            savePromise = Promise.resolve(wtDomainWriterSave({ ops: cardOps, atomic: true }));
+        }
+    }
+    savePromise.then(function (ok) {
         if (ok === "timeout") {
             // Черновик не откатываем: сервер мог уже принять запись.
             paintEmployeeCard();
@@ -20443,6 +20464,119 @@ function shopMaterializeWorkAccessMonth(month, deptCode) {
     return map;
 }
 
+/** Материализация workAccess только для одного сотрудника (карточка «Сохранить»). */
+function shopMaterializeWorkAccessEmployee(month, deptCode, employeeId) {
+    const m = month || selectedMonth;
+    const code = deptCode || ((workspace() && workspace().code) || "shop");
+    const root = metricsStoreForDept(code);
+    if (!root.workAccess[m] || typeof root.workAccess[m] !== "object") root.workAccess[m] = {};
+    const map = root.workAccess[m];
+    const eid = String(employeeId || "");
+    if (!eid || eid === SHOP_SELF_CHECKOUT_ID) return map;
+    if (!Object.prototype.hasOwnProperty.call(map, eid) || !Array.isArray(map[eid])) {
+        map[eid] = Array.isArray(map[eid]) ? map[eid] : shopWorkAccessInheritIds(eid, m);
+        if (!Array.isArray(map[eid])) map[eid] = [];
+    }
+    return map;
+}
+
+function wtEmployeeCardWorkAccessPath(deptCode, month, employeeId) {
+    const code = String(deptCode || "");
+    const m = String(month || selectedMonth || "");
+    const eid = String(employeeId || "");
+    if (!code || !m || !eid) return null;
+    if (typeof isGenericMetricsDept === "function" && isGenericMetricsDept(code)) {
+        return "deptMetrics." + code + ".workAccess." + m + "." + eid;
+    }
+    return "shopMetrics.workAccess." + m + "." + eid;
+}
+
+function wtEmployeeCardExtraAccessPath(employeeId) {
+    const eid = String(employeeId || "");
+    if (!eid) return null;
+    return "shopMetrics.extraAccess." + eid;
+}
+
+function wtEmployeeCardRecordPath(deptCode, employeeId) {
+    const code = String(deptCode || "");
+    const eid = String(employeeId || "");
+    if (!code || !eid) return null;
+    return "workspaces." + code + ".employees." + eid;
+}
+
+/**
+ * Узкие OPS для «Сохранить» карточки: сотрудник + его workAccess/extraAccess
+ * и shopMetricCatalog.items только если sync реально изменил справочник.
+ */
+function wtBuildEmployeeCardSaveOps(employeeId, cardDept) {
+    const ops = [];
+    const base = wtLastLoadedPayload || {};
+    function pushIfChanged(path, value) {
+        if (!path) return;
+        let live = value;
+        try {
+            if (live === undefined) live = null;
+            else if (typeof wtCloneJson === "function") live = wtCloneJson(live);
+        } catch (errCl) {
+            live = value === undefined ? null : value;
+        }
+        let prev;
+        try { prev = wtGetByPath(base, path); } catch (errG) { prev = undefined; }
+        try {
+            if (typeof wtJsonCanonEqual === "function" && wtJsonCanonEqual(prev, live)) return;
+        } catch (errEq) {}
+        ops.push({
+            path: path,
+            value: live === undefined ? null : live,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        });
+    }
+    const empPath = wtEmployeeCardRecordPath(cardDept, employeeId);
+    let employee = null;
+    try {
+        const resolved = resolveEmployeeCardForSave(cardDept, employeeId);
+        employee = resolved && resolved.employee;
+    } catch (errR) { employee = null; }
+    if (!employee) {
+        try { employee = getEmployee(employeeId); } catch (errE) { employee = null; }
+    }
+    if (empPath && employee) pushIfChanged(empPath, employee);
+
+    if (typeof canEditFioWorkMetrics === "function" && canEditFioWorkMetrics()) {
+        const month = selectedMonth;
+        const waPath = wtEmployeeCardWorkAccessPath(cardDept, month, employeeId);
+        let waVal = null;
+        try {
+            const store = metricsStoreForDept(cardDept);
+            const map = store && store.workAccess && store.workAccess[month];
+            if (map && Object.prototype.hasOwnProperty.call(map, employeeId)) {
+                waVal = Array.isArray(map[employeeId]) ? map[employeeId] : [];
+            }
+        } catch (errW) { waVal = null; }
+        if (waPath && waVal != null) pushIfChanged(waPath, waVal);
+
+        if (!(typeof isGenericMetricsDept === "function" && isGenericMetricsDept(cardDept))) {
+            const exPath = wtEmployeeCardExtraAccessPath(employeeId);
+            let exVal = [];
+            try {
+                const root = ensureShopMetrics();
+                if (root.extraAccess && Object.prototype.hasOwnProperty.call(root.extraAccess, employeeId)) {
+                    exVal = Array.isArray(root.extraAccess[employeeId]) ? root.extraAccess[employeeId] : [];
+                }
+            } catch (errX) { exVal = []; }
+            if (exPath) pushIfChanged(exPath, exVal);
+        }
+
+        // Справочник — один leaf items, только если sync изменил его относительно baseline.
+        try {
+            const cat = ensureShopMetricCatalog();
+            const items = (cat && cat.items) || [];
+            pushIfChanged("shopMetricCatalog.items", items);
+        } catch (errC) {}
+    }
+    return ops;
+}
+
 function syncShopExtraAccessFromWork(employeeId, month) {
     if (isGenericMetricsDept(metricsDeptCodeForEmployee(employeeId))) return;
     const extras = shopEmployeeWorkMetricIds(employeeId, month).filter(function (id) {
@@ -20494,7 +20628,10 @@ function peekEmployeeHasWorkMetric(employeeId, metricId, month) {
 function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
     const mid = canonicalMetricId(metricId);
     if (!mid || (!shopIsAssignableMetricId(mid) && !SHOP_WORK_METRIC_IDS[mid] && !peekEmployeeHasWorkMetric(employeeId, mid))) return;
-    const map = shopMaterializeWorkAccessMonth(selectedMonth, metricsDeptCodeForEmployee(employeeId));
+    const deptCode = metricsDeptCodeForEmployee(employeeId);
+    const map = typeof shopMaterializeWorkAccessEmployee === "function"
+        ? shopMaterializeWorkAccessEmployee(selectedMonth, deptCode, employeeId)
+        : shopMaterializeWorkAccessMonth(selectedMonth, deptCode);
     if (!Object.prototype.hasOwnProperty.call(map, employeeId) || !Array.isArray(map[employeeId])) {
         map[employeeId] = Array.isArray(map[employeeId]) ? map[employeeId] : shopWorkAccessInheritIds(employeeId, selectedMonth);
         if (!Array.isArray(map[employeeId])) map[employeeId] = [];
@@ -20505,6 +20642,109 @@ function applyShopEmployeeWorkMetric(employeeId, metricId, on) {
     if (!on && idx !== -1) list.splice(idx, 1);
     map[employeeId] = list;
     syncShopExtraAccessFromWork(employeeId, selectedMonth);
+}
+
+/** Узкие OPS только workAccess (+ extraAccess для shop) одного сотрудника. */
+function wtBuildWorkAccessSaveOps(employeeId) {
+    const ops = [];
+    const eid = String(employeeId || "");
+    if (!eid) return ops;
+    const deptCode = metricsDeptCodeForEmployee(eid);
+    const month = selectedMonth;
+    const base = wtLastLoadedPayload || {};
+    function pushIfChanged(path, value) {
+        if (!path) return;
+        let live = value;
+        try {
+            if (live === undefined) live = null;
+            else if (typeof wtCloneJson === "function") live = wtCloneJson(live);
+        } catch (errCl) {
+            live = value === undefined ? null : value;
+        }
+        let prev;
+        try { prev = wtGetByPath(base, path); } catch (errG) { prev = undefined; }
+        try {
+            if (typeof wtJsonCanonEqual === "function" && wtJsonCanonEqual(prev, live)) return;
+        } catch (errEq) {}
+        ops.push({
+            path: path,
+            value: live === undefined ? null : live,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        });
+    }
+    const waPath = typeof wtEmployeeCardWorkAccessPath === "function"
+        ? wtEmployeeCardWorkAccessPath(deptCode, month, eid)
+        : null;
+    try {
+        shopMaterializeWorkAccessEmployee(month, deptCode, eid);
+        const store = metricsStoreForDept(deptCode);
+        const map = store && store.workAccess && store.workAccess[month];
+        const waVal = map && Object.prototype.hasOwnProperty.call(map, eid)
+            ? (Array.isArray(map[eid]) ? map[eid] : [])
+            : [];
+        pushIfChanged(waPath, waVal);
+    } catch (errW) {}
+    if (!(typeof isGenericMetricsDept === "function" && isGenericMetricsDept(deptCode))) {
+        try {
+            syncShopExtraAccessFromWork(eid, month);
+            const exPath = typeof wtEmployeeCardExtraAccessPath === "function"
+                ? wtEmployeeCardExtraAccessPath(eid)
+                : null;
+            const root = ensureShopMetrics();
+            const exVal = root.extraAccess && Object.prototype.hasOwnProperty.call(root.extraAccess, eid)
+                ? (Array.isArray(root.extraAccess[eid]) ? root.extraAccess[eid] : [])
+                : [];
+            pushIfChanged(exPath, exVal);
+        } catch (errX) {}
+    }
+    return ops;
+}
+
+/** Явный OPS всего shopMetricCatalog.items — без collect постороннего diff. */
+function wtSaveShopMetricCatalogItemsOp() {
+    if (!wtServerMode) return Promise.resolve(saveApp());
+    if (!wtOpsUiEnabled(true)) return Promise.resolve(saveApp());
+    let items = [];
+    try {
+        const cat = ensureShopMetricCatalog();
+        items = (cat && cat.items) || [];
+    } catch (err) {
+        return Promise.resolve(false);
+    }
+    const path = "shopMetricCatalog.items";
+    let prev;
+    try { prev = wtGetByPath(wtLastLoadedPayload || {}, path); } catch (errP) { prev = undefined; }
+    try {
+        if (typeof wtJsonCanonEqual === "function" && wtJsonCanonEqual(prev, items)) {
+            return Promise.resolve(true);
+        }
+    } catch (errEq) {}
+    return Promise.resolve(wtDomainWriterSave({
+        ops: [{
+            path: path,
+            value: typeof wtCloneJson === "function" ? wtCloneJson(items) : items,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        }]
+    }));
+}
+
+/** Список справочника: items (+ shopPayroll.metrics при sync). Без полного DomainWriter-diff. */
+function wtPersistMetricCatalogListChange(needPayrollMetrics) {
+    return Promise.resolve(wtSaveShopMetricCatalogItemsOp()).then(function (ok) {
+        if (!ok) return false;
+        if (!(needPayrollMetrics && wtServerMode && typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+            return true;
+        }
+        let metricsVal = [];
+        try { metricsVal = (ensureShopPayroll().metrics || []).slice(); } catch (errM) { metricsVal = []; }
+        return Promise.resolve(wtDomainWriterSave({
+            ops: [{
+                path: "shopPayroll.metrics",
+                value: metricsVal,
+                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("shopPayroll.metrics") : 0
+            }]
+        })).then(function (payOk) { return !!payOk; }, function () { return false; });
+    }, function () { return false; });
 }
 
 function canViewFioWorkMetrics() {
@@ -20564,8 +20804,29 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
         paintWorkMetrics();
         return;
     }
-    // Вне карточки (зарплата и т.п.) — сохраняем сразу; при timeout черновик не откатываем.
-    Promise.resolve(saveApp()).then(function (ok) {
+    // Вне карточки — узкий OPS workAccess/extraAccess, не широкий saveApp (лимит 200 / чужой diff).
+    let savePromise;
+    if (!wtServerMode) {
+        savePromise = Promise.resolve(saveApp());
+    } else {
+        let waOps = [];
+        try { waOps = wtBuildWorkAccessSaveOps(employeeId) || []; } catch (errOps) {
+            waOps = [];
+        }
+        if (!waOps.length) savePromise = Promise.resolve(true);
+        else if (waOps.length > 200) {
+            if (accessSnap && store) {
+                store.workAccess = accessSnap.workAccess;
+                store.extraAccess = accessSnap.extraAccess;
+            }
+            toast("Слишком много изменений за один раз (" + waOps.length + "). Сохраните частями или обновите страницу.", "error");
+            paintWorkMetrics();
+            return;
+        } else {
+            savePromise = Promise.resolve(wtDomainWriterSave({ ops: waOps, atomic: true }));
+        }
+    }
+    savePromise.then(function (ok) {
         if (ok === "timeout") {
             toast("Ответ сервера не получен. Галочка на экране оставлена — повторите сохранение или сверьте данные с сервером.", "error");
         } else if (!ok) {
@@ -32444,9 +32705,11 @@ function addMetricSubmetric(metricId) {
     it.submetrics.forEach(function (s) { max = Math.max(max, Number(s.sort_order || 0)); });
     it.submetrics.push({ id: nextSubmetricId(), name: "Новая", sort_order: max + 10, active: true });
     metricCatalogExpanded[metricId] = true;
-    saveApp();
-    renderMetricCatalog();
-    refreshMetricsUi();
+    Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
+        if (!ok) toast("Не удалось сохранить подметрику.", "error");
+        renderMetricCatalog();
+        refreshMetricsUi();
+    });
 }
 
 function renameMetricSubmetric(metricId, subId, name) {
@@ -32457,9 +32720,11 @@ function renameMetricSubmetric(metricId, subId, name) {
     const next = String(name || "").replace(/\s+/g, " ").trim();
     if (!next) return;
     sub.name = next;
-    saveApp();
-    renderMetricCatalog();
-    refreshMetricsUi();
+    Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
+        if (!ok) toast("Не удалось сохранить название подметрики.", "error");
+        renderMetricCatalog();
+        refreshMetricsUi();
+    });
 }
 
 function setMetricSubmetricOrder(metricId, subId, value) {
@@ -32468,9 +32733,11 @@ function setMetricSubmetricOrder(metricId, subId, value) {
     const sub = it && (it.submetrics || []).find(function (s) { return s.id === subId; });
     if (!sub) return;
     sub.sort_order = Number(value) || 0;
-    saveApp();
-    renderMetricCatalog();
-    refreshMetricsUi();
+    Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
+        if (!ok) toast("Не удалось сохранить порядок подметрики.", "error");
+        renderMetricCatalog();
+        refreshMetricsUi();
+    });
 }
 
 function setMetricSubmetricActive(metricId, subId, on) {
@@ -32479,10 +32746,12 @@ function setMetricSubmetricActive(metricId, subId, on) {
     const sub = it && (it.submetrics || []).find(function (s) { return s.id === subId; });
     if (!sub) return;
     sub.active = !!on;
-    saveApp();
-    renderMetricCatalog();
-    refreshMetricsUi();
-    toast(on ? "Подметрика включена." : "Подметрика скрыта. История сохранена.");
+    Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
+        if (!ok) toast("Не удалось сохранить статус подметрики.", "error");
+        else toast(on ? "Подметрика включена." : "Подметрика скрыта. История сохранена.");
+        renderMetricCatalog();
+        refreshMetricsUi();
+    });
 }
 
 function onMetricCatalogDrag(ev, id) {
@@ -32504,9 +32773,11 @@ function onMetricCatalogDrop(ev, targetId) {
     const a = Number(src.sort_order || 0);
     src.sort_order = Number(dst.sort_order || 0);
     dst.sort_order = a;
-    saveApp();
-    renderMetricCatalog();
-    refreshMetricsUi();
+    Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
+        if (!ok) toast("Не удалось сохранить порядок метрик.", "error");
+        renderMetricCatalog();
+        refreshMetricsUi();
+    });
 }
 
 function setShopMetricCatalogActive(id, on) {
@@ -32514,11 +32785,14 @@ function setShopMetricCatalogActive(id, on) {
     const it = shopMetricCatalogById(id);
     if (!it) return;
     it.active = !!on;
-    if (metricDepartmentId(it) === "shop") syncPayrollMetricFromCatalog(it);
-    saveApp();
-    renderMetricCatalog();
-    refreshMetricsUi();
-    toast(on ? "Метрика включена." : "Метрика отключена. История сохранена.");
+    const needPay = metricDepartmentId(it) === "shop";
+    if (needPay) syncPayrollMetricFromCatalog(it);
+    Promise.resolve(wtPersistMetricCatalogListChange(needPay)).then(function (ok) {
+        if (!ok) toast("Не удалось сохранить статус метрики.", "error");
+        else toast(on ? "Метрика включена." : "Метрика отключена. История сохранена.");
+        renderMetricCatalog();
+        refreshMetricsUi();
+    });
 }
 
 function deleteShopMetricCatalogItem(id) {
@@ -32527,18 +32801,24 @@ function deleteShopMetricCatalogItem(id) {
     if (!it || it.builtin) return;
     if (shopMetricHasLinkedData(id)) {
         it.active = false;
-        saveApp();
-        renderMetricCatalog();
-        refreshMetricsUi();
-        toast((metricIsChecklist(it) ? "Чек-лист" : "Метрика")
-            + " уже использовался — отключён, история сохранена.", "error");
+        const needPay = metricDepartmentId(it) === "shop";
+        if (needPay) syncPayrollMetricFromCatalog(it);
+        Promise.resolve(wtPersistMetricCatalogListChange(needPay)).then(function (ok) {
+            if (!ok) toast("Не удалось отключить метрику.", "error");
+            else toast((metricIsChecklist(it) ? "Чек-лист" : "Метрика")
+                + " уже использовался — отключён, история сохранена.", "error");
+            renderMetricCatalog();
+            refreshMetricsUi();
+        });
         return;
     }
     ensureShopMetricCatalog().items = shopMetricCatalogItems().filter(function (x) { return x.id !== id; });
-    saveApp();
-    renderMetricCatalog();
-    refreshMetricsUi();
-    toast(metricIsChecklist(it) ? "Чек-лист удалён." : "Метрика удалена.");
+    Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
+        if (!ok) toast("Не удалось удалить метрику.", "error");
+        else toast(metricIsChecklist(it) ? "Чек-лист удалён." : "Метрика удалена.");
+        renderMetricCatalog();
+        refreshMetricsUi();
+    });
 }
 
 function shopCatalogPositionOptions() {
@@ -33988,44 +34268,14 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (assignmentRows) applyMetricCatalogAssignments(item);
     else if (item.assign_mode === "specific") applyMetricCatalogSpecificAssignment(item, personIdsEarly);
     else applyMetricCatalogGroupAssignment(item);
-    if (metricDepartmentId(item) === "shop") syncPayrollMetricFromCatalog(item);
+    const needPayrollMetrics = metricDepartmentId(item) === "shop";
+    if (needPayrollMetrics) syncPayrollMetricFromCatalog(item);
     const savedKind = item.kind;
     const back = metricFormReturnSection;
-    /* Не шлём весь appData (financeRec/табели) — только каталог и связанные ветки. */
+    /* Каталог + workAccess/extraAccess (без facts). shopPayroll.metrics — узким OPS после PUT. */
     saveMetricCatalogForm.busy = true;
-    Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice)).then(function (ok) {
+    function finishCatalogOk() {
         saveMetricCatalogForm.busy = false;
-        if (ok === "timeout") {
-            /* Не успех: форма остаётся открытой; откат не делаем — сервер мог уже записать. */
-            const box = document.getElementById("mcFormError");
-            if (box) {
-                box.style.display = "";
-                box.textContent = "Нет подтверждения сохранения. Сервер мог уже принять запись — не закрывайте форму, обновите данные с сервера или повторите «Сохранить».";
-            }
-            toast("Ответ сервера не получен за отведённое время. Не считаем метрику сохранённой. Проверьте данные и при необходимости сохраните снова (без F5 сразу).", "error");
-            return;
-        }
-        if (ok === "conflict_review") {
-            /* Merge уже на экране; на сервер не записано. Откат snap запрещён. */
-            const box = document.getElementById("mcFormError");
-            if (box) {
-                box.style.display = "";
-                box.textContent = "Конфликт версий: данные на экране обновлены с сервера и с вашими правками. На сервер ещё не записано — проверьте и нажмите «Сохранить».";
-            }
-            try { refreshMetricCatalogFormulaBox(); } catch (err) {}
-            return;
-        }
-        if (!ok) {
-            restoreMetricCatalog();
-            const box = document.getElementById("mcFormError");
-            if (box) {
-                box.style.display = "";
-                box.textContent = "Изменения метрики не записаны.";
-            }
-            try { renderMetricCatalog(); } catch (err) {}
-            try { refreshMetricsUi(); } catch (err) {}
-            return;
-        }
         metricFormReturnSection = "";
         closeMetricCatalogModal();
         if (workspace() && workspace().code === dept) deptMetricTab = sectionId;
@@ -34036,14 +34286,71 @@ function saveMetricCatalogForm(id, dupIgnore) {
             refreshMetricsUi();
         }
         toast(savedKind === "checklist" ? "Чек-лист сохранён." : "Метрика сохранена.");
-    }).catch(function () {
+    }
+    function failCatalogForm(msg) {
         saveMetricCatalogForm.busy = false;
-        restoreMetricCatalog();
         const box = document.getElementById("mcFormError");
         if (box) {
             box.style.display = "";
-            box.textContent = "Изменения метрики не записаны.";
+            box.textContent = msg || "Изменения метрики не записаны.";
         }
+        try { renderMetricCatalog(); } catch (err) {}
+        try { refreshMetricsUi(); } catch (err) {}
+    }
+    Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice)).then(function (ok) {
+        if (ok === "timeout") {
+            saveMetricCatalogForm.busy = false;
+            const box = document.getElementById("mcFormError");
+            if (box) {
+                box.style.display = "";
+                box.textContent = "Нет подтверждения сохранения. Сервер мог уже принять запись — не закрывайте форму, обновите данные с сервера или повторите «Сохранить».";
+            }
+            toast("Ответ сервера не получен за отведённое время. Не считаем метрику сохранённой. Проверьте данные и при необходимости сохраните снова (без F5 сразу).", "error");
+            return;
+        }
+        if (ok === "conflict_review") {
+            saveMetricCatalogForm.busy = false;
+            const box = document.getElementById("mcFormError");
+            if (box) {
+                box.style.display = "";
+                box.textContent = "Конфликт версий: данные на экране обновлены с сервера и с вашими правками. На сервер ещё не записано — проверьте и нажмите «Сохранить».";
+            }
+            try { refreshMetricCatalogFormulaBox(); } catch (err) {}
+            return;
+        }
+        if (!ok) {
+            restoreMetricCatalog();
+            failCatalogForm("Изменения метрики не записаны.");
+            return;
+        }
+        if (!(needPayrollMetrics && wtServerMode && wtOpsUiEnabled(true))) {
+            finishCatalogOk();
+            return;
+        }
+        let metricsVal = [];
+        try {
+            metricsVal = (ensureShopPayroll().metrics || []).slice();
+        } catch (errM) { metricsVal = []; }
+        return Promise.resolve(wtDomainWriterSave({
+            ops: [{
+                path: "shopPayroll.metrics",
+                value: metricsVal,
+                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("shopPayroll.metrics") : 0
+            }]
+        })).then(function (payOk) {
+            if (!payOk) {
+                failCatalogForm("Справочник мог записаться, но связь метрики с расчётом не подтверждена. Повторите «Сохранить» без F5.");
+                toast("Метрика: связь с расчётом не записана. Повторите сохранение.", "error");
+                return;
+            }
+            finishCatalogOk();
+        }, function () {
+            failCatalogForm("Справочник мог записаться, но связь метрики с расчётом не подтверждена. Повторите «Сохранить» без F5.");
+            toast("Метрика: связь с расчётом не записана. Повторите сохранение.", "error");
+        });
+    }).catch(function () {
+        restoreMetricCatalog();
+        failCatalogForm("Изменения метрики не записаны.");
     });
 }
 
