@@ -25590,14 +25590,103 @@ function deleteRevisionTask(taskId) {
 /* ============================================================
    ИЗМЕНЕНИЕ ЯЧЕЙКИ ТАБЕЛЯ (только отдел)
 ============================================================ */
+/** Локальная перерисовка табеля и зависимых итогов без полного refreshAll (метрики/KPI и т.п.). */
+function wtTimesheetPaintLocalUi() {
+    try { renderTimesheet(); } catch (err) { console.error(err); }
+    try { if (typeof updateStats === "function") updateStats(); } catch (err) { console.error(err); }
+    try { if (typeof renderDiscipline === "function") renderDiscipline(); } catch (err) { console.error(err); }
+}
+
+/** gen по пути ячейки: ответ устаревшего OPS не должен затирать более новый локальный ввод. */
+let wtTimesheetCellSaveGen = Object.create(null);
+let wtTimesheetCellSaveDraft = Object.create(null);
+let wtTimesheetSaveInflight = 0;
+
+function wtTimesheetSaveUiAttr(status) {
+    try {
+        const wrap = document.getElementById("timesheetWrap");
+        if (!wrap) return;
+        if (status) wrap.setAttribute("data-wt-save", status);
+        else wrap.removeAttribute("data-wt-save");
+        wrap.title = status === "saving"
+            ? "Табель: сохранение на сервер…"
+            : (status === "dirty"
+                ? "Табель: есть несохранённые или ошибочные правки — не обновляйте страницу без проверки"
+                : (status === "saved" ? "Табель: последние правки записаны на сервер" : ""));
+    } catch (err) {}
+}
+
+function wtTimesheetNoteSaveInflight(delta) {
+    wtTimesheetSaveInflight = Math.max(0, (Number(wtTimesheetSaveInflight) || 0) + delta);
+    if (wtTimesheetSaveInflight > 0) wtTimesheetSaveUiAttr("saving");
+}
+
 function finishTimesheetCellSave(employeeId, day) {
+    const deptCode = typeof timesheetActiveDeptCode === "function" ? timesheetActiveDeptCode() : "";
+    const path = deptCode && typeof wtTimesheetDayPath === "function"
+        ? wtTimesheetDayPath(deptCode, selectedMonth, employeeId, day)
+        : ("local:" + String(employeeId) + ":" + String(day));
+    const gen = (Number(wtTimesheetCellSaveGen[path]) || 0) + 1;
+    wtTimesheetCellSaveGen[path] = gen;
+    let draft = null;
+    try {
+        draft = typeof wtCloneJson === "function"
+            ? wtCloneJson(getDayRecord(employeeId, day))
+            : null;
+    } catch (errDraft) {
+        draft = null;
+    }
+    if (draft) wtTimesheetCellSaveDraft[path] = { gen: gen, value: draft, employeeId: employeeId, day: day };
+
+    // Сразу показать «Я», часы и «Пришёл в 7:30» — не ждать OPS.
+    try { wtTimesheetPaintLocalUi(); } catch (errPaint) { console.error(errPaint); }
+    wtTimesheetNoteSaveInflight(1);
+
     return saveTimesheetDayChange(employeeId, day).then(function (res) {
-        // Сначала запись, потом перерисовка — иначе refreshAll → KPI saveApp бьёт PUT/409.
-        try { refreshAll(); } catch (err) { console.error(err); }
+        wtTimesheetNoteSaveInflight(-1);
+        const latest = Number(wtTimesheetCellSaveGen[path]) || 0;
+        const pending = wtTimesheetCellSaveDraft[path];
+        const isLatest = latest === gen;
+
+        // Устаревший ответ: вернуть более новый локальный черновик и снова dirty для SoftSync.
+        if (!isLatest && pending && pending.gen === latest && pending.value != null) {
+            try {
+                if (typeof wtApplyTimesheetDayValue === "function") {
+                    wtApplyTimesheetDayValue(employeeId, day, pending.value);
+                }
+            } catch (errApply) { console.error(errApply); }
+            try { if (path && path.indexOf("local:") !== 0) wtSoftMarkDirty(path); } catch (errDirty) {}
+            try { wtTimesheetPaintLocalUi(); } catch (errP2) { console.error(errP2); }
+            if (wtTimesheetSaveInflight <= 0) {
+                wtTimesheetSaveUiAttr(wtTimesheetCellSaveDraft[path] ? "dirty" : "");
+            }
+            try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (errF) {}
+            return res;
+        }
+
+        if (isLatest) {
+            if (res && (res.status === "saved" || res.status === "saved_put" || res.status === "conflict_kept_server")) {
+                delete wtTimesheetCellSaveDraft[path];
+                if (wtTimesheetSaveInflight <= 0) wtTimesheetSaveUiAttr("saved");
+            } else if (res && (res.status === "conflict_draft" || res.status === "error" || res.status === "offline")) {
+                try { if (path && path.indexOf("local:") !== 0) wtSoftMarkDirty(path); } catch (errD2) {}
+                if (wtTimesheetSaveInflight <= 0) wtTimesheetSaveUiAttr("dirty");
+            } else if (wtTimesheetSaveInflight <= 0) {
+                wtTimesheetSaveUiAttr(pending ? "dirty" : "");
+            }
+        } else if (wtTimesheetSaveInflight <= 0) {
+            wtTimesheetSaveUiAttr(wtTimesheetCellSaveDraft[path] ? "dirty" : "saving");
+        }
+
+        // Узкая перерисовка табеля/итогов — без refreshAll (не трогаем метрики/KPI UI).
+        try { wtTimesheetPaintLocalUi(); } catch (errP3) { console.error(errP3); }
         try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
         return res;
     }, function (err) {
-        try { refreshAll(); } catch (err2) { console.error(err2); }
+        wtTimesheetNoteSaveInflight(-1);
+        try { if (path && path.indexOf("local:") !== 0) wtSoftMarkDirty(path); } catch (errD3) {}
+        if (wtTimesheetSaveInflight <= 0) wtTimesheetSaveUiAttr("dirty");
+        try { wtTimesheetPaintLocalUi(); } catch (err2) { console.error(err2); }
         try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err3) {}
         throw err;
     });

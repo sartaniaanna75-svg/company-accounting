@@ -270,10 +270,13 @@ class WtTimesheetOpPilotUiWiringTests(unittest.TestCase):
             block = self.src[start:nxt]
             self.assertIn("finishTimesheetCellSave(", block, fn)
             self.assertNotIn("saveApp();", block, fn)
-        # Сначала save, потом refreshAll — не наоборот.
+        # Сразу локальная отрисовка табеля, затем OPS; без полного refreshAll в finish.
         fin = self.src.find("function finishTimesheetCellSave(")
         fin_block = self.src[fin : self.src.find("\nfunction ", fin + 10)]
-        self.assertLess(fin_block.find("saveTimesheetDayChange"), fin_block.find("refreshAll"))
+        self.assertIn("wtTimesheetPaintLocalUi", fin_block)
+        self.assertLess(fin_block.find("wtTimesheetPaintLocalUi"), fin_block.find("saveTimesheetDayChange"))
+        self.assertNotIn("refreshAll()", fin_block)
+        self.assertIn("function wtTimesheetPaintLocalUi(", self.src)
 
     def test_op_helpers_present(self):
         self.assertIn("function saveTimesheetCellViaOp(", self.src)
@@ -293,7 +296,7 @@ class WtTimesheetOpPilotUiWiringTests(unittest.TestCase):
         self.assertIn("wtOpsUiEnabled(true)", block)
         self.assertIn('via: "put"', block)
         self.assertIn("saveTimesheetCellViaOp", block)
-        self.assertIn("wtOpsBlockIncidentalPut = true", block)
+        self.assertIn("wtOpsWithIncidentalBlock", block)
         # Ветка OPS on не должна звать saveApp.
         ops_on = block.split("saveTimesheetCellViaOp")[-1]
         self.assertNotIn("saveApp()", ops_on)
