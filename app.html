@@ -11852,7 +11852,17 @@ function wtDomainWriterSave(options) {
     if (wtSoftApplying && !options.forcePut && !useSlicePut) {
         const softRetry = Number(options._softRetry || 0);
         // Сразу защитить черновик — SoftSync не сотрёт folders/KPI до отложенной записи.
-        wtDomainWriterMarkPendingDraft();
+        // Явные ops: только их пути (не весь collect — иначе массовый ложный dirty).
+        if (options.ops && options.ops.length) {
+            wtDomainWriterDeferredPending = true;
+            try {
+                options.ops.forEach(function (leaf) {
+                    if (leaf && leaf.path) wtSoftMarkDirty(leaf.path);
+                });
+            } catch (errMark) {}
+        } else {
+            wtDomainWriterMarkPendingDraft();
+        }
         if (softRetry >= 8) {
             wtDomainWriterScheduleDeferred();
             if (!options._fromDeferred) {
@@ -11912,6 +11922,8 @@ function wtDomainWriterSave(options) {
 
     // Предварительно пометить dirty по текущему diff — SoftSync не сотрёт черновик,
     // пока запрос ждёт wtOpsChain. Сами OPS собираем заново внутри очереди.
+    // Явные ops (KPI и т.п.) — только их пути; полный collect не раздувает dirty.
+    const explicitOps = !!(options.ops && options.ops.length);
     let prelimLeaves = options.ops;
     if (!prelimLeaves) {
         try {
@@ -11921,7 +11933,7 @@ function wtDomainWriterSave(options) {
         }
     }
     // UI-изменение есть (dirty), а collect пуст — восстановить листья с dirty-путей.
-    if (!(prelimLeaves && prelimLeaves.length) && !(options.ops && options.ops.length)) {
+    if (!(prelimLeaves && prelimLeaves.length) && !explicitOps) {
         try { wtSoftProtectPendingLeaves(); } catch (errP) {}
         try {
             const fromDirty = wtDomainWriterLeavesFromDirty();
@@ -11931,12 +11943,17 @@ function wtDomainWriterSave(options) {
     try {
         prelimLeaves = wtFilterPositionCatalogLeavesForSession(prelimLeaves || []);
     } catch (errFilt) {}
+    // Отказ ДО dirty: иначе SoftSync закрепляет сотни ложных листьев после toast >200.
+    if (!explicitOps && prelimLeaves && prelimLeaves.length > 200) {
+        toast("Слишком много изменений за один раз (" + prelimLeaves.length + "). Сохраните частями или обновите страницу.", "error");
+        return Promise.resolve(false);
+    }
     try {
         if (prelimLeaves && prelimLeaves.length) {
             prelimLeaves.forEach(function (leaf) {
                 if (leaf && leaf.path) wtSoftMarkDirty(leaf.path);
             });
-        } else {
+        } else if (!explicitOps) {
             wtSoftProtectPendingLeaves();
         }
     } catch (err) {}
@@ -13205,18 +13222,31 @@ function wtResolveRecordConflict(conflict) {
     const pathLabel = conflict.path ? String(conflict.path) : "запись";
     const serverTxt = wtFormatConflictValue(conflict.server_value);
     const yoursTxt = wtFormatConflictValue(conflict.your_value);
-    const msg = "Эту запись уже изменили с другого окна или устройства.\n"
-        + "Путь: " + pathLabel + "\n\n"
-        + "На сервере: " + serverTxt + "\n"
-        + "Ваш вариант: " + yoursTxt + "\n\n"
-        + "OK — записать ваш вариант (с повторной проверкой).\n"
-        + "Отмена — выбрать другое действие.";
+    const isKpiMoneyPath = pathLabel === "shopPayroll.kpiDefs" || pathLabel === "shopPayroll.assignments";
+    const msg = isKpiMoneyPath
+        ? ("Конфликт сохранения KPI: правила или назначения уже изменил другой администратор.\n"
+            + "Чужие изменения на сервере не перезаписаны.\n"
+            + "Путь: " + pathLabel + "\n\n"
+            + "На сервере: " + serverTxt + "\n"
+            + "Ваш вариант: " + yoursTxt + "\n\n"
+            + "OK — записать ВАШ вариант поверх (с повторной проверкой версии).\n"
+            + "Отмена — выбрать: принять сервер или оставить черновик и повторить после обновления данных.")
+        : ("Эту запись уже изменили с другого окна или устройства.\n"
+            + "Путь: " + pathLabel + "\n\n"
+            + "На сервере: " + serverTxt + "\n"
+            + "Ваш вариант: " + yoursTxt + "\n\n"
+            + "OK — записать ваш вариант (с повторной проверкой).\n"
+            + "Отмена — выбрать другое действие.");
     const replace = window.confirm(msg);
     if (!replace) {
         const takeServer = window.confirm(
-            "Заменить ваш ввод значением с сервера?\n"
-            + "OK — заменить (ваш вариант сохранится в резервной копии браузера).\n"
-            + "Отмена — ничего не записывать: ваш вариант остаётся черновиком на экране."
+            isKpiMoneyPath
+                ? ("Принять актуальные KPI с сервера?\n"
+                    + "OK — заменить экран серверным вариантом (ваш черновик сохранится в резервной копии браузера).\n"
+                    + "Отмена — ничего не записывать: ваш вариант остаётся черновиком, можно повторить после обновления данных.")
+                : ("Заменить ваш ввод значением с сервера?\n"
+                    + "OK — заменить (ваш вариант сохранится в резервной копии браузера).\n"
+                    + "Отмена — ничего не записывать: ваш вариант остаётся черновиком на экране.")
         );
         if (!takeServer) return Promise.resolve("cancel");
         wtConflictBackupSave(conflict.path, "replaced_local_value", conflict.your_value);
@@ -26036,6 +26066,43 @@ function renderRepSalary() {
 ============================================================ */
 let shopKpiMigrating = false;
 
+/** Узкие пути OPS для денежных KPI (только администратор на сервере). */
+const WT_SHOP_PAYROLL_KPI_DEFS_PATH = "shopPayroll.kpiDefs";
+const WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH = "shopPayroll.assignments";
+
+/**
+ * Сохранить только kpiDefs — без полного DomainWriter-diff приложения.
+ * При OPS: один leaf с expected_v. Без OPS — прежний saveApp (локально / fallback PUT).
+ */
+function saveShopPayrollKpiDefs() {
+    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return saveApp();
+    }
+    const p = ensureShopPayroll();
+    return wtDomainWriterSave({
+        ops: [{
+            path: WT_SHOP_PAYROLL_KPI_DEFS_PATH,
+            value: Array.isArray(p.kpiDefs) ? p.kpiDefs : [],
+            expected_v: wtRecordVersion(WT_SHOP_PAYROLL_KPI_DEFS_PATH)
+        }]
+    });
+}
+
+/** Сохранить только assignments KPI. */
+function saveShopPayrollKpiAssignments() {
+    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return saveApp();
+    }
+    const p = ensureShopPayroll();
+    return wtDomainWriterSave({
+        ops: [{
+            path: WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH,
+            value: Array.isArray(p.assignments) ? p.assignments : [],
+            expected_v: wtRecordVersion(WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH)
+        }]
+    });
+}
+
 function ensureShopPayroll() {
     if (!appData.shopPayroll || typeof appData.shopPayroll !== "object") {
         appData.shopPayroll = { departmentId: "shop", salaries: [], rules: [], manual: {}, metrics: [] };
@@ -28375,7 +28442,7 @@ function reopenShopKpiDef(kpiId) {
     // Старые версии и assignments не изменяются — только новая строка в kpiDefs.
     payroll.kpiDefs.push(next);
     const view = payrollViewFromSection();
-    Promise.resolve(saveApp()).then(function (ok) {
+    Promise.resolve(saveShopPayrollKpiDefs()).then(function (ok) {
         if (ok === false) {
             toast("Восстановление KPI не записано на сервер. Правило на экране — проверьте сохранение.", "error");
             payrollRulesModeByView[view.id] = "archive";
@@ -28680,7 +28747,7 @@ function mutateShopKpiDef(kpiId, patch) {
     if (canonicalMetricId(def.metricId || def.metric_id) === METRIC_WRITEOFF_LOSSES_ID) {
         if (shopWriteoffNameLooksLikeLimitTitle(def.name) || !def.name) def.name = WRITEOFF_KPI_NAME;
     }
-    saveApp();
+    saveShopPayrollKpiDefs();
 }
 
 function setShopKpiDefField(kpiId, field, value) {
@@ -28766,7 +28833,7 @@ function closeShopKpiDef(kpiId) {
     // даёт validFrom > validTo, правило уходит в «Архив» (некорректный период) и доступно для восстановления.
     def.validTo = closeTo;
     def.valid_to = closeTo;
-    saveApp();
+    saveShopPayrollKpiDefs();
     if (from && closeTo && from > closeTo) {
         const view = payrollViewFromSection();
         payrollRulesModeByView[view.id] = "archive";
@@ -28861,7 +28928,7 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
         newDef.shared_fund = Math.max(0, Math.round(Number(kpiMetricPick.shared_fund) || 0));
     }
     ensureShopPayroll().kpiDefs.push(newDef);
-    saveApp();
+    saveShopPayrollKpiDefs();
     closeShopPayModal();
     renderShopSalaryRules();
     if (wantShared && !newDef.distribution_mode) {
@@ -28894,7 +28961,7 @@ function toggleShopKpiAssignment(employeeId, kpiId, on) {
             rec.valid_to = rec.validTo;
         }
     }
-    saveApp();
+    saveShopPayrollKpiAssignments();
     renderShopSalarySettings();
 }
 

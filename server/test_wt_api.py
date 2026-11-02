@@ -6518,6 +6518,347 @@ class WtOpsFoundationTests(unittest.TestCase):
         )
 
 
+class WtShopPayrollKpiOpsTests(unittest.TestCase):
+    """Узкое сохранение KPI через OPS: kpiDefs / assignments, конфликт, изоляция других разделов."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        self.store = {
+            "payload": json.loads(json.dumps(SAMPLE_APP)),
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        pay = self.store["payload"].setdefault("shopPayroll", {})
+        pay["kpiDefs"] = []
+        pay["assignments"] = []
+        # Посторонний «шум» в метриках — KPI OPS не должен его трогать.
+        facts = self.store["payload"].setdefault("shopMetrics", {}).setdefault("facts", {})
+        for i in range(250):
+            facts["noise_%03d" % i] = i
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id="user_admin", pin="5555"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def _record_v(self, path):
+        return int(wt_api.record_version(self.store["payload"], path) or 0)
+
+    def test_client_kpi_save_uses_narrow_ops_helpers(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function saveShopPayrollKpiDefs(", src)
+        self.assertIn("function saveShopPayrollKpiAssignments(", src)
+        self.assertIn('WT_SHOP_PAYROLL_KPI_DEFS_PATH = "shopPayroll.kpiDefs"', src)
+        self.assertIn('WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH = "shopPayroll.assignments"', src)
+        create = src[
+            src.find("function createShopKpiDef(")
+            : src.find("function toggleShopKpiAssignment(")
+        ]
+        self.assertIn("saveShopPayrollKpiDefs()", create)
+        self.assertNotIn("saveApp()", create)
+        assign = src[
+            src.find("function toggleShopKpiAssignment(")
+            : src.find("function addShopKpi(")
+        ]
+        self.assertIn("saveShopPayrollKpiAssignments()", assign)
+        self.assertNotIn("saveApp()", assign)
+        mutate = src[
+            src.find("function mutateShopKpiDef(")
+            : src.find("function setShopKpiDefField(")
+        ]
+        self.assertIn("saveShopPayrollKpiDefs()", mutate)
+        close = src[
+            src.find("function closeShopKpiDef(")
+            : src.find("function createShopKpiDef(")
+        ]
+        self.assertIn("saveShopPayrollKpiDefs()", close)
+        dw = src[
+            src.find("function wtDomainWriterSave(")
+            : src.find("function wtDomainWriterSave(") + 12000
+        ]
+        self.assertIn("!explicitOps && prelimLeaves && prelimLeaves.length > 200", dw)
+        self.assertIn("Отказ ДО dirty", dw)
+
+    def test_admin_creates_two_kpi_defs_via_ops(self):
+        cookie, _ = self.login()
+        defs = [
+            {"kpi_id": "kpi_a", "name": "KPI A", "amount": 100, "active": True},
+            {"kpi_id": "kpi_b", "name": "KPI B", "amount": 200, "active": True},
+        ]
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi-create-2",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": defs,
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(data.get("record_v"), 1)
+        saved = self.store["payload"]["shopPayroll"]["kpiDefs"]
+        self.assertEqual(len(saved), 2)
+        self.assertEqual({d["kpi_id"] for d in saved}, {"kpi_a", "kpi_b"})
+        # Посторонние факты не затронуты.
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_000"], 0)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_249"], 249)
+
+    def test_kpi_save_succeeds_despite_large_unrelated_facts(self):
+        """Большой посторонний diff в facts не мешает узкому OPS kpiDefs (1 op < 200)."""
+        cookie, _ = self.login()
+        self.assertGreaterEqual(len(self.store["payload"]["shopMetrics"]["facts"]), 200)
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [{
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [{"kpi_id": "kpi_only", "name": "Only", "amount": 50}],
+                }],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        results = data.get("results") or []
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].get("status"), "saved")
+        self.assertEqual(
+            self.store["payload"]["shopPayroll"]["kpiDefs"][0]["kpi_id"],
+            "kpi_only",
+        )
+
+    def test_kpi_mutate_and_close_via_ops(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [{
+                        "kpi_id": "kpi_m",
+                        "name": "Mut",
+                        "amount": 10,
+                        "validFrom": "2026-10",
+                        "validTo": None,
+                        "active": True,
+                    }],
+                }
+            },
+            cookie=cookie,
+        )
+        v1 = self._record_v("shopPayroll.kpiDefs")
+        mutated = [{
+            "kpi_id": "kpi_m",
+            "name": "Mut",
+            "amount": 99,
+            "validFrom": "2026-10",
+            "validTo": None,
+            "active": True,
+        }]
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": v1,
+                    "value": mutated,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(self.store["payload"]["shopPayroll"]["kpiDefs"][0]["amount"], 99)
+        v2 = self._record_v("shopPayroll.kpiDefs")
+        closed = [{
+            "kpi_id": "kpi_m",
+            "name": "Mut",
+            "amount": 99,
+            "validFrom": "2026-10",
+            "validTo": "2026-10",
+            "active": True,
+        }]
+        st2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": v2,
+                    "value": closed,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        self.assertEqual(
+            self.store["payload"]["shopPayroll"]["kpiDefs"][0]["validTo"],
+            "2026-10",
+        )
+
+    def test_kpi_assignment_ops(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [{"kpi_id": "kpi_asg", "name": "Asg", "amount": 1}],
+                }
+            },
+            cookie=cookie,
+        )
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.assignments",
+                    "expected_v": 0,
+                    "value": [{
+                        "id": "ka_1",
+                        "employee_id": "e_shop",
+                        "kpi_id": "kpi_asg",
+                        "validFrom": "2026-10",
+                        "is_active": True,
+                    }],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(data.get("record_v"), 1)
+        asg = self.store["payload"]["shopPayroll"]["assignments"]
+        self.assertEqual(len(asg), 1)
+        self.assertEqual(asg[0]["kpi_id"], "kpi_asg")
+        # Повтор с той же expected_v и тем же значением после bump — conflict (версия уже 1).
+        # Повтор с актуальной версией и тем же содержимым — успех без дублирования строк.
+        v = self._record_v("shopPayroll.assignments")
+        st2, data2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.assignments",
+                    "expected_v": v,
+                    "value": list(asg),
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        self.assertEqual(len(self.store["payload"]["shopPayroll"]["assignments"]), 1)
+
+    def test_kpi_conflict_two_editors_no_overwrite(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [{"kpi_id": "kpi_c", "name": "First", "amount": 1}],
+                }
+            },
+            cookie=cookie,
+        )
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [{"kpi_id": "kpi_c", "name": "Second", "amount": 2}],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("409"), st)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(data.get("server_v"), 1)
+        kept = self.store["payload"]["shopPayroll"]["kpiDefs"]
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]["name"], "First")
+        self.assertEqual(kept[0]["amount"], 1)
+
+    def test_kpi_persists_after_get_reload(self):
+        cookie, _ = self.login()
+        defs = [
+            {"kpi_id": "kpi_r1", "name": "R1", "amount": 11},
+            {"kpi_id": "kpi_r2", "name": "R2", "amount": 22},
+        ]
+        call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": defs,
+                }
+            },
+            cookie=cookie,
+        )
+        st, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st.startswith("200"), st)
+        pay = (data.get("payload") or {}).get("shopPayroll") or {}
+        ids = {d.get("kpi_id") for d in (pay.get("kpiDefs") or [])}
+        self.assertEqual(ids, {"kpi_r1", "kpi_r2"})
+        # Другие разделы (шум facts) на месте.
+        facts = (data.get("payload") or {}).get("shopMetrics", {}).get("facts") or {}
+        self.assertEqual(facts.get("noise_100"), 100)
+
+    def test_batch_too_many_ops_still_capped_at_200(self):
+        """Лимит 200 не повышен: batch из 201 ops отклоняется."""
+        cookie, _ = self.login()
+        ops = []
+        for i in range(201):
+            ops.append({
+                "path": "shopMetrics.facts.cap_%s" % i,
+                "expected_v": 0,
+                "value": i,
+            })
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {"atomic": False, "ops": ops},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("4"), st)
+        self.assertEqual(data.get("error"), "too many ops")
+        self.assertNotIn("cap_0", self.store["payload"]["shopMetrics"]["facts"])
+
+
 class WtOpsIntegrationTests(unittest.TestCase):
     """
     Интеграционные сценарии на FakeConn + threading.Lock (имитация row lock).
