@@ -23744,18 +23744,40 @@ function shopShelfActiveRules(month) {
 }
 
 function shopShelfManualEmployees(month) {
-    const seen = {};
-    const list = [];
-    function add(e) {
-        if (!e || !e.id || seen[e.id]) return;
-        seen[e.id] = true;
-        list.push(e);
-    }
-    shopMetricEmployees(shopMetricCategoryById("pickers")).forEach(add);
-    shopShelfActiveRules(month).forEach(function (x) {
-        if (x.role === "manual_source") add(x.employee);
+    // Авторезультат кассиров: только товаросборщики (группа карточки pickers).
+    // Кассиров с KPI «вручную» в пул не включаем — иначе их отсутствие отметки
+    // ломает ✓ у всех работающих кассиров.
+    void month;
+    return shopMetricEmployees(shopMetricCategoryById("pickers")).slice();
+}
+
+/**
+ * Если сотруднику случайно назначены и ручное, и авто правило полок —
+ * в расчёт идёт одно (правила не удаляем). Товаросборщик → вручную;
+ * остальные (кассиры) → от товароразборщиков.
+ */
+function shopShelfKpiDefForEmployee(employeeId, defs) {
+    if (!defs || !defs.length) return null;
+    if (defs.length === 1) return defs[0];
+    let emp = null;
+    try { emp = getEmployee(employeeId); } catch (err) { emp = null; }
+    const tab = (typeof employeeCardWorkGroupId === "function")
+        ? employeeCardWorkGroupId(emp || { id: employeeId }, "shop")
+        : "";
+    const want = tab === "pickers" ? "manual_source" : "derived_recipient";
+    let hit = null;
+    defs.forEach(function (d) {
+        if (shopShelfParticipation(d) === want) hit = d;
     });
-    return list;
+    if (hit) return hit;
+    defs.forEach(function (d) {
+        if (!hit && shopShelfParticipation(d) === "derived_recipient") hit = d;
+    });
+    if (hit) return hit;
+    defs.forEach(function (d) {
+        if (!hit && shopShelfParticipation(d) === "manual_source") hit = d;
+    });
+    return hit || defs[0];
 }
 
 function getShopShelfValue(employeeId, day, month) {
@@ -27979,13 +28001,24 @@ function shopEmployeeActiveRules(employeeId, month) {
     const m = month || selectedMonth;
     const out = [];
     const seenMetric = {};
+    const shelfDefs = [];
     shopKpiDefsCurrent(m).forEach(function (def) {
         if (!shopKpiAssigned(employeeId, def.kpi_id, m)) return;
         const mid = canonicalMetricId(def.metricId || def.metric_id);
+        if (mid === METRIC_SHELF_LABELS_ID) {
+            shelfDefs.push(def);
+            return;
+        }
         if (mid === METRIC_WRITEOFF_LOSSES_ID && seenMetric[mid]) return;
         seenMetric[mid] = true;
         out.push(shopRuleFromKpiDef(def, employeeId));
     });
+    if (shelfDefs.length) {
+        const chosen = typeof shopShelfKpiDefForEmployee === "function"
+            ? shopShelfKpiDefForEmployee(employeeId, shelfDefs)
+            : shelfDefs[0];
+        if (chosen) out.push(shopRuleFromKpiDef(chosen, employeeId));
+    }
     return out;
 }
 

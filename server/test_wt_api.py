@@ -7070,6 +7070,40 @@ class WtEmployeeCardOpsTests(unittest.TestCase):
         ]
         self.assertIn("wtPersistMetricCatalogListChange(needPay)", active)
 
+    def test_shelf_labels_derived_pool_and_kpi_dedup(self):
+        """Авто полки: только pickers; KPI не двоит manual+derived одному сотруднику."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        manual = src[
+            src.find("function shopShelfManualEmployees(")
+            : src.find("function shopShelfKpiDefForEmployee(")
+        ]
+        self.assertIn('shopMetricCategoryById("pickers")', manual)
+        self.assertNotIn("shopShelfActiveRules(", manual)
+        self.assertNotIn("manual_source", manual)
+        derived = src[
+            src.find("function shopShelfDayDerivedStatus(")
+            : src.find("function shopShelfMonthFact(")
+        ]
+        self.assertIn('return "empty"', derived)
+        self.assertIn("allDone ? \"done\" : \"fail\"", derived)
+        self.assertIn("function shopShelfKpiDefForEmployee(", src)
+        active = src[
+            src.find("function shopEmployeeActiveRules(")
+            : src.find("function shopEmployeeBonusTotal(")
+        ]
+        self.assertIn("METRIC_SHELF_LABELS_ID", active)
+        self.assertIn("shopShelfKpiDefForEmployee(", active)
+        self.assertIn("shelfDefs", active)
+        # Кассиры: derived UI; KPI derived читает shopShelfDayDerivedStatus.
+        self.assertIn("shopShelfDayDerivedStatus(day)", src[
+            src.find("function shopMetricInputHtml(")
+            : src.find("function onShopMetricNav(")
+        ])
+        self.assertIn("shopShelfDayDerivedStatus(day, month)", src[
+            src.find("function shopCheckKpiDayState(")
+            : src.find("function shopCheckKpiMonthStats(")
+        ])
+
 
 class WtOpsIntegrationTests(unittest.TestCase):
     """
