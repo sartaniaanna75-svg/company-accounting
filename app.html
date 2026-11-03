@@ -27039,23 +27039,97 @@ function payrollEmployees(view) {
     return list;
 }
 
+/** Ключ факта магазинской метрики — как при записи галочек (shopCatalogToField). */
+function shopMetricCatalogFactField(item) {
+    if (!item) return "";
+    return String(item.key || item.id || "");
+}
+
+/**
+ * Категория для зеркала shopPayroll.metrics / подписи шаблона (не выбор store по сотруднику).
+ * При нескольких вкладках — актуальный section_id справочника после sync assignments.
+ */
+function shopMetricCatalogMirrorCategory(item) {
+    if (!item) return "";
+    const tabs = typeof metricWorkTabIds === "function" ? metricWorkTabIds(item) : [];
+    if (tabs.length === 1) return String(tabs[0] || "");
+    const sec = String(item.section_id || item.metric_tab_id || "");
+    if (sec && tabs.indexOf(sec) !== -1) return sec;
+    if (sec) return sec;
+    return tabs.length ? String(tabs[0] || "") : "";
+}
+
+/**
+ * Store галочек для check-KPI: вкладка, где сотрудник реально вводит метрику.
+ * Одна вкладка → она; несколько → группа карточки / assignment / extra; без OR по вкладкам.
+ */
+function shopCheckKpiResolveFactCategory(work, employeeId, month) {
+    if (!work) return "";
+    const tabs = typeof metricWorkTabIds === "function" ? metricWorkTabIds(work).slice() : [];
+    if (!tabs.length) return String(work.section_id || work.metric_tab_id || "");
+    if (tabs.length === 1) return String(tabs[0] || "");
+    let emp = null;
+    try { emp = typeof getEmployee === "function" ? getEmployee(employeeId) : null; } catch (err) { emp = null; }
+    const empTab = emp
+        ? String(
+            (typeof employeeCardWorkGroupId === "function" && employeeCardWorkGroupId(emp, "shop", month))
+            || (typeof shopEmployeeHomeCategoryId === "function" && shopEmployeeHomeCategoryId(emp))
+            || ""
+        )
+        : "";
+    if (empTab && tabs.indexOf(empTab) !== -1) {
+        if (!Array.isArray(work.assignments) || !work.assignments.length) return empTab;
+        if (typeof employeeMatchesMetricAssignments === "function"
+            && employeeMatchesMetricAssignments(work, emp, empTab)) {
+            return empTab;
+        }
+        const onExtra = (work.assignments || []).some(function (row) {
+            return !!(row && row.department_id === "shop" && row.work_tab_id === empTab
+                && (row.extra_employee_ids || []).indexOf(employeeId) !== -1);
+        });
+        if (onExtra) return empTab;
+    }
+    if (emp && Array.isArray(work.assignments)) {
+        for (let i = 0; i < work.assignments.length; i++) {
+            const row = work.assignments[i];
+            if (!row || row.department_id !== "shop" || !row.work_tab_id) continue;
+            if (tabs.indexOf(row.work_tab_id) === -1) continue;
+            if (typeof employeeMatchesMetricAssignments === "function"
+                && employeeMatchesMetricAssignments(work, emp, row.work_tab_id)) {
+                return String(row.work_tab_id);
+            }
+            if ((row.extra_employee_ids || []).indexOf(employeeId) !== -1) {
+                return String(row.work_tab_id);
+            }
+        }
+    }
+    const sec = String(work.section_id || work.metric_tab_id || "");
+    if (sec && tabs.indexOf(sec) !== -1) return sec;
+    return sec || "";
+}
+
 function shopKpiTemplate(id) {
     const cid = canonicalMetricId(id);
     if (!cid) return null;
+    const work = shopMetricCatalogById(cid);
     const pay = (ensureMetricCatalog() || []).find(function (m) { return canonicalMetricId(m.id) === cid; });
     if (pay) {
-        const work = shopMetricCatalogById(cid);
-        if (work && work.name) pay.name = work.name;
+        if (work) {
+            if (work.name) pay.name = work.name;
+            const cat = shopMetricCatalogMirrorCategory(work);
+            const fld = shopMetricCatalogFactField(work);
+            if (cat) pay.category = cat;
+            if (fld) pay.field = fld;
+        }
         return pay;
     }
-    const work = shopMetricCatalogById(cid);
     if (!work) return null;
     return {
         id: work.id,
         name: work.name,
         sourceType: work.id === "metric_revision" ? "revision" : "store_metrics",
-        category: work.section_id || "",
-        field: work.key || "",
+        category: shopMetricCatalogMirrorCategory(work),
+        field: shopMetricCatalogFactField(work),
         calcType: work.fill_type === "check" ? "checklist" : "budget_ratio",
         active: work.active !== false
     };
@@ -27791,14 +27865,35 @@ function shopCheckKpiPayout(rule, doneDays, planDays) {
     };
 }
 
-function shopCheckKpiFieldInfo(rule) {
+function shopCheckKpiFieldInfo(rule, employeeId, month) {
     const metricId = canonicalMetricId(rule && (rule.metricId || rule.metric_id));
     const tpl = shopKpiTemplate(metricId);
     const work = shopMetricCatalogById(metricId);
+    let field = "";
+    let category = "";
+    if (work && typeof metricDepartmentId === "function" && metricDepartmentId(work) === "shop") {
+        field = shopMetricCatalogFactField(work);
+        if (employeeId) {
+            category = shopCheckKpiResolveFactCategory(work, employeeId, month);
+        } else {
+            const tabs = typeof metricWorkTabIds === "function" ? metricWorkTabIds(work) : [];
+            category = tabs.length === 1
+                ? String(tabs[0] || "")
+                : String(work.section_id || work.metric_tab_id || "");
+        }
+    }
+    if (!field) {
+        field = (rule && (rule.sourceKey || rule.source_key)) || (tpl && tpl.field) || "";
+    }
+    if (!category) {
+        category = (rule && (rule.sourceCategory || rule.source_category))
+            || (tpl && tpl.category)
+            || "";
+    }
     return {
         metricId: metricId,
-        category: (rule && (rule.sourceCategory || rule.source_category)) || (tpl && tpl.category) || (work && (work.section_id || work.metric_tab_id)) || "",
-        field: (rule && (rule.sourceKey || rule.source_key)) || (tpl && tpl.field) || (work && work.key) || ""
+        category: category,
+        field: field
     };
 }
 
@@ -27813,7 +27908,7 @@ function shopCheckKpiDayState(rule, employeeId, day, month) {
         if (st === "done" || st === "fail") return st;
         return "";
     }
-    const info = shopCheckKpiFieldInfo(rule);
+    const info = shopCheckKpiFieldInfo(rule, employeeId, month);
     if (!info.category || !info.field) return "";
     return shopMetricCheckState(info.category, employeeId, day, info.field, month);
 }
@@ -32525,21 +32620,49 @@ function shopMetricHasLinkedData(metricId) {
 function syncPayrollMetricFromCatalog(item) {
     if (!item || item.assignable === false) return;
     const list = ensureMetricCatalog();
+    const category = shopMetricCatalogMirrorCategory(item);
+    const field = shopMetricCatalogFactField(item);
+    const fill = String(item.fill_type || "");
+    const isCheck = fill === "check" || fill === "done_not_done" || fill === "boolean";
+    const mid = canonicalMetricId(item.id);
+    function catalogDerivedCalcType() {
+        if (isCheck) return "checklist";
+        if (mid === METRIC_WRITEOFF_LOSSES_ID || fill === "month_money") return "max_limit";
+        if (mid === "metric_arrival_730") return "timesheet_730";
+        if (mid === "metric_revision" || item.id === "metric_revision") return "budget_ratio";
+        return "budget_ratio";
+    }
+    function shouldPreserveCalcType(existing) {
+        const cur = String(existing || "");
+        if (!cur) return false;
+        // Спецтипы и нестандартные режимы не затирать бинарным checklist|budget_ratio.
+        if (cur === "max_limit" || cur === "timesheet_730" || cur === "manual"
+            || cur === "quantity" || cur === "percent") return true;
+        return false;
+    }
     let found = list.find(function (m) { return m && canonicalMetricId(m.id) === item.id; });
     if (!found) {
         found = cloneMetricDef({
             id: item.id,
             name: item.name,
             sourceType: item.id === "metric_revision" ? "revision" : "store_metrics",
-            category: item.section_id || "",
-            field: item.key || "",
-            calcType: item.fill_type === "check" ? "checklist" : "budget_ratio",
+            category: category,
+            field: field,
+            calcType: catalogDerivedCalcType(),
             active: item.active !== false
         });
         list.push(found);
     }
     found.name = item.name;
     found.active = item.active !== false;
+    if (category) found.category = category;
+    if (field) found.field = field;
+    // Чек-листы всегда checklist; спец. calcType существующих записей сохраняем.
+    if (isCheck) {
+        found.calcType = "checklist";
+    } else if (!shouldPreserveCalcType(found.calcType)) {
+        found.calcType = catalogDerivedCalcType();
+    }
 }
 
 function shopCatalogNextCustomId() {
