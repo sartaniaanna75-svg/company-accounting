@@ -2529,9 +2529,21 @@ def prune_record_meta(payload: dict, meta: dict) -> dict:
     return kept
 
 
-def bump_record_meta(payload: dict, path: str, user_id: str) -> dict:
-    out = _clone(payload) if isinstance(payload, dict) else {}
-    meta = records_map(out)
+def bump_record_meta(payload: dict, path: str, user_id: str, *, exclusive: bool = False) -> dict:
+    """
+    Поднимает record_v по path.
+    exclusive=True — payload уже независимая копия (после set_path_value в OPS);
+    полный _clone тогда не нужен. По умолчанию exclusive=False (PUT sync и пр.).
+    """
+    if not isinstance(payload, dict):
+        out: dict = {}
+    elif exclusive:
+        out = payload
+    else:
+        out = _clone(payload)
+    # Копия карты meta: не делить dict с возможным общим снимком при exclusive=False
+    # после _clone это локальная копия; при exclusive — отвязываем meta от прежнего объекта.
+    meta = dict(records_map(out))
     prev = record_version(out, path)
     meta[path] = {
         "v": prev + 1,
@@ -2544,11 +2556,20 @@ def bump_record_meta(payload: dict, path: str, user_id: str) -> dict:
 
 
 def remember_idempotency(payload: dict, key: str, result: dict) -> dict:
-    out = _clone(payload) if isinstance(payload, dict) else {}
+    """
+    Пишет результат idempotency в payload.
+    Вызывается только после OPS с уже независимым next_payload: полный _clone
+    всего снимка не нужен — достаточно нового верхнего dict и копии bag.
+    """
+    if not isinstance(payload, dict):
+        out: dict = {}
+    else:
+        out = dict(payload)
     bag = out.get(WT_IDEMPOTENCY_KEY)
     if not isinstance(bag, dict):
         bag = {}
-    bag = dict(bag)
+    else:
+        bag = dict(bag)
     bag[str(key)[:160]] = {
         "at": datetime.now(timezone.utc).isoformat(),
         "result": _clone(result),
@@ -3000,7 +3021,8 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
         }
     uid = str(user.get("user_id") or "")
     next_payload = set_path_value(payload, path, your_value)
-    next_payload = bump_record_meta(next_payload, path, uid)
+    # set_path_value уже сделал полный _clone — второй полный clone в bump не нужен.
+    next_payload = bump_record_meta(next_payload, path, uid, exclusive=True)
     return next_payload, None
 
 
