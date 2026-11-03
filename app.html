@@ -6047,6 +6047,9 @@ if (!Array.prototype.find) {
 ============================================================ */
 const STORAGE_KEY = "worktime_three_tables_v1";
 const SESSION_KEY = "worktime_session_v4";
+/** Сигнал другим вкладкам: сменилась cookie-сессия (не переключает их UI автоматически). */
+const WT_AUTH_TAB_KEY = "worktime_auth_tab_v1";
+const WT_SESSION_MISMATCH_MSG = "В другой вкладке выполнен вход под другим пользователем. Для продолжения войдите заново";
 /** Карта версий точечных записей внутри appData (сервер: _wt_records). */
 const WT_RECORDS_KEY = "_wt_records";
 let wtServerUser = null;
@@ -6063,6 +6066,17 @@ let wtAllowConflictRetry = false;
 let wtSoftApplying = false;
 /** Временный срез для PUT: только эти ключи appData (не полный снимок). */
 let wtPutPayloadOverride = null;
+/** Cookie-сессия не совпадает с пользователем этой вкладки — запись запрещена, черновик на экране. */
+let wtSessionIdentityMismatch = false;
+let wtSessionMismatchToastAt = 0;
+let wtAuthTabId = "";
+try {
+    wtAuthTabId = "tab_" + Math.random().toString(36).slice(2, 10) + "_" + String(Date.now() % 1e9);
+} catch (errTab) {
+    wtAuthTabId = "tab_x";
+}
+/** Кэш /api/me на короткое окно, чтобы PUT после OPS-проверки не дублировал запрос. */
+let wtMeIdentityCache = { at: 0, userId: "" };
 /** Безопасные замеры этапов сохранения (консоль). Вкл: localStorage.wtSaveTiming = "1" */
 function wtSaveTimingEnabled() {
     try { return localStorage.getItem("wtSaveTiming") === "1"; } catch (err) { return false; }
@@ -8646,8 +8660,93 @@ function currentAuthUser() {
     return findAccessUser(currentUserId);
 }
 
+function wtExpectedSessionUserId() {
+    if (wtServerUser && wtServerUser.user_id) return String(wtServerUser.user_id);
+    return currentUserId ? String(currentUserId) : "";
+}
+
+function wtToastSessionIdentityMismatch() {
+    if (Date.now() - wtSessionMismatchToastAt < 4000) return;
+    wtSessionMismatchToastAt = Date.now();
+    try { toast(WT_SESSION_MISMATCH_MSG, "error"); } catch (err) {}
+}
+
+function wtHandleSessionIdentityMismatch() {
+    wtSessionIdentityMismatch = true;
+    wtPutPaused = true;
+    wtKeepUnsavedDraft = true;
+    wtMeIdentityCache = { at: 0, userId: "" };
+    try { wtSoftProtectPendingLeaves(); } catch (errProt) {}
+    try { wtDomainWriterMarkPendingDraft(); } catch (errDraft) {}
+    wtToastSessionIdentityMismatch();
+    try { renderDeptNow(); } catch (errUi) {}
+    try { if (typeof applyModeUI === "function") applyModeUI(); } catch (errMode) {}
+}
+
+function wtBroadcastAuthIdentity() {
+    if (!wtAuthTabId) return;
+    try {
+        localStorage.setItem(WT_AUTH_TAB_KEY, JSON.stringify({
+            userId: wtExpectedSessionUserId(),
+            tabId: wtAuthTabId,
+            ts: Date.now()
+        }));
+    } catch (err) {}
+}
+
+function wtOnAuthTabStorage(ev) {
+    try {
+        if (!ev || ev.key !== WT_AUTH_TAB_KEY || !ev.newValue) return;
+        if (!wtServerMode || !wtExpectedSessionUserId()) return;
+        const msg = JSON.parse(ev.newValue);
+        if (!msg || msg.tabId === wtAuthTabId) return;
+        const otherId = msg.userId != null ? String(msg.userId) : "";
+        if (!otherId) return;
+        if (otherId !== wtExpectedSessionUserId()) wtHandleSessionIdentityMismatch();
+    } catch (err) {}
+}
+
+/** Перед OPS/PUT: cookie-сессия должна совпадать с пользователем вкладки. Серверный ACL не отменяет. */
+function wtConfirmSessionIdentity() {
+    if (!wtServerMode) return Promise.resolve(true);
+    if (wtSessionIdentityMismatch) {
+        wtToastSessionIdentityMismatch();
+        return Promise.resolve(false);
+    }
+    const expected = wtExpectedSessionUserId();
+    if (!expected) return Promise.resolve(true);
+    const now = Date.now();
+    if (wtMeIdentityCache.userId && (now - wtMeIdentityCache.at) < 2500) {
+        if (wtMeIdentityCache.userId !== expected) {
+            wtHandleSessionIdentityMismatch();
+            return Promise.resolve(false);
+        }
+        return Promise.resolve(true);
+    }
+    return fetch("/api/me", { credentials: "same-origin" }).then(function (res) {
+        if (res.status === 401) {
+            handleWtSaveUnauthorized();
+            return false;
+        }
+        if (!res.ok) return true;
+        return res.json().then(function (data) {
+            const meId = data && data.user && data.user.user_id != null
+                ? String(data.user.user_id)
+                : "";
+            wtMeIdentityCache = { at: Date.now(), userId: meId };
+            if (meId && meId !== expected) {
+                wtHandleSessionIdentityMismatch();
+                return false;
+            }
+            return true;
+        }, function () { return true; });
+    }, function () { return true; });
+}
+
 function rememberServerUser(user) {
     if (!user || typeof user !== "object" || !user.user_id) return null;
+    wtSessionIdentityMismatch = false;
+    wtMeIdentityCache = { at: Date.now(), userId: String(user.user_id || "") };
     wtServerUser = {
         user_id: String(user.user_id || ""),
         display_name: String(user.display_name || user.name || ""),
@@ -8659,6 +8758,7 @@ function rememberServerUser(user) {
         employee_id: String(user.employee_id || "")
     };
     currentUserId = wtServerUser.user_id;
+    try { wtBroadcastAuthIdentity(); } catch (errBc) {}
     return wtServerUser;
 }
 
@@ -8819,13 +8919,40 @@ function restoreServerAdminSession() {
         if (!res.ok) throw new Error("no-session");
         return res.json();
     }).then(function (data) {
-        const user = rememberServerUser(data && data.user);
-        if (!user) throw new Error("no-user");
+        const cookieUser = data && data.user;
+        if (!cookieUser || !cookieUser.user_id) throw new Error("no-user");
         let saved = null;
         try {
             const raw = sessionStorage.getItem(SESSION_KEY);
             if (raw && raw.charAt(0) === "{") saved = JSON.parse(raw);
         } catch (err) {}
+        /* F5: не открывать чужую cookie-сессию под UI другой вкладки. */
+        if (saved && saved.serverAuth && saved.userId
+            && String(saved.userId) !== String(cookieUser.user_id)) {
+            const entryHint = (saved && saved.entry) || "summary";
+            try { sessionStorage.removeItem(SESSION_KEY); } catch (errRm) {}
+            wtServerMode = false;
+            wtServerUser = null;
+            currentUserId = "";
+            wtSessionIdentityMismatch = false;
+            try {
+                if (entryHint === "admin") renderLogin("admin");
+                else if (entryHint === "spu") renderLogin("spu");
+                else if (entryHint === "org") renderLogin("org");
+                else if (entryHint === "financeRec") renderLogin("financeRec");
+                else if (entryHint === "territoryMetrics") renderLogin("territory");
+                else if (entryHint === "dept" || entryHint === "shop"
+                    || entryHint === "warehouse" || entryHint === "office"
+                    || entryHint === "drivers") {
+                    renderLogin(entryHint === "dept" ? "shop" : entryHint);
+                } else renderLogin("summary");
+            } catch (errLogin) {
+                try { renderLogin("summary"); } catch (err2) {}
+            }
+            return false;
+        }
+        const user = rememberServerUser(cookieUser);
+        if (!user) throw new Error("no-user");
         let entry = (saved && saved.entry) || "";
         if (user.role === "admin" || user.legacy_role === "admin") {
             if (!entry) entry = "admin";
@@ -8859,6 +8986,7 @@ function currentAuthUserName() {
 }
 
 function isAppAdmin() {
+    if (wtSessionIdentityMismatch) return false;
     const u = currentAuthUser();
     if (u && u.is_active !== false && (u.role === "admin" || u.legacy_role === "admin")) return true;
     return currentSummaryRole === "admin" && !u;
@@ -10399,7 +10527,9 @@ function renderDeptNow() {
         + '<div class="dept-now-label">Сейчас открыт</div>'
         + '<div class="dept-now-current ' + escapeHtml(code) + '">' + escapeHtml(title) + "</div>"
         + '<div class="dept-now-hint">' + escapeHtml(hint) + "</div>"
-        + (isAppAdmin() ? '<div class="admin-mode-banner on">Режим администратора</div>' : "")
+        + (wtSessionIdentityMismatch
+            ? '<div class="admin-mode-banner">' + escapeHtml(WT_SESSION_MISMATCH_MSG) + "</div>"
+            : (isAppAdmin() ? '<div class="admin-mode-banner on">Режим администратора</div>' : ""))
         + switchHtml;
 }
 
@@ -11283,9 +11413,20 @@ function handleWtSaveConflict(data) {
     });
 }
 
-function putServerStateOnce() {
+function putServerStateOnce(options) {
+    options = options || {};
     if (!wtServerMode || !appData) return Promise.resolve(false);
+    if (wtSessionIdentityMismatch) {
+        wtToastSessionIdentityMismatch();
+        return Promise.resolve(false);
+    }
     if (wtPutPaused) return Promise.resolve(false);
+    if (!options._identityChecked) {
+        return wtConfirmSessionIdentity().then(function (ok) {
+            if (!ok) return false;
+            return putServerStateOnce({ _identityChecked: true });
+        });
+    }
     const tAll = wtSaveNow();
     let payload;
     let bodyText;
@@ -11865,6 +12006,11 @@ function wtDomainWriterScheduleDeferred() {
 function wtDomainWriterSave(options) {
     options = options || {};
     if (!wtServerMode || !appData) return Promise.resolve(false);
+    if (wtSessionIdentityMismatch) {
+        wtToastSessionIdentityMismatch();
+        try { wtSoftProtectPendingLeaves(); } catch (errProt) {}
+        return Promise.resolve(false);
+    }
     // Срез PUT (справочник метрик и т.п.) всегда через PUT — иначе OPS шлёт целый
     // shopMetricCatalog/shopPayroll и ловит ложный conflict с гигантским JSON.
     const useSlicePut = wtPutPayloadOverride != null;
@@ -11932,10 +12078,16 @@ function wtDomainWriterSave(options) {
         }
         return Promise.resolve(false);
     }
+    if (!options._identityChecked) {
+        return wtConfirmSessionIdentity().then(function (ok) {
+            if (!ok) return false;
+            return wtDomainWriterSave(Object.assign({}, options, { _identityChecked: true }));
+        });
+    }
     if (options.forcePut || useSlicePut || !wtOpsUiEnabled(true)) {
         // SoftSync параллельно: зафиксировать dirty до асинхронного PUT.
         try { wtSoftProtectPendingLeaves(); } catch (err) {}
-        const jobPut = wtPutChain.then(function () { return putServerStateOnce(); });
+        const jobPut = wtPutChain.then(function () { return putServerStateOnce({ _identityChecked: true }); });
         wtPutChain = jobPut.then(function () { return true; }, function () { return true; });
         return jobPut;
     }
@@ -15808,18 +15960,22 @@ function saveSession() {
 
 function leaveWorkspace() {
     try { wtSoftPollStop(); } catch (err) {}
+    /* Черновик в appData не трогаем: после смены сессии/mismatch merge при следующем входе. */
+    const preserveDraft = !!(wtSessionIdentityMismatch || wtKeepUnsavedDraft);
     setCurrentWorkspace(null);
     currentSummaryRole = null;
     currentDeptRole = null;
     currentUserId = "";
     wtServerUser = null;
     wtServerMode = false;
+    wtSessionIdentityMismatch = false;
+    wtMeIdentityCache = { at: 0, userId: "" };
     wtStateVersion = 0;
     wtPutInFlight = false;
     wtPutPaused = false;
-    wtKeepUnsavedDraft = false;
+    wtKeepUnsavedDraft = preserveDraft;
     wtAllowConflictRetry = false;
-    wtLastLoadedPayload = null;
+    if (!preserveDraft) wtLastLoadedPayload = null;
     wtPutChain = Promise.resolve();
     currentSection = "timesheet";
     currentCustomNavItemId = null;
@@ -15827,6 +15983,14 @@ function leaveWorkspace() {
     selectedMonth = currentMonthValue();
     clearLoginPinState();
     try { sessionStorage.removeItem(SESSION_KEY); } catch (err) {}
+    try {
+        localStorage.setItem(WT_AUTH_TAB_KEY, JSON.stringify({
+            userId: "",
+            tabId: wtAuthTabId,
+            ts: Date.now(),
+            logout: true
+        }));
+    } catch (errBc) {}
     closeSidebar();
     document.getElementById("app").style.display = "none";
     document.getElementById("loginScreen").style.display = "flex";
@@ -53861,6 +54025,9 @@ function init() {
             try { ensureLoginRouteFromHash(); } catch (hashErr) { console.error(hashErr); }
         });
     } catch (err) { console.error(err); }
+    try {
+        window.addEventListener("storage", wtOnAuthTabStorage);
+    } catch (errAuthTab) { console.error(errAuthTab); }
     restoreServerAdminSession().then(function (opened) {
         if (opened) return;
         return fetchDirectory().then(function () {
