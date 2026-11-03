@@ -11240,7 +11240,28 @@ function handleWtSaveConflict(data) {
             return false;
         }
         applyServerState(state);
+        const serverPayroll = state && state.payload && state.payload.shopPayroll
+            && typeof state.payload.shopPayroll === "object"
+            ? state.payload.shopPayroll
+            : null;
         appData = wtThreeWayMerge(appData, draft, base);
+        /*
+         * Только sliceMode (справочник метрик): срез не шлёт shopPayroll, но merge
+         * мог подставить пустые kpiDefs/assignments из локального ensureShopPayroll.
+         * Восстанавливаем серверные денежные KPI на экране; авто-PUT среза ниже отключён.
+         * Общий wtThreeWayMerge для остальных разделов не меняем.
+         */
+        if (sliceMode && serverPayroll && appData) {
+            if (!appData.shopPayroll || typeof appData.shopPayroll !== "object") {
+                appData.shopPayroll = {};
+            }
+            if (Array.isArray(serverPayroll.kpiDefs)) {
+                appData.shopPayroll.kpiDefs = wtCloneJson(serverPayroll.kpiDefs);
+            }
+            if (Array.isArray(serverPayroll.assignments)) {
+                appData.shopPayroll.assignments = wtCloneJson(serverPayroll.assignments);
+            }
+        }
         wtPutPaused = false;
         wtKeepUnsavedDraft = false;
         wtAllowConflictRetry = false;
