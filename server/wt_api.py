@@ -2847,7 +2847,91 @@ def _ops_metric_branch_allowed(user: dict, branch: str) -> bool:
     return False
 
 
-def ops_path_allowed(user: dict | None, path: str) -> bool:
+# Поля продаж ТП (как в UI setRepSalesField) и проценты terms (как isRepPercentField).
+REP_SALES_MONEY_FIELDS = frozenset(
+    {"totalSales", "wholesale", "specialPrice", "sugar", "bags", "fuel"}
+)
+REP_PERCENT_FIELDS = frozenset(
+    {
+        "salesPercent",
+        "salesPercentOpt",
+        "salesPercentWholesale",
+        "salesPercentSpecial",
+    }
+)
+SALES_REP_POSITION_KEY = "торговый представитель"
+
+
+def _find_workspace_employee(payload: dict | None, dept_code: str, emp_id: str) -> dict | None:
+    if not isinstance(payload, dict) or not dept_code or not emp_id:
+        return None
+    _idx, ws = _workspace_by_code(payload.get("workspaces"), dept_code)
+    if not isinstance(ws, dict):
+        return None
+    _eidx, row = _list_item_by_id(ws.get("employees"), emp_id)
+    return row if isinstance(row, dict) else None
+
+
+def _employee_is_sales_rep(emp: dict | None) -> bool:
+    """Согласовано с клиентским isSalesRep: вкладка sales или должность ТП."""
+    if not isinstance(emp, dict):
+        return False
+    tabs: set[str] = set()
+    for key in ("work_tab_id", "primary_work_tab_id", "work_group_id"):
+        raw = str(emp.get(key) or "").strip()
+        if raw:
+            tabs.add(raw)
+    for key in ("work_tab_ids", "work_group_ids"):
+        for item in emp.get(key) or []:
+            raw = str(item or "").strip()
+            if raw:
+                tabs.add(raw)
+    if "sales" in tabs:
+        return True
+    pos = re.sub(r"\s+", " ", str(emp.get("position") or "").strip().lower())
+    return pos == SALES_REP_POSITION_KEY
+
+
+def _ops_salary_rep_sales_money_allowed(payload: dict | None, path: str, user: dict) -> bool:
+    """salary.edit: только repSales.<month>.<empId>.<moneyField> для ТП в drivers."""
+    if not user_has_perm(user, "salary", "edit"):
+        return False
+    parts = [p for p in str(path or "").split(".") if p]
+    if len(parts) != 4 or parts[0] != "repSales":
+        return False
+    if parts[3] not in REP_SALES_MONEY_FIELDS:
+        return False
+    emp = _find_workspace_employee(payload, "drivers", parts[2])
+    return _employee_is_sales_rep(emp)
+
+
+def _ops_salary_rep_percent_terms_allowed(payload: dict | None, path: str, user: dict) -> bool:
+    """
+    salary.edit: проценты ТП в карточке drivers —
+    workspaces.drivers.employees.<id>.terms.<month>.<percentField>
+    или зеркало workspaces.drivers.employees.<id>.<percentField>.
+    """
+    if not user_has_perm(user, "salary", "edit"):
+        return False
+    parts = [p for p in str(path or "").split(".") if p]
+    if len(parts) < 5 or parts[0] != "workspaces" or parts[1] != "drivers" or parts[2] != "employees":
+        return False
+    emp_id = parts[3]
+    emp = _find_workspace_employee(payload, "drivers", emp_id)
+    if not _employee_is_sales_rep(emp):
+        return False
+    if len(parts) == 5 and parts[4] in REP_PERCENT_FIELDS:
+        return True
+    if (
+        len(parts) == 7
+        and parts[4] == "terms"
+        and parts[6] in REP_PERCENT_FIELDS
+    ):
+        return True
+    return False
+
+
+def ops_path_allowed(user: dict | None, path: str, payload: dict | None = None) -> bool:
     if not user or not path:
         return False
     parts = path.split(".")
@@ -2909,6 +2993,9 @@ def ops_path_allowed(user: dict | None, path: str) -> bool:
             return _can_write_any_management(user)
         return _can_write_mgmt_key(user, parts[1])
     if top == "workspaces":
+        # adjust + salary.edit: только проценты ТП (до проверки departments).
+        if _ops_salary_rep_percent_terms_allowed(payload, path, user):
+            return True
         if len(parts) < 3 or parts[1] not in codes:
             return False
         if parts[2] == "timesheet":
@@ -2924,7 +3011,11 @@ def ops_path_allowed(user: dict | None, path: str) -> bool:
         return user_has_perm(user, "settings", "edit")
     if top == "vacationPlans":
         return user_has_perm(user, "vacationPlan", "edit") or user_has_perm(user, "salary", "edit")
-    if top in ("positionCatalog", "fleetVehicles", "repSales"):
+    if top == "repSales":
+        if _ops_salary_rep_sales_money_allowed(payload, path, user):
+            return True
+        return user_has_perm(user, "settings", "edit") or can_write_dept_employees(user)
+    if top in ("positionCatalog", "fleetVehicles"):
         return user_has_perm(user, "settings", "edit") or can_write_dept_employees(user)
     # users — только admin (ранний return is_app_admin).
     return False
@@ -2996,7 +3087,7 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
         )
         if idx < 0:
             return None, {"error": "invalid path", "message": "Подразделение не найдено."}
-    if not ops_path_allowed(user, path):
+    if not ops_path_allowed(user, path, payload):
         return None, {"error": "forbidden", "message": "Недостаточно прав для этой записи."}
     your_value = op.get("value")
     if _ops_closed_salary_value_forbidden(payload, path, your_value, user):

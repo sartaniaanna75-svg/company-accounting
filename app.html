@@ -6050,6 +6050,8 @@ const SESSION_KEY = "worktime_session_v4";
 /** Сигнал другим вкладкам: сменилась cookie-сессия (не переключает их UI автоматически). */
 const WT_AUTH_TAB_KEY = "worktime_auth_tab_v1";
 const WT_SESSION_MISMATCH_MSG = "В другой вкладке выполнен вход под другим пользователем. Для продолжения войдите заново";
+const WT_SESSION_CONFIRM_MSG = "Не удалось подтвердить пользователя. Данные не сохранены. Проверьте соединение и повторите попытку";
+const WT_ME_CONFIRM_TIMEOUT_MS = 4000;
 /** Карта версий точечных записей внутри appData (сервер: _wt_records). */
 const WT_RECORDS_KEY = "_wt_records";
 let wtServerUser = null;
@@ -6069,6 +6071,7 @@ let wtPutPayloadOverride = null;
 /** Cookie-сессия не совпадает с пользователем этой вкладки — запись запрещена, черновик на экране. */
 let wtSessionIdentityMismatch = false;
 let wtSessionMismatchToastAt = 0;
+let wtSessionConfirmToastAt = 0;
 let wtAuthTabId = "";
 try {
     wtAuthTabId = "tab_" + Math.random().toString(36).slice(2, 10) + "_" + String(Date.now() % 1e9);
@@ -8671,6 +8674,20 @@ function wtToastSessionIdentityMismatch() {
     try { toast(WT_SESSION_MISMATCH_MSG, "error"); } catch (err) {}
 }
 
+function wtToastSessionConfirmFailed() {
+    if (Date.now() - wtSessionConfirmToastAt < 4000) return;
+    wtSessionConfirmToastAt = Date.now();
+    try { toast(WT_SESSION_CONFIRM_MSG, "error"); } catch (err) {}
+}
+
+/** Временный отказ проверки: данные на экране не трогаем, повторная попытка разрешена. */
+function wtRejectSessionConfirmTransient() {
+    wtMeIdentityCache = { at: 0, userId: "" };
+    try { wtSoftProtectPendingLeaves(); } catch (errProt) {}
+    wtToastSessionConfirmFailed();
+    return false;
+}
+
 function wtHandleSessionIdentityMismatch() {
     wtSessionIdentityMismatch = true;
     wtPutPaused = true;
@@ -8714,7 +8731,7 @@ function wtConfirmSessionIdentity() {
         return Promise.resolve(false);
     }
     const expected = wtExpectedSessionUserId();
-    if (!expected) return Promise.resolve(true);
+    if (!expected) return Promise.resolve(wtRejectSessionConfirmTransient());
     const now = Date.now();
     if (wtMeIdentityCache.userId && (now - wtMeIdentityCache.at) < 2500) {
         if (wtMeIdentityCache.userId !== expected) {
@@ -8723,24 +8740,52 @@ function wtConfirmSessionIdentity() {
         }
         return Promise.resolve(true);
     }
-    return fetch("/api/me", { credentials: "same-origin" }).then(function (res) {
+    const canAbort = typeof AbortController !== "undefined";
+    const ctrl = canAbort ? new AbortController() : null;
+    let timer = null;
+    const fetchOpts = { credentials: "same-origin" };
+    if (ctrl) fetchOpts.signal = ctrl.signal;
+    /* Итог всегда {kind,...}: поздний abort после timeout не даёт второй отправки сохранения. */
+    const fetchOutcome = fetch("/api/me", fetchOpts).then(
+        function (res) { return { kind: "res", res: res }; },
+        function (err) { return { kind: "err", err: err }; }
+    );
+    const timeoutOutcome = new Promise(function (resolve) {
+        timer = setTimeout(function () {
+            try { if (ctrl) ctrl.abort(); } catch (errAbort) {}
+            resolve({ kind: "timeout" });
+        }, WT_ME_CONFIRM_TIMEOUT_MS);
+    });
+    return Promise.race([fetchOutcome, timeoutOutcome]).then(function (outcome) {
+        if (timer) {
+            try { clearTimeout(timer); } catch (errT) {}
+            timer = null;
+        }
+        if (!outcome || outcome.kind === "timeout" || outcome.kind === "err") {
+            return wtRejectSessionConfirmTransient();
+        }
+        const res = outcome.res;
+        if (!res) return wtRejectSessionConfirmTransient();
         if (res.status === 401) {
             handleWtSaveUnauthorized();
             return false;
         }
-        if (!res.ok) return true;
+        if (!res.ok) return wtRejectSessionConfirmTransient();
         return res.json().then(function (data) {
             const meId = data && data.user && data.user.user_id != null
-                ? String(data.user.user_id)
+                ? String(data.user.user_id).trim()
                 : "";
-            wtMeIdentityCache = { at: Date.now(), userId: meId };
-            if (meId && meId !== expected) {
+            if (!meId) return wtRejectSessionConfirmTransient();
+            if (meId !== expected) {
                 wtHandleSessionIdentityMismatch();
                 return false;
             }
+            wtMeIdentityCache = { at: Date.now(), userId: meId };
             return true;
-        }, function () { return true; });
-    }, function () { return true; });
+        }, function () {
+            return wtRejectSessionConfirmTransient();
+        });
+    });
 }
 
 function rememberServerUser(user) {
@@ -26678,13 +26723,48 @@ function fillMonth() {
 /* ============================================================
    ЗАРПЛАТА ТОРГОВЫХ ПРЕДСТАВИТЕЛЕЙ
 ============================================================ */
+const REP_SALES_INPUT_FIELDS = {
+    totalSales: 1,
+    wholesale: 1,
+    specialPrice: 1,
+    sugar: 1,
+    bags: 1,
+    fuel: 1
+};
+
+/** Узкий OPS одного поля продаж ТП — без полного DomainWriter-diff (лимит 200). */
+function saveRepSalesFieldOp(employeeId, field) {
+    const month = shopPeriodMonthKey(selectedMonth) || String(selectedMonth || "");
+    const empId = String(employeeId || "");
+    const key = String(field || "");
+    if (!month || !empId || !REP_SALES_INPUT_FIELDS[key]) return Promise.resolve(false);
+    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return Promise.resolve(saveApp());
+    }
+    const path = "repSales." + month + "." + empId + "." + key;
+    const rec = ensureRepSales(empId);
+    return wtDomainWriterSave({
+        ops: [{
+            path: path,
+            value: rec[key],
+            expected_v: wtRecordVersion(path)
+        }]
+    });
+}
+
 function setRepSalesField(employeeId, field, value) {
     if (!canEditRepSales()) return;
+    const key = String(field || "");
+    if (!REP_SALES_INPUT_FIELDS[key]) return;
     const rec = ensureRepSales(employeeId);
-    if (field === "bags") rec.bags = parseDecimal(value, 0);
-    else rec[field] = parseMoney2(value, 0);
-    saveApp();
-    refreshAll();
+    if (key === "bags") rec.bags = parseDecimal(value, 0);
+    else rec[key] = parseMoney2(value, 0);
+    Promise.resolve(saveRepSalesFieldOp(employeeId, key)).then(function (ok) {
+        if (ok === false && wtServerMode) {
+            toast("Изменение продаж ТП не записано на сервер. Значение пока только на этом экране.", "error");
+        }
+        try { refreshAll(); } catch (err) {}
+    });
 }
 
 function renderRepSalary() {
@@ -37128,6 +37208,55 @@ function updateEmployee(employeeId, field, value, deptCode) {
     saveApp();
 }
 
+/** Узкий OPS процентов ТП: только leaf terms.<month>.<field> (+ legacy salesPercent). */
+function saveRepPercentFieldOps(employeeId, field) {
+    const empId = String(employeeId || "");
+    const key = String(field || "");
+    if (!empId || !isRepPercentField(key)) return Promise.resolve(false);
+    const homeCode = employeeHomeDeptCode(empId) || "drivers";
+    const month = shopPeriodMonthKey(selectedMonth) || String(selectedMonth || "");
+    if (!month) return Promise.resolve(false);
+    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return Promise.resolve(saveApp());
+    }
+    const employee = getEmployee(empId);
+    if (!employee || !employee.terms || !employee.terms[month]) return Promise.resolve(false);
+    const rec = employee.terms[month];
+    const base = "workspaces." + homeCode + ".employees." + empId;
+    const ops = [{
+        path: base + ".terms." + month + "." + key,
+        value: rec[key],
+        expected_v: wtRecordVersion(base + ".terms." + month + "." + key)
+    }];
+    if (key === "salesPercent" || key === "salesPercentOpt") {
+        const twin = key === "salesPercentOpt" ? "salesPercent" : "salesPercentOpt";
+        ops.push({
+            path: base + ".terms." + month + "." + twin,
+            value: rec[twin],
+            expected_v: wtRecordVersion(base + ".terms." + month + "." + twin)
+        });
+        ops.push({
+            path: base + "." + key,
+            value: employee[key],
+            expected_v: wtRecordVersion(base + "." + key)
+        });
+        if (employee[twin] != null) {
+            ops.push({
+                path: base + "." + twin,
+                value: employee[twin],
+                expected_v: wtRecordVersion(base + "." + twin)
+            });
+        }
+    } else {
+        ops.push({
+            path: base + "." + key,
+            value: employee[key],
+            expected_v: wtRecordVersion(base + "." + key)
+        });
+    }
+    return wtDomainWriterSave({ ops: ops, atomic: true });
+}
+
 function setEmployeeTermsField(employeeId, field, value, deptCode) {
     let employee = null;
     if (deptCode) {
@@ -37147,8 +37276,9 @@ function setEmployeeTermsField(employeeId, field, value, deptCode) {
         return;
     }
     const current = getEmployeeTerms(employee, selectedMonth);
+    const monthKey = shopPeriodMonthKey(selectedMonth) || String(selectedMonth || "");
     if (!employee.terms || typeof employee.terms !== "object") employee.terms = {};
-    const rec = employee.terms[selectedMonth] || {
+    const rec = employee.terms[monthKey] || {
         rate: current.rate,
         taxiDaily: current.taxiDaily,
         salesPercent: current.salesPercentOpt,
@@ -37167,12 +37297,22 @@ function setEmployeeTermsField(employeeId, field, value, deptCode) {
             employee.salesPercent = pct;
             employee.salesPercentOpt = pct;
         }
-    } else {
-        const amount = parseMoney(value, 0);
-        rec[field] = amount;
-        employee[field] = amount;
+        employee.terms[monthKey] = rec;
+        Promise.resolve(saveRepPercentFieldOps(employeeId, field)).then(function (ok) {
+            if (ok === false && wtServerMode) {
+                toast("Процент ТП не записан на сервер. Значение пока только на этом экране.", "error");
+            }
+            if (isSummary()) {
+                try { renderSummaryStaff(); } catch (err) {}
+            }
+            try { refreshAll(); } catch (err2) {}
+        });
+        return;
     }
-    employee.terms[selectedMonth] = rec;
+    const amount = parseMoney(value, 0);
+    rec[field] = amount;
+    employee[field] = amount;
+    employee.terms[monthKey] = rec;
     saveApp();
     if (isSummary()) renderSummaryStaff();
     refreshAll();
