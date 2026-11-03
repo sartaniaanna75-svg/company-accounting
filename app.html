@@ -25729,6 +25729,104 @@ function newRevisionTask(folder, day, employeeId, comment, fromTask) {
     });
 }
 
+/** Путь OPS к карте заданий ревизии (магазин или склад) — без смешения корней. */
+function wtRevisionTasksBasePath(deptId) {
+    const dept = deptId || (typeof revisionActiveDept === "function" ? revisionActiveDept() : "shop");
+    if (dept === "warehouse") return "deptRevisions.warehouse.tasks";
+    return "shopRevision.tasks";
+}
+
+/** Точечный путь одного задания: …tasks.<месяц>.<taskId>. */
+function wtRevisionTaskPath(month, taskId, deptId) {
+    return wtRevisionTasksBasePath(deptId) + "." + String(month || "") + "." + String(taskId || "");
+}
+
+/** Параллельные сохранения одного и того же задания запрещены (потеря/гонка). */
+let wtRevisionTaskSaveInflight = Object.create(null);
+
+/**
+ * Запись только указанных заданий ревизии.
+ * При OPS: явные ops (без collect каталога и прочих dirty).
+ * Без OPS / локально: await saveApp — toast успеха только при ok.
+ * Не меняет DomainWriter/SoftSync — использует уже существующий wtDomainWriterSave({ ops }).
+ */
+function wtPersistRevisionTasks(entries, options) {
+    options = options || {};
+    const list = Array.isArray(entries)
+        ? entries.filter(function (e) { return e && e.month && e.taskId; })
+        : [];
+    if (!list.length) return Promise.resolve(true);
+    const deptId = options.deptId || (typeof revisionActiveDept === "function" ? revisionActiveDept() : "shop");
+    const paths = [];
+    let i;
+    for (i = 0; i < list.length; i++) {
+        const path = wtRevisionTaskPath(list[i].month, list[i].taskId, deptId);
+        if (wtRevisionTaskSaveInflight[path]) {
+            toast(options.busyToast || "Сохранение этого назначения уже выполняется. Дождитесь результата.", "error");
+            return Promise.resolve(false);
+        }
+        paths.push(path);
+    }
+    paths.forEach(function (p) { wtRevisionTaskSaveInflight[p] = 1; });
+    try {
+        paths.forEach(function (p) {
+            if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(p);
+        });
+    } catch (errMark) {}
+
+    function clearInflight() {
+        paths.forEach(function (p) {
+            try { delete wtRevisionTaskSaveInflight[p]; } catch (errCl) {}
+        });
+    }
+    function afterOk() {
+        paths.forEach(function (p) {
+            try { if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(p); } catch (errCd) {}
+        });
+        if (options.successToast) toast(options.successToast);
+    }
+    function afterFail() {
+        toast(options.errorToast
+            || "Назначение ревизии не записано на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение.",
+            "error");
+    }
+
+    function finish(ok) {
+        clearInflight();
+        if (ok) afterOk();
+        else afterFail();
+        return !!ok;
+    }
+
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return finish(!!ok); },
+            function () { return finish(false); }
+        );
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return Promise.resolve(saveApp()).then(
+            function (ok) { return finish(!!ok); },
+            function () { return finish(false); }
+        );
+    }
+
+    const ops = paths.map(function (path) {
+        let value = null;
+        try { value = wtGetByPath(appData, path); } catch (errGet) { value = null; }
+        return {
+            path: path,
+            value: typeof wtCloneJson === "function" ? wtCloneJson(value) : value,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        };
+    });
+    const atomic = options.atomic != null ? !!options.atomic : (ops.length > 1);
+    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: atomic })).then(
+        function (ok) { return finish(!!ok); },
+        function () { return finish(false); }
+    );
+}
+
 function submitRevisionAssign(folderId, day, taskId) {
     const folder = revisionFindFolder(folderId);
     const empId = ((document.getElementById("revEmp") || {}).value || "").trim();
@@ -25743,6 +25841,7 @@ function submitRevisionAssign(folderId, day, taskId) {
             + ". Назначить ревизию всё равно?")) return;
     }
     const store = revisionMonthStore(selectedMonth);
+    let savedTaskId = null;
     if (taskId && store[taskId] && !revisionIsChangeStatus(store[taskId].status)) {
         if (!store[taskId].assignedEmployeeId) store[taskId].assignedEmployeeId = store[taskId].employeeId || empId;
         store[taskId].employeeId = empId;
@@ -25752,6 +25851,7 @@ function submitRevisionAssign(folderId, day, taskId) {
         if (!store[taskId].planned_date) {
             store[taskId].planned_date = selectedMonth + "-" + String(Number(day)).padStart(2, "0");
         }
+        savedTaskId = taskId;
     } else {
         const existing = revisionTaskAt(folderId, day, selectedMonth);
         if (existing && !revisionIsChangeStatus(revisionTaskStatus(existing, selectedMonth))) {
@@ -25759,15 +25859,24 @@ function submitRevisionAssign(folderId, day, taskId) {
             existing.employeeId = empId;
             existing.employee_id = empId;
             existing.comment = comment;
+            savedTaskId = existing.id;
         } else {
             const task = newRevisionTask(folder, day, empId, comment, null);
             store[task.id] = task;
+            savedTaskId = task.id;
         }
     }
-    saveApp();
-    closeRevisionModal();
     renderShopRevision();
-    toast("Пересчёт назначен.");
+    return wtPersistRevisionTasks(
+        [{ month: selectedMonth, taskId: savedTaskId }],
+        {
+            successToast: "Пересчёт назначен.",
+            errorToast: "Назначение пересчёта не записано на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение."
+        }
+    ).then(function (ok) {
+        if (ok) closeRevisionModal();
+        return ok;
+    });
 }
 
 function markRevisionDone(taskId) {
@@ -25791,10 +25900,17 @@ function markRevisionDone(taskId) {
     task.completed_date = task.doneAt;
     task.confirmedBy = revisionActor();
     task.confirmSource = "manual";
-    saveApp();
-    closeRevisionModal();
     renderShopRevision();
-    toast("Пересчёт отмечен выполненным.");
+    return wtPersistRevisionTasks(
+        [{ month: selectedMonth, taskId: taskId }],
+        {
+            successToast: "Пересчёт отмечен выполненным.",
+            errorToast: "Отметка выполнения не записана на сервер. Данные остались на экране — не обновляйте страницу."
+        }
+    ).then(function (ok) {
+        if (ok) closeRevisionModal();
+        return ok;
+    });
 }
 
 function unmarkRevisionDone(taskId) {
@@ -25805,10 +25921,17 @@ function unmarkRevisionDone(taskId) {
     task.completedEmployeeId = "";
     task.completed_date = "";
     task.confirmedBy = null;
-    saveApp();
-    closeRevisionModal();
     renderShopRevision();
-    toast("Отметка снята.");
+    return wtPersistRevisionTasks(
+        [{ month: selectedMonth, taskId: taskId }],
+        {
+            successToast: "Отметка снята.",
+            errorToast: "Снятие отметки не записано на сервер. Данные остались на экране — не обновляйте страницу."
+        }
+    ).then(function (ok) {
+        if (ok) closeRevisionModal();
+        return ok;
+    });
 }
 
 function submitRevisionMove(taskId) {
@@ -25852,10 +25975,21 @@ function submitRevisionMove(taskId) {
     task.movedToMonth = month;
     task.movedToDay = day;
     stampRevisionChange(task, "moved");
-    saveApp();
-    closeRevisionModal();
     renderShopRevision();
-    toast("Пересчёт перенесён.");
+    return wtPersistRevisionTasks(
+        [
+            { month: selectedMonth, taskId: taskId },
+            { month: month, taskId: next.id }
+        ],
+        {
+            atomic: true,
+            successToast: "Пересчёт перенесён.",
+            errorToast: "Перенос пересчёта не записан на сервер. Данные остались на экране — не обновляйте страницу."
+        }
+    ).then(function (ok) {
+        if (ok) closeRevisionModal();
+        return ok;
+    });
 }
 
 function deleteRevisionTask(taskId) {
@@ -25869,10 +26003,17 @@ function deleteRevisionTask(taskId) {
     task.completed_date = "";
     task.completedEmployeeId = "";
     stampRevisionChange(task, "cancelled");
-    saveApp();
-    closeRevisionModal();
     renderShopRevision();
-    toast("Назначение снято.");
+    return wtPersistRevisionTasks(
+        [{ month: selectedMonth, taskId: taskId }],
+        {
+            successToast: "Назначение снято.",
+            errorToast: "Снятие назначения не записано на сервер. Данные остались на экране — не обновляйте страницу."
+        }
+    ).then(function (ok) {
+        if (ok) closeRevisionModal();
+        return ok;
+    });
 }
 
 
