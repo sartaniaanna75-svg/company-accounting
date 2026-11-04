@@ -11304,7 +11304,11 @@ function buildStaffPutPayload() {
         }
         out.shopPayroll = pay;
     }
-    if (userHasPerm("salary", "edit") && appData.salary) out.salary = appData.salary;
+    // Расчёт — полные начисления; выдача — сервер примет только issued.
+    if ((userHasPerm("salary", "edit") || (typeof canSalaryPay === "function" && canSalaryPay()))
+        && appData.salary) {
+        out.salary = appData.salary;
+    }
     if ((userHasPerm("financeRec", "edit") || userHasPerm("financeRecSetup", "edit")) && appData.financeRec) {
         const financeSlice = staffFinanceSlice(appData.financeRec);
         if (financeSlice) out.financeRec = financeSlice;

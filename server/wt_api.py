@@ -416,6 +416,48 @@ def user_has_perm(user: dict | None, key: str, minimum: str = "view") -> bool:
     return perm_rank(perms.get(key)) >= need
 
 
+def user_has_salary_pay(user: dict | None) -> bool:
+    """Право «Выдача зарплаты» (отметка Выдано). Не равно расчёту начислений."""
+    if is_app_admin(user):
+        return True
+    if not user:
+        return False
+    perms = user.get("permissions") or {}
+    if perm_rank(perms.get("salaryPay")) > 0:
+        return True
+    return str(user.get("legacy_role") or "") == "pay"
+
+
+def user_can_write_salary(user: dict | None) -> bool:
+    """Может писать ветку salary: расчёт и/или выдача."""
+    return user_has_perm(user, "salary", "edit") or user_has_salary_pay(user)
+
+
+# Подразделения, чьи табели/карточки нужны для зарплатных ведомостей.
+PAYROLL_DEPT_CODES = frozenset({"shop", "office", "warehouse", "drivers"})
+# Поля salary.<month>.<empId>.*
+SALARY_PAY_FIELD_KEYS = frozenset({"issued"})
+SALARY_CALC_FIELD_KEYS = frozenset(
+    {
+        "fines",
+        "bonus",
+        "advance",
+        "products",
+        "taxes",
+        "vacationPay",
+        "vacationPaidEarlier",
+        "skipFine",
+        "taxiDaily",
+        "sources",
+        "updated_at",
+        "external_1c_id",
+        "reflect1c",
+        "expenseZp",
+        "rate",
+    }
+)
+
+
 def user_can_open_management(user: dict | None) -> bool:
     if is_app_admin(user):
         return True
@@ -1524,7 +1566,7 @@ def _can_write_top(user: dict, key: str) -> bool:
             user_has_perm(user, "salary", "edit") or _can_edit_metric_setup(user)
         )
     if key == "salary":
-        return user_has_perm(user, "salary", "edit")
+        return user_can_write_salary(user)
     if key == "financeRec":
         return user_has_perm(user, "financeRec", "edit") or user_has_perm(user, "financeRecSetup", "edit")
     if key == "management":
@@ -1534,6 +1576,74 @@ def _can_write_top(user: dict, key: str) -> bool:
     if key == "customerReturns":
         return user_has_perm(user, "customerReturns", "edit")
     return False
+
+
+def _salary_record_field_forbidden(field: str, can_calc: bool, can_pay: bool) -> bool:
+    if field in SALARY_PAY_FIELD_KEYS:
+        return not can_pay
+    if can_calc:
+        return False
+    return True
+
+
+def _salary_record_diff_forbidden(current: Any, incoming: Any, can_calc: bool, can_pay: bool) -> bool:
+    if not isinstance(incoming, dict):
+        return True
+    cur = current if isinstance(current, dict) else {}
+    for field, val in incoming.items():
+        if _same(val, cur.get(field)):
+            continue
+        if _salary_record_field_forbidden(str(field), can_calc, can_pay):
+            return True
+    return False
+
+
+def _salary_branch_forbidden(current: Any, incoming: Any, user: dict) -> bool:
+    """Запрет записи salary: Calc — начисления; Pay — только issued."""
+    can_calc = user_has_perm(user, "salary", "edit")
+    can_pay = user_has_salary_pay(user)
+    if not can_calc and not can_pay:
+        return True
+    if not isinstance(incoming, dict):
+        return True
+    cur_root = current if isinstance(current, dict) else {}
+    for month, bucket in incoming.items():
+        if not isinstance(bucket, dict):
+            return True
+        cur_month = cur_root.get(month) if isinstance(cur_root.get(month), dict) else {}
+        for emp_id, rec in bucket.items():
+            if _salary_record_diff_forbidden(cur_month.get(emp_id), rec, can_calc, can_pay):
+                return True
+    return False
+
+
+def _merge_salary_for_user(current: Any, incoming: Any, user: dict) -> Any:
+    """Слить salary с учётом Calc/Pay: pay-only не трогает начисления."""
+    can_calc = user_has_perm(user, "salary", "edit")
+    can_pay = user_has_salary_pay(user)
+    if not isinstance(incoming, dict):
+        return current
+    out = _clone(current) if isinstance(current, dict) else {}
+    for month, bucket in incoming.items():
+        if not isinstance(bucket, dict):
+            continue
+        out_month = out.get(month) if isinstance(out.get(month), dict) else {}
+        out_month = _clone(out_month)
+        for emp_id, rec in bucket.items():
+            if not isinstance(rec, dict):
+                continue
+            cur = out_month.get(emp_id) if isinstance(out_month.get(emp_id), dict) else {}
+            nxt = _clone(cur)
+            for field, val in rec.items():
+                key = str(field)
+                if key in SALARY_PAY_FIELD_KEYS:
+                    if can_pay:
+                        nxt[key] = _clone(val)
+                elif can_calc:
+                    nxt[key] = _clone(val)
+            out_month[str(emp_id)] = nxt
+        out[str(month)] = out_month
+    return out
 
 
 def _can_write_dept_map(user: dict, key: str, dept: str) -> bool:
@@ -2056,6 +2166,14 @@ def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
                     if data_key in val and _closed_field_violations(cur_fin.get(data_key), val.get(data_key), True):
                         return True
             continue
+        if key == "salary":
+            if not user_can_write_salary(user):
+                if _empty_wipe(val, current.get(key)) or _same(val, current.get(key)):
+                    continue
+                return True
+            if _salary_branch_forbidden(current.get(key), val, user):
+                return True
+            continue
         if _can_write_top(user, key):
             allow_sal = user_has_perm(user, "salary", "edit") or key == "financeRec"
             if _closed_field_violations(current.get(key), val, allow_sal):
@@ -2148,6 +2266,9 @@ def _apply_staff_writes(current: dict, incoming: dict, user: dict) -> dict:
             continue
         if key == "financeRec":
             stored[key] = _apply_finance_rec(stored.get(key), incoming.get(key), user)
+            continue
+        if key == "salary":
+            stored[key] = _merge_salary_for_user(stored.get(key), incoming.get(key), user)
             continue
         allow_sal = user_has_perm(user, "salary", "edit") or key == "financeRec"
         stored[key] = _overlay_open(stored.get(key), incoming.get(key), allow_sal)
@@ -2977,7 +3098,12 @@ def ops_path_allowed(user: dict | None, path: str, payload: dict | None = None) 
             return parts[1] == "metrics"
         return True
     if top == "salary":
-        return user_has_perm(user, "salary", "edit")
+        # Расчёт — любые поля начислений; выдача — только issued.
+        if len(parts) >= 4 and parts[3] == "issued":
+            return user_has_salary_pay(user)
+        if user_has_perm(user, "salary", "edit"):
+            return True
+        return False
     if top == "financeRec":
         if len(parts) < 2:
             return False
@@ -3034,11 +3160,29 @@ def _ops_closed_salary_value_forbidden(payload: dict, path: str, value: Any, use
     """
     OPS пишет value как есть (без _overlay_open). Без salary нельзя подставить
     закрытые зарплатные поля через workspaces.*.employees (ставка и т.п.).
-    Вершины shopPayroll/salary режет ops_path_allowed.
+    Для salary.* — Calc не пишет issued, Pay не пишет начисления.
     """
+    parts = [p for p in str(path or "").split(".") if p]
+    if parts and parts[0] == "salary":
+        if is_app_admin(user):
+            return False
+        can_calc = user_has_perm(user, "salary", "edit")
+        can_pay = user_has_salary_pay(user)
+        if len(parts) >= 4:
+            return _salary_record_field_forbidden(parts[3], can_calc, can_pay)
+        if len(parts) == 3 and isinstance(value, dict):
+            current = get_path_value(payload, path)
+            return _salary_record_diff_forbidden(current, value, can_calc, can_pay)
+        if len(parts) == 2 and isinstance(value, dict):
+            current = get_path_value(payload, path)
+            cur_month = current if isinstance(current, dict) else {}
+            for emp_id, rec in value.items():
+                if _salary_record_diff_forbidden(cur_month.get(emp_id), rec, can_calc, can_pay):
+                    return True
+            return False
+        return not can_calc
     if is_app_admin(user) or user_has_perm(user, "salary", "edit"):
         return False
-    parts = [p for p in str(path or "").split(".") if p]
     if len(parts) >= 3 and parts[0] == "workspaces" and parts[2] == "employees":
         current = get_path_value(payload, ".".join(parts[:3]))
         # workspaces.shop.employees.<id>.rate
@@ -3454,9 +3598,52 @@ def drop_closed_fields(value: Any, allow_salary: bool, allow_finance: bool) -> A
     return value
 
 
-def filter_workspace(workspace: dict, allowed_codes: set[str], user: dict) -> dict | None:
+def _payroll_workspace_view(workspace: dict, user: dict) -> dict:
+    """
+    Зарплатный срез подразделения без операционного членства:
+    карточки, employeeIds и табель для расчёта сумм. Без PIN и ролей входа.
+    """
+    allow_finance = user_has_perm(user, "financeRec", "view")
+    out: dict[str, Any] = {}
+    for key in ("id", "code", "name", "type", "defaultHours"):
+        if key in workspace:
+            out[key] = workspace.get(key)
+    emps = workspace.get("employees")
+    if isinstance(emps, list):
+        out["employees"] = [
+            drop_closed_fields(emp, True, allow_finance)
+            for emp in emps
+            if isinstance(emp, dict)
+        ]
+    else:
+        out["employees"] = []
+    ids = workspace.get("employeeIds")
+    if isinstance(ids, list) and ids:
+        out["employeeIds"] = [x for x in ids]
+    else:
+        # Ведомость клиента читает employeeIds; без списка — из карточек.
+        out["employeeIds"] = [
+            str(emp.get("id"))
+            for emp in out["employees"]
+            if emp.get("id") not in (None, "")
+        ]
+    ts = workspace.get("timesheet")
+    out["timesheet"] = drop_closed_fields(ts, True, allow_finance) if ts is not None else {}
+    return out
+
+
+def filter_workspace(
+    workspace: dict,
+    allowed_codes: set[str],
+    user: dict,
+    *,
+    payroll_access: bool = False,
+) -> dict | None:
     code = str(workspace.get("code") or "")
-    if code not in allowed_codes:
+    member = code in allowed_codes
+    if not member:
+        if payroll_access and code in PAYROLL_DEPT_CODES:
+            return _payroll_workspace_view(workspace, user)
         return None
     allow_salary = user_has_perm(user, "salary", "view")
     allow_finance = user_has_perm(user, "financeRec", "view")
@@ -3470,7 +3657,8 @@ def filter_workspace(workspace: dict, allowed_codes: set[str], user: dict) -> di
             out[key] = [drop_closed_fields(emp, allow_salary, allow_finance) for emp in item]
             continue
         if key == "timesheet":
-            if user_has_perm(user, "timesheet", "view"):
+            # Зарплатный доступ видит табель для расчёта, без права править раздел «Табель».
+            if user_has_perm(user, "timesheet", "view") or allow_salary:
                 out[key] = drop_closed_fields(item, allow_salary, allow_finance)
             else:
                 out[key] = {}
@@ -3543,7 +3731,7 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
         filtered = []
         for item in workspaces:
             if isinstance(item, dict):
-                kept = filter_workspace(item, codes, user)
+                kept = filter_workspace(item, codes, user, payroll_access=allow_salary)
                 if kept:
                     filtered.append(kept)
         out["workspaces"] = filtered
@@ -3553,12 +3741,13 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
         or user_has_perm(user, "metricsSetup", "view")
         or user_has_perm(user, "metrics", "view")
     )
-    # Справочник метрик общий: нужен складу/территории без галочки shop.
-    if can_metrics and "shopMetricCatalog" in payload:
+    # Справочник метрик: операционный ввод или зарплатный расчёт KPI.
+    if (can_metrics or allow_salary) and "shopMetricCatalog" in payload:
         out["shopMetricCatalog"] = drop_closed_fields(
             payload.get("shopMetricCatalog"), allow_salary, allow_finance
         )
 
+    # Магазин: операционные ветки — только членство; зарплатные — по salary*.
     if "shop" in codes:
         if can_metrics and "shopMetrics" in payload:
             out["shopMetrics"] = drop_closed_fields(payload.get("shopMetrics"), allow_salary, allow_finance)
@@ -3566,8 +3755,13 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
             out["shopRevision"] = drop_closed_fields(payload.get("shopRevision"), allow_salary, allow_finance)
         if user_has_perm(user, "salesPlan", "view") and "shopSalesPlan" in payload:
             out["shopSalesPlan"] = drop_closed_fields(payload.get("shopSalesPlan"), allow_salary, allow_finance)
-        if allow_salary and "shopPayroll" in payload:
+    if allow_salary:
+        if "shopPayroll" in payload:
             out["shopPayroll"] = drop_closed_fields(payload.get("shopPayroll"), True, allow_finance)
+        if "shopMetrics" not in out and "shopMetrics" in payload:
+            out["shopMetrics"] = drop_closed_fields(payload.get("shopMetrics"), True, allow_finance)
+        if "shopSalesPlan" not in out and "shopSalesPlan" in payload:
+            out["shopSalesPlan"] = drop_closed_fields(payload.get("shopSalesPlan"), True, allow_finance)
 
     territory = codes & TERRITORY_CODES
     if territory:
@@ -3583,9 +3777,30 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
             branch = pick_dept_branch(payload.get("deptSalesPlans"), territory, allow_salary, allow_finance)
             if branch:
                 out["deptSalesPlans"] = branch
+    if allow_salary:
+        # Метрики/планы территории для сумм зарплаты — все payroll-отделы, не только member.
+        payroll_territory = PAYROLL_DEPT_CODES & TERRITORY_CODES
+        metrics_branch = pick_dept_branch(
+            payload.get("deptMetrics"), payroll_territory, True, allow_finance
+        )
+        if metrics_branch:
+            merged = dict(out.get("deptMetrics") or {})
+            merged.update(metrics_branch)
+            out["deptMetrics"] = merged
+        plans_branch = pick_dept_branch(
+            payload.get("deptSalesPlans"), payroll_territory, True, allow_finance
+        )
+        if plans_branch:
+            merged = dict(out.get("deptSalesPlans") or {})
+            merged.update(plans_branch)
+            out["deptSalesPlans"] = merged
 
     if allow_salary and "salary" in payload:
         out["salary"] = drop_closed_fields(payload.get("salary"), True, allow_finance)
+    if allow_salary and "repSales" in payload:
+        out["repSales"] = drop_closed_fields(payload.get("repSales"), True, allow_finance)
+    if allow_salary and "vacationPlans" in payload:
+        out["vacationPlans"] = drop_closed_fields(payload.get("vacationPlans"), True, allow_finance)
     if allow_finance and "financeRec" in payload:
         out["financeRec"] = drop_closed_fields(payload.get("financeRec"), allow_salary, True)
     if user_can_open_management(user) and "management" in payload:

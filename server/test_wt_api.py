@@ -1409,17 +1409,117 @@ class StoreApiTests(unittest.TestCase):
         self.assertTrue(status.startswith("200"), status)
         self.assertIn("salary", data["payload"])
         self.assertNotIn("1111", raw)
+        # Calc без Pay: может менять начисления, не issued.
         status2, *_ = call(
             "PUT",
             "/api/state",
             {
                 "version": int(data["version"]),
-                "payload": {"salary": {"2026-10": {"e_shop": {"issued": True, "rate": 1500}}}},
+                "payload": {"salary": {"2026-10": {"e_shop": {"bonus": 500, "rate": 1500}}}},
             },
             cookie=cookie,
         )
         self.assertTrue(status2.startswith("200"), status2)
+        self.assertEqual(self.store["payload"]["salary"]["2026-10"]["e_shop"]["bonus"], 500)
+        self.assertFalse(self.store["payload"]["salary"]["2026-10"]["e_shop"]["issued"])
+
+    def test_salary_pay_reads_all_payroll_depts_without_shop_membership(self):
+        """Выдача зарплаты: видит shop/warehouse без departments=shop, без метрик/ревизий."""
+        payer = {
+            "user_id": "usr_salary_pay",
+            "display_name": "Наталья",
+            "pin": "4445",
+            "role": "user",
+            "legacy_role": "pay",
+            "is_active": True,
+            "departments": ["summary"],
+            "permissions": {"salaryPay": "edit"},
+        }
+        self.store["payload"]["users"].append(payer)
+        self.store["payload"]["repSales"] = {"2026-10": {"e_tp": {"bags": 1}}}
+        self.store["payload"]["shopSalesPlan"] = {"months": {"2026-10": {"plan": 1}}}
+        cookie, _ = self.login("usr_salary_pay", "4445")
+        status, data, raw, _ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        payload = data["payload"]
+        codes = [w["code"] for w in payload.get("workspaces") or []]
+        self.assertIn("shop", codes)
+        self.assertIn("warehouse", codes)
+        shop = next(w for w in payload["workspaces"] if w["code"] == "shop")
+        self.assertEqual(shop["employees"][0]["id"], "e_shop")
+        self.assertIn("e_shop", shop.get("employeeIds") or [])
+        self.assertEqual(shop["timesheet"]["2026-10"]["e_shop"]["1"], "Я")
+        self.assertNotIn("pin", shop)
+        self.assertIn("salary", payload)
+        self.assertIn("shopPayroll", payload)
+        self.assertIn("shopMetrics", payload)
+        self.assertIn("repSales", payload)
+        self.assertIn("shopSalesPlan", payload)
+        self.assertNotIn("shopRevision", payload)
+        self.assertNotIn("1111", raw)
+        # Выдача: только issued.
+        status_ok, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(data["version"]),
+                "payload": {"salary": {"2026-10": {"e_shop": {"issued": True}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status_ok.startswith("200"), status_ok)
         self.assertTrue(self.store["payload"]["salary"]["2026-10"]["e_shop"]["issued"])
+        status_bad, err, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"salary": {"2026-10": {"e_shop": {"bonus": 999}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status_bad.startswith("403"), status_bad)
+        self.assertEqual(err["error"], "forbidden")
+        self.assertNotEqual(self.store["payload"]["salary"]["2026-10"]["e_shop"].get("bonus"), 999)
+
+    def test_salary_calc_cannot_mark_issued_without_pay(self):
+        calc = {
+            "user_id": "usr_salary_calc",
+            "display_name": "Ольга",
+            "pin": "4446",
+            "role": "user",
+            "legacy_role": "adjust",
+            "is_active": True,
+            "departments": ["summary"],
+            "permissions": {"salaryCalc": "edit"},
+        }
+        self.store["payload"]["users"].append(calc)
+        cookie, _ = self.login("usr_salary_calc", "4446")
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        codes = [w["code"] for w in data["payload"].get("workspaces") or []]
+        self.assertIn("shop", codes)
+        status_bad, err, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(data["version"]),
+                "payload": {"salary": {"2026-10": {"e_shop": {"issued": True}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status_bad.startswith("403"), status_bad)
+        self.assertEqual(err["error"], "forbidden")
+        self.assertFalse(self.store["payload"]["salary"]["2026-10"]["e_shop"]["issued"])
+
+    def test_no_salary_rights_no_payroll_payload(self):
+        cookie, _ = self.login("usr_001", "1111")
+        status, data, raw, _ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        self.assertNotIn("salary", data["payload"])
+        self.assertNotIn("shopPayroll", data["payload"])
+        self.assertNotIn("repSales", data.get("payload") or {})
+        self.assertNotIn('"salary"', raw)
 
     def test_admin_duplicate_pin_rejected(self):
         cookie, _ = self.login()
