@@ -9976,14 +9976,24 @@ function summaryEmployeeGroups() {
     orderedDeptWorkspaces().forEach(function (w) {
         if (summaryDeptFilter && w.code !== summaryDeptFilter) return;
         const people = [];
+        const seen = {};
         assignedIds(w).forEach(function (id) {
             const e = findEmployeeIn(w, id);
-            if (e && includeInMonthPayroll(e)) people.push(e);
+            if (!e || !e.id || seen[e.id] || !includeInMonthPayroll(e)) return;
+            seen[e.id] = true;
+            people.push(e);
+        });
+        // Как payrollEmployees: карточка в отделе входит в ведомость даже без строки в employeeIds.
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id || seen[e.id] || !includeInMonthPayroll(e)) return;
+            if (isSalesRep(e)) return;
+            seen[e.id] = true;
+            people.push(e);
         });
         if (w.code === "drivers") {
             (w.employees || []).forEach(function (e) {
-                if (!isSalesRep(e) || !includeInMonthPayroll(e)) return;
-                if (people.some(function (p) { return p.id === e.id; })) return;
+                if (!isSalesRep(e) || !includeInMonthPayroll(e) || seen[e.id]) return;
+                seen[e.id] = true;
                 people.push(e);
             });
         }
@@ -16020,13 +16030,13 @@ function uniqueAssignedEmployees() {
             seen[e.id] = true;
             list.push(e);
         });
-        if (w.code === "drivers") {
-            (w.employees || []).forEach(function (e) {
-                if (!isSalesRep(e) || !includeInMonthPayroll(e) || seen[e.id]) return;
-                seen[e.id] = true;
-                list.push(e);
-            });
-        }
+        // Согласовано с summaryEmployeeGroups / payrollEmployees (карточка без employeeIds).
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id || seen[e.id] || !includeInMonthPayroll(e)) return;
+            if (isSalesRep(e) && w.code !== "drivers") return;
+            seen[e.id] = true;
+            list.push(e);
+        });
     });
     return list;
 }
@@ -29581,8 +29591,19 @@ function shopSalaryRowData(employee) {
         taxes: data.taxes,
         vacationPay: data.vacationPay,
         vacationPaidEarlier: !!data.vacationPaidEarlier,
+        taxiTotal: Number(data.taxiTotal || 0),
+        taxiIncluded: !!data.taxiIncluded,
         total: data.toHand
     };
+}
+
+/** Подпись автодоплат под окладом в ведомостях отделов (как extraPayNote в общей зарплате). */
+function payrollAccruedNotes(row) {
+    const bits = [];
+    if (row && row.taxiIncluded && Number(row.taxiTotal || 0)) {
+        bits.push('<div class="shop-kpi-mini">Такси +' + money(row.taxiTotal) + "</div>");
+    }
+    return bits.join("");
 }
 
 function closeShopPayModal() {
@@ -29709,7 +29730,7 @@ function renderPayrollView(view) {
             + escapeHtml(employee.name) + "</button>"
             + (isWorking(employee) ? "" : ' <span class="note">уволен</span>') + "</td>"
             + '<td class="shop-pay-days">' + formatShopDays(row.workedDays) + "</td>"
-            + "<td>" + money(row.oklad) + "</td>"
+            + "<td>" + money(row.oklad) + payrollAccruedNotes(row) + "</td>"
             + "<td><button type=\"button\" class=\"shop-pay-bonus\" onclick=\"openShopBonusBreakdown('" + employee.id + "')\">"
             + moneyFlex(row.metricBonus) + "</button></td>"
             + payrollAdjMoneyCell(employee.id, "products", row.products, canAdj)

@@ -8820,5 +8820,60 @@ class WtSalaryFlagOpsTests(unittest.TestCase):
         self.assertTrue(self.store["payload"]["salary"]["2026-11"]["e_boro"]["issued"])
 
 
+class WtSummaryPayrollListAlignTests(unittest.TestCase):
+    """
+    Общая «Зарплата» должна включать карточки отдела так же, как ведомости
+    магазина/склада/офиса (employeeIds ∪ employees), без дублей и без ТП вне drivers.
+    FakeConn не нужен — только маркеры app.html. Формулы toHand/taxi не меняются.
+    """
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_summary_employee_groups_unions_workspace_employees(self):
+        src = self._src()
+        fn = src[
+            src.find("function summaryEmployeeGroups(")
+            : src.find("function departmentGroupClass(")
+        ]
+        self.assertIn("(w.employees || []).forEach", fn)
+        self.assertIn("if (isSalesRep(e)) return;", fn)
+        self.assertIn('if (w.code === "drivers")', fn)
+        self.assertIn("includeInMonthPayroll(e)", fn)
+        # Не только assignedIds / employeeIds.
+        self.assertIn("assignedIds(w)", fn)
+        self.assertIn("seen[e.id]", fn)
+
+    def test_payroll_employees_still_unions_employees(self):
+        src = self._src()
+        fn = src[
+            src.find("function payrollEmployees(")
+            : src.find("function shopMetricCatalogFactField(")
+        ]
+        self.assertIn("assignedIds(w).forEach", fn)
+        self.assertIn("(w.employees || []).forEach(add);", fn)
+        self.assertIn("if (isSalesRep(e)) return;", fn)
+
+    def test_warehouse_payroll_shows_taxi_under_oklad(self):
+        src = self._src()
+        row = src[
+            src.find("function shopSalaryRowData(")
+            : src.find("function closeShopPayModal(")
+        ]
+        self.assertIn("taxiTotal: Number(data.taxiTotal || 0)", row)
+        self.assertIn("taxiIncluded: !!data.taxiIncluded", row)
+        self.assertIn("function payrollAccruedNotes(row)", row)
+        self.assertIn('Такси +\' + money(row.taxiTotal)', row)
+        render = src[
+            src.find("function renderPayrollView(")
+            : src.find("function renderShopSalarySettings(")
+        ]
+        self.assertIn("money(row.oklad) + payrollAccruedNotes(row)", render)
+        # Итог строки по-прежнему toHand (такси уже внутри), без повторного сложения в oklad.
+        self.assertIn("total: data.toHand", row)
+        self.assertIn("sums.oklad += row.oklad;", render)
+        self.assertIn("sums.total += row.total;", render)
+
+
 if __name__ == "__main__":
     unittest.main()
