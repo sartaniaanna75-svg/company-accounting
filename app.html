@@ -10444,6 +10444,125 @@ function writeSalaryAdj(employeeId, field, value) {
     return rec;
 }
 
+/** Поля ручных начислений/удержаний salary.<month>.<emp>.* (не issued / не «Ранее»). */
+const SALARY_ADJ_OPS_FIELDS = {
+    fines: 1,
+    skipFine: 1,
+    products: 1,
+    advance: 1,
+    taxes: 1,
+    bonus: 1,
+    vacationPay: 1
+};
+
+/**
+ * Узкий OPS одного зарплатного поля — без полного DomainWriter-diff (лимит 200 / toast 4315).
+ * Для products/taxes/vacationPay дополнительно пишет sources.<field> и updated_at.
+ */
+function saveSalaryAdjFieldOp(employeeId, field) {
+    const month = String(selectedMonth || "");
+    const key = String(field || "");
+    if (!month || employeeId == null || employeeId === "" || !SALARY_ADJ_OPS_FIELDS[key]) {
+        return Promise.resolve(false);
+    }
+    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true);
+    }
+    const bucket = appData && appData.salary && appData.salary[month];
+    let empKey = typeof salaryRecordKey === "function" ? salaryRecordKey(bucket, employeeId) : null;
+    if (empKey == null) empKey = employeeId;
+    const rec = bucket && bucket[empKey]
+        ? bucket[empKey]
+        : (typeof ensureSalary === "function" ? ensureSalary(employeeId) : null);
+    if (!rec) return Promise.resolve(false);
+    if (typeof salaryRecordKey === "function") {
+        const again = salaryRecordKey(appData.salary[month], employeeId);
+        if (again != null) empKey = again;
+    }
+    const base = "salary." + month + "." + String(empKey);
+    const ops = [{
+        path: base + "." + key,
+        value: rec[key],
+        expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(base + "." + key) : 0
+    }];
+    if (key === "products" || key === "taxes" || key === "vacationPay") {
+        if (rec.sources && typeof rec.sources === "object" && rec.sources[key] != null) {
+            const sp = base + ".sources." + key;
+            ops.push({
+                path: sp,
+                value: rec.sources[key],
+                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(sp) : 0
+            });
+        }
+        if (rec.updated_at) {
+            const up = base + ".updated_at";
+            ops.push({
+                path: up,
+                value: rec.updated_at,
+                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(up) : 0
+            });
+        }
+    }
+    try {
+        ops.forEach(function (op) {
+            if (op && op.path && typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(op.path);
+        });
+    } catch (errMark) {}
+    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: ops.length > 1 })).then(
+        function (ok) { return !!ok; },
+        function () { return false; }
+    );
+}
+
+function salaryAdjSaveFailedToast() {
+    toast("Изменение зарплаты не записано на сервер. Значение пока только на этом экране — не обновляйте страницу, повторите сохранение.", "error");
+}
+
+/** Галочки «Выдано» / «Ранее» — отдельные пути, не смешивать с SALARY_ADJ_OPS_FIELDS. */
+const SALARY_FLAG_OPS_FIELDS = {
+    issued: 1,
+    vacationPaidEarlier: 1
+};
+
+/**
+ * Узкий OPS одной зарплатной галочки: salary.<month>.<emp>.issued|vacationPaidEarlier.
+ * Права проверяет вызывающий handler и сервер (Pay / Calc); здесь только транспорт.
+ */
+function saveSalaryFlagFieldOp(employeeId, field) {
+    const month = String(selectedMonth || "");
+    const key = String(field || "");
+    if (!month || employeeId == null || employeeId === "" || !SALARY_FLAG_OPS_FIELDS[key]) {
+        return Promise.resolve(false);
+    }
+    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true);
+    }
+    const bucket = appData && appData.salary && appData.salary[month];
+    let empKey = typeof salaryRecordKey === "function" ? salaryRecordKey(bucket, employeeId) : null;
+    if (empKey == null) empKey = employeeId;
+    const rec = bucket && bucket[empKey]
+        ? bucket[empKey]
+        : (typeof ensureSalary === "function" ? ensureSalary(employeeId) : null);
+    if (!rec) return Promise.resolve(false);
+    if (typeof salaryRecordKey === "function") {
+        const again = salaryRecordKey(appData.salary[month], employeeId);
+        if (again != null) empKey = again;
+    }
+    const path = "salary." + month + "." + String(empKey) + "." + key;
+    const ops = [{
+        path: path,
+        value: !!rec[key],
+        expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+    }];
+    try {
+        if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path);
+    } catch (errMark) {}
+    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: false })).then(
+        function (ok) { return !!ok; },
+        function () { return false; }
+    );
+}
+
 function normalizeSalaryRecord(rec) {
     const next = emptySalaryRecord();
     if (!rec || typeof rec !== "object") return next;
@@ -27377,9 +27496,11 @@ function setRepSalaryPanel(panel) {
 function setRepSalaryAdj(employeeId, field, value) {
     if (!canEditShopSalaryAdj()) return;
     writeSalaryAdj(employeeId, field, value);
-    saveApp();
-    renderRepSalary();
-    if (isSummary()) renderSalary();
+    Promise.resolve(saveSalaryAdjFieldOp(employeeId, field)).then(function (ok) {
+        if (ok === false && wtServerMode) salaryAdjSaveFailedToast();
+        renderRepSalary();
+        if (isSummary()) renderSalary();
+    });
 }
 
 function repSalaryVacationCell(employeeId, row, canEdit) {
@@ -29923,9 +30044,11 @@ function setShopSalaryAdj(employeeId, field, value) {
     if (!canEditShopSalaryAdj()) return;
     if (currentSummaryRole === "admin") {
         writeSalaryAdj(employeeId, field, value);
-        saveApp();
-        renderPayrollView(payrollViewFromSection());
-        if (isSummary()) renderSalary();
+        Promise.resolve(saveSalaryAdjFieldOp(employeeId, field)).then(function (ok) {
+            if (ok === false && wtServerMode) salaryAdjSaveFailedToast();
+            renderPayrollView(payrollViewFromSection());
+            if (isSummary()) renderSalary();
+        });
         return;
     }
     setAdjustment(employeeId, field, value);
@@ -31638,11 +31761,11 @@ function applyPlannedVacationPayOnce(month, options) {
     });
     if (!changed) return false;
     if (options.persist === false) return true;
-    if (options.narrow) {
-        wtPersistSalaryVacationPayLeaves(applied, { silentFail: !!options.silentFail });
-        return true;
-    }
-    saveApp();
+    // Всегда узкий OPS (в т.ч. при открытии ведомости/графика).
+    // Широкий saveApp() здесь раньше давал toast >200 и потерю после F5.
+    wtPersistSalaryVacationPayLeaves(applied, {
+        silentFail: options.silentFail != null ? !!options.silentFail : !!options.narrow
+    });
     return true;
 }
 
@@ -31729,9 +31852,20 @@ function toggleSalaryDeptGroup(code) {
 
 function setVacationPaidEarlier(employeeId, checked) {
     if (!canEditShopSalaryAdj() && !canEditSalaryField("vacationPay")) return;
-    ensureSalary(employeeId).vacationPaidEarlier = !!checked;
-    saveApp();
-    refreshAll();
+    const rec = ensureSalary(employeeId);
+    const prev = !!rec.vacationPaidEarlier;
+    const next = !!checked;
+    if (prev === next) return;
+    rec.vacationPaidEarlier = next;
+    Promise.resolve(saveSalaryFlagFieldOp(employeeId, "vacationPaidEarlier")).then(function (ok) {
+        if (ok === false && wtServerMode) {
+            rec.vacationPaidEarlier = prev;
+            salaryAdjSaveFailedToast();
+            refreshAll();
+            return;
+        }
+        refreshAll();
+    });
 }
 
 function salaryFmtMaybe(v) {
@@ -31947,7 +32081,8 @@ function salaryEmployeePremium(data) {
 ============================================================ */
 function renderSalary() {
     if (currentWorkspaceIndex === null || !isSummary()) return;
-    applyPlannedVacationPayOnce(selectedMonth);
+    // Once-начисление: узкий OPS или no-op (HR/pay без calc). Без широкого saveApp.
+    applyPlannedVacationPayOnce(selectedMonth, { narrow: true, silentFail: true });
     if (currentSection === "salary-vacation-plan") {
         renderSalaryVacationPlan();
         return;
@@ -32236,7 +32371,7 @@ function renderSalaryVacationRegistry() {
     salaryUi.vacMonth = ym;
     salaryUi.vacYear = salaryMonthYear(ym);
     const canAmt = canEditSalaryField("vacationPay");
-    applyPlannedVacationPayOnce(ym);
+    applyPlannedVacationPayOnce(ym, { narrow: true, silentFail: true });
     const rows = collectVacationQueue(ym);
     box.innerHTML = '<div class="note" style="margin:0">Расчётный месяц: <b>'
         + escapeHtml(monthLabel(ym) || ym)
@@ -32417,7 +32552,7 @@ function renderSalaryVacationPlan() {
     const month = vacationPlanMonth();
     (vacationPlanStoredYearList(y) || []).forEach(function (rec) {
         const ym = plannedDateMonth(rec && rec.planned_date);
-        if (ym) applyPlannedVacationPayOnce(ym);
+        if (ym) applyPlannedVacationPayOnce(ym, { narrow: true, silentFail: true });
     });
     const obj = salaryUi.planObject || "";
     const depts = vacationPlanDeptOptions(obj);
@@ -32554,15 +32689,28 @@ function diffSalarySums(now, before) {
 function setAdjustment(employeeId, field, value) {
     if (!canEditSalaryField(field)) return;
     writeSalaryAdj(employeeId, field, value);
-    saveApp();
-    refreshAll();
+    Promise.resolve(saveSalaryAdjFieldOp(employeeId, field)).then(function (ok) {
+        if (ok === false && wtServerMode) salaryAdjSaveFailedToast();
+        refreshAll();
+    });
 }
 
 function setIssued(employeeId, checked) {
     if (!canMarkIssued()) return;
-    ensureSalary(employeeId).issued = !!checked;
-    saveApp();
-    refreshAll();
+    const rec = ensureSalary(employeeId);
+    const prev = !!rec.issued;
+    const next = !!checked;
+    if (prev === next) return;
+    rec.issued = next;
+    Promise.resolve(saveSalaryFlagFieldOp(employeeId, "issued")).then(function (ok) {
+        if (ok === false && wtServerMode) {
+            rec.issued = prev;
+            salaryAdjSaveFailedToast();
+            refreshAll();
+            return;
+        }
+        refreshAll();
+    });
 }
 
 

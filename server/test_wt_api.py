@@ -7214,6 +7214,30 @@ class WtVacationPlanOpsTests(unittest.TestCase):
         patch_fn = html.split("function patchVacationPlanEmp(", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("wtPersistVacationPlanRecords", patch_fn)
         self.assertNotIn("saveApp();", patch_fn)
+        # Открытие ведомости/реестра/графика — только узкий once, без широкого saveApp.
+        apply_fn = html.split("function applyPlannedVacationPayOnce(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("wtPersistSalaryVacationPayLeaves(", apply_fn)
+        self.assertNotIn("saveApp();", apply_fn)
+        render_sal = html.split("function renderSalary(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn(
+            "applyPlannedVacationPayOnce(selectedMonth, { narrow: true, silentFail: true })",
+            render_sal,
+        )
+        self.assertNotIn("applyPlannedVacationPayOnce(selectedMonth);", render_sal)
+        render_reg = html.split("function renderSalaryVacationRegistry(", 1)[1].split(
+            "\nfunction ", 1
+        )[0]
+        self.assertIn(
+            "applyPlannedVacationPayOnce(ym, { narrow: true, silentFail: true })",
+            render_reg,
+        )
+        render_plan = html.split("function renderSalaryVacationPlan(", 1)[1].split(
+            "\nfunction ", 1
+        )[0]
+        self.assertIn(
+            "applyPlannedVacationPayOnce(ym, { narrow: true, silentFail: true })",
+            render_plan,
+        )
 
     def test_persist_after_reread(self):
         cookie, _ = self.login()
@@ -8207,6 +8231,514 @@ class WtOpsIntegrationTests(unittest.TestCase):
         facts = self.store["payload"]["shopMetrics"]["facts"]
         self.assertEqual(facts.get("guarded"), "OP_KEEP")
         self.assertEqual(facts.get("admin_extra"), 5)
+
+
+class WtSalaryAdjOpsTests(unittest.TestCase):
+    """
+    Узкое сохранение ручных полей ведомости: salary.<month>.<emp>.products|taxes|…
+    Сценарий Ольги (Зарплата ТП «Продукты»/«Налог») без широкого DomainWriter-diff.
+    FakeConn, без live БД.
+    """
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["salary"] = {
+            "2026-11": {
+                "e_boro": {
+                    "products": 0,
+                    "taxes": 0,
+                    "bonus": 0,
+                    "fines": 0,
+                    "advance": 0,
+                    "issued": False,
+                },
+                "e_other": {
+                    "products": 10,
+                    "taxes": 20,
+                    "bonus": 0,
+                    "issued": False,
+                },
+            }
+        }
+        payload["users"] = list(payload.get("users") or []) + [
+            {
+                "user_id": "usr_olga_adj",
+                "display_name": "Ольга",
+                "pin": "4446",
+                "role": "user",
+                "legacy_role": "adjust",
+                "is_active": True,
+                "departments": ["summary"],
+                "permissions": {"salaryCalc": "edit"},
+            }
+        ]
+        self.store = {
+            "payload": payload,
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id="usr_olga_adj", pin="4446"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_client_markers_narrow_salary_adj(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = (Path(root) / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function saveSalaryAdjFieldOp(", html)
+        self.assertIn("SALARY_ADJ_OPS_FIELDS", html)
+        self.assertIn("saveSalaryAdjFieldOp(employeeId, field)", html)
+        # Не широкий saveApp в setRepSalaryAdj / setAdjustment после write.
+        rep = html.split("function setRepSalaryAdj(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("saveSalaryAdjFieldOp(", rep)
+        self.assertNotIn("saveApp();", rep)
+        adj = html.split("function setAdjustment(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("saveSalaryAdjFieldOp(", adj)
+        self.assertNotIn("saveApp();", adj)
+
+    def test_olga_products_taxes_persist_and_reread(self):
+        cookie, _ = self.login()
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "idempotency_key": "sal-adj-boro-1",
+                "atomic": True,
+                "ops": [
+                    {
+                        "path": "salary.2026-11.e_boro.products",
+                        "expected_v": 0,
+                        "value": 500,
+                    },
+                    {
+                        "path": "salary.2026-11.e_boro.taxes",
+                        "expected_v": 0,
+                        "value": 100,
+                    },
+                    {
+                        "path": "salary.2026-11.e_boro.sources.products",
+                        "expected_v": 0,
+                        "value": {
+                            "source": "manual",
+                            "external_1c_id": "",
+                            "updated_at": "2026-11-04T12:00:00.000Z",
+                        },
+                    },
+                    {
+                        "path": "salary.2026-11.e_boro.sources.taxes",
+                        "expected_v": 0,
+                        "value": {
+                            "source": "manual",
+                            "external_1c_id": "",
+                            "updated_at": "2026-11-04T12:00:01.000Z",
+                        },
+                    },
+                ],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, d))
+        row = self.store["payload"]["salary"]["2026-11"]["e_boro"]
+        self.assertEqual(row.get("products"), 500)
+        self.assertEqual(row.get("taxes"), 100)
+        self.assertFalse(row.get("issued"))
+        # Другой сотрудник не тронут.
+        other = self.store["payload"]["salary"]["2026-11"]["e_other"]
+        self.assertEqual(other.get("products"), 10)
+        self.assertEqual(other.get("taxes"), 20)
+        # F5 / повторное чтение.
+        st2, got, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st2.startswith("200"), st2)
+        pl = got.get("payload") or {}
+        again = ((pl.get("salary") or {}).get("2026-11") or {}).get("e_boro") or {}
+        self.assertEqual(again.get("products"), 500)
+        self.assertEqual(again.get("taxes"), 100)
+
+    def test_single_field_then_second_field(self):
+        cookie, _ = self.login()
+        st1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.products",
+                    "expected_v": 0,
+                    "value": 500,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        meta = (self.store["payload"].get("_wt_records") or {}).get(
+            "salary.2026-11.e_boro.products"
+        ) or {}
+        rv = int(meta.get("v") or 1)
+        st2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.taxes",
+                    "expected_v": 0,
+                    "value": 100,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        # Повтор products с актуальным expected_v — без дубля/потери.
+        st3, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.products",
+                    "expected_v": rv,
+                    "value": 500,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st3.startswith("200"), st3)
+        row = self.store["payload"]["salary"]["2026-11"]["e_boro"]
+        self.assertEqual(row.get("products"), 500)
+        self.assertEqual(row.get("taxes"), 100)
+
+    def test_no_salary_rights_forbidden(self):
+        cookie, _ = self.login("usr_001", "1111")
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.products",
+                    "expected_v": 0,
+                    "value": 500,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), (st, d))
+        self.assertEqual(
+            self.store["payload"]["salary"]["2026-11"]["e_boro"].get("products"), 0
+        )
+
+    def test_parallel_conflict_other_user_same_field(self):
+        cookie_a, _ = self.login()
+        admin_cookie, _ = self.login("user_admin", "5555")
+        st1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.products",
+                    "expected_v": 0,
+                    "value": 500,
+                }
+            },
+            cookie=cookie_a,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.products",
+                    "expected_v": 0,
+                    "value": 777,
+                }
+            },
+            cookie=admin_cookie,
+        )
+        self.assertTrue(st2.startswith("409"), (st2, d2))
+        self.assertEqual(
+            self.store["payload"]["salary"]["2026-11"]["e_boro"].get("products"), 500
+        )
+
+    def test_calc_cannot_write_issued_via_adj_path(self):
+        cookie, _ = self.login()
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.issued",
+                    "expected_v": 0,
+                    "value": True,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), (st, d))
+        self.assertFalse(
+            self.store["payload"]["salary"]["2026-11"]["e_boro"].get("issued")
+        )
+
+
+class WtSalaryFlagOpsTests(unittest.TestCase):
+    """
+    Узкое сохранение галочек issued / vacationPaidEarlier.
+    FakeConn, без live БД. Формулы toHand не меняются.
+    """
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["salary"] = {
+            "2026-11": {
+                "e_boro": {
+                    "products": 0,
+                    "taxes": 0,
+                    "vacationPay": 5000,
+                    "vacationPaidEarlier": False,
+                    "issued": False,
+                },
+                "e_other": {
+                    "products": 10,
+                    "vacationPay": 1000,
+                    "vacationPaidEarlier": True,
+                    "issued": True,
+                },
+            },
+            "2026-10": {
+                "e_boro": {
+                    "vacationPay": 2000,
+                    "vacationPaidEarlier": False,
+                    "issued": False,
+                }
+            },
+        }
+        payload["users"] = list(payload.get("users") or []) + [
+            {
+                "user_id": "usr_flag_calc",
+                "display_name": "Calc",
+                "pin": "4446",
+                "role": "user",
+                "legacy_role": "adjust",
+                "is_active": True,
+                "departments": ["summary"],
+                "permissions": {"salaryCalc": "edit"},
+            },
+            {
+                "user_id": "usr_flag_pay",
+                "display_name": "Pay",
+                "pin": "4445",
+                "role": "user",
+                "legacy_role": "pay",
+                "is_active": True,
+                "departments": ["summary"],
+                "permissions": {"salaryPay": "edit"},
+            },
+        ]
+        self.store = {
+            "payload": payload,
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id, pin):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_client_markers_narrow_flags_and_tohand_formula(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = (Path(root) / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function saveSalaryFlagFieldOp(", html)
+        self.assertIn("SALARY_FLAG_OPS_FIELDS", html)
+        issued_fn = html.split("function setIssued(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("saveSalaryFlagFieldOp(employeeId, \"issued\")", issued_fn)
+        self.assertNotIn("saveApp();", issued_fn)
+        earlier_fn = html.split("function setVacationPaidEarlier(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn(
+            "saveSalaryFlagFieldOp(employeeId, \"vacationPaidEarlier\")", earlier_fn
+        )
+        self.assertNotIn("saveApp();", earlier_fn)
+        # Формула «к выдаче» не тронута.
+        self.assertIn(
+            "const toHand = pay - (adj.vacationPaidEarlier ? vacationPay : 0);", html
+        )
+
+    def test_pay_saves_issued_persist_reread_toggle(self):
+        cookie, _ = self.login("usr_flag_pay", "4445")
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.issued",
+                    "expected_v": 0,
+                    "value": True,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, d))
+        self.assertTrue(self.store["payload"]["salary"]["2026-11"]["e_boro"]["issued"])
+        meta = (self.store["payload"].get("_wt_records") or {}).get(
+            "salary.2026-11.e_boro.issued"
+        ) or {}
+        rv = int(meta.get("v") or 1)
+        st2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.issued",
+                    "expected_v": rv,
+                    "value": False,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        self.assertFalse(self.store["payload"]["salary"]["2026-11"]["e_boro"]["issued"])
+        st3, got, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st3.startswith("200"), st3)
+        again = ((got.get("payload") or {}).get("salary") or {}).get("2026-11", {}).get(
+            "e_boro"
+        ) or {}
+        self.assertFalse(again.get("issued"))
+        # Чужие сотрудник/месяц не затронуты.
+        self.assertTrue(self.store["payload"]["salary"]["2026-11"]["e_other"]["issued"])
+        self.assertFalse(self.store["payload"]["salary"]["2026-10"]["e_boro"]["issued"])
+
+    def test_calc_cannot_write_issued(self):
+        cookie, _ = self.login("usr_flag_calc", "4446")
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.issued",
+                    "expected_v": 0,
+                    "value": True,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), (st, d))
+        self.assertFalse(self.store["payload"]["salary"]["2026-11"]["e_boro"]["issued"])
+
+    def test_calc_saves_vacation_paid_earlier_persist_reread(self):
+        cookie, _ = self.login("usr_flag_calc", "4446")
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.vacationPaidEarlier",
+                    "expected_v": 0,
+                    "value": True,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, d))
+        row = self.store["payload"]["salary"]["2026-11"]["e_boro"]
+        self.assertTrue(row.get("vacationPaidEarlier"))
+        self.assertEqual(row.get("vacationPay"), 5000)
+        st2, got, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st2.startswith("200"), st2)
+        again = ((got.get("payload") or {}).get("salary") or {}).get("2026-11", {}).get(
+            "e_boro"
+        ) or {}
+        self.assertTrue(again.get("vacationPaidEarlier"))
+        self.assertTrue(
+            self.store["payload"]["salary"]["2026-11"]["e_other"]["vacationPaidEarlier"]
+        )
+        self.assertFalse(
+            self.store["payload"]["salary"]["2026-10"]["e_boro"]["vacationPaidEarlier"]
+        )
+
+    def test_pay_cannot_write_vacation_paid_earlier(self):
+        cookie, _ = self.login("usr_flag_pay", "4445")
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.vacationPaidEarlier",
+                    "expected_v": 0,
+                    "value": True,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), (st, d))
+        self.assertFalse(
+            self.store["payload"]["salary"]["2026-11"]["e_boro"]["vacationPaidEarlier"]
+        )
+
+    def test_parallel_conflict_issued(self):
+        cookie_pay, _ = self.login("usr_flag_pay", "4445")
+        admin_cookie, _ = self.login("user_admin", "5555")
+        st1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.issued",
+                    "expected_v": 0,
+                    "value": True,
+                }
+            },
+            cookie=cookie_pay,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-11.e_boro.issued",
+                    "expected_v": 0,
+                    "value": False,
+                }
+            },
+            cookie=admin_cookie,
+        )
+        self.assertTrue(st2.startswith("409"), (st2, d2))
+        self.assertTrue(self.store["payload"]["salary"]["2026-11"]["e_boro"]["issued"])
 
 
 if __name__ == "__main__":
