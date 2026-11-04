@@ -5265,13 +5265,47 @@
                             <div class="card-title">Зарплата торговых представителей</div>
                             <div class="note" id="repSalaryNote">
                                 Сотрудники отдела «Логистика + Торговые» с должностью «Торговый представитель».
-                                Продажи вводит админ. Неотработанные будни (пн–пт) берутся из табеля и уменьшают начисление.
-                                Итог после удержания за дни попадает в колонку «Начислено» общей зарплаты.
+                                «Таблица» — ведомость с ручными начислениями и удержаниями (те же поля, что в общей зарплате).
+                                «Расчёт продаж ТП» — действующий расчёт комиссионных; «Начислено» в таблице берётся из него.
                             </div>
+                        </div>
+                        <div class="toolbar" id="repSalaryTabs">
+                            <button type="button" class="metrics-tab active" data-rep-panel="table" onclick="setRepSalaryPanel('table')">Таблица</button>
+                            <button type="button" class="metrics-tab" data-rep-panel="calc" onclick="setRepSalaryPanel('calc')">Расчёт продаж ТП</button>
                         </div>
                     </div>
                 </div>
-                <div class="card">
+                <div class="card" id="repSalaryTableCard">
+                    <div class="table-wrapper" id="repSalaryTableWrap">
+                        <table class="shop-pay-table" id="repSalaryPayTable">
+                            <thead>
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th class="shop-pay-days">Отработано<br>дней</th>
+                                    <th title="Итог расчёта продаж ТП после удержания за неотработанные будни">Начислено</th>
+                                    <th title="Удержание, ручной ввод за месяц">Продукты</th>
+                                    <th title="Удержание, ручной ввод за месяц">Налог</th>
+                                    <th class="shop-pay-vac" title="Начисление, ручной ввод за месяц">Отпускные</th>
+                                    <th>Премия</th>
+                                    <th>Штраф</th>
+                                    <th>Аванс</th>
+                                    <th>Итог</th>
+                                </tr>
+                            </thead>
+                            <tbody id="repSalaryTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="repSalaryCalcCard" style="display:none;">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Расчёт продаж ТП</div>
+                            <div class="note">
+                                Продажи вводит админ. Неотработанные будни (пн–пт) берутся из табеля и уменьшают начисление.
+                                Итог после удержания за дни попадает в колонку «Начислено» таблицы и общей зарплаты.
+                            </div>
+                        </div>
+                    </div>
                     <div class="table-wrapper" id="repSalaryWrap">
                         <table class="rep-table">
                             <thead>
@@ -6495,6 +6529,8 @@ let revisionFocusFolderId = "";
 let revisionEscBound = false;
 let shopSalaryPanel = "table";
 let shopSalaryEditEmployeeId = "";
+/** Вкладки «Зарплата ТП»: table | calc. По умолчанию — ведомость. */
+let repSalaryPanel = "table";
 let payrollPanelByView = { shop: "table", office: "table", warehouse: "table", drivers: "table" };
 let payrollEditEmployeeByView = { shop: "", office: "", warehouse: "", drivers: "" };
 let payrollRulesModeByView = { shop: "active", office: "active", warehouse: "active", drivers: "active" };
@@ -26928,9 +26964,128 @@ function setRepSalesField(employeeId, field, value) {
     });
 }
 
-function renderRepSalary() {
-    if (currentWorkspaceIndex === null || !isSummary()) return;
-    if (currentSummaryRole === "pay") return;
+function setRepSalaryPanel(panel) {
+    repSalaryPanel = panel === "calc" ? "calc" : "table";
+    renderRepSalary();
+}
+
+/** Ручные поля ТП — те же appData.salary[month][id], что в общей зарплате и ведомостях склада. */
+function setRepSalaryAdj(employeeId, field, value) {
+    if (!canEditShopSalaryAdj()) return;
+    writeSalaryAdj(employeeId, field, value);
+    saveApp();
+    renderRepSalary();
+    if (isSummary()) renderSalary();
+}
+
+function repSalaryVacationCell(employeeId, row, canEdit) {
+    const amount = canEdit
+        ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+            + blankZeroInt(row.vacationPay) + "\" onchange=\"setRepSalaryAdj('" + employeeId + "','vacationPay',this.value)\">"
+        : money(row.vacationPay);
+    const box = '<label class="sal-vac-flag"><input type="checkbox"'
+        + (row.vacationPaidEarlier ? " checked" : "")
+        + (canEdit ? "" : " disabled")
+        + " onchange=\"setVacationPaidEarlier('" + employeeId + "', this.checked)\"> Ранее</label>";
+    return '<td class="shop-pay-vac"><div class="shop-pay-vac-box">' + amount + box + "</div></td>";
+}
+
+function repSalaryAdjMoneyCell(employeeId, field, value, canEdit) {
+    if (!canEdit) return "<td>" + money(value) + "</td>";
+    return "<td><input class=\"money-input no-spin\" type=\"number\" min=\"0\" step=\"1\" inputmode=\"numeric\" value=\""
+        + blankZeroInt(value) + "\" onchange=\"setRepSalaryAdj('" + employeeId + "','" + field + "',this.value)\"></td>";
+}
+
+/** Автодоплаты/удержания ТП вне колонок ручного ввода (как extraPayNote в общей зарплате). */
+function repSalaryAccruedNotes(data) {
+    const bits = [];
+    if (Number(data.salesPlanBonus || 0)) {
+        bits.push('<div class="shop-kpi-mini">План продаж +' + money(data.salesPlanBonus) + "</div>");
+    }
+    if (data.taxiIncluded && Number(data.taxiTotal || 0)) {
+        bits.push('<div class="shop-kpi-mini">Такси +' + money(data.taxiTotal) + "</div>");
+    }
+    if (Number(data.earlyPay || 0)) {
+        bits.push('<div class="shop-kpi-mini">7:30 +' + money(data.earlyPay) + "</div>");
+    }
+    return bits.join("");
+}
+
+function renderRepSalaryTable() {
+    const body = document.getElementById("repSalaryTableBody");
+    if (!body) return;
+    const list = listSalesReps();
+    if (!list.length) {
+        body.innerHTML = '<tr><td colspan="10"><div class="empty-row">Нет торговых представителей. В отделе «Логистика + Торговые» поставьте должность «Торговый представитель».</div></td></tr>';
+        return;
+    }
+    const canAdj = canEditShopSalaryAdj();
+    let html = "";
+    let sums = {
+        days: 0, accrued: 0, products: 0, taxes: 0, vacationPay: 0,
+        premium: 0, fine: 0, advance: 0, total: 0
+    };
+    list.forEach(function (employee) {
+        // Единый источник с общей зарплатой (не пересчитываем комиссионные отдельно).
+        const home = employeeHome(employee.id) || findWorkspaceByCode("drivers");
+        const data = calculateEmployee(employee.id, selectedMonth, home ? [home] : undefined);
+        const row = {
+            workedDays: data.workedDays,
+            oklad: data.accrued,
+            premium: data.bonus,
+            fine: data.fineTotal || ((data.fines || 0) + (data.lateAmount || 0)),
+            fineManual: data.fines,
+            lateAmount: data.lateAmount,
+            advance: data.advance,
+            products: data.products,
+            taxes: data.taxes,
+            vacationPay: data.vacationPay,
+            vacationPaidEarlier: !!data.vacationPaidEarlier,
+            total: data.toHand
+        };
+        sums.days += row.workedDays;
+        sums.accrued += row.oklad;
+        sums.products += Number(row.products || 0);
+        sums.taxes += Number(row.taxes || 0);
+        sums.vacationPay += Number(row.vacationPay || 0);
+        sums.premium += row.premium;
+        sums.fine += row.fine;
+        sums.advance += row.advance;
+        sums.total += row.total;
+        html += '<tr class="' + (isWorking(employee) ? "" : "staff-fired") + '">'
+            + "<td><strong>" + escapeHtml(employee.name) + "</strong>"
+            + (isWorking(employee) ? "" : ' <span class="note">уволен</span>') + "</td>"
+            + '<td class="shop-pay-days">' + formatShopDays(row.workedDays) + "</td>"
+            + "<td>" + money(row.oklad) + repSalaryAccruedNotes(data) + "</td>"
+            + repSalaryAdjMoneyCell(employee.id, "products", row.products, canAdj)
+            + repSalaryAdjMoneyCell(employee.id, "taxes", row.taxes, canAdj)
+            + repSalaryVacationCell(employee.id, row, canAdj)
+            + "<td>" + (canAdj
+                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(row.premium) + "\" onchange=\"setRepSalaryAdj('" + employee.id + "','bonus',this.value)\">"
+                : money(row.premium)) + "</td>"
+            + "<td>" + (canAdj
+                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(row.fineManual) + "\" onchange=\"setRepSalaryAdj('" + employee.id + "','fines',this.value)\">"
+                    + (row.lateAmount ? '<div class="shop-kpi-mini">Опоздания: −' + money(row.lateAmount) + "</div>" : "")
+                    + (Number(data.skipFine || 0) ? '<div class="shop-kpi-mini">Неотработанные дни ТП: −' + money(data.skipFine) + "</div>" : "")
+                : money(row.fine)) + "</td>"
+            + "<td>" + (canAdj
+                ? '<input class="money-input no-spin" type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(row.advance) + "\" onchange=\"setRepSalaryAdj('" + employee.id + "','advance',this.value)\">"
+                : money(row.advance)) + "</td>"
+            + '<td class="pay">' + money(row.total) + "</td></tr>";
+    });
+    html += '<tr class="totals-row"><td>Итого</td><td class="shop-pay-days">' + formatShopDays(sums.days) + "</td><td>"
+        + money(sums.accrued) + "</td><td>"
+        + money(sums.products) + "</td><td>" + money(sums.taxes) + "</td><td>"
+        + money(sums.vacationPay) + "</td><td>"
+        + money(sums.premium) + "</td><td>" + money(sums.fine) + "</td><td>"
+        + money(sums.advance) + "</td><td class=\"pay\">" + money(sums.total) + "</td></tr>";
+    body.innerHTML = html;
+}
+
+function renderRepSalaryCalc() {
     const body = document.getElementById("repSalaryBody");
     if (!body) return;
 
@@ -27002,6 +27157,24 @@ function renderRepSalary() {
         wrap.scrollLeft = scrollLeft;
         wrap.scrollTop = scrollTop;
     }
+}
+
+function renderRepSalary() {
+    if (currentWorkspaceIndex === null || !isSummary()) return;
+    if (currentSummaryRole === "pay") return;
+    const panel = repSalaryPanel === "calc" ? "calc" : "table";
+    const root = document.getElementById("repSalary");
+    if (root) {
+        root.querySelectorAll("[data-rep-panel]").forEach(function (btn) {
+            btn.classList.toggle("active", btn.getAttribute("data-rep-panel") === panel);
+        });
+    }
+    const tableCard = document.getElementById("repSalaryTableCard");
+    const calcCard = document.getElementById("repSalaryCalcCard");
+    if (tableCard) tableCard.style.display = panel === "table" ? "" : "none";
+    if (calcCard) calcCard.style.display = panel === "calc" ? "" : "none";
+    if (panel === "calc") renderRepSalaryCalc();
+    else renderRepSalaryTable();
 }
 
 
