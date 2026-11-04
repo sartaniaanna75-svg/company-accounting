@@ -5316,6 +5316,7 @@
                                     <th>Спеццена</th>
                                     <th>Сахар</th>
                                     <th>Мешки</th>
+                                    <th title="Индивидуальная ставка оплаты за мешок сахара">₽/мешок</th>
                                     <th>Топливо торговых</th>
                                     <th title="Опт / Крупный опт / Спеццена">%</th>
                                     <th class="rep-calc">База</th>
@@ -5330,7 +5331,7 @@
                                     <th class="rep-calc">Не отраб.</th>
                                     <th class="rep-calc" title="Отпуск ОТ в будни">Отпуск</th>
                                     <th class="rep-calc" title="Прочие неотработанные будни">Прочие</th>
-                                    <th class="rep-calc">Удерж. за дни</th>
+                                    <th class="rep-calc" title="Базовое удержание × выбранный процент">Удерж. за дни</th>
                                     <th class="rep-calc">После удержания</th>
                                 </tr>
                             </thead>
@@ -14697,7 +14698,30 @@ function isSalesRep(employee) {
 }
 
 function emptyRepSales() {
-    return { totalSales: 0, wholesale: 0, specialPrice: 0, sugar: 0, bags: 0, fuel: 0 };
+    return {
+        totalSales: 0,
+        wholesale: 0,
+        specialPrice: 0,
+        sugar: 0,
+        bags: 0,
+        bagRate: REP_BAG_PAY,
+        fuel: 0,
+        dayHoldPct: 100
+    };
+}
+
+/** Процент удержания за неотработанные дни ТП: только 0 / 50 / 100; иначе 100 (как раньше). */
+function normalizeRepDayHoldPct(value) {
+    const n = Number(value);
+    if (n === 0 || n === 50 || n === 100) return n;
+    return 100;
+}
+
+/** Ставка ₽/мешок: отсутствие поля → прежние 5 ₽; явный 0 допускается. */
+function normalizeRepBagRate(value) {
+    if (value == null || value === "") return REP_BAG_PAY;
+    const n = parseMoney2(value, REP_BAG_PAY);
+    return n < 0 ? 0 : n;
 }
 
 function normalizeRepSales(rec) {
@@ -14708,7 +14732,13 @@ function normalizeRepSales(rec) {
     next.specialPrice = parseMoney2(rec.specialPrice, 0);
     next.sugar = parseMoney2(rec.sugar, 0);
     next.bags = parseDecimal(rec.bags, 0);
+    next.bagRate = Object.prototype.hasOwnProperty.call(rec, "bagRate")
+        ? normalizeRepBagRate(rec.bagRate)
+        : REP_BAG_PAY;
     next.fuel = parseMoney2(rec.fuel, 0);
+    next.dayHoldPct = Object.prototype.hasOwnProperty.call(rec, "dayHoldPct")
+        ? normalizeRepDayHoldPct(rec.dayHoldPct)
+        : 100;
     return next;
 }
 
@@ -15148,6 +15178,9 @@ function calculateRepPay(input) {
     const specialPrice = parseMoney2(input.specialPrice, 0);
     const sugar = parseMoney2(input.sugar, 0);
     const bags = parseDecimal(input.bags, 0);
+    const bagRate = input.bagRate == null || input.bagRate === ""
+        ? REP_BAG_PAY
+        : normalizeRepBagRate(input.bagRate);
     const fuel = parseMoney2(input.fuel, 0);
     const percentOpt = parseRepPercent(input.percentOpt != null ? input.percentOpt : input.percent, 0);
     const percentWholesale = parseRepPercent(input.percentWholesale, 0);
@@ -15158,7 +15191,7 @@ function calculateRepPay(input) {
     if (base < 0) base = 0;
     const wholesalePay = roundMoney2(wholesale * (percentWholesale / 100));
     const specialPay = roundMoney2(specialPrice * (percentSpecial / 100));
-    const bagsPay = roundMoney2(bags * REP_BAG_PAY);
+    const bagsPay = roundMoney2(bags * bagRate);
     const mainPay = roundMoney2(base * (percentOpt / 100));
     const accruedTotal = roundMoney2(mainPay + wholesalePay + specialPay + bagsPay);
     const prelim = roundMoney2(accruedTotal - fuel);
@@ -15168,6 +15201,7 @@ function calculateRepPay(input) {
         specialPrice: specialPrice,
         sugar: sugar,
         bags: bags,
+        bagRate: bagRate,
         fuel: fuel,
         percent: percentOpt,
         percentOpt: percentOpt,
@@ -15227,18 +15261,23 @@ function calculateSalesRep(employee, monthOverride) {
         specialPrice: sales.specialPrice,
         sugar: sales.sugar,
         bags: sales.bags,
+        bagRate: sales.bagRate,
         fuel: sales.fuel,
         percentOpt: terms.salesPercentOpt,
         percentWholesale: terms.salesPercentWholesale,
         percentSpecial: terms.salesPercentSpecial
     });
     const days = repTimesheetDays(employee.id);
+    const dayHoldPct = normalizeRepDayHoldPct(sales.dayHoldPct);
     const dayCost = days.scheduled > 0 ? roundMoney2(pay.prelim / days.scheduled) : 0;
-    const dayHold = roundMoney2(dayCost * days.unworked);
+    const dayHoldBase = roundMoney2(dayCost * days.unworked);
+    const dayHold = roundMoney2(dayHoldBase * dayHoldPct / 100);
     const afterDays = roundMoney2(pay.prelim - dayHold);
     if (monthOverride) selectedMonth = monthKeep;
     return Object.assign({}, pay, days, {
         dayCost: dayCost,
+        dayHoldPct: dayHoldPct,
+        dayHoldBase: dayHoldBase,
         dayHold: dayHold,
         afterDays: afterDays
     });
@@ -26926,7 +26965,9 @@ const REP_SALES_INPUT_FIELDS = {
     specialPrice: 1,
     sugar: 1,
     bags: 1,
-    fuel: 1
+    bagRate: 1,
+    fuel: 1,
+    dayHoldPct: 1
 };
 
 /** Узкий OPS одного поля продаж ТП — без полного DomainWriter-diff (лимит 200). */
@@ -26955,6 +26996,8 @@ function setRepSalesField(employeeId, field, value) {
     if (!REP_SALES_INPUT_FIELDS[key]) return;
     const rec = ensureRepSales(employeeId);
     if (key === "bags") rec.bags = parseDecimal(value, 0);
+    else if (key === "bagRate") rec.bagRate = normalizeRepBagRate(value);
+    else if (key === "dayHoldPct") rec.dayHoldPct = normalizeRepDayHoldPct(value);
     else rec[key] = parseMoney2(value, 0);
     Promise.resolve(saveRepSalesFieldOp(employeeId, key)).then(function (ok) {
         if (ok === false && wtServerMode) {
@@ -27096,7 +27139,7 @@ function renderRepSalaryCalc() {
     const editable = canEditRepSales();
 
     if (!list.length) {
-        body.innerHTML = '<tr><td colspan="22"><div class="empty-row">Нет торговых представителей. В отделе «Логистика + Торговые» поставьте должность «Торговый представитель».</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="23"><div class="empty-row">Нет торговых представителей. В отделе «Логистика + Торговые» поставьте должность «Торговый представитель».</div></td></tr>';
         return;
     }
 
@@ -27108,11 +27151,30 @@ function renderRepSalaryCalc() {
             + blankZero(value) + "\" onchange=\"setRepSalesField('" + id + "','" + field + "',this.value)\">";
     }
 
+    function bagRateInput(id, value) {
+        if (!editable) return money2(value);
+        return '<input class="rep-input no-spin" type="number" min="0" step="0.01" inputmode="decimal" value="'
+            + blankZero(value) + "\" onchange=\"setRepSalesField('" + id + "','bagRate',this.value)\">";
+    }
+
+    function dayHoldPctSelect(id, pct) {
+        const cur = normalizeRepDayHoldPct(pct);
+        if (!editable) return '<div class="note">Удерживать ' + cur + "%</div>";
+        return '<select class="rep-input" onchange="setRepSalesField(\'' + id + "','dayHoldPct',this.value)\">"
+            + '<option value="0"' + (cur === 0 ? " selected" : "") + ">0%</option>"
+            + '<option value="50"' + (cur === 50 ? " selected" : "") + ">50%</option>"
+            + '<option value="100"' + (cur === 100 ? " selected" : "") + ">100%</option>"
+            + "</select>";
+    }
+
     let html = "";
     list.forEach(function (employee) {
         const data = calculateSalesRep(employee);
         const warn = data.baseOverflow
             ? '<div class="rep-warn">Опт + спеццена + сахар больше продаж. База = 0.</div>'
+            : "";
+        const holdNote = data.dayHoldPct !== 100
+            ? '<div class="note">база ' + money2(data.dayHoldBase) + "</div>"
             : "";
         html += '<tr class="' + (isWorking(employee) ? "" : "staff-fired") + '">'
             + "<td><strong>" + escapeHtml(employee.name) + "</strong>"
@@ -27122,6 +27184,7 @@ function renderRepSalaryCalc() {
             + "<td>" + numInput(employee.id, "specialPrice", data.specialPrice, "0.01") + "</td>"
             + "<td>" + numInput(employee.id, "sugar", data.sugar, "0.01") + "</td>"
             + "<td>" + numInput(employee.id, "bags", data.bags, "0.1") + "</td>"
+            + "<td>" + bagRateInput(employee.id, data.bagRate) + "</td>"
             + "<td>" + numInput(employee.id, "fuel", data.fuel, "0.01") + "</td>"
             + "<td title=\"Опт / Крупный опт / Спеццена\">"
             + (editable
@@ -27147,7 +27210,10 @@ function renderRepSalaryCalc() {
             + '<td class="rep-calc">' + data.unworked + "</td>"
             + '<td class="rep-calc">' + data.vacation + "</td>"
             + '<td class="rep-calc">' + data.otherUnpaid + "</td>"
-            + '<td class="rep-calc">' + money2(data.dayHold) + "</td>"
+            + '<td class="rep-calc">' + money2(data.dayHold)
+                + '<div class="note">Удерживать за дни</div>'
+                + dayHoldPctSelect(employee.id, data.dayHoldPct)
+                + holdNote + "</td>"
             + '<td class="rep-calc pay">' + money2(data.afterDays) + "</td>"
             + "</tr>";
     });

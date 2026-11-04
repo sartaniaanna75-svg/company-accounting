@@ -2849,7 +2849,16 @@ def _ops_metric_branch_allowed(user: dict, branch: str) -> bool:
 
 # Поля продаж ТП (как в UI setRepSalesField) и проценты terms (как isRepPercentField).
 REP_SALES_MONEY_FIELDS = frozenset(
-    {"totalSales", "wholesale", "specialPrice", "sugar", "bags", "fuel"}
+    {
+        "totalSales",
+        "wholesale",
+        "specialPrice",
+        "sugar",
+        "bags",
+        "bagRate",
+        "fuel",
+        "dayHoldPct",
+    }
 )
 REP_PERCENT_FIELDS = frozenset(
     {
