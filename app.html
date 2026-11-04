@@ -6396,6 +6396,9 @@ const SKIP_FINE_PER_DAY = 1500;
 const EARLY_730_PAY = 125;
 /** С этого месяца офис: без авто-125 ₽, только назначенные KPI из shopPayroll. */
 const OFFICE_MANAGED_KPI_FROM = "2026-10";
+/** Sentinel в shopPayroll.assignments: офисная галочка «Активно» для общих KPI (не трогает правило). */
+const OFFICE_KPI_SCOPE_EMP_ID = "__office_kpi_scope__";
+const OFFICE_KPI_SCOPE_MARK = "office_active";
 const SALES_REP_POSITION = "Торговый представитель";
 const REP_BAG_PAY = 5;
 const DEPT_POSITIONS = {
@@ -15326,6 +15329,8 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
     let skipFine = skipFineStored;
     let pay;
     let fineTotal;
+    // Такси в pay: ТП и офис — как раньше; склад/водители — добавить; магазин (shop) — без изменений.
+    let taxiIncluded = false;
 
     if (sales) {
         workedDays = presenceDays;
@@ -15335,6 +15340,7 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         salesPlanBonus = salesPlanBonusForEmployee(employee.id, selectedMonth);
         kpiBonus = salesPlanBonus;
         pay = accrued + salesPlanBonus - lateAmount - fines - skipFine - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
+        taxiIncluded = true;
     } else if (payrollHome) {
         workedDays = hourDays;
         accrued = Math.round(hourDays * Number(rate || 0));
@@ -15344,6 +15350,10 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         skipFine = 0;
         fineTotal = fines + lateAmount;
         pay = accrued + kpiBonus + bonus - fines - lateAmount - advance - products + vacationPay - taxes;
+        if (homeCode === "warehouse" || homeCode === "drivers") {
+            pay += taxiTotal;
+            taxiIncluded = true;
+        }
     } else {
         // Офис и прочие не-payrollHome: оклад/такси прежние; KPI офиса — только с OFFICE_MANAGED_KPI_FROM.
         workedDays = hourDays;
@@ -15351,9 +15361,10 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         skipFine = 0;
         fineTotal = fines + lateAmount;
         salesPlanBonus = salesPlanBonusForEmployee(employee.id, selectedMonth);
-        if (officeManagedKpi) kpiBonusOnly = shopEmployeeBonusTotal(employee.id, selectedMonth);
+        if (officeManagedKpi) kpiBonusOnly = officeEmployeeBonusTotal(employee.id, selectedMonth);
         kpiBonus = kpiBonusOnly + salesPlanBonus;
         pay = accrued + kpiBonus - lateAmount - fines - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
+        taxiIncluded = true;
     }
 
     if (monthOverride) selectedMonth = monthKeep;
@@ -15393,6 +15404,7 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         products: products,
         taxiDaily: taxiDaily,
         taxiTotal: taxiTotal,
+        taxiIncluded: !!taxiIncluded,
         vacationPay: vacationPay,
         taxes: taxes,
         issued: !!adj.issued,
@@ -27380,6 +27392,104 @@ function officePayrollBlocksSharedKpiMutation(def) {
     return !!(view && view.id === "office" && isPayrollSharedCrossDeptKpi(def));
 }
 
+function isOfficeKpiScopeAssignment(a) {
+    if (!a) return false;
+    const eid = a.employee_id || a.employeeId;
+    if (eid !== OFFICE_KPI_SCOPE_EMP_ID) return false;
+    return a.scope === OFFICE_KPI_SCOPE_MARK || a.office_scope === true;
+}
+
+/** Запись-маркер офисной активности общего KPI (хранит office_months, назначения сотрудников не трогает). */
+function findOfficeKpiScopeAssignment(kpiId) {
+    const id = String(kpiId || "");
+    if (!id) return null;
+    const hits = (ensureShopPayroll().assignments || []).filter(function (a) {
+        return isOfficeKpiScopeAssignment(a) && a.kpi_id === id;
+    });
+    if (!hits.length) return null;
+    hits.sort(function (a, b) {
+        return String(b.validFrom || b.valid_from || "").localeCompare(String(a.validFrom || a.valid_from || ""));
+    });
+    return hits[0];
+}
+
+/**
+ * Офисная галочка «Активно» для общего KPI.
+ * По умолчанию включено. Месяцы до OFFICE_MANAGED_KPI_FROM на расчёт не влияют.
+ */
+function isOfficeSharedKpiActive(kpiId, month) {
+    const m = String(month || selectedMonth || "");
+    const key = m.length >= 7 ? m.slice(0, 7) : m;
+    if (!officeUsesManagedKpi(key)) return true;
+    const rec = findOfficeKpiScopeAssignment(kpiId);
+    if (!rec) return true;
+    const map = rec.office_months;
+    if (!map || typeof map !== "object") return rec.is_active !== false;
+    if (Object.prototype.hasOwnProperty.call(map, key)) return map[key] !== false;
+    const earlier = Object.keys(map).filter(function (k) { return k && k <= key; }).sort();
+    if (!earlier.length) return true;
+    return map[earlier[earlier.length - 1]] !== false;
+}
+
+function ensureOfficeKpiScopeAssignment(kpiId) {
+    let rec = findOfficeKpiScopeAssignment(kpiId);
+    if (rec) {
+        if (!rec.office_months || typeof rec.office_months !== "object") rec.office_months = {};
+        rec.scope = OFFICE_KPI_SCOPE_MARK;
+        rec.office_scope = true;
+        rec.employee_id = OFFICE_KPI_SCOPE_EMP_ID;
+        rec.employeeId = OFFICE_KPI_SCOPE_EMP_ID;
+        return rec;
+    }
+    const payroll = ensureShopPayroll();
+    rec = {
+        id: generateKpiAssignId(),
+        employee_id: OFFICE_KPI_SCOPE_EMP_ID,
+        employeeId: OFFICE_KPI_SCOPE_EMP_ID,
+        kpi_id: kpiId,
+        scope: OFFICE_KPI_SCOPE_MARK,
+        office_scope: true,
+        office_months: {},
+        validFrom: OFFICE_MANAGED_KPI_FROM,
+        valid_from: OFFICE_MANAGED_KPI_FROM,
+        validTo: null,
+        valid_to: null,
+        is_active: true
+    };
+    payroll.assignments.push(rec);
+    return rec;
+}
+
+/** Вкл/выкл общего KPI только для офиса (узкий OPS assignments, без правки kpiDefs). */
+function setOfficeSharedKpiActive(kpiId, on) {
+    if (!canEditShopPayrollRules()) return;
+    const view = payrollViewFromSection();
+    if (!view || view.id !== "office") return;
+    if (!kpiId) return;
+    const monthKey = String(selectedMonth || "").slice(0, 7);
+    if (!officeUsesManagedKpi(monthKey)) {
+        toast("Офисная активность KPI действует с " + OFFICE_MANAGED_KPI_FROM + ".", "info");
+        renderShopSalaryRules(PAYROLL_VIEWS.office);
+        return;
+    }
+    const rec = ensureOfficeKpiScopeAssignment(kpiId);
+    rec.office_months[monthKey] = !!on;
+    rec.is_active = true;
+    saveShopPayrollKpiAssignments();
+    renderPayrollView(PAYROLL_VIEWS.office);
+}
+
+/** Сумма KPI офиса с учётом офисной галочки «Активно» (назначения сохраняются). */
+function officeEmployeeBonusTotal(employeeId, month) {
+    const m = month || selectedMonth;
+    return shopEmployeeBonusLines(employeeId, m).filter(function (line) {
+        const kid = line.rule && line.rule.kpi_id;
+        if (!kid) return true;
+        if (!isPayrollSharedCrossDeptKpi(line.rule)) return true;
+        return isOfficeSharedKpiActive(kid, m);
+    }).reduce(function (s, line) { return s + line.amount; }, 0);
+}
+
 function kpiDefDepartment(d) {
     return (d && (d.department_id || d.departmentId)) || "shop";
 }
@@ -29619,11 +29729,18 @@ function renderShopSalaryRules(view) {
         const inactive = def.active === false;
         const sharedBudget = isShopKpiSharedBudget(def);
         if (officePayrollBlocksSharedKpiMutation(def)) {
+            const officeOn = isOfficeSharedKpiActive(kpiId, selectedMonth);
+            const canOfficeToggle = canEditShopPayrollRules() && officeUsesManagedKpi(selectedMonth);
             html += "<tr><td><div class=\"shop-kpi-name\">" + escapeHtml(shopKpiName(def)) + "</div>"
-                + '<div class="shop-kpi-mini">общее правило · только просмотр'
+                + '<div class="shop-kpi-mini">общее правило · план/премия только просмотр'
                 + (ts730 ? " · 7:30" : "")
-                + (inactive ? " · выключен" : "") + "</div>"
-                + '<div class="shop-kpi-mini">Включение сотрудникам офиса — во вкладке «Назначение KPI».</div></td>'
+                + (inactive ? " · выключено в общем правиле" : "") + "</div>"
+                + '<label class="shop-kpi-mini" style="display:block;margin-top:4px"><input type="checkbox"'
+                + (officeOn ? " checked" : "")
+                + (canOfficeToggle ? "" : " disabled")
+                + " onchange=\"setOfficeSharedKpiActive('" + kpiId + "',this.checked)\"> Активно</label>"
+                + '<div class="shop-kpi-mini">Только для офиса с ' + OFFICE_MANAGED_KPI_FROM
+                + ". Назначения сотрудников не удаляются. Магазин/склад/водители не затрагиваются.</div></td>"
                 + "<td><div class=\"shop-kpi-mini\">" + escapeHtml(shopKpiFactSourceLabel(def)) + "</div></td>"
                 + "<td>" + blankZero(def.plan || 0) + "</td>"
                 + "<td>" + moneyFlex(shopKpiBudget(def)) + "</td>"
@@ -31101,7 +31218,7 @@ function renderSalary() {
         if (data.salesRep && data.skipFine) {
             bits.push('<div class="shop-kpi-mini">Неотработанные дни ТП: −' + money(data.skipFine) + "</div>");
         }
-        if (!data.payrollHome && data.taxiTotal) {
+        if (data.taxiIncluded && data.taxiTotal) {
             bits.push('<div class="shop-kpi-mini">Такси +' + money(data.taxiTotal) + "</div>");
         }
         return bits.join("");
@@ -31578,7 +31695,8 @@ function addSalarySums(dst, data) {
     dst.advance += data.advance;
     dst.products += data.products;
     dst.workedDays += Number(data.workedDays || 0);
-    dst.taxiTotal += data.taxiTotal;
+    // В итог такси только если оно реально вошло в pay (офис/ТП/склад/водители).
+    dst.taxiTotal += data.taxiIncluded ? Number(data.taxiTotal || 0) : 0;
     dst.vacationPay += data.vacationPay;
     dst.taxes += data.taxes;
     dst.pay += data.pay;
