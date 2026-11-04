@@ -4770,6 +4770,9 @@
         <button type="button" class="nav-btn" data-for="summary" data-section="shopSalary" onclick="showSection('shopSalary', this)">
             🏪 Зарплата Володарского
         </button>
+        <button type="button" class="nav-btn" data-for="summary" data-section="officeSalary" onclick="showSection('officeSalary', this)">
+            🏢 Зарплата офиса
+        </button>
         <button type="button" class="nav-btn" data-for="summary" data-section="warehouseSalary" onclick="showSection('warehouseSalary', this)">
             📦 Зарплата Склада
         </button>
@@ -5371,6 +5374,80 @@
                         </div>
                     </div>
                     <div id="shopSalarySettingsBody"></div>
+                </div>
+            </section>
+
+
+            <!-- =================================================
+                 ЗАРПЛАТА ОФИСА — shopPayroll + department_id=office;
+                 оклад/такси как в общей ветке; KPI с 2026-10
+            ================================================== -->
+            <section id="officeSalary" class="section">
+                <div class="card">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Зарплата офиса</div>
+                            <div class="note">
+                                Оклад = отработанные часы / 8 × ставка (как в общей зарплате). Такси, отпускные и ручные премии без изменений.
+                                С октября 2026 KPI начисляются только по правилам и назначениям; автопремия 125 ₽ за 7:30 отключена.
+                                Общее правило «Приход в 7:30» не переписывается — включайте сотрудникам через «Назначение KPI».
+                            </div>
+                        </div>
+                        <div class="toolbar">
+                            <button type="button" class="metrics-tab active" data-pay-panel="table" onclick="setPayrollPanel('office','table')">Таблица</button>
+                            <button type="button" class="metrics-tab" data-pay-panel="rules" id="officeSalaryRulesTab" onclick="setPayrollPanel('office','rules')">Правила KPI</button>
+                            <button type="button" class="metrics-tab" data-pay-panel="settings" id="officeSalarySettingsTab" onclick="setPayrollPanel('office','settings')">Назначение KPI</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card" id="officeSalaryTableCard">
+                    <div class="table-wrapper">
+                        <table class="shop-pay-table">
+                            <thead>
+                                <tr>
+                                    <th>Сотрудник</th>
+                                    <th class="shop-pay-days">Отработано<br>дней</th>
+                                    <th>Оклад</th>
+                                    <th>Бонус по метрикам</th>
+                                    <th title="Удержание, ручной ввод за месяц">Продукты</th>
+                                    <th title="Удержание, ручной ввод за месяц">Налог</th>
+                                    <th class="shop-pay-vac" title="Начисление, ручной ввод за месяц">Отпускные</th>
+                                    <th>Премия</th>
+                                    <th>Штраф</th>
+                                    <th>Аванс</th>
+                                    <th>Итог</th>
+                                </tr>
+                            </thead>
+                            <tbody id="officeSalaryBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card" id="officeSalaryRulesCard" style="display:none;">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">KPI / Правила начисления</div>
+                            <div class="note">Новые правила создаются с department_id=office. Общие правила (в т.ч. 7:30) здесь только для просмотра и назначения — без изменения периодов и сумм.</div>
+                        </div>
+                        <div class="toolbar">
+                            <button type="button" class="btn btn-primary btn-small" onclick="addShopKpiDef()">+ Создать KPI</button>
+                        </div>
+                    </div>
+                    <div id="officeSalaryRulesBody"></div>
+                </div>
+                <div class="card" id="officeSalarySettingsCard" style="display:none;">
+                    <div class="card-header">
+                        <div>
+                            <div class="card-title">Назначение KPI</div>
+                            <div class="note">Слева только включение KPI. План и премия офисных правил — во вкладке «Правила KPI». Для 7:30 достаточно галочки назначения.</div>
+                        </div>
+                        <div class="toolbar">
+                            <div class="form-group">
+                                <label for="officeSalaryEmployeeSel">Сотрудник</label>
+                                <select id="officeSalaryEmployeeSel" onchange="setPayrollEditEmployee('office',this.value)"></select>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="officeSalarySettingsBody"></div>
                 </div>
             </section>
 
@@ -6317,6 +6394,8 @@ const SUMMARY_ROLES = [
 ];
 const SKIP_FINE_PER_DAY = 1500;
 const EARLY_730_PAY = 125;
+/** С этого месяца офис: без авто-125 ₽, только назначенные KPI из shopPayroll. */
+const OFFICE_MANAGED_KPI_FROM = "2026-10";
 const SALES_REP_POSITION = "Торговый представитель";
 const REP_BAG_PAY = 5;
 const DEPT_POSITIONS = {
@@ -6409,9 +6488,9 @@ let revisionFocusFolderId = "";
 let revisionEscBound = false;
 let shopSalaryPanel = "table";
 let shopSalaryEditEmployeeId = "";
-let payrollPanelByView = { shop: "table", warehouse: "table", drivers: "table" };
-let payrollEditEmployeeByView = { shop: "", warehouse: "", drivers: "" };
-let payrollRulesModeByView = { shop: "active", warehouse: "active", drivers: "active" };
+let payrollPanelByView = { shop: "table", office: "table", warehouse: "table", drivers: "table" };
+let payrollEditEmployeeByView = { shop: "", office: "", warehouse: "", drivers: "" };
+let payrollRulesModeByView = { shop: "active", office: "active", warehouse: "active", drivers: "active" };
 const PAYROLL_VIEWS = {
     shop: {
         id: "shop",
@@ -6420,6 +6499,14 @@ const PAYROLL_VIEWS = {
         workTabId: "",
         title: "Зарплата Володарского",
         empty: "В магазине Володарского нет сотрудников в табеле за этот месяц."
+    },
+    office: {
+        id: "office",
+        sectionId: "officeSalary",
+        departmentId: "office",
+        workTabId: "",
+        title: "Зарплата офиса",
+        empty: "В офисе нет сотрудников в табеле за этот месяц."
     },
     warehouse: {
         id: "warehouse",
@@ -9698,6 +9785,13 @@ function departmentGroupClass(w) {
 function allowsEarly730(w) {
     const code = w && w.code;
     return code === "shop" || code === "office" || code === "warehouse" || code === "drivers";
+}
+
+/** Офис: управляемые KPI вместо авто-EARLY_730_PAY (с OFFICE_MANAGED_KPI_FROM). */
+function officeUsesManagedKpi(month) {
+    const raw = String(month || selectedMonth || "");
+    const m = raw.length >= 7 ? raw.slice(0, 7) : raw;
+    return !!(m && m >= OFFICE_MANAGED_KPI_FROM);
 }
 
 function changeSummaryDeptFilter(value) {
@@ -15219,7 +15313,9 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
     const taxes = parseMoney(adj.taxes, 0);
     const taxiTotal = Math.round(taxiDaily * presenceDays);
     const skipFineStored = adj.skipFine == null ? acc.skip * SKIP_FINE_PER_DAY : parseMoney(adj.skipFine, 0);
-    const earlyPay = acc.earlyDays * EARLY_730_PAY;
+    const officeManagedKpi = homeCode === "office" && officeUsesManagedKpi(selectedMonth);
+    // Офис с 2026-10: без авто-125 ₽; shop/warehouse/drivers/ТП — без изменений.
+    const earlyPay = (officeManagedKpi ? 0 : acc.earlyDays * EARLY_730_PAY);
     const bonusTotal = bonus + earlyPay;
     const lateAmount = Math.round(Number(rate || 0) * acc.lateMinutes / 480);
     let workedDays;
@@ -15249,13 +15345,15 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
         fineTotal = fines + lateAmount;
         pay = accrued + kpiBonus + bonus - fines - lateAmount - advance - products + vacationPay - taxes;
     } else {
+        // Офис и прочие не-payrollHome: оклад/такси прежние; KPI офиса — только с OFFICE_MANAGED_KPI_FROM.
         workedDays = hourDays;
         accrued = Math.round(hourDays * Number(rate || 0));
         skipFine = 0;
         fineTotal = fines + lateAmount;
         salesPlanBonus = salesPlanBonusForEmployee(employee.id, selectedMonth);
-        kpiBonus = salesPlanBonus;
-        pay = accrued + salesPlanBonus - lateAmount - fines - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
+        if (officeManagedKpi) kpiBonusOnly = shopEmployeeBonusTotal(employee.id, selectedMonth);
+        kpiBonus = kpiBonusOnly + salesPlanBonus;
+        pay = accrued + kpiBonus - lateAmount - fines - products - advance + taxiTotal + bonusTotal + vacationPay - taxes;
     }
 
     if (monthOverride) selectedMonth = monthKeep;
@@ -17129,7 +17227,7 @@ function allowedSections() {
         const list = [];
         if (userHasPerm("timesheet", "view")) list.push("timesheet");
         if (userHasPerm("salary", "view")) {
-            list.push("salary", "repSalary", "shopSalary", "warehouseSalary", "driversSalary");
+            list.push("salary", "repSalary", "shopSalary", "officeSalary", "warehouseSalary", "driversSalary");
         }
         if (canVacationPlan()) list.push("salary-vacation-plan");
         if (userHasPerm("discipline", "view")) list.push("discipline");
@@ -17206,6 +17304,7 @@ function sectionTitle(id) {
         "salary-vacation-plan": "График выплаты отпускных",
         repSalary: "Зарплата ТП",
         shopSalary: "Зарплата Володарского",
+        officeSalary: "Зарплата офиса",
         warehouseSalary: "Зарплата Склада",
         driversSalary: "Зарплата Водителей",
         summaryStaff: "Сотрудники",
@@ -17382,6 +17481,7 @@ function showSection(id, button) {
     if (id === "salary-vacation-plan") runSection(renderSalaryVacationPlan);
     if (id === "repSalary") runSection(renderRepSalary);
     if (id === "shopSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.shop); });
+    if (id === "officeSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.office); });
     if (id === "warehouseSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.warehouse); });
     if (id === "driversSalary") runSection(function () { renderPayrollView(PAYROLL_VIEWS.drivers); });
     if (id === "summaryStaff") runSection(renderSummaryStaff);
@@ -17439,6 +17539,7 @@ function refreshAll() {
         run(renderRepSalary);
         run(renderShopSalary);
         if (typeof PAYROLL_VIEWS !== "undefined") {
+            run(function () { renderPayrollView(PAYROLL_VIEWS.office); });
             run(function () { renderPayrollView(PAYROLL_VIEWS.warehouse); });
             run(function () { renderPayrollView(PAYROLL_VIEWS.drivers); });
         }
@@ -21034,7 +21135,8 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
         if (currentSection === "summaryStaff" || currentSection === "users") {
             try { renderSummaryStaff(); } catch (err) { console.error(err); }
         }
-        if (currentSection === "shopSalary" || currentSection === "warehouseSalary" || currentSection === "driversSalary") {
+        if (currentSection === "shopSalary" || currentSection === "officeSalary"
+            || currentSection === "warehouseSalary" || currentSection === "driversSalary") {
             renderPayrollView(payrollViewFromSection());
         }
         refreshMetricsUi();
@@ -27260,9 +27362,22 @@ function shopSalaryEmployees() {
 }
 
 function payrollViewFromSection() {
+    if (currentSection === "officeSalary") return PAYROLL_VIEWS.office;
     if (currentSection === "warehouseSalary") return PAYROLL_VIEWS.warehouse;
     if (currentSection === "driversSalary") return PAYROLL_VIEWS.drivers;
     return PAYROLL_VIEWS.shop;
+}
+
+/** Общие KPI (7:30 / department_id=all) нельзя менять из раздела офиса. */
+function isPayrollSharedCrossDeptKpi(def) {
+    if (!def) return false;
+    if (typeof isShopTimesheet730Kpi === "function" && isShopTimesheet730Kpi(def)) return true;
+    return kpiDefDepartment(def) === "all";
+}
+
+function officePayrollBlocksSharedKpiMutation(def) {
+    const view = typeof payrollViewFromSection === "function" ? payrollViewFromSection() : null;
+    return !!(view && view.id === "office" && isPayrollSharedCrossDeptKpi(def));
 }
 
 function kpiDefDepartment(d) {
@@ -28609,6 +28724,7 @@ function setPayrollEditEmployee(viewId, employeeId) {
 }
 
 function payrollViewPrefix(view) {
+    if (view.id === "office") return "officeSalary";
     if (view.id === "warehouse") return "warehouseSalary";
     if (view.id === "drivers") return "driversSalary";
     return "shopSalary";
@@ -28620,7 +28736,8 @@ function openShopEmployeeKpiFromStaff(employeeId) {
         return;
     }
     const home = employeeHomeDeptCode(employeeId);
-    const viewId = home === "warehouse" ? "warehouse" : (home === "drivers" ? "drivers" : "shop");
+    const viewId = home === "office" ? "office"
+        : (home === "warehouse" ? "warehouse" : (home === "drivers" ? "drivers" : "shop"));
     const view = PAYROLL_VIEWS[viewId];
     payrollEditEmployeeByView[viewId] = employeeId || "";
     if (viewId === "shop") shopSalaryEditEmployeeId = employeeId || "";
@@ -29284,6 +29401,10 @@ function reopenShopKpiDef(kpiId) {
         toast("Правило KPI не найдено.", "error");
         return;
     }
+    if (versions.some(function (d) { return officePayrollBlocksSharedKpiMutation(d); })) {
+        toast("Общее правило нельзя восстанавливать из зарплаты офиса. Используйте назначение KPI.", "error");
+        return;
+    }
     if (shopKpiDefForMonth(kpiId, monthKey)) {
         toast("Правило уже действует в " + monthLabel(monthKey) + ". Новая версия не создана.", "error");
         return;
@@ -29497,6 +29618,20 @@ function renderShopSalaryRules(view) {
         const ts730 = isShopTimesheet730Kpi(def);
         const inactive = def.active === false;
         const sharedBudget = isShopKpiSharedBudget(def);
+        if (officePayrollBlocksSharedKpiMutation(def)) {
+            html += "<tr><td><div class=\"shop-kpi-name\">" + escapeHtml(shopKpiName(def)) + "</div>"
+                + '<div class="shop-kpi-mini">общее правило · только просмотр'
+                + (ts730 ? " · 7:30" : "")
+                + (inactive ? " · выключен" : "") + "</div>"
+                + '<div class="shop-kpi-mini">Включение сотрудникам офиса — во вкладке «Назначение KPI».</div></td>'
+                + "<td><div class=\"shop-kpi-mini\">" + escapeHtml(shopKpiFactSourceLabel(def)) + "</div></td>"
+                + "<td>" + blankZero(def.plan || 0) + "</td>"
+                + "<td>" + moneyFlex(shopKpiBudget(def)) + "</td>"
+                + "<td>" + blankZeroInt(shopKpiMaxCoef(def)) + " %</td>"
+                + "<td>" + escapeHtml(from || "—") + "</td>"
+                + "<td></td></tr>";
+            return;
+        }
         html += "<tr><td><div class=\"shop-kpi-name\">" + escapeHtml(shopKpiName(def)) + "</div>"
             + '<div class="shop-kpi-mini">' + escapeHtml(shopKpiCalcKindLabel(def))
             + (isShopMaxLimitKpi(def) ? " · лимит персонально по ответственному за пересчёт" : "")
@@ -29590,6 +29725,11 @@ function mutateShopKpiDef(kpiId, patch) {
         def = hits[0];
     }
     if (!def) return;
+    if (officePayrollBlocksSharedKpiMutation(def)) {
+        toast("Общее правило (в т.ч. 7:30) нельзя менять из зарплаты офиса. Включайте через «Назначение KPI».", "error");
+        renderShopSalaryRules(PAYROLL_VIEWS.office);
+        return;
+    }
     const from = shopPeriodMonthKey(def.validFrom || def.valid_from);
     const patchFrom = patch.validFrom != null || patch.valid_from != null
         ? shopPeriodMonthKey(patch.validFrom || patch.valid_from)
@@ -29717,6 +29857,10 @@ function closeShopKpiDef(kpiId) {
     if (!canEditShopPayrollRules()) return;
     const def = shopKpiDefForMonth(kpiId, selectedMonth);
     if (!def) return;
+    if (officePayrollBlocksSharedKpiMutation(def)) {
+        toast("Общее правило нельзя закрывать из зарплаты офиса — это затронет другие подразделения.", "error");
+        return;
+    }
     const monthKey = shopPeriodMonthKey(selectedMonth);
     const from = shopPeriodMonthKey(def.validFrom || def.valid_from || monthKey);
     const closeTo = shiftMonth(monthKey, -1);
@@ -29961,7 +30105,8 @@ function openShopBonusCard(employeeId) {
         return;
     }
     const home = employeeHomeDeptCode(employeeId);
-    const viewId = home === "warehouse" ? "warehouse" : (home === "drivers" ? "drivers" : "shop");
+    const viewId = home === "office" ? "office"
+        : (home === "warehouse" ? "warehouse" : (home === "drivers" ? "drivers" : "shop"));
     payrollEditEmployeeByView[viewId] = employeeId;
     if (viewId === "shop") shopSalaryEditEmployeeId = employeeId;
     setPayrollPanel(viewId, "settings");
