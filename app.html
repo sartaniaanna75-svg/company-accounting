@@ -9703,6 +9703,160 @@ function syncLegacyPinsFromUsers(data) {
     });
 }
 
+/** OPS-путь карточки доступа: users.<user_id>. */
+function wtAccessUserPath(userId) {
+    return "users." + String(userId || "");
+}
+
+/**
+ * Нужен ли legacy-PIN в workspaces для этого user_id.
+ * Обычные usr_* — нет (вход по users.pin_hash).
+ * user_dept_* / слоты SUMMARY_ROLES — да, при смене PIN.
+ */
+function wtAccessUserNeedsLegacyPinSync(userId) {
+    const uid = String(userId || "");
+    if (!uid) return false;
+    if (DEPT_DEFAULTS.some(function (d) { return uid === "user_dept_" + d.code; })) return true;
+    const summary = (appData && appData.workspaces || []).find(function (w) {
+        return w && (w.code === "summary" || w.type === "summary");
+    });
+    return SUMMARY_ROLES.some(function (r) {
+        const bound = (summary && summary.roleUsers && summary.roleUsers[r.role]
+            && summary.roleUsers[r.role].user_id) || ("user_" + r.role);
+        return String(bound) === uid;
+    });
+}
+
+/**
+ * Узкие OPS только для legacy-путей, связанных с userId (после syncLegacyPinsFromUsers).
+ * Не трогает чужие подразделения и чужие role-слоты.
+ */
+function wtAccessUserLegacyPinOps(userId) {
+    const uid = String(userId || "");
+    const ops = [];
+    if (!uid || !appData) return ops;
+    const base = wtLastLoadedPayload || {};
+
+    function pushIfChanged(path) {
+        if (!path) return;
+        let live;
+        let prev;
+        try {
+            live = wtGetByPath(appData, path);
+            prev = wtGetByPath(base, path);
+        } catch (err) {
+            return;
+        }
+        if (wtJsonCanonEqual(live, prev)) return;
+        // Пустой PIN на клиенте после strip — не затираем серверный legacy PIN.
+        if (path.indexOf(".pin") === path.length - 4 && !pinIsSet(live)) return;
+        ops.push({
+            path: path,
+            value: typeof wtCloneJson === "function" ? wtCloneJson(live) : live,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        });
+    }
+
+    DEPT_DEFAULTS.forEach(function (def) {
+        if (uid !== "user_dept_" + def.code) return;
+        pushIfChanged("workspaces." + def.code + ".pin");
+    });
+
+    const summary = (appData.workspaces || []).find(function (w) {
+        return w && (w.code === "summary" || w.type === "summary");
+    });
+    if (summary) {
+        SUMMARY_ROLES.forEach(function (r) {
+            const bound = (summary.roleUsers && summary.roleUsers[r.role]
+                && summary.roleUsers[r.role].user_id) || ("user_" + r.role);
+            if (String(bound) !== uid) return;
+            pushIfChanged("workspaces.summary.roleUsers." + r.role);
+            // rolePins целиком часто вырезан из GET — пишем только слот роли при наличии значения.
+            if (summary.rolePins && pinIsSet(summary.rolePins[r.role])) {
+                pushIfChanged("workspaces.summary.rolePins." + r.role);
+            }
+            if (r.role === "admin" && pinIsSet(summary.pin)) {
+                pushIfChanged("workspaces.summary.pin");
+            }
+        });
+    }
+    return ops;
+}
+
+/**
+ * Узкая запись одного пользователя (users.<id>) + при необходимости legacy PIN.
+ * Без collect всего dirty. При OPS выкл. на сервере — ошибка, без широкого saveApp.
+ */
+function wtPersistAccessUser(userId, options) {
+    options = options || {};
+    const uid = String(userId || "");
+    if (!uid) return Promise.resolve(false);
+    const path = wtAccessUserPath(uid);
+    let userVal = null;
+    try {
+        userVal = findAccessUser(uid);
+    } catch (errFind) {
+        userVal = null;
+    }
+    if (!userVal) return Promise.resolve(false);
+
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return !!ok; },
+            function () { return false; }
+        );
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        toast("Точечное сохранение пользователей недоступно (OPS выключен). Обновите страницу или включите OPS — широкий saveApp для прав отключён.", "error");
+        return Promise.resolve(false);
+    }
+
+    const ops = [{
+        path: path,
+        value: typeof wtCloneJson === "function" ? wtCloneJson(userVal) : userVal,
+        expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+    }];
+    if (options.syncLegacyPins) {
+        const legacy = wtAccessUserLegacyPinOps(uid);
+        for (let i = 0; i < legacy.length; i++) ops.push(legacy[i]);
+    }
+
+    try {
+        ops.forEach(function (op) {
+            if (op && op.path && typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(op.path);
+        });
+    } catch (errMark) {}
+
+    const atomic = ops.length > 1;
+    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: atomic })).then(
+        function (ok) {
+            if (ok) {
+                try {
+                    ops.forEach(function (op) {
+                        if (op && op.path && typeof wtSoftClearDirty === "function") {
+                            wtSoftClearDirty(op.path);
+                        }
+                    });
+                    if (typeof stripLocalSecretsAfterSave === "function") stripLocalSecretsAfterSave();
+                } catch (errClear) {}
+            } else if (!options.silentFail) {
+                toast(options.errorToast
+                    || "Права пользователя не записаны на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение.",
+                    "error");
+            }
+            return !!ok;
+        },
+        function () {
+            if (!options.silentFail) {
+                toast(options.errorToast
+                    || "Права пользователя не записаны на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение.",
+                    "error");
+            }
+            return false;
+        }
+    );
+}
+
 function migrateAppUsers(data) {
     if (wtServerMode) return;
     if (!data || typeof data !== "object") return;
@@ -39137,22 +39291,19 @@ function saveAccessUser(userId) {
     if (role === "admin") prev.legacy_role = "admin";
     else if (prev.legacy_role === "admin") prev.legacy_role = "staff";
     normalizeAccessUser(prev);
+    // Локальная совместимость PIN (summary/dept). На сервер — только связанные пути.
     syncLegacyPinsFromUsers(appData);
     if (wtPutPaused && !wtKeepUnsavedDraft) wtPutPaused = false;
-    const done = saveApp();
+    const syncLegacy = !!pin && wtAccessUserNeedsLegacyPinSync(prev.user_id);
     function afterSaved() {
         closeAccessUserEditor();
         renderAccessUsers();
         renderDeptNow();
         toast("Пользователь сохранён. Вход — по PIN, user_id не изменился.");
     }
-    if (done && typeof done.then === "function") {
-        done.then(function (ok) {
-            if (ok) afterSaved();
-        });
-        return;
-    }
-    afterSaved();
+    Promise.resolve(wtPersistAccessUser(prev.user_id, { syncLegacyPins: syncLegacy })).then(function (ok) {
+        if (ok) afterSaved();
+    });
 }
 
 function renderSummaryUsers() {

@@ -3321,15 +3321,28 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
             "message": "Запись уже изменена другим пользователем.",
             "path": path,
             "server_v": server_v,
-            "server_value": server_value,
-            "your_value": your_value,
+            "server_value": ops_public_value(path, server_value),
+            "your_value": ops_public_value(path, your_value),
             "your_expected_v": expected_v,
         }
     uid = str(user.get("user_id") or "")
     next_payload = set_path_value(payload, path, your_value)
+    # users.* через OPS: как PUT — хешируем новый pin и сохраняем pin_hash, если pin не передан.
+    if path == "users" or path.startswith("users."):
+        next_payload = hash_pins_in_payload(next_payload, payload)
     # set_path_value уже сделал полный _clone — второй полный clone в bump не нужен.
     next_payload = bump_record_meta(next_payload, path, uid, exclusive=True)
     return next_payload, None
+
+
+def ops_public_value(path: str, value: Any) -> Any:
+    """Ответ OPS не должен отдавать pin/pin_hash (как GET /api/state)."""
+    p = str(path or "")
+    if p == "users" or p.startswith("users."):
+        return strip_secrets(value)
+    if p.endswith(".pin") or p.endswith(".password") or ".rolePins" in p:
+        return None if p.endswith(".pin") or p.endswith(".password") else strip_secrets(value)
+    return value
 
 
 def handle_post_state_op(environ):
@@ -3380,11 +3393,12 @@ def handle_post_state_op(environ):
                 )
                 return json_bytes(op_err, status)
             expected = int(state.get("version") or 0)
+            op_path = normalize_op_path(op.get("path")) or ""
             result_body = {
                 "ok": True,
-                "path": normalize_op_path(op.get("path")),
-                "record_v": record_version(next_payload, normalize_op_path(op.get("path")) or ""),
-                "value": get_path_value(next_payload, normalize_op_path(op.get("path")) or ""),
+                "path": op_path,
+                "record_v": record_version(next_payload, op_path),
+                "value": ops_public_value(op_path, get_path_value(next_payload, op_path)),
             }
             if idem:
                 next_payload = remember_idempotency(next_payload, idem, result_body)
@@ -3447,7 +3461,7 @@ def apply_state_ops_batch(
                 "status": "saved",
                 "path": path,
                 "record_v": record_version(next_payload, path),
-                "value": get_path_value(next_payload, path),
+                "value": ops_public_value(path, get_path_value(next_payload, path)),
             }
         )
     if atomic and any(r.get("status") != "saved" for r in results):

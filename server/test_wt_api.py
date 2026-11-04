@@ -6639,6 +6639,247 @@ class WtOpsFoundationTests(unittest.TestCase):
         )
 
 
+class WtAccessUserOpsTests(unittest.TestCase):
+    """Узкое сохранение прав: users.<user_id> через OPS. FakeConn, без live БД."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        # Хеши как после PUT — вход по pin_hash.
+        payload = wt_api.hash_pins_in_payload(payload, None)
+        self.store = {
+            "payload": payload,
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id="user_admin", pin="5555"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def _user(self, user_id):
+        return next(u for u in self.store["payload"]["users"] if u["user_id"] == user_id)
+
+    def test_one_perm_checkbox_via_ops(self):
+        cookie, _ = self.login()
+        row = json.loads(json.dumps(self._user("usr_001")))
+        row.pop("pin", None)
+        row.pop("password", None)
+        row.pop("pin_hash", None)
+        perms = dict(row.get("permissions") or {})
+        perms["timesheet"] = "none"
+        row["permissions"] = perms
+        st, data, raw, _ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": row}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        stored = self._user("usr_001")
+        self.assertEqual(stored["permissions"].get("timesheet"), "none")
+        self.assertTrue(str(stored.get("pin_hash") or "").startswith("scrypt$"))
+        self.assertNotIn("pin", stored)
+        self.assertNotIn("1111", raw or "")
+        self.assertNotIn("pin_hash", json.dumps(data.get("value") or {}))
+
+    def test_several_perms_role_departments(self):
+        cookie, _ = self.login()
+        row = json.loads(json.dumps(self._user("usr_001")))
+        row.pop("pin", None)
+        row.pop("pin_hash", None)
+        row["role"] = "manager"
+        row["departments"] = ["shop", "summary"]
+        row["permissions"] = {
+            "timesheet": "edit",
+            "metricsInput": "edit",
+            "salaryCalc": "edit",
+            "salary": "edit",
+            "settings": "none",
+        }
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": row}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        stored = self._user("usr_001")
+        self.assertEqual(stored["role"], "manager")
+        self.assertEqual(stored["departments"], ["shop", "summary"])
+        self.assertEqual(stored["permissions"]["salaryCalc"], "edit")
+
+    def test_persist_and_reread(self):
+        cookie, _ = self.login()
+        row = json.loads(json.dumps(self._user("usr_001")))
+        row.pop("pin", None)
+        row.pop("pin_hash", None)
+        row["display_name"] = "ВИКУЛИШНА-NEW"
+        row["permissions"] = dict(row.get("permissions") or {})
+        row["permissions"]["revision"] = "edit"
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": row}},
+            cookie=cookie,
+        )
+        st, got, raw, _ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st.startswith("200"), st)
+        reloaded = next(u for u in got["payload"]["users"] if u["user_id"] == "usr_001")
+        self.assertEqual(reloaded["display_name"], "ВИКУЛИШНА-NEW")
+        self.assertEqual(reloaded["permissions"]["revision"], "edit")
+        self.assertNotIn("pin", reloaded)
+        self.assertNotIn("pin_hash", reloaded)
+        self.assertNotIn("pin_hash", raw or "")
+
+    def test_two_admins_different_users(self):
+        cookie, _ = self.login()
+        a = json.loads(json.dumps(self._user("user_admin")))
+        a.pop("pin", None)
+        a.pop("pin_hash", None)
+        a["display_name"] = "Admin-A"
+        b = json.loads(json.dumps(self._user("usr_001")))
+        b.pop("pin", None)
+        b.pop("pin_hash", None)
+        b["display_name"] = "Staff-B"
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.user_admin", "expected_v": 0, "value": a}},
+            cookie=cookie,
+        )
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": b}},
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        self.assertTrue(st2.startswith("200"), st2)
+        self.assertEqual(self._user("user_admin")["display_name"], "Admin-A")
+        self.assertEqual(self._user("usr_001")["display_name"], "Staff-B")
+        self.assertEqual(d1.get("record_v"), 1)
+        self.assertEqual(d2.get("record_v"), 1)
+
+    def test_same_user_conflict(self):
+        cookie, _ = self.login()
+        row = json.loads(json.dumps(self._user("usr_001")))
+        row.pop("pin", None)
+        row.pop("pin_hash", None)
+        row["display_name"] = "First"
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": row}},
+            cookie=cookie,
+        )
+        stale = json.loads(json.dumps(row))
+        stale["display_name"] = "Stale"
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": stale}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("409"), st)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(self._user("usr_001")["display_name"], "First")
+        # другой пользователь не затронут
+        self.assertEqual(self._user("user_admin")["display_name"], ADMIN["display_name"])
+
+    def test_non_admin_forbidden(self):
+        cookie, _ = self.login("usr_001", "1111")
+        row = json.loads(json.dumps(self._user("usr_001")))
+        row.pop("pin", None)
+        row.pop("pin_hash", None)
+        row["permissions"] = dict(row.get("permissions") or {})
+        row["permissions"]["settings"] = "edit"
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": row}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+
+    def test_pin_change_login_and_others_untouched(self):
+        cookie, _ = self.login()
+        other_hash = self._user("user_admin")["pin_hash"]
+        row = json.loads(json.dumps(self._user("usr_001")))
+        row["pin"] = "9999"
+        row.pop("pin_hash", None)
+        st, data, raw, _ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "users.usr_001", "expected_v": 0, "value": row}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        stored = self._user("usr_001")
+        self.assertTrue(str(stored.get("pin_hash") or "").startswith("scrypt$"))
+        self.assertNotIn("pin", stored)
+        self.assertNotIn("9999", raw or "")
+        self.assertTrue(wt_api.verify_pin("9999", stored["pin_hash"]))
+        self.assertFalse(wt_api.verify_pin("1111", stored["pin_hash"]))
+        self.assertEqual(self._user("user_admin")["pin_hash"], other_hash)
+        # вход новым PIN
+        st_login, *_ = call("POST", "/api/login", {"user_id": "usr_001", "pin": "9999"})
+        self.assertTrue(st_login.startswith("200"), st_login)
+
+    def test_client_markers_narrow_persist_no_wide_saveapp(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = (Path(root) / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function wtPersistAccessUser(", html)
+        self.assertIn("function wtAccessUserPath(", html)
+        save_fn = html.split("function saveAccessUser(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("wtPersistAccessUser(", save_fn)
+        self.assertIn("syncLegacyPinsFromUsers", save_fn)
+        self.assertNotIn("saveApp()", save_fn)
+        persist_fn = html.split("function wtPersistAccessUser(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("wtDomainWriterSave({ ops:", persist_fn)
+        self.assertIn("OPS выключен", persist_fn)
+        # При OPS выкл. на сервере — не широкий saveApp
+        self.assertIn("return Promise.resolve(false)", persist_fn)
+
+    def test_ops_disabled_blocks_user_op(self):
+        cookie, _ = self.login()
+        with patch.dict(os.environ, {"WT_OPS_ENABLED": "0"}, clear=False):
+            st, data, *_ = call(
+                "POST",
+                "/api/state/op",
+                {
+                    "op": {
+                        "path": "users.usr_001",
+                        "expected_v": 0,
+                        "value": {"user_id": "usr_001", "display_name": "X"},
+                    }
+                },
+                cookie=cookie,
+            )
+            self.assertTrue(st.startswith("503"), st)
+            self.assertEqual(data.get("error"), "ops disabled")
+
+
 class WtVacationPlanOpsTests(unittest.TestCase):
     """
     Узкое сохранение графика отпускных: vacationPlans.<year>.<vacation_plan_id>.
