@@ -12146,6 +12146,18 @@ function wtJsonCanonEqual(a, b) {
     }
 }
 
+/* Строки остатков и статусов Финконтроля пишет fr-mod.js построчно по ключу с версией строки
+   (frPersistRows / frFlushRowSideEffects). Корень целиком не отправляем и не помечаем dirty:
+   широкий лист затирал строки других сотрудников.
+   Транзиты пишутся только по transit_id (frPersistOpsWithTransits); корневой лист нёс лишь
+   локальную нормализацию — в т.ч. transit_id, присвоенный старому транзиту без номера. */
+const WT_FR_ROW_KEYED_ROOTS = {
+    "financeRec.openings": 1,
+    "financeRec.day_closings": 1,
+    "financeRec.period_states": 1,
+    "financeRec.money_transits": 1
+};
+
 function wtCollectChangedLeaves(baseRoot, draftRoot) {
     const out = [];
     const META = { _wt_records: 1, _wt_idempotency: 1, employeeRemovals: 1, employeeCreateIdempotency: 1 };
@@ -12156,6 +12168,7 @@ function wtCollectChangedLeaves(baseRoot, draftRoot) {
             const top = path.split(".", 1)[0];
             if (META[top] || top.charAt(0) === "_") return;
             if (!WT_DOMAIN_TRACKED_TOPS[top]) return;
+            if (WT_FR_ROW_KEYED_ROOTS[path]) return;
         }
         if (path === "") {
             const lObj = left && typeof left === "object" && !Array.isArray(left) ? left : {};
@@ -12656,6 +12669,10 @@ function wtDomainWriterSave(options) {
         return jobPut;
     }
 
+    // Строки остатков/статусов FR не входят в collect — их побочные изменения пишутся по ключу.
+    try {
+        if (typeof frScheduleRowFlush === "function") frScheduleRowFlush();
+    } catch (errFrRows) {}
     // Предварительно пометить dirty по текущему diff — SoftSync не сотрёт черновик,
     // пока запрос ждёт wtOpsChain. Сами OPS собираем заново внутри очереди.
     // Явные ops (KPI и т.п.) — только их пути; полный collect не раздувает dirty.
@@ -12903,7 +12920,7 @@ function wtDomainWriterSave(options) {
     // Разрешение конфликтов — вне звена очереди: повторные записи встают в wtOpsChain после него.
     return job.then(function (outcome) {
         if (outcome && typeof outcome === "object" && Array.isArray(outcome.wtConflicts)) {
-            return wtDomainWriterResolveConflicts(outcome, atomic, options._conflictChoice || "");
+            return wtDomainWriterResolveConflicts(outcome, atomic, options._conflictChoice || "", options._conflictRound || 0);
         }
         return outcome;
     });
@@ -12949,7 +12966,11 @@ const WT_KEYED_LIST_PATHS = {
     "customerReturns.items": "return_id",
     "shopRevision.groups": "id",
     "shopRevision.folders": "id",
-    "financeRec.operations": "finance_operation_id"
+    "financeRec.operations": "finance_operation_id",
+    // Записи по id (OPS) поднимают версию корня: широкий писатель на 409 сливает по id, не затирает.
+    "financeRec.audit": "audit_id",
+    "financeRec.import_batches": "import_batch_id",
+    "financeRec.money_transits": "transit_id"
 };
 
 function wtKeyedListKey(path) {
@@ -13102,6 +13123,8 @@ function wtKeyedListConflictLabel(path) {
     if (path === "shopRevision.groups") return "Ревизия — группы";
     if (path === "shopRevision.folders") return "Ревизия — подпапки";
     if (path === "financeRec.operations") return "Финконтроль — операции";
+    if (path === "financeRec.audit") return "Финконтроль — журнал";
+    if (path === "financeRec.import_batches") return "Финконтроль — партии импорта";
     return path;
 }
 
@@ -13208,7 +13231,10 @@ function wtDomainWriterAdoptServerValue(c) {
  * Разрешение конфликтов batch — строго вне звена wtOpsChain.
  * true — всё, что было на экране, подтверждено сервером; false — есть незаписанное.
  */
-function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice) {
+const WT_ATOMIC_YOURS_MAX_ROUNDS = 5;
+
+function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice, conflictRound) {
+    conflictRound = Number(conflictRound) || 0;
     const conflicts = outcome.wtConflicts || [];
     let allWritten = !outcome.failedCount;
     const retryPaths = {};
@@ -13228,6 +13254,10 @@ function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice) {
                 const r = wtKeyedListResolveConflict(c);
                 if (r === "merged") retryPaths[c.path] = true;
                 else if (r !== "server_same") allWritten = false;
+                // Атомарный пакет сервер отклонил целиком: повторить все его пути, не только слитый список.
+                if (atomic && (r === "merged" || r === "server_same")) {
+                    (outcome.opsPaths || []).forEach(function (p) { retryPaths[p] = true; });
+                }
                 return;
             }
             // Без права записи справочника: не показывать окно перезаписи, принять сервер и снять ложный dirty.
@@ -13245,21 +13275,34 @@ function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice) {
                 your_expected_v: c.your_expected_v
             };
             // Атомарная группа (ячейка метрики + зеркало) — одно значение: выбор «мой вариант»
-            // уже сделан для первой ячейки, второй раз не спрашиваем.
-            const decided = (atomic && presetChoice === "yours")
-                ? wtSaveRecordOp(c.path, conflictArg.your_value, {
-                    expected_v: c.server_v,
-                    forceEnable: true,
-                    idempotency_key: wtNewIdempotencyKey()
-                }).then(function (res) {
-                    return res && res.status === "saved" ? "yours" : wtResolveRecordConflict(conflictArg);
-                })
-                : wtResolveRecordConflict(conflictArg);
+            // уже сделан для первой ячейки, второй раз не спрашиваем (ограничено числом повторов).
+            // Атомарный пакет не пишется по частям: «мой вариант» — только в общем повторе.
+            let decided;
+            if (atomic && presetChoice === "yours" && conflictRound < WT_ATOMIC_YOURS_MAX_ROUNDS) {
+                decided = Promise.resolve("yours");
+            } else if (atomic) {
+                decided = wtResolveRecordConflict(conflictArg, { deferWrite: true });
+            } else {
+                decided = wtResolveRecordConflict(conflictArg);
+            }
             return decided.then(function (choice) {
                 if (choice === "yours") {
                     chosenYours = true;
-                    // Записано wtSaveRecordOp; в атомарном batch остальные листья — повтором.
                     if (atomic) {
+                        // База = подтверждённый сервер: повтор пойдёт с expected_v = server_v;
+                        // наше значение остаётся на экране и уходит вместе с остальными путями пакета.
+                        try {
+                            if (live === undefined && appData) wtSetByPath(appData, c.path, wtCloneJson(conflictArg.your_value));
+                            if (c.server_v != null) wtSetLocalRecordMeta(c.path, c.server_v);
+                            if (wtLastLoadedPayload) {
+                                wtSetByPath(wtLastLoadedPayload, c.path, c.server_value == null ? null : wtCloneJson(c.server_value));
+                                if (c.server_v != null) {
+                                    if (!wtLastLoadedPayload[WT_RECORDS_KEY]) wtLastLoadedPayload[WT_RECORDS_KEY] = {};
+                                    wtLastLoadedPayload[WT_RECORDS_KEY][c.path] = { v: Number(c.server_v) || 0, updated_at: new Date().toISOString() };
+                                }
+                            }
+                        } catch (errY) {}
+                        retryPaths[c.path] = true;
                         (outcome.opsPaths || []).forEach(function (p) { retryPaths[p] = true; });
                     }
                     return;
@@ -13289,7 +13332,8 @@ function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice) {
         return Promise.resolve(wtDomainWriterSave({
             atomic: atomic,
             ops: pending.map(function (p) { return { path: p }; }),
-            _conflictChoice: (atomic && chosenYours) ? "yours" : ""
+            _conflictChoice: (atomic && chosenYours) ? "yours" : "",
+            _conflictRound: conflictRound + 1
         })).then(function (ok) {
             return ok === true && allWritten;
         });
@@ -14064,7 +14108,8 @@ function wtFormatConflictValue(value) {
     return String(value);
 }
 
-function wtResolveRecordConflict(conflict) {
+function wtResolveRecordConflict(conflict, opts) {
+    opts = opts || {};
     if (!conflict || conflict.status !== "conflict") {
         return Promise.resolve("cancel");
     }
@@ -14108,6 +14153,8 @@ function wtResolveRecordConflict(conflict) {
         wtConflictBackupSave(conflict.path, "replaced_local_value", conflict.your_value);
         return Promise.resolve("server");
     }
+    // Атомарный пакет: запись выполнит вызывающий одним повтором всего пакета.
+    if (opts.deferWrite) return Promise.resolve("yours");
     return wtSaveRecordOp(conflict.path, conflict.your_value, {
         expected_v: conflict.server_v,
         forceEnable: true,

@@ -411,6 +411,653 @@ function frFinishDirectory(snap, okText) {
     });
 }
 
+/** Снимок выбранных веток financeRec для отката критичных сохранений. */
+function frSnapFinanceKeys(keys) {
+    ensureFinanceRec();
+    const root = appData.financeRec || {};
+    const snap = {};
+    (keys || []).forEach(function (k) {
+        snap[k] = JSON.parse(JSON.stringify(root[k] == null ? [] : root[k]));
+    });
+    return snap;
+}
+
+function frRestoreFinanceKeys(snap) {
+    if (!snap || !appData || !appData.financeRec) return;
+    Object.keys(snap).forEach(function (k) {
+        appData.financeRec[k] = snap[k];
+    });
+}
+
+/** Анти-двойной клик для критичных сохранений FR. */
+function frBeginCriticalSave() {
+    if (frUi._criticalSaveBusy) {
+        toast("Сохранение ещё выполняется. Подождите.", "error");
+        return false;
+    }
+    frUi._criticalSaveBusy = true;
+    return true;
+}
+
+/**
+ * Критичное сохранение FR: toast успеха только после ok сервера;
+ * при отказе — откат только указанных веток (другие черновики не трогаем).
+ * opsPaths — полный список связанных путей одним atomic batch.
+ * Вызывать после frBeginCriticalSave() и локальной мутации.
+ */
+function frAwaitCriticalSave(snap, opsPaths, okText, failText) {
+    const ops = (opsPaths || []).map(function (path) {
+        let value = null;
+        try {
+            value = typeof wtGetByPath === "function"
+                ? wtGetByPath(appData, path)
+                : null;
+        } catch (err) {
+            value = null;
+        }
+        return { path: path, value: value };
+    }).filter(function (leaf) { return leaf && leaf.path; });
+    return Promise.resolve(saveApp({ atomic: true, ops: ops })).then(function (ok) {
+        frUi._criticalSaveBusy = false;
+        if (ok !== true && ok !== "ok") {
+            frRestoreFinanceKeys(snap);
+            try { renderFinanceRec(); } catch (err) {}
+            toast(failText || "Изменения не записаны на сервер.", "error");
+            return false;
+        }
+        try { renderFinanceRec(); } catch (err) {}
+        if (okText) toast(okText, "success");
+        return true;
+    }).catch(function () {
+        frUi._criticalSaveBusy = false;
+        frRestoreFinanceKeys(snap);
+        try { renderFinanceRec(); } catch (err) {}
+        toast(failText || "Изменения не записаны на сервер (сеть или сервер).", "error");
+        return false;
+    });
+}
+
+function frOpPathById(opId) {
+    return "financeRec.operations." + String(opId || "");
+}
+
+const FR_SNAPSHOT_LIST_ID_FIELDS = {
+    operations: "finance_operation_id",
+    audit: "audit_id",
+    import_batches: "import_batch_id",
+    money_transits: "transit_id"
+};
+
+/* Строки остатков/статусов без id: адрес OPS — смысловой ключ (как fr_row_key в server/wt_api.py). */
+const FR_ROW_KEY_LISTS = ["openings", "day_closings", "period_states"];
+
+function frRowKeyDate(raw) {
+    const s = String(raw == null ? "" : raw).replace(/[\u00A0\u202F]/g, " ").trim();
+    if (/^[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(s)) return s.slice(0, 10);
+    const m = s.match(/^([0-9]{1,2})[./-]([0-9]{1,2})[./-]([0-9]{2,4})/);
+    if (m) {
+        let y = Number(m[3]);
+        if (y < 100) y += 2000;
+        return y + "-" + String(Number(m[2])).padStart(2, "0") + "-" + String(Number(m[1])).padStart(2, "0");
+    }
+    return s;
+}
+
+function frRowKeyPart(value) {
+    let bytes;
+    try {
+        bytes = unescape(encodeURIComponent(String(value == null ? "" : value)));
+    } catch (err) {
+        return "";
+    }
+    let out = "";
+    for (let i = 0; i < bytes.length; i++) {
+        const ch = bytes.charAt(i);
+        if (/[A-Za-z0-9]/.test(ch)) {
+            out += ch;
+        } else {
+            const h = bytes.charCodeAt(i).toString(16).toUpperCase();
+            out += "-" + (h.length < 2 ? "0" + h : h);
+        }
+    }
+    return out;
+}
+
+/** Сегмент пути строки; "" — ключ неполный (такую строку по ключу не пишем). */
+function frRowKey(listKey, row) {
+    if (!row || typeof row !== "object") return "";
+    let raw;
+    if (listKey === "openings") {
+        raw = [row.object_id || row.finance_area_id, row.period_key, row.account_id || row.finance_source_id];
+    } else if (listKey === "day_closings") {
+        raw = [row.object_id || row.finance_area_id, frRowKeyDate(row.date), row.account_id || row.finance_source_id];
+    } else if (listKey === "period_states") {
+        // Только finance_area_id — как ищет строку frPeriodState. Старая строка лишь с object_id
+        // расчётами не читается и по ключу не адресуется (иначе совпала бы с рабочей строкой недели).
+        raw = [row.finance_area_id, row.period_key];
+    } else {
+        return "";
+    }
+    const parts = raw.map(function (v) { return v == null ? "" : String(v); });
+    if (parts.some(function (p) { return !p; })) return "";
+    const enc = parts.map(frRowKeyPart);
+    if (enc.some(function (p) { return !p; })) return "";
+    return enc.join("_");
+}
+
+function frRowPath(listKey, key) {
+    return "financeRec." + listKey + "." + key;
+}
+
+/** financeRec.<openings|day_closings|period_states>.<ключ> → { list, key }; иначе null. */
+function frRowPathParts(path) {
+    const parts = String(path || "").split(".");
+    if (parts.length !== 3 || parts[0] !== "financeRec" || FR_ROW_KEY_LISTS.indexOf(parts[1]) < 0 || !parts[2]) return null;
+    return { list: parts[1], key: parts[2] };
+}
+
+function frRowIndexByKey(list, listKey, key) {
+    if (!Array.isArray(list) || !key) return -1;
+    for (let i = 0; i < list.length; i++) {
+        if (list[i] && frRowKey(listKey, list[i]) === key) return i;
+    }
+    return -1;
+}
+
+/** Upsert строки по ключу в root.financeRec (первое совпадение, как find в расчётах). */
+function frRowUpsert(root, listKey, key, value) {
+    if (!root || !key || !value || typeof value !== "object") return;
+    if (!root.financeRec || typeof root.financeRec !== "object") root.financeRec = {};
+    if (!Array.isArray(root.financeRec[listKey])) root.financeRec[listKey] = [];
+    const list = root.financeRec[listKey];
+    const idx = frRowIndexByKey(list, listKey, key);
+    const cloned = frCloneFinanceJson(value);
+    if (idx >= 0) list[idx] = cloned;
+    else list.push(cloned);
+}
+
+/**
+ * Подтверждённое сервером значение → wtLastLoadedPayload.
+ * financeRec.<list>.<id> — upsert элемента списка по id (не свойство массива).
+ */
+function frSnapshotApplyConfirmed(path, value) {
+    try {
+        if (typeof wtLastLoadedPayload === "undefined" || !wtLastLoadedPayload || !path) return;
+        const rowRef = frRowPathParts(path);
+        if (rowRef) {
+            if (value != null) frRowUpsert(wtLastLoadedPayload, rowRef.list, rowRef.key, value);
+            return;
+        }
+        const parts = String(path).split(".");
+        if (parts.length === 3 && parts[0] === "financeRec" && FR_SNAPSHOT_LIST_ID_FIELDS[parts[1]]) {
+            if (parts[2].charAt(0) === "$") return;
+            const idField = FR_SNAPSHOT_LIST_ID_FIELDS[parts[1]];
+            if (!wtLastLoadedPayload.financeRec || typeof wtLastLoadedPayload.financeRec !== "object") {
+                wtLastLoadedPayload.financeRec = {};
+            }
+            const fr = wtLastLoadedPayload.financeRec;
+            if (!Array.isArray(fr[parts[1]])) fr[parts[1]] = [];
+            const list = fr[parts[1]];
+            let idx = -1;
+            for (let i = 0; i < list.length; i++) {
+                if (list[i] && String(list[i][idField] || "") === parts[2]) { idx = i; break; }
+            }
+            if (value == null) return;
+            const cloned = frCloneFinanceJson(value);
+            if (idx >= 0) list[idx] = cloned;
+            else list.push(cloned);
+            return;
+        }
+        if (parts.length > 3 && parts[0] === "financeRec" && FR_SNAPSHOT_LIST_ID_FIELDS[parts[1]]) {
+            // Полевая правка записи по id — снимок не трогаем (обновится при SoftSync/F5).
+            return;
+        }
+        if (typeof wtSetByPath === "function") wtSetByPath(wtLastLoadedPayload, path, value);
+    } catch (err) {}
+}
+
+function frFindOpById(opId) {
+    const want = String(opId || "");
+    if (!want) return null;
+    return ((appData.financeRec && appData.financeRec.operations) || []).find(function (o) {
+        return o && String(o.finance_operation_id || "") === want;
+    }) || null;
+}
+
+function frCloneFinanceJson(value) {
+    return JSON.parse(JSON.stringify(value == null ? null : value));
+}
+
+/** Снимок операций по id до мутации (для отката без трогания чужих id). */
+function frSnapOpsByIds(ids) {
+    const snap = { byId: {}, order: [] };
+    (ids || []).forEach(function (id) {
+        const sid = String(id || "");
+        if (!sid || snap.byId[sid] !== undefined) return;
+        snap.order.push(sid);
+        const rec = frFindOpById(sid);
+        snap.byId[sid] = rec ? frCloneFinanceJson(rec) : null;
+    });
+    return snap;
+}
+
+/**
+ * Снимок «до мутации» из frBeginMoneyOpsSnapshot (полная карта id → копия).
+ * Id, которого не было в карте, — создан в этой попытке (null).
+ */
+function frSnapOpsFromBefore(ids, beforeById) {
+    const snap = { byId: {}, order: [] };
+    (ids || []).forEach(function (id) {
+        const sid = String(id || "");
+        if (!sid || snap.byId[sid] !== undefined) return;
+        snap.order.push(sid);
+        const prev = beforeById ? beforeById[sid] : null;
+        snap.byId[sid] = prev ? frCloneFinanceJson(prev) : null;
+    });
+    return snap;
+}
+
+/**
+ * Откат только затронутых id. Не трогает операции, которых не было в snap.
+ * createdIds — id, созданные в этой попытке (удаляются из массива при откате).
+ * attempted — снимок отправленных значений: id, изменённый локально после отправки
+ * (новая правка / SoftSync), не откатывается.
+ */
+function frRestoreOpsSnap(snap, createdIds, attempted) {
+    if (!snap || !appData || !appData.financeRec) return;
+    ensureFinanceRec();
+    const created = {};
+    (createdIds || []).forEach(function (id) { if (id) created[String(id)] = true; });
+    const changedSince = {};
+    if (attempted && attempted.byId) {
+        Object.keys(attempted.byId).forEach(function (id) {
+            const now = frFindOpById(id);
+            let same = false;
+            try {
+                same = JSON.stringify(now ? now : null) === JSON.stringify(attempted.byId[id]);
+            } catch (errS) {}
+            if (!same) changedSince[id] = true;
+        });
+    }
+    const list = appData.financeRec.operations || [];
+    const next = [];
+    const seen = {};
+    list.forEach(function (o) {
+        if (!o) return;
+        const id = String(o.finance_operation_id || "");
+        if (!id) {
+            next.push(o);
+            return;
+        }
+        if (changedSince[id]) {
+            next.push(o);
+            seen[id] = true;
+            return;
+        }
+        if (created[id]) return;
+        if (Object.prototype.hasOwnProperty.call(snap.byId, id)) {
+            if (snap.byId[id] == null) return;
+            next.push(frCloneFinanceJson(snap.byId[id]));
+            seen[id] = true;
+            return;
+        }
+        next.push(o);
+    });
+    (snap.order || []).forEach(function (id) {
+        if (seen[id] || created[id] || changedSince[id] || snap.byId[id] == null) return;
+        next.push(frCloneFinanceJson(snap.byId[id]));
+    });
+    appData.financeRec.operations = next;
+}
+
+function frUniqueOpIds(ids) {
+    const out = [];
+    const seen = {};
+    (ids || []).forEach(function (id) {
+        const sid = String(id || "");
+        if (!sid || seen[sid]) return;
+        seen[sid] = true;
+        out.push(sid);
+    });
+    return out;
+}
+
+function frCollectChangedOpIds(beforeById) {
+    const ids = [];
+    const seen = {};
+    function add(id) {
+        const sid = String(id || "");
+        if (!sid || seen[sid]) return;
+        seen[sid] = true;
+        ids.push(sid);
+    }
+    Object.keys(beforeById || {}).forEach(add);
+    ((appData.financeRec && appData.financeRec.operations) || []).forEach(function (o) {
+        if (!o || !o.finance_operation_id) return;
+        const id = String(o.finance_operation_id);
+        const prev = beforeById[id];
+        if (prev === undefined) {
+            add(id);
+            return;
+        }
+        try {
+            if (JSON.stringify(prev) !== JSON.stringify(o)) add(id);
+        } catch (err) {
+            add(id);
+        }
+    });
+    return ids;
+}
+
+function frBeginMoneyOpsSnapshot() {
+    const beforeById = {};
+    ((appData.financeRec && appData.financeRec.operations) || []).forEach(function (o) {
+        if (!o || !o.finance_operation_id) return;
+        beforeById[String(o.finance_operation_id)] = frCloneFinanceJson(o);
+    });
+    return beforeById;
+}
+
+function frMoneyOpsPasteLocked() {
+    return !!(frUi._reconcilePasteLock || frUi._niPasteLock);
+}
+
+function frQueueMoneyOpIds(ids) {
+    if (!frUi._pasteOpIds) frUi._pasteOpIds = {};
+    frUniqueOpIds(ids).forEach(function (id) { frUi._pasteOpIds[id] = true; });
+}
+
+function frFlushMoneyOpPasteQueue(options) {
+    const map = frUi._pasteOpIds || {};
+    frUi._pasteOpIds = {};
+    const beforeMap = frUi._pasteOpBefore || {};
+    frUi._pasteOpBefore = {};
+    const ids = Object.keys(map);
+    const auditMap = frUi._pasteAuditIds || {};
+    frUi._pasteAuditIds = {};
+    const auditIds = Object.keys(auditMap);
+    if (!ids.length && !auditIds.length) return Promise.resolve(true);
+    const opts = options || {
+        atomic: true,
+        successToast: "",
+        failToast: "Вставленные операции не записаны на сервер. Изменения на экране отменены."
+    };
+    const extraLeaves = Array.isArray(opts.extraLeaves) ? opts.extraLeaves.slice() : [];
+    auditIds.forEach(function (aid) {
+        const leaf = frAuditLeaf(aid);
+        if (leaf) extraLeaves.push(leaf);
+    });
+    opts.extraLeaves = extraLeaves;
+    opts.createdAuditIds = (opts.createdAuditIds || []).concat(auditIds);
+    if (!opts.snap && !opts.before) {
+        // Id без снимка в очереди не считаем созданным: откат не должен удалить существующую операцию.
+        ids.forEach(function (id) {
+            if (!Object.prototype.hasOwnProperty.call(beforeMap, id)) {
+                const cur = frFindOpById(id);
+                beforeMap[id] = cur ? frCloneFinanceJson(cur) : null;
+            }
+        });
+        opts.snap = frSnapOpsFromBefore(ids, beforeMap);
+    }
+    return frPersistOpsById(ids, opts);
+}
+
+/**
+ * Узкое сохранение операций по finance_operation_id.
+ * Без fallback на широкий PUT массива operations (риск затереть чужие записи).
+ */
+function frPersistOpsById(ids, options) {
+    options = options || {};
+    const opIds = frUniqueOpIds(ids);
+    const extraLeaves = Array.isArray(options.extraLeaves) ? options.extraLeaves.slice() : [];
+    const createdAuditIds = Array.isArray(options.createdAuditIds) ? options.createdAuditIds.slice() : [];
+    if (!opIds.length && !extraLeaves.length) return Promise.resolve(true);
+    // before — снимок frBeginMoneyOpsSnapshot до мутации; без него откат вернёт уже изменённые данные.
+    const snap = options.snap || (options.before ? frSnapOpsFromBefore(opIds, options.before) : frSnapOpsByIds(opIds));
+    const createdIds = options.createdIds || opIds.filter(function (id) {
+        return snap.byId[id] == null;
+    });
+    const attempted = frSnapOpsByIds(opIds);
+    if (frMoneyOpsPasteLocked()) {
+        if (!frUi._pasteOpBefore) frUi._pasteOpBefore = {};
+        opIds.forEach(function (id) {
+            if (!Object.prototype.hasOwnProperty.call(frUi._pasteOpBefore, id)) {
+                frUi._pasteOpBefore[id] = snap.byId[id] == null ? null : snap.byId[id];
+            }
+        });
+        frQueueMoneyOpIds(opIds);
+        createdAuditIds.forEach(function (aid) {
+            if (!frUi._pasteAuditIds) frUi._pasteAuditIds = {};
+            if (aid) frUi._pasteAuditIds[String(aid)] = true;
+        });
+        extraLeaves.forEach(function (leaf) {
+            if (!leaf || !leaf.path || leaf.path.indexOf("financeRec.audit.") !== 0) return;
+            const aid = leaf.path.split(".")[2];
+            if (!aid) return;
+            if (!frUi._pasteAuditIds) frUi._pasteAuditIds = {};
+            frUi._pasteAuditIds[aid] = true;
+        });
+        return Promise.resolve("queued");
+    }
+    if (frUi._moneyOpsBusy && !options.alreadyBusy) {
+        // Флаг занятости принадлежит идущему сохранению — не сбрасываем; это изменение не отправлено.
+        frRestoreOpsSnap(snap, createdIds, attempted);
+        frDropLocalAuditIds(createdAuditIds);
+        if (typeof options.onRestore === "function") {
+            try { options.onRestore(); } catch (errRB) {}
+        }
+        try { renderFinanceRec(); } catch (errB) {}
+        toast("Сохранение операции ещё выполняется. Изменение не записано и отменено — повторите после завершения.", "error");
+        return Promise.resolve(false);
+    }
+
+    function restoreFail(msg) {
+        frUi._moneyOpsBusy = false;
+        frRestoreOpsSnap(snap, createdIds, attempted);
+        frDropLocalAuditIds(createdAuditIds);
+        if (typeof options.onRestore === "function") {
+            try { options.onRestore(); } catch (errR) {}
+        }
+        try { renderFinanceRec(); } catch (err) {}
+        toast(msg || options.failToast || "Операция не записана на сервер.", "error");
+        return false;
+    }
+
+    if (!wtServerMode) {
+        frUi._moneyOpsBusy = true;
+        return Promise.resolve(saveApp()).then(function (ok) {
+            frUi._moneyOpsBusy = false;
+            if (ok !== true && ok !== "ok") return restoreFail(options.failToast);
+            try { renderFinanceRec(); } catch (err) {}
+            if (options.successToast) toast(options.successToast, "success");
+            if (typeof options.onSuccess === "function") {
+                try { options.onSuccess(); } catch (errS) {}
+            }
+            return true;
+        });
+    }
+
+    if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
+        return Promise.resolve(restoreFail(
+            "Точечное сохранение Финконтроля недоступно. Операция не записана (широкая перезапись массива отключена как небезопасная)."
+        ));
+    }
+
+    frUi._moneyOpsBusy = true;
+    opIds.forEach(function (id) {
+        try {
+            if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(frOpPathById(id));
+        } catch (errD) {}
+    });
+    extraLeaves.forEach(function (leaf) {
+        try {
+            if (leaf && leaf.path && typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(leaf.path);
+        } catch (errE) {}
+    });
+
+    function buildOps() {
+        const leaves = opIds.map(function (id) {
+            const rec = frFindOpById(id);
+            return {
+                path: frOpPathById(id),
+                value: rec ? frCloneFinanceJson(rec) : null,
+                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(frOpPathById(id)) : 0
+            };
+        });
+        extraLeaves.forEach(function (leaf) {
+            if (!leaf || !leaf.path) return;
+            let value = leaf.value;
+            try {
+                if (typeof wtGetByPath === "function") {
+                    const live = wtGetByPath(appData, leaf.path);
+                    if (live !== undefined) value = live;
+                }
+            } catch (errL) {}
+            leaves.push({
+                path: leaf.path,
+                value: value,
+                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(leaf.path) : 0
+            });
+        });
+        return leaves.filter(function (leaf) {
+            if (!leaf || !leaf.path) return false;
+            // value:null на всю операцию сервер отклоняет — не отправляем.
+            if (leaf.path.indexOf("financeRec.operations.") === 0 && leaf.path.split(".").length === 3 && leaf.value == null) {
+                return false;
+            }
+            return true;
+        });
+    }
+
+    function runBatch() {
+        const ops = buildOps();
+        if (!ops.length) {
+            frUi._moneyOpsBusy = false;
+            return restoreFail(options.failToast);
+        }
+        // Создание: expected_v 0 и value объект; поле/правка — актуальная версия.
+        let bodyText;
+        try {
+            bodyText = JSON.stringify({
+                atomic: options.atomic !== false,
+                idempotency_key: typeof wtNewIdempotencyKey === "function"
+                    ? wtNewIdempotencyKey()
+                    : ("fr_ops_" + Date.now()),
+                ops: ops
+            });
+        } catch (err) {
+            frUi._moneyOpsBusy = false;
+            return Promise.resolve(restoreFail("Не удалось подготовить сохранение операции."));
+        }
+        const fetchFn = typeof wtOpsFetchWithTimeout === "function" ? wtOpsFetchWithTimeout : fetch;
+        return fetchFn("/api/state/op/batch", {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: bodyText
+        }).then(function (res) {
+            if (res.status === 401) {
+                frUi._moneyOpsBusy = false;
+                try { if (typeof handleWtSaveUnauthorized === "function") handleWtSaveUnauthorized(); } catch (err) {}
+                return restoreFail("Сессия истекла. Операция не записана.");
+            }
+            if (res.status === 503 || res.status === 404 || res.status === 405) {
+                frUi._moneyOpsBusy = false;
+                return restoreFail(
+                    "Точечное сохранение на сервере недоступно. Операция не записана (широкая перезапись отключена)."
+                );
+            }
+            return res.text().then(function (raw) {
+                let body = null;
+                if (raw) {
+                    try { body = JSON.parse(raw); } catch (errJ) {
+                        frUi._moneyOpsBusy = false;
+                        return restoreFail("Сервер вернул некорректный ответ. Операция не записана.");
+                    }
+                }
+                if (res.status === 409 || (body && body.error === "conflict")) {
+                    frUi._moneyOpsBusy = false;
+                    return restoreFail(
+                        (body && body.message)
+                            ? ("Конфликт: " + body.message)
+                            : "Конфликт: эту операцию изменил другой сотрудник. Ваши правки на экране отменены."
+                    );
+                }
+                if (!res.ok || !(body && body.ok === true)) {
+                    frUi._moneyOpsBusy = false;
+                    return restoreFail(
+                        (body && body.message) || options.failToast || "Операция не записана на сервер."
+                    );
+                }
+                const results = Array.isArray(body.results) ? body.results : [];
+                if (!results.length || results.some(function (r) { return !r || r.status !== "saved"; })) {
+                    frUi._moneyOpsBusy = false;
+                    return restoreFail(options.failToast);
+                }
+                try {
+                    results.forEach(function (row) {
+                        if (!row || row.status !== "saved" || !row.path) return;
+                        if (row.record_v != null && typeof wtSetLocalRecordMeta === "function") {
+                            wtSetLocalRecordMeta(row.path, row.record_v);
+                        }
+                        // SoftSync во время запроса мог вернуть в список старую строку — иначе
+                        // фоновая запись побочных строк отправила бы её поверх подтверждённой.
+                        const rowRef = frRowPathParts(row.path);
+                        if (rowRef && row.value && typeof row.value === "object") {
+                            frRowUpsert(appData, rowRef.list, rowRef.key, row.value);
+                        }
+                        // Список транзитов SoftSync берёт с сервера целиком (не черновик DomainWriter).
+                        const tParts = String(row.path).split(".");
+                        if (tParts.length === 3 && tParts[1] === "money_transits" && row.value && typeof row.value === "object"
+                            && appData.financeRec && Array.isArray(appData.financeRec.money_transits)) {
+                            const tList = appData.financeRec.money_transits;
+                            const ti = tList.findIndex(function (t) { return t && String(t.transit_id || "") === tParts[2]; });
+                            if (ti >= 0) tList[ti] = frCloneFinanceJson(row.value);
+                            else tList.push(frCloneFinanceJson(row.value));
+                        }
+                        frSnapshotApplyConfirmed(row.path, row.value);
+                        if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(row.path);
+                    });
+                    if (body.version != null && typeof wtStateVersion !== "undefined") {
+                        const opV = Number(body.version);
+                        if (Number.isFinite(opV)) {
+                            wtStateVersion = opV;
+                            if (opV > Number(wtSoftAppliedVersion || 0)) wtSoftAppliedVersion = opV;
+                        }
+                    }
+                } catch (errApply) {}
+                frUi._moneyOpsBusy = false;
+                try { renderFinanceRec(); } catch (err) {}
+                if (options.successToast) toast(options.successToast, "success");
+                if (typeof options.onSuccess === "function") {
+                    try { options.onSuccess(); } catch (errS) {}
+                }
+                try { frScheduleRowFlush(); } catch (errF) {}
+                return true;
+            });
+        }).catch(function () {
+            frUi._moneyOpsBusy = false;
+            return restoreFail("Нет связи с сервером. Операция не записана. Изменения на экране отменены.");
+        });
+    }
+
+    const identity = typeof wtConfirmSessionIdentity === "function"
+        ? wtConfirmSessionIdentity()
+        : Promise.resolve(true);
+    return identity.then(function (okId) {
+        if (!okId) {
+            frUi._moneyOpsBusy = false;
+            return restoreFail("Не удалось подтвердить сессию. Операция не записана.");
+        }
+        if (typeof wtOpsChain !== "undefined") {
+            const job = wtOpsChain.then(runBatch, runBatch);
+            wtOpsChain = job.then(function () { return true; }, function () { return true; });
+            return job;
+        }
+        return runBatch();
+    });
+}
+
 /**
  * Есть ли использование account_id в операциях, остатках, перемещениях.
  * Проверяется только в рамках object_id счёта.
@@ -1216,6 +1863,479 @@ function frTransitById(transitId) {
     }) || null;
 }
 
+function frTransitPathById(transitId) {
+    return "financeRec.money_transits." + String(transitId || "");
+}
+
+/** Карта transit_id → копия до мутации (для узкой записи и отката по id). */
+function frBeginTransitsSnapshot() {
+    // Нормализация до снимка: иначе отрисовка «изменит» чужие транзиты и они попадут в пакет.
+    ensureFinanceRec();
+    const byId = {};
+    ((appData.financeRec && appData.financeRec.money_transits) || []).forEach(function (t) {
+        if (!t || !t.transit_id) return;
+        byId[String(t.transit_id)] = frCloneFinanceJson(t);
+    });
+    return byId;
+}
+
+function frSnapTransitsByIds(ids) {
+    const byId = {};
+    (ids || []).forEach(function (id) {
+        const t = frTransitById(id);
+        byId[id] = t ? frCloneFinanceJson(t) : null;
+    });
+    return byId;
+}
+
+function frCollectChangedTransitIds(beforeById) {
+    const ids = [];
+    ((appData.financeRec && appData.financeRec.money_transits) || []).forEach(function (t) {
+        if (!t || !t.transit_id) return;
+        const id = String(t.transit_id);
+        const prev = beforeById ? beforeById[id] : undefined;
+        let same = false;
+        try { same = prev !== undefined && JSON.stringify(prev) === JSON.stringify(t); } catch (err) {}
+        if (!same && ids.indexOf(id) < 0) ids.push(id);
+    });
+    return ids;
+}
+
+function frTransitLeaf(transitId) {
+    const t = frTransitById(transitId);
+    if (!t) return null;
+    const path = frTransitPathById(transitId);
+    return {
+        path: path,
+        value: frCloneFinanceJson(t),
+        expected_v: typeof wtRecordVersion === "function" ? Number(wtRecordVersion(path) || 0) : 0
+    };
+}
+
+/**
+ * Существующие транзиты, которых нет по transit_id в серверном снимке
+ * (старые записи без id: id присвоен только локально — запись по id создала бы дубль).
+ */
+function frTransitIdsMissingOnServer(ids, beforeById) {
+    if (!wtServerMode || typeof wtLastLoadedPayload === "undefined" || !wtLastLoadedPayload) return [];
+    const fr = wtLastLoadedPayload.financeRec;
+    const serverList = fr && Array.isArray(fr.money_transits) ? fr.money_transits : [];
+    return (ids || []).filter(function (id) {
+        if (!beforeById || beforeById[id] === undefined) return false;
+        return !serverList.some(function (t) { return t && String(t.transit_id || "") === id; });
+    });
+}
+
+/**
+ * Откат транзитов по id. Созданные в попытке удаляются, изменённые — возвращаются к снимку.
+ * Транзит, изменённый локально после отправки (attempted ≠ текущее), не трогается.
+ */
+function frRestoreTransitsSnap(beforeById, ids, attempted) {
+    if (!appData || !appData.financeRec || !Array.isArray(appData.financeRec.money_transits)) return;
+    const list = appData.financeRec.money_transits;
+    (ids || []).forEach(function (id) {
+        const idx = list.findIndex(function (t) { return t && String(t.transit_id || "") === id; });
+        const now = idx >= 0 ? list[idx] : null;
+        if (attempted && Object.prototype.hasOwnProperty.call(attempted, id)) {
+            let same = false;
+            try { same = JSON.stringify(now) === JSON.stringify(attempted[id]); } catch (err) {}
+            if (!same) return;
+        }
+        const prev = beforeById ? beforeById[id] : undefined;
+        if (prev === undefined || prev === null) {
+            if (idx >= 0) list.splice(idx, 1);
+        } else if (idx >= 0) {
+            list[idx] = frCloneFinanceJson(prev);
+        } else {
+            list.push(frCloneFinanceJson(prev));
+        }
+    });
+}
+
+/**
+ * Операции + транзиты + журнал — один атомарный пакет OPS по id.
+ * Вызывать при frUi._moneyOpsBusy = true, после мутации; снимки before/transitsBefore — до неё.
+ */
+function frPersistOpsWithTransits(opIds, ctx) {
+    const transitIds = frCollectChangedTransitIds(ctx.transitsBefore);
+    const auditIds = (ctx.auditIds || []).filter(Boolean);
+    const attemptedTransits = frSnapTransitsByIds(transitIds);
+    function restoreTransits() {
+        frRestoreTransitsSnap(ctx.transitsBefore, transitIds, attemptedTransits);
+    }
+    const legacy = frTransitIdsMissingOnServer(transitIds, ctx.transitsBefore);
+    if (legacy.length) {
+        const ids = frUniqueOpIds(opIds);
+        frUi._moneyOpsBusy = false;
+        frRestoreOpsSnap(frSnapOpsFromBefore(ids, ctx.before), ctx.createdOpIds || [], frSnapOpsByIds(ids));
+        restoreTransits();
+        frDropLocalAuditIds(auditIds);
+        try { renderFinanceRec(); } catch (err) {}
+        toast("Транзит не найден на сервере по номеру (старая запись без transit_id). Изменение не записано и отменено — нужна разовая миграция данных.", "error");
+        return Promise.resolve(false);
+    }
+    const extraLeaves = [];
+    transitIds.forEach(function (id) {
+        const leaf = frTransitLeaf(id);
+        if (leaf) extraLeaves.push(leaf);
+    });
+    auditIds.forEach(function (aid) {
+        const leaf = frAuditLeaf(aid);
+        if (leaf) extraLeaves.push(leaf);
+    });
+    return frPersistOpsById(opIds, {
+        atomic: true,
+        alreadyBusy: true,
+        before: ctx.before,
+        createdIds: ctx.createdOpIds || [],
+        extraLeaves: extraLeaves,
+        createdAuditIds: auditIds,
+        successToast: ctx.successToast,
+        failToast: ctx.failToast,
+        onSuccess: ctx.onSuccess,
+        onRestore: restoreTransits
+    });
+}
+
+/** Перед мутацией транзитов: идёт другое сохранение или пакетная вставка — не начинать. */
+function frMoneyOpsBlocked() {
+    if (frUi._moneyOpsBusy || frMoneyOpsPasteLocked()) {
+        toast("Сохранение операции ещё выполняется. Подождите.", "error");
+        return true;
+    }
+    return false;
+}
+
+/** Ключ → копия строки openings / day_closings / period_states (первое вхождение ключа). */
+function frBeginRowsSnapshot() {
+    ensureFinanceRec();
+    const snap = {};
+    FR_ROW_KEY_LISTS.forEach(function (listKey) {
+        const byKey = {};
+        (appData.financeRec[listKey] || []).forEach(function (r) {
+            const k = frRowKey(listKey, r);
+            if (!k || Object.prototype.hasOwnProperty.call(byKey, k)) return;
+            byKey[k] = frCloneFinanceJson(r);
+        });
+        snap[listKey] = byKey;
+    });
+    return snap;
+}
+
+/** changed — новые/изменённые ключи после снимка; lost — ключи, исчезнувшие (строка сменила ключ). */
+function frCollectChangedRows(before) {
+    const now = frBeginRowsSnapshot();
+    const changed = [];
+    const lost = [];
+    FR_ROW_KEY_LISTS.forEach(function (listKey) {
+        const b = (before && before[listKey]) || {};
+        const n = now[listKey];
+        Object.keys(n).forEach(function (k) {
+            let same = false;
+            try { same = b[k] !== undefined && JSON.stringify(b[k]) === JSON.stringify(n[k]); } catch (err) {}
+            if (!same) changed.push({ list: listKey, key: k });
+        });
+        Object.keys(b).forEach(function (k) {
+            if (!Object.prototype.hasOwnProperty.call(n, k)) lost.push({ list: listKey, key: k });
+        });
+    });
+    return { changed: changed, lost: lost };
+}
+
+function frRowLeaf(listKey, key) {
+    const list = (appData.financeRec && appData.financeRec[listKey]) || [];
+    const idx = frRowIndexByKey(list, listKey, key);
+    if (idx < 0) return null;
+    const path = frRowPath(listKey, key);
+    return {
+        path: path,
+        value: frCloneFinanceJson(list[idx]),
+        expected_v: typeof wtRecordVersion === "function" ? Number(wtRecordVersion(path) || 0) : 0
+    };
+}
+
+/**
+ * Откат строк по ключу к снимку before. Созданные в попытке удаляются.
+ * Строка, изменённая локально после отправки (attempted ≠ текущее), не трогается.
+ */
+function frRestoreRows(before, refs, attempted) {
+    if (!appData || !appData.financeRec) return;
+    (refs || []).forEach(function (c) {
+        const list = appData.financeRec[c.list];
+        if (!Array.isArray(list)) return;
+        const path = frRowPath(c.list, c.key);
+        const idx = frRowIndexByKey(list, c.list, c.key);
+        const now = idx >= 0 ? list[idx] : null;
+        if (attempted && Object.prototype.hasOwnProperty.call(attempted, path)) {
+            let same = false;
+            try { same = JSON.stringify(now) === JSON.stringify(attempted[path]); } catch (err) {}
+            if (!same) return;
+        }
+        const prev = before && before[c.list] ? before[c.list][c.key] : undefined;
+        if (prev === undefined) {
+            if (idx >= 0) list.splice(idx, 1);
+        } else if (idx >= 0) {
+            list[idx] = frCloneFinanceJson(prev);
+        } else {
+            list.push(frCloneFinanceJson(prev));
+        }
+    });
+}
+
+/**
+ * Изменённые строки остатков/статусов + журнал — один атомарный пакет OPS по ключу.
+ * before — frBeginRowsSnapshot() до мутации. Успех — только после ответа сервера.
+ */
+function frPersistRows(before, auditIds, ctx) {
+    ctx = ctx || {};
+    const diff = frCollectChangedRows(before);
+    const ids = (auditIds || []).filter(Boolean);
+    const attempted = {};
+    function restoreRows() {
+        frRestoreRows(before, diff.changed.concat(diff.lost), attempted);
+    }
+    if (diff.lost.length) {
+        restoreRows();
+        frDropLocalAuditIds(ids);
+        try { renderFinanceRec(); } catch (err) {}
+        toast("Строка остатка хранится в устаревшем формате (дата или счёт). Изменение не записано и отменено.", "error");
+        return Promise.resolve(false);
+    }
+    // requireRows — строки, которые изменил обработчик (строка статуса). Ключ должен указывать
+    // именно на эту строку, иначе на сервер ушёл бы только журнал без самого изменения.
+    const required = [];
+    let unaddressable = false;
+    (ctx.requireRows || []).forEach(function (ref) {
+        if (unaddressable || !ref || !ref.row) return;
+        const key = frRowKey(ref.list, ref.row);
+        const local = (appData.financeRec && appData.financeRec[ref.list]) || [];
+        const li = key ? frRowIndexByKey(local, ref.list, key) : -1;
+        if (li < 0 || local[li] !== ref.row) {
+            unaddressable = true;
+            return;
+        }
+        required.push({ list: ref.list, key: key });
+    });
+    if (unaddressable) {
+        (ctx.requireRows || []).forEach(function (ref) {
+            if (!ref || !ref.row || !ref.prev) return;
+            Object.keys(ref.row).forEach(function (k) { delete ref.row[k]; });
+            Object.assign(ref.row, frCloneFinanceJson(ref.prev));
+        });
+        restoreRows();
+        frDropLocalAuditIds(ids);
+        try { renderFinanceRec(); } catch (err) {}
+        toast("Строка статуса периода хранится в устаревшем формате. Изменение не записано и отменено.", "error");
+        return Promise.resolve(false);
+    }
+    // ensureRows — строки, которые действие должно подтвердить на сервере, даже если локально
+    // они уже совпадали со снимком «до» (перенос, посчитанный отрисовкой, но ещё не записанный).
+    const serverFr = typeof wtLastLoadedPayload !== "undefined" && wtLastLoadedPayload ? wtLastLoadedPayload.financeRec : null;
+    (ctx.ensureRows || []).concat(required).forEach(function (ref) {
+        if (!ref || !ref.key) return;
+        if (diff.changed.some(function (c) { return c.list === ref.list && c.key === ref.key; })) return;
+        const local = (appData.financeRec && appData.financeRec[ref.list]) || [];
+        const li = frRowIndexByKey(local, ref.list, ref.key);
+        if (li < 0) return;
+        const server = serverFr && Array.isArray(serverFr[ref.list]) ? serverFr[ref.list] : [];
+        const si = frRowIndexByKey(server, ref.list, ref.key);
+        let same = false;
+        try { same = si >= 0 && JSON.stringify(server[si]) === JSON.stringify(local[li]); } catch (err) {}
+        if (!same) diff.changed.push({ list: ref.list, key: ref.key });
+    });
+    const extraLeaves = [];
+    diff.changed.forEach(function (c) {
+        const leaf = frRowLeaf(c.list, c.key);
+        if (!leaf) return;
+        attempted[leaf.path] = frCloneFinanceJson(leaf.value);
+        extraLeaves.push(leaf);
+    });
+    ids.forEach(function (aid) {
+        const leaf = frAuditLeaf(aid);
+        if (leaf) extraLeaves.push(leaf);
+    });
+    if (!extraLeaves.length) {
+        // Все затронутые строки уже совпадают с серверным снимком — записывать нечего.
+        if (ctx.successToast) toast(ctx.successToast, "success");
+        if (typeof ctx.onSuccess === "function") {
+            try { ctx.onSuccess(); } catch (errS) {}
+        }
+        return Promise.resolve(true);
+    }
+    return frPersistOpsById([], {
+        atomic: true,
+        extraLeaves: extraLeaves,
+        createdAuditIds: ids,
+        successToast: ctx.successToast,
+        failToast: ctx.failToast,
+        onSuccess: ctx.onSuccess,
+        onRestore: restoreRows
+    });
+}
+
+const FR_ROW_FLUSH_CHUNK = 100;
+
+/**
+ * Побочные строки (перенос при отрисовке, новые статусы периода) раньше уходили широким
+ * корнем списка при любом saveApp. Теперь — только отличающиеся от серверного снимка строки,
+ * по ключу с версией строки; конфликт — принимаем серверную строку.
+ */
+function frScheduleRowFlush(delayMs) {
+    if (typeof wtServerMode === "undefined" || !wtServerMode) return;
+    if (frUi._rowFlushTimer) return;
+    frUi._rowFlushTimer = setTimeout(function () {
+        frUi._rowFlushTimer = null;
+        try { frFlushRowSideEffects(); } catch (err) { console.error(err); }
+    }, delayMs == null ? 60 : delayMs);
+}
+
+function frCollectRowFlushLeaves() {
+    const leaves = [];
+    const base = wtLastLoadedPayload && wtLastLoadedPayload.financeRec;
+    FR_ROW_KEY_LISTS.forEach(function (listKey) {
+        const local = (appData.financeRec && appData.financeRec[listKey]) || [];
+        const server = base && Array.isArray(base[listKey]) ? base[listKey] : [];
+        const serverByKey = {};
+        server.forEach(function (r) {
+            const k = frRowKey(listKey, r);
+            if (k && !Object.prototype.hasOwnProperty.call(serverByKey, k)) serverByKey[k] = r;
+        });
+        const seen = {};
+        local.forEach(function (r) {
+            const k = frRowKey(listKey, r);
+            if (!k || seen[k]) return;
+            seen[k] = true;
+            const path = frRowPath(listKey, k);
+            if (typeof wtSoftHasDirty === "function" && wtSoftHasDirty(path)) return;
+            let same = false;
+            try {
+                same = serverByKey[k] !== undefined && JSON.stringify(serverByKey[k]) === JSON.stringify(r);
+            } catch (err) {}
+            if (same) return;
+            leaves.push({
+                path: path,
+                value: frCloneFinanceJson(r),
+                expected_v: typeof wtRecordVersion === "function" ? Number(wtRecordVersion(path) || 0) : 0
+            });
+        });
+    });
+    return leaves;
+}
+
+function frSendRowFlushChunk(leaves) {
+    let bodyText;
+    try {
+        bodyText = JSON.stringify({
+            atomic: false,
+            idempotency_key: typeof wtNewIdempotencyKey === "function"
+                ? wtNewIdempotencyKey()
+                : ("fr_rows_" + Date.now()),
+            ops: leaves
+        });
+    } catch (err) {
+        return Promise.resolve(false);
+    }
+    const sent = {};
+    leaves.forEach(function (leaf) { sent[leaf.path] = leaf.value; });
+    const fetchFn = typeof wtOpsFetchWithTimeout === "function" ? wtOpsFetchWithTimeout : fetch;
+    return fetchFn("/api/state/op/batch", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: bodyText
+    }).then(function (res) {
+        return res.text().then(function (raw) {
+            let body = null;
+            try { body = raw ? JSON.parse(raw) : null; } catch (errJ) { return false; }
+            const results = body && Array.isArray(body.results) ? body.results : [];
+            results.forEach(function (row) {
+                if (!row || !row.path || !Object.prototype.hasOwnProperty.call(sent, row.path)) return;
+                const ref = frRowPathParts(row.path);
+                if (!ref) return;
+                if (row.status === "saved") {
+                    if (row.record_v != null && typeof wtSetLocalRecordMeta === "function") {
+                        wtSetLocalRecordMeta(row.path, row.record_v);
+                    }
+                    frSnapshotApplyConfirmed(row.path, row.value != null ? row.value : sent[row.path]);
+                    return;
+                }
+                if (row.status !== "conflict" || !row.server_value || typeof row.server_value !== "object") return;
+                // Строку изменил другой сотрудник: принимаем сервер, если локально она не менялась после отправки.
+                const list = (appData.financeRec && appData.financeRec[ref.list]) || [];
+                const idx = frRowIndexByKey(list, ref.list, ref.key);
+                let same = false;
+                try { same = idx >= 0 && JSON.stringify(list[idx]) === JSON.stringify(sent[row.path]); } catch (errS) {}
+                if (!same) return;
+                frRowUpsert(appData, ref.list, ref.key, row.server_value);
+                frSnapshotApplyConfirmed(row.path, row.server_value);
+                if (row.server_v != null && typeof wtSetLocalRecordMeta === "function") {
+                    wtSetLocalRecordMeta(row.path, row.server_v);
+                }
+            });
+            if (res.ok && body && body.ok === true && body.version != null && typeof wtStateVersion !== "undefined") {
+                const opV = Number(body.version);
+                if (Number.isFinite(opV)) {
+                    wtStateVersion = opV;
+                    if (opV > Number(wtSoftAppliedVersion || 0)) wtSoftAppliedVersion = opV;
+                }
+            }
+            return !!(res.ok && body && body.ok === true);
+        });
+    }).catch(function () {
+        return false;
+    });
+}
+
+function frFlushRowSideEffects() {
+    if (typeof wtServerMode === "undefined" || !wtServerMode || !appData || !appData.financeRec) return Promise.resolve(false);
+    if (typeof wtLastLoadedPayload === "undefined" || !wtLastLoadedPayload) return Promise.resolve(false);
+    if (typeof wtSessionIdentityMismatch !== "undefined" && wtSessionIdentityMismatch) return Promise.resolve(false);
+    if (!frCan("fill")) return Promise.resolve(false);
+    if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) return Promise.resolve(false);
+    if (frUi._rowFlushBusy) {
+        frUi._rowFlushAgain = true;
+        return Promise.resolve(false);
+    }
+    frUi._rowFlushBusy = true;
+    let retryLater = false;
+    function job() {
+        // Строки идущего сохранения пользователя ещё не подтверждены — их не отправляем.
+        if (frUi._moneyOpsBusy || frUi._criticalSaveBusy || frMoneyOpsPasteLocked()
+            || (typeof wtSoftApplying !== "undefined" && wtSoftApplying)) {
+            retryLater = true;
+            return Promise.resolve(false);
+        }
+        const leaves = frCollectRowFlushLeaves();
+        let chain = Promise.resolve(true);
+        for (let i = 0; i < leaves.length; i += FR_ROW_FLUSH_CHUNK) {
+            const chunk = leaves.slice(i, i + FR_ROW_FLUSH_CHUNK);
+            chain = chain.then(function (prevOk) {
+                return frSendRowFlushChunk(chunk).then(function (ok) { return prevOk && ok; });
+            });
+        }
+        return chain;
+    }
+    function done(result) {
+        frUi._rowFlushBusy = false;
+        if (retryLater) {
+            frScheduleRowFlush(400);
+        } else if (frUi._rowFlushAgain) {
+            frUi._rowFlushAgain = false;
+            frScheduleRowFlush();
+        }
+        return result;
+    }
+    function run() {
+        return job().then(done, function () { return done(false); });
+    }
+    if (typeof wtOpsChain !== "undefined") {
+        const p = wtOpsChain.then(run, run);
+        wtOpsChain = p.then(function () { return true; }, function () { return true; });
+        return p;
+    }
+    return run();
+}
+
 function frTransitOpenSum(areaId) {
     let sum = 0;
     frTransits(areaId).forEach(function (t) {
@@ -1496,7 +2616,7 @@ function frSyncTransitAfterTransfer(areaId, op, isNew) {
         if (!isNew && op.transit_id) return;
         ensureFinanceRec();
         const t = {
-            transit_id: nextPrefixedId("ftr", appData.financeRec.money_transits.map(function (x) {
+            transit_id: nextPrefixedUniqueId("ftr", appData.financeRec.money_transits.map(function (x) {
                 return x && x.transit_id;
             })),
             object_id: areaId,
@@ -2735,15 +3855,54 @@ function frAudit(kind, extra) {
         ensureFinanceRec();
         const a = frActiveArea();
         const w = frEnsureWeek();
-        appData.financeRec.audit.push(Object.assign({
-            audit_id: nextPrefixedId("faud", appData.financeRec.audit.map(function (x) { return x && x.audit_id; })),
+        // Уникальный id: два сотрудника одновременно не получат один audit_id (create-only на сервере).
+        const auditId = nextPrefixedUniqueId("faud", appData.financeRec.audit.map(function (x) { return x && x.audit_id; }));
+        const entry = Object.assign({
+            audit_id: auditId,
             at: new Date().toISOString(),
             user_id: typeof currentAuthUserId === "function" ? currentAuthUserId() : "",
             kind: kind,
             finance_area_id: a ? a.finance_area_id : "",
             period_key: w.period_key
-        }, extra || {}));
-    } catch (err) { console.error(err); }
+        }, extra || {});
+        appData.financeRec.audit.push(entry);
+        if (frMoneyOpsPasteLocked()) {
+            if (!frUi._pasteAuditIds) frUi._pasteAuditIds = {};
+            frUi._pasteAuditIds[auditId] = true;
+        }
+        return auditId;
+    } catch (err) {
+        console.error(err);
+        return "";
+    }
+}
+
+/** Лист OPS для одной записи журнала (create-only на сервере). */
+function frAuditLeaf(auditId) {
+    const id = String(auditId || "");
+    if (!id) return null;
+    const rec = ((appData.financeRec && appData.financeRec.audit) || []).find(function (x) {
+        return x && String(x.audit_id || "") === id;
+    });
+    if (!rec) return null;
+    const path = "financeRec.audit." + id;
+    return {
+        path: path,
+        value: frCloneFinanceJson(rec),
+        expected_v: typeof wtRecordVersion === "function" ? Number(wtRecordVersion(path) || 0) : 0
+    };
+}
+
+function frDropLocalAuditIds(ids) {
+    const drop = {};
+    (ids || []).forEach(function (id) {
+        const sid = String(id || "");
+        if (sid) drop[sid] = true;
+    });
+    if (!Object.keys(drop).length || !appData || !appData.financeRec) return;
+    appData.financeRec.audit = (appData.financeRec.audit || []).filter(function (a) {
+        return !(a && drop[String(a.audit_id || "")]);
+    });
 }
 
 function frStatusLabel(st) {
@@ -3429,9 +4588,11 @@ function frSaveWeekActualBalance(sourceId, value) {
     if (!frCanEditData()) return;
     const area = frActiveArea();
     if (!area || !sourceId) return;
+    if (frMoneyOpsBlocked()) { renderFinanceRec(); return; }
     const w = frEnsureWeek();
     const endDate = w.end_date;
     ensureFinanceRec();
+    const rowsBefore = frBeginRowsSnapshot();
     let row = frDayClosingRow(area.finance_area_id, endDate, sourceId);
     const raw = String(value == null ? "" : value).trim();
     if (!row) {
@@ -3472,7 +4633,7 @@ function frSaveWeekActualBalance(sourceId, value) {
     row.updated_at = new Date().toISOString();
     frNormalizeBalanceRow(row);
     const calc = frWeekEndCalculatedForAccount(area.finance_area_id, w.period_key, endDate, sourceId);
-    frAudit("week_actual_balance", {
+    const auditId = frAudit("week_actual_balance", {
         finance_source_id: sourceId,
         account_id: sourceId,
         detail: endDate + " " + w.period_key,
@@ -3481,7 +4642,9 @@ function frSaveWeekActualBalance(sourceId, value) {
     });
     const next = typeof mgmtSpuShiftReportingWeek === "function" ? mgmtSpuShiftReportingWeek(w.start_date, 1) : null;
     if (next) frCarryIfNeeded(area.finance_area_id, next.period_key);
-    saveApp();
+    frPersistRows(rowsBefore, [auditId], {
+        failToast: "Фактический остаток не записан на сервер. Изменение на экране отменено."
+    });
     renderFinanceRec();
 }
 
@@ -3618,6 +4781,7 @@ function frCommitNonIncomeComment(inp) {
     }
     const w = frEnsureWeek();
     const dates = frWeekDates(w);
+    const before = frBeginMoneyOpsSnapshot();
     const newKey = frRenameNonIncomeLine(area.finance_area_id, w.period_key, dates, lineKey, comment, ch);
     if (newKey && newKey !== lineKey) {
         tr.setAttribute("data-line-key", newKey);
@@ -3625,7 +4789,14 @@ function frCommitNonIncomeComment(inp) {
             el.setAttribute("data-line-key", newKey);
         });
     }
-    saveApp();
+    const ids = frCollectChangedOpIds(before);
+    if (ids.length) {
+        frPersistOpsById(ids, {
+            atomic: true,
+            before: before,
+            failToast: "Комментарий не записан на сервер. Изменения на экране отменены."
+        });
+    }
     return true;
 }
 
@@ -3664,6 +4835,7 @@ function frCommitNonIncomeCell(inp, dataSource) {
         return false;
     }
     const wasNew = lineKey === "new";
+    const before = frBeginMoneyOpsSnapshot();
     const result = frSetNonIncomeCell(
         area.finance_area_id,
         lineKey === "new" ? "" : lineKey,
@@ -3686,12 +4858,20 @@ function frCommitNonIncomeCell(inp, dataSource) {
         lineKey = result.lineKey;
     }
     inp.value = frFmtCellAmount(amt);
-    frAudit(ch === "bank" ? "non_income_bank_grid" : "non_income_grid", {
+    const audId = frAudit(ch === "bank" ? "non_income_bank_grid" : "non_income_grid", {
         detail: comment + " " + date,
         old_value: prev,
         new_value: amt
     });
-    saveApp();
+    const ids = frCollectChangedOpIds(before);
+    const audLeaf = frAuditLeaf(audId);
+    frPersistOpsById(ids, {
+        atomic: true,
+        before: before,
+        extraLeaves: audLeaf ? [audLeaf] : [],
+        createdAuditIds: audId ? [audId] : [],
+        failToast: "Внедоходовая операция не записана на сервер. Изменения на экране отменены."
+    });
     /* после первой суммы в новой строке — перерисовать, чтобы появилась пустая строка */
     if (wasNew && amt > 0) return "render";
     /* если опустошили все ячейки строки — тоже можно перерисовать, но обновления итогов достаточно */
@@ -3707,7 +4887,9 @@ function frOnNonIncomePaste(e, inp) {
     if (!String(text).trim()) return;
     const matrix = frParsePasteMatrix(text);
     e.preventDefault();
-    frUi._reconcilePasteLock = true;
+    frUi._niPasteLock = true;
+    frUi._pasteOpIds = {};
+    frUi._pasteOpBefore = {};
     const startR = Number(inp.getAttribute("data-ni-r"));
     const startC = Number(inp.getAttribute("data-ni-c"));
     const ch = frNiChannelOfEl(inp);
@@ -3723,13 +4905,19 @@ function frOnNonIncomePaste(e, inp) {
             if (res === "render") needRender = true;
         });
     });
-    frUi._reconcilePasteLock = false;
-    if (needRender) {
-        renderFinanceRec();
-        return;
-    }
-    frRefreshNonIncomeTotalsDom();
-    frRefreshDayAggDom();
+    frUi._niPasteLock = false;
+    frFlushMoneyOpPasteQueue({
+        atomic: true,
+        failToast: "Вставка внедоходовых не записана на сервер. Изменения на экране отменены."
+    }).then(function (ok) {
+        if (ok === false) return;
+        if (needRender) {
+            renderFinanceRec();
+            return;
+        }
+        frRefreshNonIncomeTotalsDom();
+        frRefreshDayAggDom();
+    });
 }
 
 function frRefreshNonIncomeTotalsDom() {
@@ -3785,15 +4973,24 @@ function frCommitRevenueCell(inp, dataSource) {
         inp.value = frFmtCellAmount(amt);
         return false;
     }
+    const before = frBeginMoneyOpsSnapshot();
     frSetGridCell(area.finance_area_id, sourceId, date, amt, dataSource || FR_DATA_SOURCES.manual, opKind);
     inp.value = frFmtCellAmount(amt);
-    frAudit("revenue_grid", {
+    const audId = frAudit("revenue_grid", {
         finance_source_id: sourceId,
         detail: date + " " + opKind,
         old_value: prev,
         new_value: amt
     });
-    saveApp();
+    const ids = frCollectChangedOpIds(before);
+    const audLeaf = frAuditLeaf(audId);
+    frPersistOpsById(ids, {
+        atomic: true,
+        before: before,
+        extraLeaves: audLeaf ? [audLeaf] : [],
+        createdAuditIds: audId ? [audId] : [],
+        failToast: "Ячейка выручки не записана на сервер. Изменения на экране отменены."
+    });
     return true;
 }
 
@@ -3827,6 +5024,8 @@ function frOnReconcilePaste(e, inp) {
     e.preventDefault();
     e.stopPropagation();
     frUi._reconcilePasteLock = true;
+    frUi._pasteOpIds = {};
+    frUi._pasteOpBefore = {};
     const startR = Number(inp.getAttribute("data-r"));
     const startC = Number(inp.getAttribute("data-c"));
     let changed = 0;
@@ -3842,16 +5041,22 @@ function frOnReconcilePaste(e, inp) {
         });
     });
     frUi._reconcilePasteLock = false;
-    frRefreshReconcileTotalsDom();
-    if (changed > 0) {
-        const focusR = startR + matrix.length - 1;
-        const focusC = startC + (matrix[matrix.length - 1] || []).length - 1;
-        renderFinanceRec();
-        setTimeout(function () {
-            const el = document.querySelector('.fr-rev-cell[data-r="' + focusR + '"][data-c="' + focusC + '"]');
-            if (el) { el.focus(); try { el.select(); } catch (err) {} }
-        }, 0);
-    }
+    const focusR = startR + matrix.length - 1;
+    const focusC = startC + (matrix[matrix.length - 1] || []).length - 1;
+    frFlushMoneyOpPasteQueue({
+        atomic: true,
+        failToast: "Вставка выручки не записана на сервер. Изменения на экране отменены."
+    }).then(function (ok) {
+        if (ok === false) return;
+        frRefreshReconcileTotalsDom();
+        if (changed > 0) {
+            renderFinanceRec();
+            setTimeout(function () {
+                const el = document.querySelector('.fr-rev-cell[data-r="' + focusR + '"][data-c="' + focusC + '"]');
+                if (el) { el.focus(); try { el.select(); } catch (err) {} }
+            }, 0);
+        }
+    });
 }
 
 function frRefreshReconcileTotalsDom() {
@@ -4600,6 +5805,10 @@ function openFrDividendForm(id) {
 
 function saveFrDividend() {
     if (!frCanEditData()) return;
+    if (frUi._moneyOpsBusy) {
+        toast("Сохранение операции ещё выполняется. Подождите.", "error");
+        return;
+    }
     const area = frActiveArea();
     const w = frEnsureWeek();
     const id = ((document.getElementById("frDivId") || {}).value || "");
@@ -4610,9 +5819,12 @@ function saveFrDividend() {
     if (!(amt > 0)) { toast("Укажите сумму", "error"); return; }
     if (!accountId) { toast("Выберите счёт", "error"); return; }
     ensureFinanceRec();
+    frUi._moneyOpsBusy = true;
+    const before = frBeginMoneyOpsSnapshot();
     let rec = id ? (appData.financeRec.operations || []).find(function (o) {
         return o && o.finance_operation_id === id;
     }) : null;
+    const isNew = !rec;
     if (!rec) {
         rec = {
             finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) {
@@ -4638,16 +5850,29 @@ function saveFrDividend() {
         data_source: rec.data_source || FR_DATA_SOURCES.manual,
         revenue_direction: "none"
     });
-    frAudit(id ? "dividend_edit" : "dividend_add", {
+    const audId = frAudit(id ? "dividend_edit" : "dividend_add", {
         finance_source_id: accountId,
         detail: date,
         new_value: amt
     });
-    saveApp();
-    closeMgmtModal();
-    if (!frUi.dividendDetailOpen) frUi.dividendDetailOpen = {};
-    frUi.dividendDetailOpen[area.finance_area_id] = true;
-    renderFinanceRec();
+    const audLeaf = frAuditLeaf(audId);
+    const opId = rec.finance_operation_id;
+    return frPersistOpsById([opId], {
+        atomic: true,
+        alreadyBusy: true,
+        before: before,
+        createdIds: isNew ? [opId] : [],
+        extraLeaves: audLeaf ? [audLeaf] : [],
+        createdAuditIds: audId ? [audId] : [],
+        successToast: isNew ? "Дивиденды сохранены" : "Дивиденды обновлены",
+        failToast: "Дивиденды не записаны на сервер. Окно оставлено открытым для исправления.",
+        onSuccess: function () {
+            closeMgmtModal();
+            if (!frUi.dividendDetailOpen) frUi.dividendDetailOpen = {};
+            frUi.dividendDetailOpen[area.finance_area_id] = true;
+            renderFinanceRec();
+        }
+    });
 }
 
 function openFrTransitSendForm() {
@@ -4688,6 +5913,7 @@ function openFrTransitSendForm() {
 
 function saveFrTransitSend() {
     if (!frCanEditData()) return;
+    if (frMoneyOpsBlocked()) return;
     const area = frActiveArea();
     const areaId = area.object_id || area.finance_area_id;
     const fromId = ((document.getElementById("frTsFrom") || {}).value || "");
@@ -4698,14 +5924,27 @@ function saveFrTransitSend() {
     if (!(amt > 0)) { toast("Укажите сумму", "error"); return; }
     if (!fromId || !transitAcc) { toast("Выберите счёт", "error"); return; }
     if (fromId === transitAcc) { toast("Счета должны отличаться", "error"); return; }
+    ensureFinanceRec();
+    frUi._moneyOpsBusy = true;
+    const before = frBeginMoneyOpsSnapshot();
+    const transitsBefore = frBeginTransitsSnapshot();
     const op = frCreateTransferOp(areaId, fromId, transitAcc, amt, date, comment);
     frSyncTransitAfterTransfer(areaId, op, true);
-    frAudit("transit_send", { finance_source_id: fromId, detail: transitAcc + " " + date, new_value: amt });
-    saveApp();
-    closeMgmtModal();
-    if (!frUi.transitDetailOpen) frUi.transitDetailOpen = {};
-    frUi.transitDetailOpen[areaId] = true;
-    renderFinanceRec();
+    const audId = frAudit("transit_send", { finance_source_id: fromId, detail: transitAcc + " " + date, new_value: amt });
+    return frPersistOpsWithTransits([op.finance_operation_id], {
+        before: before,
+        transitsBefore: transitsBefore,
+        createdOpIds: [op.finance_operation_id],
+        auditIds: [audId],
+        successToast: "Деньги отправлены в путь",
+        failToast: "Отправка в путь не записана на сервер. Окно оставлено открытым для исправления.",
+        onSuccess: function () {
+            closeMgmtModal();
+            if (!frUi.transitDetailOpen) frUi.transitDetailOpen = {};
+            frUi.transitDetailOpen[areaId] = true;
+            renderFinanceRec();
+        }
+    });
 }
 
 function frJournalTransitRow(areaId, transitId) {
@@ -4733,7 +5972,7 @@ function frEnsureTransitForClose(areaId, transitId) {
     if (!op || (op.object_id || op.finance_area_id) !== areaId) return null;
     const transitAcc = frOpAccountToId(op) || frTransitAccountId(areaId);
     const t = {
-        transit_id: nextPrefixedId("ftr", appData.financeRec.money_transits.map(function (x) {
+        transit_id: nextPrefixedUniqueId("ftr", appData.financeRec.money_transits.map(function (x) {
             return x && x.transit_id;
         })),
         object_id: areaId,
@@ -4792,6 +6031,7 @@ function openFrTransitCloseForm(transitId) {
 
 function saveFrTransitClose() {
     if (!frCan("fill")) return;
+    if (frMoneyOpsBlocked()) return;
     const area = frActiveArea();
     const areaId = area.object_id || area.finance_area_id;
     const transitId = ((document.getElementById("frTcId") || {}).value || "");
@@ -4819,8 +6059,14 @@ function saveFrTransitClose() {
         toast("Выберите конечный счёт", "error");
         return;
     }
+    ensureFinanceRec();
+    frUi._moneyOpsBusy = true;
+    const before = frBeginMoneyOpsSnapshot();
+    const transitsBefore = frBeginTransitsSnapshot();
     const t = frEnsureTransitForClose(areaId, transitId);
     if (!t || (t.object_id || t.finance_area_id) !== areaId) {
+        frRestoreTransitsSnap(transitsBefore, frCollectChangedTransitIds(transitsBefore), null);
+        frUi._moneyOpsBusy = false;
         toast("Запись не найдена", "error");
         return;
     }
@@ -4841,16 +6087,25 @@ function saveFrTransitClose() {
     });
     t.updated_at = new Date().toISOString();
     frNormalizeTransitRecord(t);
-    frAudit("transit_close", {
+    const audId = frAudit("transit_close", {
         finance_source_id: toId,
         detail: t.transit_id + " " + date,
         new_value: amt
     });
-    saveApp();
-    closeMgmtModal();
-    if (!frUi.transitDetailOpen) frUi.transitDetailOpen = {};
-    frUi.transitDetailOpen[areaId] = true;
-    renderFinanceRec();
+    return frPersistOpsWithTransits([op.finance_operation_id], {
+        before: before,
+        transitsBefore: transitsBefore,
+        createdOpIds: [op.finance_operation_id],
+        auditIds: [audId],
+        successToast: "Поступление записано",
+        failToast: "Поступление не записано на сервер. Окно оставлено открытым для исправления.",
+        onSuccess: function () {
+            closeMgmtModal();
+            if (!frUi.transitDetailOpen) frUi.transitDetailOpen = {};
+            frUi.transitDetailOpen[areaId] = true;
+            renderFinanceRec();
+        }
+    });
 }
 
 function renderFrTransferTab(areaId, w, canEdit) {
@@ -4950,6 +6205,7 @@ function renderFrTransferTab(areaId, w, canEdit) {
 
 function frQuickAddTransfer(date) {
     if (!frCanEditData()) return;
+    if (frMoneyOpsBlocked()) return;
     const area = frActiveArea();
     const w = frEnsureWeek();
     const from = ((document.getElementById("frTrFrom_" + date) || {}).value || "");
@@ -4959,7 +6215,15 @@ function frQuickAddTransfer(date) {
     if (!(amt > 0)) { toast("Укажите сумму", "error"); return; }
     if (!from || !to) { toast("Выберите счета", "error"); return; }
     if (from === to) { toast("Счета «откуда» и «куда» должны отличаться", "error"); return; }
+    const areaId = area.object_id || area.finance_area_id;
+    if (frIsTransitSource(frSourceByAccountId(areaId, from))) {
+        toast("Закрытие денег в пути — через «Закрыть / Деньги поступили»", "error");
+        return;
+    }
     ensureFinanceRec();
+    frUi._moneyOpsBusy = true;
+    const before = frBeginMoneyOpsSnapshot();
+    const transitsBefore = frBeginTransitsSnapshot();
     const opWeek = frWeek(date);
     const rec = {
         finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
@@ -4981,23 +6245,24 @@ function frQuickAddTransfer(date) {
         revenue_direction: "none"
     });
     appData.financeRec.operations.push(rec);
-    const areaId = area.object_id || area.finance_area_id;
-    const fromSrc = frSourceByAccountId(areaId, from);
-    if (frIsTransitSource(fromSrc)) {
-        toast("Закрытие денег в пути — через «Закрыть / Деньги поступили»", "error");
-        rec.is_deleted = true;
-        saveApp();
-        renderFinanceRec();
-        return;
-    }
     frSyncTransitAfterTransfer(areaId, rec, true);
-    frAudit("transfer_add", { finance_source_id: from, detail: to + " " + date, new_value: amt });
-    saveApp();
-    renderFinanceRec();
+    const audId = frAudit("transfer_add", { finance_source_id: from, detail: to + " " + date, new_value: amt });
+    return frPersistOpsWithTransits([rec.finance_operation_id], {
+        before: before,
+        transitsBefore: transitsBefore,
+        createdOpIds: [rec.finance_operation_id],
+        auditIds: [audId],
+        successToast: "Перемещение добавлено",
+        failToast: "Перемещение не записано на сервер. Изменения на экране отменены."
+    });
 }
 
 function frQuickAddOp(kind, date) {
     if (!frCanEditData()) return;
+    if (frUi._moneyOpsBusy) {
+        toast("Сохранение операции ещё выполняется. Подождите.", "error");
+        return;
+    }
     const area = frActiveArea();
     const w = frEnsureWeek();
     const srcEl = document.getElementById("frAddSrc_" + kind + "_" + date);
@@ -5007,6 +6272,7 @@ function frQuickAddOp(kind, date) {
     const src = srcEl && srcEl.value;
     if (!(amt > 0)) { toast("Укажите сумму", "error"); return; }
     if (!src) { toast("Выберите счёт", "error"); return; }
+    frUi._moneyOpsBusy = true;
     ensureFinanceRec();
     const movement_kind = kind === "non_income" ? "non_income" : (kind === "income" ? "income" : "expense");
     const opWeek = frWeek(date);
@@ -5029,13 +6295,25 @@ function frQuickAddOp(kind, date) {
         data_source: FR_DATA_SOURCES.manual
     });
     appData.financeRec.operations.push(rec);
-    frAudit("op_add", { finance_source_id: src, new_value: amt, detail: movement_kind + " " + date });
-    saveApp();
-    renderFinanceRec();
+    const audId = frAudit("op_add", { finance_source_id: src, new_value: amt, detail: movement_kind + " " + date });
+    const audLeaf = frAuditLeaf(audId);
+    return frPersistOpsById([rec.finance_operation_id], {
+        atomic: true,
+        alreadyBusy: true,
+        createdIds: [rec.finance_operation_id],
+        extraLeaves: audLeaf ? [audLeaf] : [],
+        createdAuditIds: audId ? [audId] : [],
+        successToast: "Операция добавлена",
+        failToast: "Операция не записана на сервер. Изменения на экране отменены."
+    });
 }
 
 function frQuickAddRefund(date) {
     if (!frCanEditData()) return;
+    if (frUi._moneyOpsBusy) {
+        toast("Сохранение операции ещё выполняется. Подождите.", "error");
+        return;
+    }
     const area = frActiveArea();
     if (!area) return;
     const areaId = area.object_id || area.finance_area_id;
@@ -5051,6 +6329,7 @@ function frQuickAddRefund(date) {
     const note = String(((document.getElementById("frRefOp_" + date) || {}).value) || "").trim();
     if (!(amt > 0)) { toast("Укажите сумму возврата", "error"); return; }
     if (!src) { toast("Выберите счёт, куда вернулись деньги", "error"); return; }
+    frUi._moneyOpsBusy = true;
     ensureFinanceRec();
     const rec = {
         finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })),
@@ -5073,9 +6352,17 @@ function frQuickAddRefund(date) {
         revenue_direction: "none"
     });
     appData.financeRec.operations.push(rec);
-    frAudit("expense_refund_add", { finance_source_id: src, new_value: amt, detail: date });
-    saveApp();
-    renderFinanceRec();
+    const audId = frAudit("expense_refund_add", { finance_source_id: src, new_value: amt, detail: date });
+    const audLeaf = frAuditLeaf(audId);
+    return frPersistOpsById([rec.finance_operation_id], {
+        atomic: true,
+        alreadyBusy: true,
+        createdIds: [rec.finance_operation_id],
+        extraLeaves: audLeaf ? [audLeaf] : [],
+        createdAuditIds: audId ? [audId] : [],
+        successToast: "Возврат добавлен",
+        failToast: "Возврат не записан на сервер. Изменения на экране отменены."
+    });
 }
 
 function renderFrDaysTab(areaId, w, canEdit) {
@@ -5141,9 +6428,11 @@ function renderFrDaysTab(areaId, w, canEdit) {
 function frSaveDayActual(sourceId, date, value) {
     /* Факт остатка опционален (инвентаризация); расчётный остаток всегда считается автоматически. */
     if (!frCanEditData()) return;
+    if (frMoneyOpsBlocked()) { renderFinanceRec(); return; }
     const area = frActiveArea();
     const w = frEnsureWeek();
     ensureFinanceRec();
+    const rowsBefore = frBeginRowsSnapshot();
     let row = frDayClosingRow(area.finance_area_id, date, sourceId);
     const raw = String(value == null ? "" : value).trim();
     if (!row) {
@@ -5171,7 +6460,7 @@ function frSaveDayActual(sourceId, date, value) {
     row.updated_at = new Date().toISOString();
     frNormalizeBalanceRow(row);
     const calc = frDayCalculated(area.finance_area_id, w.period_key, date, sourceId);
-    frAudit("day_actual", {
+    const auditId = frAudit("day_actual", {
         finance_source_id: sourceId,
         detail: date,
         new_value: row.actual_closing,
@@ -5179,7 +6468,9 @@ function frSaveDayActual(sourceId, date, value) {
     });
     const next = typeof mgmtSpuShiftReportingWeek === "function" ? mgmtSpuShiftReportingWeek(w.start_date, 1) : null;
     if (date === w.end_date && next) frCarryIfNeeded(area.finance_area_id, next.period_key);
-    saveApp();
+    frPersistRows(rowsBefore, [auditId], {
+        failToast: "Фактический остаток дня не записан на сервер. Изменение на экране отменено."
+    });
     renderFinanceRec();
 }
 
@@ -5471,6 +6762,7 @@ function frSaveOpening(sourceId, value) {
         renderFinanceRec();
         return;
     }
+    if (frMoneyOpsBlocked()) { renderFinanceRec(); return; }
     const old = frWeekIncomingOpening(area.finance_area_id, w.period_key, sourceId);
     const next = frNum(value);
     let why = "";
@@ -5481,6 +6773,7 @@ function frSaveOpening(sourceId, value) {
     } else {
         why = "начальный остаток";
     }
+    const rowsBefore = frBeginRowsSnapshot();
     let row = frOpeningRow(area.finance_area_id, w.period_key, sourceId);
     if (!row) {
         row = {
@@ -5498,8 +6791,10 @@ function frSaveOpening(sourceId, value) {
     row.is_manual = true;
     row.carried = false;
     row.updated_at = new Date().toISOString();
-    frAudit("opening_edit", { old_value: old, new_value: next, finance_source_id: sourceId, comment: String(why).trim() });
-    saveApp();
+    const auditId = frAudit("opening_edit", { old_value: old, new_value: next, finance_source_id: sourceId, comment: String(why).trim() });
+    frPersistRows(rowsBefore, [auditId], {
+        failToast: "Входящий остаток не записан на сервер. Изменение на экране отменено."
+    });
     renderFinanceRec();
 }
 
@@ -5536,13 +6831,20 @@ function openFrOpForm(id) {
 
 function saveFrOp() {
     if (!frCanEditData()) return;
+    if (frUi._moneyOpsBusy) {
+        toast("Сохранение операции ещё выполняется. Подождите.", "error");
+        return;
+    }
     const area = frActiveArea();
     const w = frEnsureWeek();
     const id = ((document.getElementById("frOpId") || {}).value || "");
     const amt = frNum((document.getElementById("frOpAmt") || {}).value);
     if (!(amt > 0)) { toast("Укажите сумму", "error"); return; }
+    frUi._moneyOpsBusy = true;
+    const before = frBeginMoneyOpsSnapshot();
     let rec = id ? (appData.financeRec.operations || []).find(function (o) { return o && o.finance_operation_id === id; }) : null;
     const old = rec ? rec.amount : null;
+    const isNew = !rec;
     if (!rec) {
         rec = { finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })) };
         appData.financeRec.operations.push(rec);
@@ -5565,14 +6867,31 @@ function saveFrOp() {
         op_type: kind,
         data_source: rec.data_source || FR_DATA_SOURCES.manual
     });
-    frAudit(id ? "op_edit" : "op_add", { finance_operation_id: rec.finance_operation_id, old_value: old, new_value: amt, finance_source_id: rec.finance_source_id });
-    saveApp();
-    closeMgmtModal();
-    renderFinanceRec();
+    const audId = frAudit(id ? "op_edit" : "op_add", { finance_operation_id: rec.finance_operation_id, old_value: old, new_value: amt, finance_source_id: rec.finance_source_id });
+    const audLeaf = frAuditLeaf(audId);
+    const opId = rec.finance_operation_id;
+    const ids = frUniqueOpIds(frCollectChangedOpIds(before).concat([opId]));
+    return frPersistOpsById(ids, {
+        atomic: true,
+        alreadyBusy: true,
+        before: before,
+        createdIds: isNew ? [opId] : [],
+        extraLeaves: audLeaf ? [audLeaf] : [],
+        createdAuditIds: audId ? [audId] : [],
+        successToast: isNew ? "Операция сохранена" : "Операция обновлена",
+        failToast: "Операция не записана на сервер. Окно оставлено открытым для исправления.",
+        onSuccess: function () {
+            closeMgmtModal();
+        }
+    });
 }
 
 function frDeleteOp(id) {
     if (!frCanEditData()) return;
+    if (frUi._moneyOpsBusy) {
+        toast("Сохранение операции ещё выполняется. Подождите.", "error");
+        return;
+    }
     const rec = (appData.financeRec.operations || []).find(function (o) { return o && o.finance_operation_id === id; });
     if (!rec) return;
     if (frOpKind(rec) === "transfer" && rec.transit_id && rec.transit_role === "send") {
@@ -5581,6 +6900,16 @@ function frDeleteOp(id) {
             toast("Нельзя удалить: по этой отправке уже есть поступления", "error");
             return;
         }
+    }
+    if (frMoneyOpsPasteLocked()) {
+        toast("Сохранение операции ещё выполняется. Подождите.", "error");
+        return;
+    }
+    frUi._moneyOpsBusy = true;
+    const before = frBeginMoneyOpsSnapshot();
+    const transitsBefore = frBeginTransitsSnapshot();
+    if (frOpKind(rec) === "transfer" && rec.transit_id && rec.transit_role === "send") {
+        const t = frTransitById(rec.transit_id);
         if (t) {
             t.amount_sent = 0;
             t.amount_closed = 0;
@@ -5592,16 +6921,15 @@ function frDeleteOp(id) {
     rec.is_deleted = true;
     rec.deleted_at = new Date().toISOString();
     rec.deleted_by = typeof currentAuthUserId === "function" ? currentAuthUserId() : "";
-    frAudit("op_delete", { finance_operation_id: id, old_value: rec.amount, finance_source_id: rec.finance_source_id, detail: rec.comment || "" });
+    const audId = frAudit("op_delete", { finance_operation_id: id, old_value: rec.amount, finance_source_id: rec.finance_source_id, detail: rec.comment || "" });
     renderFinanceRec();
-    return Promise.resolve(saveApp()).then(function (ok) {
-        if (ok === true) {
-            toast("Операция удалена", "success");
-        } else if (wtServerMode) {
-            toast("Удаление не записано на сервер. Не обновляйте страницу — пометка удаления пока только на этом экране.", "error");
-        }
-        try { renderFinanceRec(); } catch (err) {}
-        return ok;
+    return frPersistOpsWithTransits([id], {
+        before: before,
+        transitsBefore: transitsBefore,
+        createdOpIds: [],
+        auditIds: [audId],
+        successToast: "Операция удалена",
+        failToast: "Удаление не записано на сервер. Пометка удаления на экране отменена."
     });
 }
 
@@ -6057,20 +7385,29 @@ function frAddFormulaTerm() {
 
 function frSaveFormula() {
     if (!frCan("setup")) return;
+    if (!frBeginCriticalSave()) return;
     const area = frActiveArea();
     const box = document.getElementById("frFormulaBox");
-    if (!box) return;
+    if (!box || !area) {
+        frUi._criticalSaveBusy = false;
+        return;
+    }
     const terms = [];
     box.querySelectorAll(".fr-filters").forEach(function (row) {
         const sign = (row.querySelector(".frSign") || {}).value || "+";
         const metric = (row.querySelector(".frMetric") || {}).value || "finm_income";
         terms.push({ metric_id: metric, sign: sign === "-" ? "-" : "+" });
     });
+    const snap = frSnapFinanceKeys(["formulas"]);
     let row = (appData.financeRec.formulas || []).find(function (f) { return f && f.finance_area_id === area.finance_area_id; });
     if (!row) { row = { finance_area_id: area.finance_area_id }; appData.financeRec.formulas.push(row); }
     row.terms = terms;
-    saveApp();
-    toast("Формула сверки сохранена", "success");
+    return frAwaitCriticalSave(
+        snap,
+        ["financeRec.formulas"],
+        "Формула сверки сохранена",
+        "Формула не записана на сервер. Изменения на экране отменены."
+    );
 }
 
 function frSetStatus(status) {
@@ -6078,19 +7415,27 @@ function frSetStatus(status) {
     if ((status === "review" || status === "reconciled") && !frCan("check")) return;
     const area = frActiveArea();
     const w = frEnsureWeek();
+    if (frMoneyOpsBlocked()) return;
+    const rowsBefore = frBeginRowsSnapshot();
     const st = frPeriodState(area.finance_area_id, w.period_key);
     if (st.status === "closed" && !frCan("setup")) return;
+    const stPrev = frCloneFinanceJson(st);
     const old = st.status;
     st.status = status;
-    frAudit("status", { old_value: old, new_value: status });
-    saveApp();
+    const auditId = frAudit("status", { old_value: old, new_value: status });
+    frPersistRows(rowsBefore, [auditId], {
+        requireRows: [{ list: "period_states", row: st, prev: stPrev }],
+        failToast: "Статус периода не записан на сервер. Изменение на экране отменено."
+    });
     renderFinanceRec();
 }
 
 function frClosePeriod() {
     const area = frActiveArea();
     const w = frEnsureWeek();
+    if (!area || !w) return;
     const chk = frWeekFactCheck(area.finance_area_id, w.period_key);
+    let forceWhy = null;
     if (!chk.balanced) {
         if (!frCan("setup")) {
             toast(
@@ -6101,20 +7446,30 @@ function frClosePeriod() {
             );
             return;
         }
-        const why = prompt("Принудительное закрытие. Укажите причину:");
-        if (!String(why || "").trim()) return;
-        frAudit("force_close", { comment: why, old_value: chk.totalDisc });
+        forceWhy = prompt("Принудительное закрытие. Укажите причину:");
+        if (!String(forceWhy || "").trim()) return;
     }
     if (!frCan("close") && !frCan("setup")) return;
+    if (frMoneyOpsBlocked()) return;
+    // Строка статуса + строки переноса + журнал — один atomic batch по ключам строк.
+    const rowsBefore = frBeginRowsSnapshot();
+    const auditIds = [];
+    if (forceWhy != null) {
+        auditIds.push(frAudit("force_close", { comment: forceWhy, old_value: chk.totalDisc }));
+    }
     const st = frPeriodState(area.finance_area_id, w.period_key);
+    const stPrev = frCloneFinanceJson(st);
     st.status = "closed";
     st.closed_at = new Date().toISOString();
     st.closed_by = typeof currentAuthUserId === "function" ? currentAuthUserId() : "";
-    frPushCarry(true);
-    frAudit("close", { new_value: "closed" });
-    saveApp();
-    renderFinanceRec();
-    toast("Период закрыт.");
+    const ensureRows = (frPushCarry(true) || []).slice();
+    auditIds.push(frAudit("close", { new_value: "closed" }));
+    return frPersistRows(rowsBefore, auditIds, {
+        ensureRows: ensureRows,
+        requireRows: [{ list: "period_states", row: st, prev: stPrev }],
+        successToast: "Период закрыт.",
+        failToast: "Период не закрыт на сервере. Статус и перенос остатков на экране отменены."
+    });
 }
 
 function frReopenPeriod() {
@@ -6123,18 +7478,28 @@ function frReopenPeriod() {
     if (!String(why || "").trim()) return;
     const area = frActiveArea();
     const w = frEnsureWeek();
+    if (frMoneyOpsBlocked()) return;
+    const rowsBefore = frBeginRowsSnapshot();
     const st = frPeriodState(area.finance_area_id, w.period_key);
+    const stPrev = frCloneFinanceJson(st);
     st.status = "review";
-    frAudit("reopen", { comment: why });
-    saveApp();
+    const auditId = frAudit("reopen", { comment: why });
+    frPersistRows(rowsBefore, [auditId], {
+        requireRows: [{ list: "period_states", row: st, prev: stPrev }],
+        failToast: "Период не открыт на сервере. Изменение на экране отменено."
+    });
     renderFinanceRec();
 }
 
 function frPushCarry(silent) {
     const area = frActiveArea();
     const w = frEnsureWeek();
+    if (!area || !w) return;
     const next = typeof mgmtSpuShiftReportingWeek === "function" ? mgmtSpuShiftReportingWeek(w.start_date, 1) : null;
     if (!next) return;
+    if (!silent && frMoneyOpsBlocked()) return;
+    const rowsBefore = silent ? null : frBeginRowsSnapshot();
+    const carriedRows = [];
     frSources(area.finance_area_id, true).forEach(function (s) {
         const sid = s.finance_source_id;
         let value = 0;
@@ -6161,12 +7526,15 @@ function frPushCarry(silent) {
         row.value = value;
         row.carried = true;
         row.is_manual = false;
+        const k = frRowKey("openings", row);
+        if (k) carriedRows.push({ list: "openings", key: k });
     });
-    if (!silent) {
-        saveApp();
-        toast("Остатки перенесены на следующую неделю.");
-        renderFinanceRec();
-    }
+    if (silent) return carriedRows;
+    return frPersistRows(rowsBefore, [], {
+        ensureRows: carriedRows,
+        successToast: "Остатки перенесены на следующую неделю.",
+        failToast: "Перенос остатков не записан на сервер. Изменения на экране отменены."
+    });
 }
 
 function frShiftWeekToCurrent() {
@@ -6213,6 +7581,7 @@ function openFrTransferForm(id) {
 
 function saveFrTransfer() {
     if (!frCanEditData()) return;
+    if (frMoneyOpsBlocked()) return;
     const area = frActiveArea();
     const w = frEnsureWeek();
     const id = ((document.getElementById("frTrId") || {}).value || "");
@@ -6225,6 +7594,15 @@ function saveFrTransfer() {
     if (!from || !to || from === to) { toast("Выберите разные счета «откуда» и «куда»", "error"); return; }
     ensureFinanceRec();
     let rec = id ? (appData.financeRec.operations || []).find(function (o) { return o && o.finance_operation_id === id; }) : null;
+    const areaId = area.object_id || area.finance_area_id;
+    if (frIsTransitSource(frSourceByAccountId(areaId, from)) && !(rec && rec.transit_role)) {
+        toast("Закрытие денег в пути — через «Закрыть / Деньги поступили»", "error");
+        return;
+    }
+    frUi._moneyOpsBusy = true;
+    const before = frBeginMoneyOpsSnapshot();
+    const transitsBefore = frBeginTransitsSnapshot();
+    const isNew = !rec;
     if (!rec) {
         rec = { finance_operation_id: nextPrefixedUniqueId("fop", appData.financeRec.operations.map(function (x) { return x && x.finance_operation_id; })) };
         appData.financeRec.operations.push(rec);
@@ -6246,17 +7624,20 @@ function saveFrTransfer() {
         data_source: rec.data_source || FR_DATA_SOURCES.manual,
         revenue_direction: "none"
     });
-    const areaId = area.object_id || area.finance_area_id;
-    const fromSrc = frSourceByAccountId(areaId, from);
-    if (frIsTransitSource(fromSrc) && !rec.transit_role) {
-        toast("Закрытие денег в пути — через «Закрыть / Деньги поступили»", "error");
-        return;
-    }
     frSyncTransitAfterTransfer(areaId, rec, !id);
-    frAudit(id ? "transfer_edit" : "transfer_add", { finance_source_id: from, detail: to, new_value: amt });
-    saveApp();
-    closeMgmtModal();
-    renderFinanceRec();
+    const audId = frAudit(id ? "transfer_edit" : "transfer_add", { finance_source_id: from, detail: to, new_value: amt });
+    return frPersistOpsWithTransits([rec.finance_operation_id], {
+        before: before,
+        transitsBefore: transitsBefore,
+        createdOpIds: isNew ? [rec.finance_operation_id] : [],
+        auditIds: [audId],
+        successToast: isNew ? "Перемещение добавлено" : "Перемещение обновлено",
+        failToast: "Перемещение не записано на сервер. Окно оставлено открытым для исправления.",
+        onSuccess: function () {
+            closeMgmtModal();
+            renderFinanceRec();
+        }
+    });
 }
 
 function frHashStr(s) {
@@ -7011,10 +8392,46 @@ function frApplyExpenseImport(text, sourceId, meta) {
     // Orphan/partial: переиспользуем import_batch_id из истории, не создаём второй batch_key.
     let batchId = (existingBatch && existingBatch.import_batch_id)
         ? String(existingBatch.import_batch_id)
-        : nextPrefixedId("fimp", (appData.financeRec.import_batches || []).map(function (x) { return x && x.import_batch_id; }));
-    let added = 0;
+        : nextPrefixedUniqueId("fimp", (appData.financeRec.import_batches || []).map(function (x) { return x && x.import_batch_id; }));
+    // Предпросчёт: не мутировать локально, если пакет не влезет в один атомарный OPS (лимит 200 − meta).
+    let wouldAdd = 0;
     let skippedDup = 0;
     let skippedNoAmt = 0;
+    const probeFp = Object.assign({}, existingFp);
+    rows.forEach(function (r) {
+        if (!(r.amount > 0)) { skippedNoAmt++; return; }
+        const payeeText = String(r.payee_name || r.payee || "").trim();
+        const operationText = String(r.operation || "").trim();
+        const fpOld = frExpenseFingerprint(area.finance_area_id, sourceId, r.date, r.amount, payeeText);
+        const fp = frExpenseImportKey(area.finance_area_id, sourceId, r.date, r.amount, payeeText, operationText, r.op_time);
+        if (probeFp[fp] || probeFp[fpOld]) { skippedDup++; return; }
+        probeFp[fp] = true;
+        probeFp[fpOld] = true;
+        wouldAdd++;
+    });
+    if (wouldAdd <= 0) {
+        toast(skippedDup ? "Все строки уже были загружены ранее (дубли)." : "Нечего импортировать.", "error");
+        return;
+    }
+    const existingInBatch = (appData.financeRec.operations || []).filter(function (o) {
+        return o && !o.is_deleted
+            && String(o.import_batch_id || "") === String(batchId)
+            && o.finance_operation_id;
+    }).length;
+    if (existingInBatch + wouldAdd > FR_IMPORT_BULK_MAX_ITEMS) {
+        toast(
+            "Импорт слишком большой (лимит "
+            + FR_IMPORT_BULK_MAX_ITEMS
+            + " операций за атомарный $bulk, сейчас "
+            + (existingInBatch + wouldAdd)
+            + "). Разбейте файл. Данные не записаны.",
+            "error"
+        );
+        return;
+    }
+    let added = 0;
+    skippedDup = 0;
+    skippedNoAmt = 0;
     rows.forEach(function (r) {
         if (!(r.amount > 0)) { skippedNoAmt++; return; }
         const payeeText = String(r.payee_name || r.payee || "").trim();
@@ -7127,7 +8544,16 @@ function frExpenseImportFileCoverage(areaId, sourceId, rows, existingFp) {
     return { total: total, covered: covered };
 }
 
-/** Пути Финконтроля, которые импорт пишет целиком через OPS. */
+/**
+ * Импорт: один лист financeRec.operations.$bulk + партия + аудит (≤3 листа в atomic batch).
+ * Лимит элементов внутри $bulk — серверный FR_OPS_BULK_MAX_ITEMS (зеркало).
+ */
+const FR_IMPORT_OPS_BULK_PATH = "financeRec.operations.$bulk";
+const FR_IMPORT_BULK_PATH = FR_IMPORT_OPS_BULK_PATH;
+const FR_IMPORT_BULK_MAX_ITEMS = 2000;
+const FR_IMPORT_MAX_BATCH_OPS = FR_IMPORT_BULK_MAX_ITEMS;
+
+/** Пути Финконтроля, которые импорт помечает dirty / очищает при откате. */
 const FR_IMPORT_OPS_PATHS = [
     "financeRec.operations",
     "financeRec.import_batches",
@@ -7393,7 +8819,12 @@ function frApplyFinanceRecordVersionsFromPayload(payload) {
     if (!payload || typeof payload !== "object") return;
     const map = payload._wt_records;
     if (!map || typeof map !== "object") return;
-    FR_IMPORT_OPS_PATHS.forEach(function (path) {
+    // Версии записей по id (operations/import_batches/audit) — для expected_v $bulk и meta-листов.
+    const idPrefixes = ["financeRec.operations.", "financeRec.import_batches.", "financeRec.audit."];
+    const idPaths = Object.keys(map).filter(function (p) {
+        return idPrefixes.some(function (pre) { return String(p).indexOf(pre) === 0; });
+    });
+    FR_IMPORT_OPS_PATHS.concat(idPaths).forEach(function (path) {
         const meta = map[path];
         if (!meta || typeof meta !== "object") return;
         const v = Number(meta.v);
@@ -7413,7 +8844,7 @@ function frApplyFinanceRecordVersionsFromPayload(payload) {
     try {
         if (appData) {
             if (!appData._wt_records || typeof appData._wt_records !== "object") appData._wt_records = {};
-            FR_IMPORT_OPS_PATHS.forEach(function (path) {
+            FR_IMPORT_OPS_PATHS.concat(idPaths).forEach(function (path) {
                 if (map[path] && typeof map[path] === "object") {
                     appData._wt_records[path] = {
                         v: Number(map[path].v) || 0,
@@ -7497,13 +8928,22 @@ function frMergeServerFinanceForImportBatch(batchId) {
     });
 }
 
-function frMarkFinanceImportDirty() {
+function frMarkFinanceImportDirty(batchId) {
     try {
-        if (typeof wtSoftMarkDirty === "function") {
-            wtSoftMarkDirty("financeRec.operations");
-            wtSoftMarkDirty("financeRec.import_batches");
-            wtSoftMarkDirty("financeRec.audit");
-        }
+        if (typeof wtSoftMarkDirty !== "function") return;
+        const bid = batchId != null ? String(batchId) : "";
+        // Виртуальный $bulk не помечаем: dirty — только реальные пути операций по id.
+        ((appData.financeRec && appData.financeRec.operations) || []).forEach(function (o) {
+            if (!o || o.is_deleted || !o.finance_operation_id) return;
+            if (String(o.import_batch_id || "") !== bid) return;
+            wtSoftMarkDirty("financeRec.operations." + String(o.finance_operation_id));
+        });
+        if (bid) wtSoftMarkDirty("financeRec.import_batches." + bid);
+        ((appData.financeRec && appData.financeRec.audit) || []).forEach(function (a) {
+            if (!a || !a.audit_id) return;
+            if (String(a.import_batch_id || "") !== String(bid)) return;
+            wtSoftMarkDirty("financeRec.audit." + String(a.audit_id));
+        });
     } catch (err) {}
 }
 
@@ -7515,19 +8955,99 @@ function frFinanceImportExpectedV(path) {
     return 0;
 }
 
+function frSetImportSaveError(code, message) {
+    try {
+        if (typeof window !== "undefined") {
+            window.__frLastImportSaveError = { code: String(code || ""), message: String(message || ""), at: Date.now() };
+        }
+    } catch (err) {}
+}
+
 /**
- * OPS batch для трёх массивов Финконтроля без DomainWriter-диалога.
+ * Листья OPS для импорта: $bulk операций + партия по id + аудит по id.
+ * Без широких массивов operations / import_batches / audit.
+ */
+function frBuildExpenseImportOpsLeaves(batchId) {
+    const fr = appData.financeRec;
+    const bid = String(batchId || "");
+    const batchOps = ((fr && fr.operations) || []).filter(function (o) {
+        return o && !o.is_deleted
+            && String(o.import_batch_id || "") === bid
+            && o.finance_operation_id;
+    });
+    if (!batchOps.length) {
+        return { leaves: [], mode: "empty", batchOpCount: 0 };
+    }
+    if (batchOps.length > FR_IMPORT_MAX_BATCH_OPS) {
+        return { leaves: [], mode: "too_large", batchOpCount: batchOps.length };
+    }
+    const bulkItems = batchOps.map(function (o) {
+        const path = "financeRec.operations." + String(o.finance_operation_id);
+        return {
+            expected_v: frFinanceImportExpectedV(path),
+            value: o
+        };
+    });
+    const leaves = [{
+        path: FR_IMPORT_BULK_PATH,
+        value: bulkItems,
+        expected_v: frFinanceImportExpectedV(FR_IMPORT_BULK_PATH)
+    }];
+    const batchMeta = ((fr && fr.import_batches) || []).find(function (b) {
+        return b && String(b.import_batch_id || "") === bid;
+    });
+    if (batchMeta) {
+        const bpath = "financeRec.import_batches." + bid;
+        leaves.push({
+            path: bpath,
+            value: batchMeta,
+            expected_v: frFinanceImportExpectedV(bpath)
+        });
+    }
+    // Журнал create-only: только записи этого захода, которых ещё нет в серверном снимке.
+    const serverAuditIds = {};
+    try {
+        const snapFr = (typeof wtLastLoadedPayload !== "undefined" && wtLastLoadedPayload)
+            ? wtLastLoadedPayload.financeRec
+            : null;
+        ((snapFr && snapFr.audit) || []).forEach(function (a) {
+            if (a && a.audit_id) serverAuditIds[String(a.audit_id)] = true;
+        });
+    } catch (errSnap) {}
+    ((fr && fr.audit) || []).forEach(function (a) {
+        if (!a || !a.audit_id) return;
+        if (String(a.import_batch_id || "") !== bid) return;
+        if (serverAuditIds[String(a.audit_id)]) return;
+        const apath = "financeRec.audit." + String(a.audit_id);
+        leaves.push({
+            path: apath,
+            value: a,
+            expected_v: frFinanceImportExpectedV(apath)
+        });
+    });
+    return { leaves: leaves, mode: "bulk", batchOpCount: batchOps.length };
+}
+
+/**
+ * OPS batch импорта: операции batch по id, без DomainWriter-диалога и без forcePut.
  * При 409: повторный GET+merge по id и retry (до 3 раз). Hard conflict одной записи — отказ.
  */
 function frSaveFinanceImportArraysOps(batchId, attempt) {
     attempt = attempt || 0;
     if (!appData || !appData.financeRec) return Promise.resolve(false);
-    const fr = appData.financeRec;
-    const ops = [
-        { path: "financeRec.operations", value: fr.operations || [], expected_v: frFinanceImportExpectedV("financeRec.operations") },
-        { path: "financeRec.import_batches", value: fr.import_batches || [], expected_v: frFinanceImportExpectedV("financeRec.import_batches") },
-        { path: "financeRec.audit", value: fr.audit || [], expected_v: frFinanceImportExpectedV("financeRec.audit") }
-    ];
+    const built = frBuildExpenseImportOpsLeaves(batchId);
+    if (built.mode === "too_large") {
+        frSetImportSaveError(
+            "too_large",
+            "Импорт больше " + FR_IMPORT_MAX_BATCH_OPS + " операций нельзя атомарно сохранить без серверного расширения."
+        );
+        return Promise.resolve(false);
+    }
+    if (built.mode !== "bulk" || !built.leaves.length) {
+        frSetImportSaveError("empty", "Нет операций batch для OPS-записи.");
+        return Promise.resolve(false);
+    }
+    const ops = built.leaves;
     let bodyText;
     try {
         bodyText = JSON.stringify({
@@ -7536,6 +9056,7 @@ function frSaveFinanceImportArraysOps(batchId, attempt) {
             ops: ops
         });
     } catch (err) {
+        frSetImportSaveError("serialize", "Не удалось подготовить пакет импорта.");
         return Promise.resolve(false);
     }
     return fetch("/api/state/op/batch", {
@@ -7546,13 +9067,16 @@ function frSaveFinanceImportArraysOps(batchId, attempt) {
     }).then(function (res) {
         if (res.status === 401) {
             try { if (typeof handleWtSaveUnauthorized === "function") handleWtSaveUnauthorized(); } catch (err) {}
+            frSetImportSaveError("unauthorized", "Сессия истекла.");
             return false;
         }
         if (res.status === 503 || res.status === 404 || res.status === 405) {
-            // OPS недоступен — защищённый PUT без ложного успеха при сбое.
-            return Promise.resolve(saveApp({ forcePut: true })).then(function (ok) {
-                return ok === true || ok === "ok";
-            });
+            // OPS недоступен: не forcePut — широкий PUT мог бы затереть чужие операции.
+            frSetImportSaveError(
+                "ops_unavailable",
+                "OPS недоступен. Импорт не записан широким сохранением — можно безопасно повторить позже."
+            );
+            return false;
         }
         return res.text().then(function (raw) {
             let body = null;
@@ -7560,28 +9084,52 @@ function frSaveFinanceImportArraysOps(batchId, attempt) {
                 try { body = JSON.parse(raw); } catch (err) { return false; }
             }
             if (res.status === 409 || (body && (body.error === "conflict" || body.status === "conflict"))) {
-                if (attempt >= 3) return false;
+                if (attempt >= 3) {
+                    frSetImportSaveError("conflict", "Конфликт версий при записи импорта (409).");
+                    return false;
+                }
                 return frMergeServerFinanceForImportBatch(batchId).then(function (merged) {
-                    if (!merged || merged.ok === false) return false;
-                    frMarkFinanceImportDirty();
+                    if (!merged || merged.ok === false) {
+                        frSetImportSaveError("conflict", "Конфликт при слиянии перед повтором импорта.");
+                        return false;
+                    }
+                    frMarkFinanceImportDirty(batchId);
                     return frSaveFinanceImportArraysOps(batchId, attempt + 1);
                 });
             }
-            if (!res.ok) return false;
-            if (!(body && body.ok === true)) return false;
+            if (!res.ok) {
+                frSetImportSaveError("http", "Сервер отклонил пакет импорта (" + res.status + ").");
+                return false;
+            }
+            if (!(body && body.ok === true)) {
+                frSetImportSaveError("bad_body", "Некорректный ответ сервера при импорте.");
+                return false;
+            }
             const results = Array.isArray(body.results) ? body.results : [];
             if (!results.length || results.some(function (r) { return !r || r.status !== "saved"; })) {
+                frSetImportSaveError("partial_batch", "Пакет импорта применён не полностью — откат по atomic.");
                 return false;
             }
             try {
                 results.forEach(function (row) {
                     if (!row || row.status !== "saved" || !row.path) return;
+                    if (row.path === FR_IMPORT_BULK_PATH) {
+                        // $bulk — виртуальный путь: только версии и снимок реальных операций.
+                        (Array.isArray(row.items) ? row.items : []).forEach(function (it) {
+                            if (!it || !it.path) return;
+                            if (it.record_v != null && typeof wtSetLocalRecordMeta === "function") {
+                                wtSetLocalRecordMeta(it.path, it.record_v);
+                            }
+                            const live = frFindOpById(String(it.path).split(".")[2]);
+                            if (live) frSnapshotApplyConfirmed(it.path, live);
+                            if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(it.path);
+                        });
+                        return;
+                    }
                     if (row.record_v != null && typeof wtSetLocalRecordMeta === "function") {
                         wtSetLocalRecordMeta(row.path, row.record_v);
                     }
-                    if (typeof wtLastLoadedPayload !== "undefined" && wtLastLoadedPayload && row.path) {
-                        if (typeof wtSetByPath === "function") wtSetByPath(wtLastLoadedPayload, row.path, row.value);
-                    }
+                    frSnapshotApplyConfirmed(row.path, row.value);
                     if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(row.path);
                 });
                 if (body.version != null && typeof wtStateVersion !== "undefined") {
@@ -7589,9 +9137,13 @@ function frSaveFinanceImportArraysOps(batchId, attempt) {
                     if (Number.isFinite(opV)) wtStateVersion = opV;
                 }
             } catch (err) {}
+            try {
+                if (typeof window !== "undefined") window.__frLastImportSaveError = null;
+            } catch (err2) {}
             return true;
         });
     }).catch(function () {
+        frSetImportSaveError("network", "Сеть недоступна при записи импорта.");
         return false;
     });
 }
@@ -7758,7 +9310,7 @@ function frReconcileFailedExpenseImport(batchId, expectedFingerprints) {
 
 function frSaveExpenseImportBatch(batchId, okMsg, expectedFingerprints) {
     const expectedFp = expectedFingerprints || [];
-    frMarkFinanceImportDirty();
+    frMarkFinanceImportDirty(batchId);
     return frMergeServerFinanceForImportBatch(batchId).then(function (merged) {
         function afterFail() {
             return frReconcileFailedExpenseImport(batchId, expectedFp).then(function (rec) {
@@ -7776,7 +9328,20 @@ function frSaveExpenseImportBatch(batchId, okMsg, expectedFingerprints) {
                     try { renderFinanceRec(); } catch (err) {}
                     return false;
                 }
-                toast("Расходники не записаны на сервер. Можно повторить импорт того же файла.", "error");
+                let failMsg = "Расходники не записаны на сервер. Можно повторить импорт того же файла.";
+                try {
+                    const errInfo = (typeof window !== "undefined") ? window.__frLastImportSaveError : null;
+                    if (errInfo && errInfo.code === "ops_unavailable") {
+                        failMsg = "OPS недоступен — импорт не сохранён широкой записью (чтобы не затереть чужие операции). Повторите, когда OPS снова доступен.";
+                    } else if (errInfo && errInfo.code === "too_large") {
+                        failMsg = "Импорт слишком большой для одного атомарного пакета. Данные не записаны — можно повторить после разбиения файла.";
+                    } else if (errInfo && errInfo.code === "conflict") {
+                        failMsg = "Конфликт версий при импорте (409). Обновите данные и повторите — дубли по fingerprint не создадутся.";
+                    } else if (errInfo && errInfo.message) {
+                        failMsg = String(errInfo.message) + " Можно повторить импорт того же файла.";
+                    }
+                } catch (errMsg) {}
+                toast(failMsg, "error");
                 try { renderFinanceRec(); } catch (err) {}
                 return false;
             });
@@ -7816,15 +9381,18 @@ function frSaveExpenseImportBatch(batchId, okMsg, expectedFingerprints) {
         if (merged.ok === false) {
             return afterFail();
         }
-        frMarkFinanceImportDirty();
+        frMarkFinanceImportDirty(batchId);
         try { renderFinanceRec(); } catch (err) {}
         const useOps = typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true);
-        const savePromise = useOps
-            ? frSaveFinanceImportArraysOps(batchId, 0)
-            : Promise.resolve(saveApp({ forcePut: true })).then(function (ok) {
-                return ok === true || ok === "ok";
-            });
-        return Promise.resolve(savePromise).then(function (ok) {
+        if (!useOps) {
+            // Не forcePut: широкий PUT способен уничтожить чужие financeRec.operations.
+            frSetImportSaveError(
+                "ops_unavailable",
+                "OPS недоступен. Импорт не записан широким сохранением — можно безопасно повторить позже."
+            );
+            return afterFail();
+        }
+        return Promise.resolve(frSaveFinanceImportArraysOps(batchId, 0)).then(function (ok) {
             if (ok === true) {
                 try { closeMgmtModal(); } catch (err) {}
                 toast(okMsg, "success");

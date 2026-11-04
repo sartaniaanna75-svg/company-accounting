@@ -2363,7 +2363,88 @@ def incoming_admin_pin_duplicate(current: dict, incoming: dict) -> bool:
 WT_RECORDS_KEY = "_wt_records"
 WT_IDEMPOTENCY_KEY = "_wt_idempotency"
 WT_OPS_META_KEYS = frozenset({WT_RECORDS_KEY, WT_IDEMPOTENCY_KEY})
-WT_PATH_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){0,15}$")
+# Сегмент может быть обычным id или спец-операцией вида $bulk (не поле объекта).
+WT_PATH_RE = re.compile(
+    r"^[A-Za-z0-9_-]+(?:\.(?:\$[A-Za-z0-9_-]+|[A-Za-z0-9_-]+)){0,15}$"
+)
+# Финконтроль: id-адресация массивов + виртуальный bulk-upsert операций.
+FR_LIST_ID_FIELDS = {
+    "operations": "finance_operation_id",
+    "audit": "audit_id",
+    "import_batches": "import_batch_id",
+    "money_transits": "transit_id",
+}
+FR_OPS_BULK_SEGMENT = "$bulk"
+FR_OPS_BULK_PATH = "financeRec.operations.$bulk"
+FR_OPS_BULK_MAX_ITEMS = 2000
+# Строки остатков и статусов без собственного id: адрес — смысловой ключ из существующих полей
+# (объект + неделя/дата + счёт). Тот же ключ считает клиент (frRowKey в fr-mod.js).
+FR_ROW_KEY_LISTS = ("openings", "day_closings", "period_states")
+_FR_ROW_KEY_ISO_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_FR_ROW_KEY_DMY_RE = re.compile(r"^([0-9]{1,2})[./-]([0-9]{1,2})[./-]([0-9]{2,4})")
+
+
+def _fr_row_key_date(raw: Any) -> str:
+    s = "" if raw is None else str(raw)
+    s = s.replace("\u00a0", " ").replace("\u202f", " ").strip()
+    if _FR_ROW_KEY_ISO_RE.match(s):
+        return s[:10]
+    m = _FR_ROW_KEY_DMY_RE.match(s)
+    if m:
+        y = int(m.group(3))
+        if y < 100:
+            y += 2000
+        return "%d-%02d-%02d" % (y, int(m.group(2)), int(m.group(1)))
+    return s
+
+
+def _fr_row_key_part(value: Any) -> str:
+    s = "" if value is None else str(value)
+    out = []
+    for b in s.encode("utf-8"):
+        c = chr(b)
+        if ("0" <= c <= "9") or ("A" <= c <= "Z") or ("a" <= c <= "z"):
+            out.append(c)
+        else:
+            out.append("-%02X" % b)
+    return "".join(out)
+
+
+def fr_row_key(list_key: str, row: Any) -> str:
+    """Сегмент пути строки openings/day_closings/period_states; "" — ключ неполный."""
+    if not isinstance(row, dict):
+        return ""
+    if list_key == "openings":
+        raw = [
+            row.get("object_id") or row.get("finance_area_id"),
+            row.get("period_key"),
+            row.get("account_id") or row.get("finance_source_id"),
+        ]
+    elif list_key == "day_closings":
+        raw = [
+            row.get("object_id") or row.get("finance_area_id"),
+            _fr_row_key_date(row.get("date")),
+            row.get("account_id") or row.get("finance_source_id"),
+        ]
+    elif list_key == "period_states":
+        # Только finance_area_id — как клиентский frPeriodState; строка лишь с object_id не адресуется.
+        raw = [row.get("finance_area_id"), row.get("period_key")]
+    else:
+        return ""
+    parts = ["" if v is None else str(v) for v in raw]
+    if any(not p for p in parts):
+        return ""
+    return "_".join(_fr_row_key_part(p) for p in parts)
+
+
+def _fr_row_by_key(items: Any, list_key: str, key: str) -> tuple[int, dict | None]:
+    """Первая строка с ключом (как find в клиенте); дубли не трогаем."""
+    if not isinstance(items, list) or not key:
+        return -1, None
+    for idx, row in enumerate(items):
+        if isinstance(row, dict) and fr_row_key(list_key, row) == key:
+            return idx, row
+    return -1, None
 WT_IDEMPOTENCY_MAX = 300
 
 
@@ -2479,6 +2560,40 @@ def get_path_value(root: Any, path: str) -> Any:
                 return None
             cur = row
             i += 3
+            continue
+        # financeRec.{openings|day_closings|period_states}.<ключ> — строка по смысловому ключу.
+        if (
+            part in FR_ROW_KEY_LISTS
+            and i >= 1
+            and parts[i - 1] == "financeRec"
+            and isinstance(cur, dict)
+            and isinstance(cur.get(part), list)
+            and i + 1 < len(parts)
+        ):
+            idx, row = _fr_row_by_key(cur.get(part), part, parts[i + 1])
+            if idx < 0 or not isinstance(row, dict):
+                return None
+            cur = row
+            i += 2
+            continue
+        # financeRec.{operations|audit|import_batches}.<id>[.…] — массив, не dict/индекс.
+        # operations.$bulk — виртуальный путь (только meta), в массиве не ищем.
+        if (
+            part in FR_LIST_ID_FIELDS
+            and i >= 1
+            and parts[i - 1] == "financeRec"
+            and isinstance(cur, dict)
+            and isinstance(cur.get(part), list)
+            and i + 1 < len(parts)
+        ):
+            item_id = parts[i + 1]
+            if part == "operations" and str(item_id) == FR_OPS_BULK_SEGMENT:
+                return None
+            idx, row = _list_item_by_id(cur.get(part), item_id, FR_LIST_ID_FIELDS[part])
+            if idx < 0 or not isinstance(row, dict):
+                return None
+            cur = row
+            i += 2
             continue
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
@@ -2640,6 +2755,86 @@ def set_path_value(root: dict, path: str, value: Any) -> dict:
             return out
         out["vacationPlans"] = vp
         return out
+    # financeRec.{openings|day_closings|period_states}.<ключ> — только строка целиком, ключ тела = ключ пути.
+    if len(parts) >= 3 and parts[0] == "financeRec" and parts[1] in FR_ROW_KEY_LISTS:
+        list_key = parts[1]
+        row_key = str(parts[2] or "")
+        fr_raw = out.get("financeRec")
+        items_raw = fr_raw.get(list_key) if isinstance(fr_raw, dict) else None
+        if len(parts) != 3 or not row_key or not isinstance(value, dict) or isinstance(items_raw, dict):
+            return out
+        if fr_row_key(list_key, value) != row_key:
+            return out
+        fr = _clone(fr_raw) if isinstance(fr_raw, dict) else {}
+        items = _clone(items_raw) if isinstance(items_raw, list) else []
+        idx, _row = _fr_row_by_key(items, list_key, row_key)
+        if idx >= 0:
+            items[idx] = _clone(value)
+        else:
+            items.append(_clone(value))
+        fr[list_key] = items
+        out["financeRec"] = fr
+        return out
+    # financeRec.{operations|audit|import_batches}.<id>[.…] — массив остаётся массивом.
+    if len(parts) >= 3 and parts[0] == "financeRec" and parts[1] in FR_LIST_ID_FIELDS:
+        list_key = parts[1]
+        id_field = FR_LIST_ID_FIELDS[list_key]
+        item_id = str(parts[2] or "").strip()
+        rest = parts[3:]
+        fr_raw = out.get("financeRec")
+        items_raw = fr_raw.get(list_key) if isinstance(fr_raw, dict) else None
+        # Legacy/test: list_key как dict — не трогаем (общий dict-walk ниже).
+        if isinstance(items_raw, dict):
+            pass
+        elif list_key == "operations" and item_id == FR_OPS_BULK_SEGMENT:
+            # Виртуальный путь — в массив не пишем.
+            return out
+        elif not item_id:
+            return out
+        else:
+            fr = _clone(fr_raw) if isinstance(fr_raw, dict) else {}
+            items = _clone(items_raw) if isinstance(items_raw, list) else []
+            # value: null на всю запись не материализуем здесь (см. apply_state_op).
+            if not rest and value is None:
+                return out
+            if not rest:
+                if not isinstance(value, dict):
+                    return out
+                cloned = _clone(value)
+                cloned[id_field] = item_id
+                idx, _row = _list_item_by_id(items, item_id, id_field)
+                if idx >= 0:
+                    items[idx] = cloned
+                else:
+                    items.append(cloned)
+                fr[list_key] = items
+                out["financeRec"] = fr
+                return out
+            # Поле: только существующая запись — без «скелета» с пустыми полями.
+            idx, row = _list_item_by_id(items, item_id, id_field)
+            if idx < 0 or not isinstance(row, dict):
+                return out
+            row = _clone(row)
+            cur_row: Any = row
+            for part in rest[:-1]:
+                nxt = cur_row.get(part) if isinstance(cur_row, dict) else None
+                if not isinstance(nxt, dict):
+                    nxt = {}
+                    if isinstance(cur_row, dict):
+                        cur_row[part] = nxt
+                cur_row = nxt
+            leaf = rest[-1]
+            if not isinstance(cur_row, dict):
+                return out
+            if value is None:
+                cur_row.pop(leaf, None)
+            else:
+                cur_row[leaf] = _clone(value)
+            row[id_field] = item_id
+            items[idx] = row
+            fr[list_key] = items
+            out["financeRec"] = fr
+            return out
     cur = out
     for part in parts[:-1]:
         nxt = cur.get(part)
@@ -2953,6 +3148,58 @@ def _collect_changed_op_paths(before: Any, after: Any) -> list[str]:
                 walk(lrow, rrow, f"users.{uid}")
             return
 
+        # financeRec.{operations|audit|import_batches} — по id-полю, не целиком массив.
+        for list_key, id_field in FR_LIST_ID_FIELDS.items():
+            if path != f"financeRec.{list_key}":
+                continue
+            left_list = left if isinstance(left, list) else []
+            right_list = right if isinstance(right, list) else []
+            # Legacy dict-shape не режем по id здесь.
+            if isinstance(left, dict) or isinstance(right, dict):
+                if _is_trackable_op_path(path):
+                    changed.append(path)
+                return
+            ids: set[str] = set()
+            for row in list(left_list) + list(right_list):
+                if isinstance(row, dict) and row.get(id_field) not in (None, ""):
+                    ids.add(str(row.get(id_field)))
+            for oid in ids:
+                if list_key == "operations" and oid == FR_OPS_BULK_SEGMENT:
+                    continue
+                _, lrow = _list_item_by_id(left_list, oid, id_field)
+                _, rrow = _list_item_by_id(right_list, oid, id_field)
+                # Гранулярность — запись целиком (так её пишет OPS по id), не отдельные поля.
+                if not _same(lrow, rrow):
+                    changed.append(f"financeRec.{list_key}.{oid}")
+            return
+
+        # financeRec.{openings|day_closings|period_states} — по смысловому ключу строки.
+        for list_key in FR_ROW_KEY_LISTS:
+            if path != f"financeRec.{list_key}":
+                continue
+            if isinstance(left, dict) or isinstance(right, dict):
+                if _is_trackable_op_path(path):
+                    changed.append(path)
+                return
+            left_list = left if isinstance(left, list) else []
+            right_list = right if isinstance(right, list) else []
+            keys: set[str] = set()
+            for row in list(left_list) + list(right_list):
+                k = fr_row_key(list_key, row)
+                if k:
+                    keys.add(k)
+            any_row = False
+            for k in keys:
+                _, lrow = _fr_row_by_key(left_list, list_key, k)
+                _, rrow = _fr_row_by_key(right_list, list_key, k)
+                if not _same(lrow, rrow):
+                    changed.append(f"financeRec.{list_key}.{k}")
+                    any_row = True
+            # Изменились только дубли/строки без ключа — версия корня всё равно растёт.
+            if not any_row and _is_trackable_op_path(path):
+                changed.append(path)
+            return
+
         if isinstance(left, dict) and isinstance(right, dict):
             for key in set(left) | set(right):
                 sk = str(key)
@@ -3013,6 +3260,11 @@ def sync_record_versions_after_put(current: dict, stored: dict, user: dict | Non
     # 2) Новые изменения под tracked tops.
     for path in _collect_changed_op_paths(current, out):
         bump_if_changed(path)
+    # 3) Финконтроль: изменённая запись по id → поднять и корень списка.
+    for path in list(bumped):
+        fr_child = _fr_list_root_of(path)
+        if fr_child is not None:
+            bump_if_changed(fr_child[0])
     if WT_IDEMPOTENCY_KEY in current and WT_IDEMPOTENCY_KEY not in out:
         out = _clone(out)
         out[WT_IDEMPOTENCY_KEY] = _clone(current.get(WT_IDEMPOTENCY_KEY))
@@ -3283,6 +3535,176 @@ def _dept_employees_closed_salary_write(current: Any, incoming: Any) -> bool:
     return False
 
 
+def apply_finance_operations_bulk(
+    payload: dict, items_raw: Any, user: dict
+) -> tuple[dict | None, dict | None]:
+    """
+    Спец-операция financeRec.operations.$bulk: upsert списка операций по id.
+    value = [ { expected_v, value: {finance_operation_id, …} }, … ].
+    Чужие операции не трогает. Дубликаты id в запросе — отказ до записи.
+    """
+    if not isinstance(items_raw, list):
+        return None, {
+            "error": "invalid value",
+            "message": "Значение $bulk должно быть списком элементов {expected_v, value}.",
+        }
+    if not items_raw:
+        return None, {"error": "invalid value", "message": "Список $bulk пуст."}
+    if len(items_raw) > FR_OPS_BULK_MAX_ITEMS:
+        return None, {
+            "error": "too many ops",
+            "message": "Не больше %s операций в $bulk за раз." % FR_OPS_BULK_MAX_ITEMS,
+        }
+
+    seen: set[str] = set()
+    prepared: list[tuple[str, dict, str, int]] = []
+    for i, row in enumerate(items_raw):
+        if not isinstance(row, dict):
+            return None, {
+                "error": "invalid value",
+                "message": "Элемент $bulk[%s] должен быть объектом." % i,
+            }
+        try:
+            item_ev = int(row.get("expected_v") if row.get("expected_v") is not None else -1)
+        except (TypeError, ValueError):
+            return None, {
+                "error": "invalid expected_v",
+                "message": "expected_v элемента $bulk[%s] должно быть числом." % i,
+            }
+        if item_ev < 0:
+            return None, {
+                "error": "invalid expected_v",
+                "message": "Укажите expected_v (>= 0) для элемента $bulk[%s]." % i,
+            }
+        val = row.get("value")
+        if not isinstance(val, dict):
+            return None, {
+                "error": "invalid value",
+                "message": "value элемента $bulk[%s] должно быть объектом операции." % i,
+            }
+        oid = str(val.get("finance_operation_id") or "").strip()
+        if not oid or oid == FR_OPS_BULK_SEGMENT:
+            return None, {
+                "error": "invalid value",
+                "message": "Нужен корректный finance_operation_id в $bulk[%s]." % i,
+            }
+        if oid in seen:
+            return None, {
+                "error": "duplicate id",
+                "message": "Дублирующийся finance_operation_id в $bulk: %s" % oid,
+                "path": "financeRec.operations." + oid,
+            }
+        seen.add(oid)
+        op_path = "financeRec.operations." + oid
+        server_v = record_version(payload, op_path)
+        if item_ev != server_v:
+            server_value = get_path_value(payload, op_path)
+            return None, {
+                "error": "conflict",
+                "message": "Запись уже изменена другим пользователем.",
+                "path": op_path,
+                "server_v": server_v,
+                "server_value": ops_public_value(op_path, server_value),
+                "your_value": ops_public_value(op_path, val),
+                "your_expected_v": item_ev,
+            }
+        prepared.append((oid, val, op_path, item_ev))
+
+    uid = str(user.get("user_id") or "")
+    next_payload = _clone(payload) if isinstance(payload, dict) else {}
+    fr_raw = next_payload.get("financeRec")
+    fr = _clone(fr_raw) if isinstance(fr_raw, dict) else {}
+    items_raw_list = fr.get("operations")
+    if isinstance(items_raw_list, dict):
+        return None, {
+            "error": "invalid path",
+            "message": "$bulk поддерживается только для списка операций.",
+        }
+    items = _clone(items_raw_list) if isinstance(items_raw_list, list) else []
+
+    for oid, val, _op_path, _ev in prepared:
+        cloned = _clone(val)
+        cloned["finance_operation_id"] = oid
+        idx, _row = _list_item_by_id(items, oid, "finance_operation_id")
+        if idx >= 0:
+            items[idx] = cloned
+        else:
+            items.append(cloned)
+
+    fr["operations"] = items
+    next_payload["financeRec"] = fr
+    for oid, _val, op_path, _ev in prepared:
+        next_payload = bump_record_meta(next_payload, op_path, uid, exclusive=True)
+    # Корень списка: широкий писатель со старой версией получит 409, а не тихий wipe.
+    next_payload = bump_record_meta(next_payload, "financeRec.operations", uid, exclusive=True)
+    return next_payload, None
+
+
+def _fr_list_root_of(path: str) -> tuple[str, str] | None:
+    """financeRec.<list>.<id>[.…] → (root_path, list_key); иначе None."""
+    parts = str(path or "").split(".")
+    if len(parts) >= 3 and parts[0] == "financeRec" and (
+        parts[1] in FR_LIST_ID_FIELDS or parts[1] in FR_ROW_KEY_LISTS
+    ):
+        return "financeRec." + parts[1], parts[1]
+    return None
+
+
+def _bump_fr_changed_children(before: dict, after: dict, list_key: str, uid: str) -> dict:
+    """Запись корня financeRec.<list>: поднять версии реально изменённых записей по id/ключу."""
+    b_fr = before.get("financeRec") if isinstance(before, dict) else None
+    a_fr = after.get("financeRec") if isinstance(after, dict) else None
+    b_list = b_fr.get(list_key) if isinstance(b_fr, dict) else None
+    a_list = a_fr.get(list_key) if isinstance(a_fr, dict) else None
+    if not isinstance(b_list, list) and not isinstance(a_list, list):
+        return after
+    b_list = b_list if isinstance(b_list, list) else []
+    a_list = a_list if isinstance(a_list, list) else []
+    if list_key in FR_ROW_KEY_LISTS:
+        keys: set[str] = set()
+        for row in b_list + a_list:
+            k = fr_row_key(list_key, row)
+            if k:
+                keys.add(k)
+        out_k = after
+        for k in sorted(keys):
+            _, brow = _fr_row_by_key(b_list, list_key, k)
+            _, arow = _fr_row_by_key(a_list, list_key, k)
+            if brow == arow:
+                continue
+            out_k = bump_record_meta(out_k, "financeRec.%s.%s" % (list_key, k), uid, exclusive=True)
+        return out_k
+    id_field = FR_LIST_ID_FIELDS[list_key]
+    ids: set[str] = set()
+    for row in b_list + a_list:
+        if isinstance(row, dict) and row.get(id_field) not in (None, ""):
+            ids.add(str(row.get(id_field)))
+    out = after
+    for rid in sorted(ids):
+        _, brow = _list_item_by_id(b_list, rid, id_field)
+        _, arow = _list_item_by_id(a_list, rid, id_field)
+        if brow == arow:
+            continue
+        out = bump_record_meta(out, "financeRec.%s.%s" % (list_key, rid), uid, exclusive=True)
+    return out
+
+
+def _bulk_result_items(payload: dict, path: str, raw_value: Any) -> list[dict] | None:
+    """Для $bulk: версии и значения каждой операции — клиенту для expected_v последующих правок."""
+    if path != FR_OPS_BULK_PATH or not isinstance(raw_value, list):
+        return None
+    out: list[dict] = []
+    for row in raw_value:
+        val = row.get("value") if isinstance(row, dict) else None
+        oid = str((val or {}).get("finance_operation_id") or "").strip() if isinstance(val, dict) else ""
+        if not oid:
+            continue
+        op_path = "financeRec.operations." + oid
+        # Без value: клиент уже держит тело; не раздуваем ответ / idempotency-кэш.
+        out.append({"path": op_path, "record_v": record_version(payload, op_path)})
+    return out
+
+
 def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, dict | None]:
     """
     Применяет одну точечную операцию.
@@ -3313,6 +3735,16 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
         return None, {"error": "invalid expected_v", "message": "Ожидаемая версия записи должна быть числом."}
     if expected_v < 0:
         return None, {"error": "invalid expected_v", "message": "Укажите expected_v (>= 0)."}
+    uid = str(user.get("user_id") or "")
+
+    # A: виртуальный bulk-upsert операций (не поле объекта).
+    # Версия проверяется по каждой операции внутри; у самого $bulk meta нет.
+    if path == FR_OPS_BULK_PATH:
+        applied, bulk_err = apply_finance_operations_bulk(payload, your_value, user)
+        if bulk_err is not None:
+            return None, bulk_err
+        return (applied if applied is not None else payload), None
+
     server_v = record_version(payload, path)
     server_value = get_path_value(payload, path)
     if expected_v != server_v:
@@ -3325,13 +3757,152 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
             "your_value": ops_public_value(path, your_value),
             "your_expected_v": expected_v,
         }
-    uid = str(user.get("user_id") or "")
+
+    # financeRec.{operations|audit|import_batches}.<id>: валидация до записи.
+    fr_op_parts = path.split(".")
+    if (
+        len(fr_op_parts) >= 3
+        and fr_op_parts[0] == "financeRec"
+        and fr_op_parts[1] in FR_LIST_ID_FIELDS
+    ):
+        list_key = fr_op_parts[1]
+        item_id = str(fr_op_parts[2] or "").strip()
+        id_field = FR_LIST_ID_FIELDS[list_key]
+        if not item_id or (list_key == "operations" and item_id == FR_OPS_BULK_SEGMENT):
+            return None, {
+                "error": "invalid path",
+                "message": "Некорректный идентификатор записи Финконтроля.",
+            }
+        fr_root = payload.get("financeRec") if isinstance(payload, dict) else None
+        items_list = fr_root.get(list_key) if isinstance(fr_root, dict) else None
+        if isinstance(items_list, list):
+            if your_value is None and len(fr_op_parts) == 3:
+                if list_key == "operations":
+                    return None, {
+                        "error": "invalid value",
+                        "message": "Удаление операции через null не поддерживается. Используйте is_deleted.",
+                    }
+                if list_key == "audit":
+                    return None, {
+                        "error": "immutable",
+                        "message": "Запись журнала нельзя удалить через OPS.",
+                    }
+                if list_key == "money_transits":
+                    return None, {
+                        "error": "invalid value",
+                        "message": "Удаление транзита через null не поддерживается.",
+                    }
+                return None, {
+                    "error": "invalid value",
+                    "message": "Удаление партии импорта через null не поддерживается.",
+                }
+            if len(fr_op_parts) > 3:
+                existing = get_path_value(payload, "financeRec.%s.%s" % (list_key, item_id))
+                if not isinstance(existing, dict):
+                    return None, {
+                        "error": "invalid path",
+                        "message": "Запись не найдена.",
+                    }
+                # Журнал: запрет полевых правок существующей истории.
+                if list_key == "audit":
+                    return None, {
+                        "error": "immutable",
+                        "message": "Запись журнала нельзя изменять.",
+                    }
+            if len(fr_op_parts) == 3 and your_value is not None and not isinstance(your_value, dict):
+                return None, {
+                    "error": "invalid value",
+                    "message": "Значение записи должно быть объектом.",
+                }
+            # Журнал: только создание; повторная запись того же audit_id — отказ
+            # (кроме идентичного повтора — идемпотентно, без дубля и без смены версии).
+            if list_key == "audit" and len(fr_op_parts) == 3 and isinstance(your_value, dict):
+                body_id = str(your_value.get(id_field) or "").strip()
+                if body_id and body_id != item_id:
+                    return None, {
+                        "error": "invalid value",
+                        "message": "audit_id в теле должен совпадать с путём.",
+                    }
+                existing_aud = get_path_value(payload, "financeRec.audit." + item_id)
+                if isinstance(existing_aud, dict):
+                    want = _clone(your_value)
+                    want[id_field] = item_id
+                    if _same(existing_aud, want):
+                        return payload, None
+                    return None, {
+                        "error": "immutable",
+                        "message": "Запись журнала уже существует и не может быть перезаписана.",
+                        "path": path,
+                    }
+
+    # financeRec.{openings|day_closings|period_states}.<ключ>: только строка целиком, без удаления.
+    if (
+        len(fr_op_parts) >= 3
+        and fr_op_parts[0] == "financeRec"
+        and fr_op_parts[1] in FR_ROW_KEY_LISTS
+    ):
+        row_list_key = fr_op_parts[1]
+        fr_root_r = payload.get("financeRec") if isinstance(payload, dict) else None
+        rows_list = fr_root_r.get(row_list_key) if isinstance(fr_root_r, dict) else None
+        if len(fr_op_parts) != 3 or not fr_op_parts[2] or isinstance(rows_list, dict):
+            return None, {
+                "error": "invalid path",
+                "message": "Строку остатка или статуса периода можно записать только целиком по ключу.",
+            }
+        if your_value is None:
+            return None, {
+                "error": "invalid value",
+                "message": "Удаление строки остатка или статуса периода через null не поддерживается.",
+            }
+        if not isinstance(your_value, dict):
+            return None, {"error": "invalid value", "message": "Значение записи должно быть объектом."}
+        if fr_row_key(row_list_key, your_value) != fr_op_parts[2]:
+            return None, {
+                "error": "invalid value",
+                "message": "Ключ строки (объект, неделя или дата, счёт) не совпадает с путём записи.",
+            }
+
+    # Журнал целиком (legacy-писатели): только дополнение, без удаления/правки истории.
+    if path == "financeRec.audit":
+        fr_root_a = payload.get("financeRec") if isinstance(payload, dict) else None
+        old_list = fr_root_a.get("audit") if isinstance(fr_root_a, dict) else None
+        if isinstance(old_list, list) and old_list:
+            if not isinstance(your_value, list):
+                return None, {
+                    "error": "immutable",
+                    "message": "Журнал Финконтроля нельзя заменить не-списком.",
+                }
+            for old_row in old_list:
+                if not isinstance(old_row, dict):
+                    continue
+                aid = str(old_row.get("audit_id") or "")
+                if not aid:
+                    continue
+                _ni, new_row = _list_item_by_id(your_value, aid, "audit_id")
+                if new_row is None or not _same(old_row, new_row):
+                    return None, {
+                        "error": "immutable",
+                        "message": "Нельзя удалить или изменить существующую запись журнала.",
+                        "path": path,
+                        "audit_id": aid,
+                    }
+
     next_payload = set_path_value(payload, path, your_value)
     # users.* через OPS: как PUT — хешируем новый pin и сохраняем pin_hash, если pin не передан.
     if path == "users" or path.startswith("users."):
         next_payload = hash_pins_in_payload(next_payload, payload)
     # set_path_value уже сделал полный _clone — второй полный clone в bump не нужен.
     next_payload = bump_record_meta(next_payload, path, uid, exclusive=True)
+    # Финконтроль: связь версий корня списка и записей по id (без тихого wipe).
+    fr_child = _fr_list_root_of(path)
+    if fr_child is not None:
+        next_payload = bump_record_meta(next_payload, fr_child[0], uid, exclusive=True)
+    else:
+        fr_parts = path.split(".")
+        if len(fr_parts) == 2 and fr_parts[0] == "financeRec" and (
+            fr_parts[1] in FR_LIST_ID_FIELDS or fr_parts[1] in FR_ROW_KEY_LISTS
+        ):
+            next_payload = _bump_fr_changed_children(payload, next_payload, fr_parts[1], uid)
     # График отпускных → once vacationPay в ведомости (без права salary у HR).
     if path.startswith("vacationPlans.") and path.count(".") >= 2:
         parts = path.split(".")
@@ -3536,6 +4107,9 @@ def handle_post_state_op(environ):
                 "record_v": record_version(next_payload, op_path),
                 "value": ops_public_value(op_path, get_path_value(next_payload, op_path)),
             }
+            bulk_items = _bulk_result_items(next_payload, op_path, op.get("value"))
+            if bulk_items is not None:
+                result_body["items"] = bulk_items
             if idem:
                 next_payload = remember_idempotency(next_payload, idem, result_body)
             row = persist_payload(cur, next_payload, expected, str(user.get("user_id") or ""))
@@ -3592,14 +4166,16 @@ def apply_state_ops_batch(
             results.append(row)
             continue
         next_payload = applied if applied is not None else next_payload
-        results.append(
-            {
-                "status": "saved",
-                "path": path,
-                "record_v": record_version(next_payload, path),
-                "value": ops_public_value(path, get_path_value(next_payload, path)),
-            }
-        )
+        saved_row = {
+            "status": "saved",
+            "path": path,
+            "record_v": record_version(next_payload, path),
+            "value": ops_public_value(path, get_path_value(next_payload, path)),
+        }
+        bulk_items = _bulk_result_items(next_payload, path, raw_op.get("value"))
+        if bulk_items is not None:
+            saved_row["items"] = bulk_items
+        results.append(saved_row)
     if atomic and any(r.get("status") != "saved" for r in results):
         return None, results, {"error": "batch failed", "message": "Пакет не применён."}
     return next_payload, results, None
@@ -3705,6 +4281,99 @@ def handle_post_state_op_batch(environ):
         conn.close()
 
 
+_FR_PUT_KEEP_ABSENT = object()
+FR_PUT_KEYED_LISTS = ("audit", "import_batches", "operations")
+
+
+def _fr_list_put_plan(
+    current: dict, incoming: dict, list_key: str, can_write: bool, as_admin: bool
+) -> tuple[Any, str | None]:
+    """
+    Список Финконтроля через PUT (audit / import_batches / operations): по id, не по индексу,
+    без физического удаления. Отсутствие записи в запросе — устаревшая копия, серверная остаётся.
+    Новый id добавляется; дубль id с другим содержанием или запись без id — конфликт.
+    audit: существующие записи неизменяемы. import_batches / operations: правка существующей
+    (в т.ч. is_deleted) — только с актуальной версией записи, иначе конфликт.
+    Возвращает (итоговый список | _FR_PUT_KEEP_ABSENT, код ошибки | None).
+    """
+    in_fr = incoming.get("financeRec")
+    if not isinstance(in_fr, dict):
+        return _FR_PUT_KEEP_ABSENT, None
+    id_field = FR_LIST_ID_FIELDS[list_key]
+    cur_fr = current.get("financeRec") if isinstance(current.get("financeRec"), dict) else {}
+    cur_list = cur_fr.get(list_key) if isinstance(cur_fr.get(list_key), list) else []
+    out = _clone(cur_list)
+    in_list = in_fr.get(list_key)
+    if not isinstance(in_list, list):
+        return (out if list_key in cur_fr else _FR_PUT_KEEP_ABSENT), None
+    positions: dict[str, list] = {}
+    anon: list = []
+    for idx, row in enumerate(cur_list):
+        rid = row.get(id_field) if isinstance(row, dict) else None
+        if rid in (None, ""):
+            anon.append(strip_secrets(row))
+        else:
+            positions.setdefault(str(rid), []).append(idx)
+    seen: dict[str, Any] = {}
+    changed = False
+    for row in in_list:
+        rid = row.get(id_field) if isinstance(row, dict) else None
+        if rid in (None, ""):
+            if any(_same(row, a) for a in anon):
+                continue
+            return None, "invalid"
+        rid = str(rid)
+        if rid in seen:
+            if _same(row, seen[rid]):
+                continue
+            return None, "duplicate"
+        seen[rid] = row
+        if rid in positions:
+            if any(_same(row, strip_secrets(cur_list[i])) for i in positions[rid]):
+                continue
+            if list_key == "audit" or len(positions[rid]) > 1:
+                return None, "immutable"
+            path = f"financeRec.{list_key}.{rid}"
+            server_v = record_version(current, path)
+            if server_v and record_version(incoming, path) != server_v:
+                return None, "stale"
+            if can_write:
+                i = positions[rid][0]
+                out[i] = _clone(row) if as_admin else _overlay_open(cur_list[i], row, True)
+                changed = True
+            continue
+        if can_write:
+            out.append(_clone(row) if as_admin else _overlay_open({}, row, True))
+            changed = True
+    if not changed and list_key not in cur_fr:
+        return _FR_PUT_KEEP_ABSENT, None
+    return out, None
+
+
+def _fr_lists_put_plans(current: dict, incoming: dict, can_write: bool, as_admin: bool) -> tuple[dict, str | None]:
+    plans: dict[str, Any] = {}
+    for list_key in FR_PUT_KEYED_LISTS:
+        plan, err = _fr_list_put_plan(current, incoming, list_key, can_write, as_admin)
+        if err:
+            return {}, "fr_conflict:" + list_key
+        plans[list_key] = plan
+    return plans, None
+
+
+def _fr_lists_put_apply(stored: Any, plans: dict) -> Any:
+    if not isinstance(stored, dict):
+        return stored
+    for list_key, plan in plans.items():
+        if plan is _FR_PUT_KEEP_ABSENT:
+            continue
+        fr = stored.get("financeRec")
+        if not isinstance(fr, dict):
+            fr = {}
+            stored["financeRec"] = fr
+        fr[list_key] = plan
+    return stored
+
+
 def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict | None, str | None]:
     """Пишем поверх снимка в БД. Запрещённое поле — 403, без частичной записи."""
     if not isinstance(current, dict):
@@ -3717,19 +4386,29 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     if is_app_admin(user):
         if incoming_admin_pin_duplicate(current, incoming):
             return None, "duplicate_pin"
+        fr_plans, fr_err = _fr_lists_put_plans(current, incoming, True, True)
+        if fr_err:
+            return None, fr_err
         stored = _merge_admin_payload(current, incoming)
         # Старый PUT не должен затирать записи, уже обновлённые точечным API.
         stored = protect_wt_records_on_put(current, stored, incoming)
+        stored = _fr_lists_put_apply(stored, fr_plans)
         # Изменения через PUT поднимают record_v — иначе op не увидит конфликт.
         return sync_record_versions_after_put(current, stored, user), None
     if _staff_put_forbidden(current, incoming, user):
         return None, "forbidden"
+    fr_plans, fr_err = _fr_lists_put_plans(
+        current, incoming, user_has_perm(user, "financeRec", "edit"), False
+    )
+    if fr_err:
+        return None, fr_err
     stored = _apply_staff_writes(current, incoming, user)
     # Staff PUT обычно не шлёт counters — сохраняем серверные после reserve.
     if isinstance(stored, dict) and "employeeIdCounters" not in incoming:
         if isinstance(current.get("employeeIdCounters"), dict):
             stored["employeeIdCounters"] = _clone(current.get("employeeIdCounters"))
     stored = protect_wt_records_on_put(current, stored, incoming)
+    stored = _fr_lists_put_apply(stored, fr_plans)
     stored = sync_record_versions_after_put(current, stored, user)
     return stored, None
 
@@ -4874,6 +5553,16 @@ def handle_put_state(environ):
             {"error": "duplicate employee id", "message": "Этот ID сотрудника уже используется."},
             "400 Bad Request",
         )
+    if denied and denied.startswith("fr_conflict:"):
+        list_key = denied.split(":", 1)[1]
+        body = conflict_body(state)
+        body["path"] = "financeRec." + list_key
+        body["message"] = {
+            "audit": "Журнал Финконтроля: существующие записи нельзя изменить или удалить.",
+            "import_batches": "Партии импорта: конфликт с данными сервера (изменены другим сотрудником или повтор id).",
+            "operations": "Операции Финконтроля: конфликт с данными сервера (изменены другим сотрудником или повтор id).",
+        }.get(list_key, "Финконтроль: конфликт с данными сервера.") + " Обновите данные с сервера."
+        return json_bytes(body, "409 Conflict")
     if denied or stored is None:
         return json_bytes({"error": "forbidden"}, "403 Forbidden")
     # Клиенту нужны только поднятые record_v — иначе следующий PUT со старым

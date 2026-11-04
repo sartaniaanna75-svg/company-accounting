@@ -6,10 +6,12 @@ from __future__ import annotations
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import test_wt_api as tw
+import wt_api
 
 
 FR_MOD = Path(__file__).resolve().parents[1].joinpath("fr-mod.js")
@@ -509,6 +511,353 @@ class FrImportMergeE2ETests(unittest.TestCase):
         complete = len(expected) > 0 and len(missing) == 0
         self.assertFalse(complete)
         self.assertEqual(missing, ["fp_e2e_3"])
+
+
+class WtFrCriticalSaveToastTests(unittest.TestCase):
+    """
+    Ложный toast успеха у закрытия периода / формулы / переноса остатков.
+    Только маркеры fr-mod.js — без live БД.
+    """
+
+    def _src(self):
+        return FR_MOD.read_text(encoding="utf-8")
+
+    def _fn(self, src, name, end_name):
+        start = src.find("function " + name + "(")
+        end = src.find("function " + end_name + "(", start + 1)
+        self.assertGreater(start, -1, name)
+        self.assertGreater(end, start, end_name)
+        return src[start:end]
+
+    def test_helpers_await_atomic_and_rollback(self):
+        src = self._src()
+        self.assertIn("function frSnapFinanceKeys(", src)
+        self.assertIn("function frRestoreFinanceKeys(", src)
+        self.assertIn("function frBeginCriticalSave(", src)
+        await_fn = self._fn(src, "frAwaitCriticalSave", "frAccountUsage")
+        self.assertIn("saveApp({ atomic: true, ops: ops })", await_fn)
+        self.assertIn("frRestoreFinanceKeys(snap)", await_fn)
+        self.assertIn('ok !== true && ok !== "ok"', await_fn)
+        # Toast успеха только после ok.
+        self.assertIn("if (okText) toast(okText, \"success\");", await_fn)
+        self.assertLess(
+            await_fn.find('ok !== true && ok !== "ok"'),
+            await_fn.find("if (okText) toast(okText"),
+        )
+
+    def test_fr_save_formula_no_eager_success_toast(self):
+        fn = self._fn(self._src(), "frSaveFormula", "frSetStatus")
+        self.assertIn("frBeginCriticalSave()", fn)
+        self.assertIn("frAwaitCriticalSave(", fn)
+        self.assertIn('"financeRec.formulas"', fn)
+        self.assertNotIn("saveApp();", fn)
+        # Нет toast сразу после saveApp без await.
+        self.assertNotRegex(fn, r"saveApp\(\);\s*toast\(")
+
+    def test_fr_close_period_atomic_related_paths(self):
+        # Этап 4Б: строка статуса + строки переноса + журнал — один atomic batch по ключам строк.
+        fn = self._fn(self._src(), "frClosePeriod", "frReopenPeriod")
+        self.assertIn("frMoneyOpsBlocked()", fn)
+        self.assertIn("frBeginRowsSnapshot()", fn)
+        self.assertIn("frPushCarry(true)", fn)
+        self.assertIn("return frPersistRows(rowsBefore, auditIds, {", fn)
+        self.assertIn('requireRows: [{ list: "period_states", row: st, prev: stPrev }]', fn)
+        self.assertIn('successToast: "Период закрыт."', fn)
+        self.assertNotIn('"financeRec.period_states"', fn)
+        self.assertNotIn('"financeRec.openings"', fn)
+        self.assertNotIn("saveApp(", fn)
+        self.assertNotRegex(fn, r"toast\(\"Период закрыт")
+
+    def test_fr_push_carry_awaits_server(self):
+        fn = self._fn(self._src(), "frPushCarry", "frShiftWeekToCurrent")
+        self.assertIn("frMoneyOpsBlocked()", fn)
+        self.assertIn("return frPersistRows(rowsBefore, [], {", fn)
+        self.assertIn("ensureRows: carriedRows", fn)
+        self.assertNotIn('"financeRec.openings"', fn)
+        self.assertNotIn("saveApp(", fn)
+
+    def test_client_saveapp_passes_atomic_ops_to_domain_writer(self):
+        """saveApp(options) → wtDomainWriterSave; explicit ops + atomic уходят в /api/state/op/batch."""
+        app = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        save = app[
+            app.find("function saveApp(")
+            : app.find("function saveMetricChange(")
+        ]
+        self.assertIn("return wtDomainWriterSave(options || {});", save)
+        dw = app[
+            app.find("function wtDomainWriterSave(")
+            : app.find("const WT_OPS_FETCH_TIMEOUT_MS")
+        ]
+        self.assertIn("const atomic = !!options.atomic;", dw)
+        self.assertIn("const explicitOps = options.ops || null;", dw)
+        self.assertIn("atomic: atomic,", dw)
+        self.assertIn('"/api/state/op/batch"', dw)
+        # SoftSync: dirty по явным ops до ожидания ответа.
+        self.assertIn("hasExplicitOps", dw)
+        self.assertIn("wtSoftMarkDirty(leaf.path)", dw)
+
+
+class WtFrClosePeriodAtomicOpsTests(unittest.TestCase):
+    """
+    Реальный путь OPS batch для тройки period_states + openings + audit (как frClosePeriod).
+    FakeConn, без live / Timeweb.
+    """
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + tw.SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(tw.SAMPLE_APP))
+        payload["financeRec"] = {
+            "operations": [{"finance_operation_id": "fop_keep", "amount": 10}],
+            "period_states": [
+                {
+                    "finance_period_id": "fper_1",
+                    "finance_area_id": "farea_shop",
+                    "period_key": "2026-W40",
+                    "status": "review",
+                }
+            ],
+            "openings": [
+                {
+                    "finance_area_id": "farea_shop",
+                    "period_key": "2026-W41",
+                    "finance_source_id": "fsrc_1",
+                    "value": 100,
+                    "carried": False,
+                }
+            ],
+            "audit": [{"audit_id": "faud_0", "kind": "seed"}],
+            "formulas": [{"finance_area_id": "farea_shop", "terms": [{"metric_id": "finm_income", "sign": "+"}]}],
+            "sources": [],
+            "areas": [],
+            "categories": [],
+        }
+        self.store = {
+            "payload": payload,
+            "version": 5,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: tw.FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self):
+        st, data, _, cookies = tw.call(
+            "POST", "/api/login", {"user_id": "user_admin", "pin": "5555"}
+        )
+        self.assertTrue(st.startswith("200"), st)
+        return tw.cookie_from(cookies)
+
+    def batch(self, cookie, ops, atomic=True):
+        return tw.call(
+            "POST",
+            "/api/state/op/batch",
+            {"ops": ops, "atomic": atomic, "idempotency_key": "fr-close-" + str(atomic)},
+            cookie=cookie,
+        )
+
+    def _close_like_ops(self, expected_states=0, expected_openings=0, expected_audit=0):
+        return [
+            {
+                "path": "financeRec.period_states",
+                "expected_v": expected_states,
+                "value": [
+                    {
+                        "finance_period_id": "fper_1",
+                        "finance_area_id": "farea_shop",
+                        "period_key": "2026-W40",
+                        "status": "closed",
+                        "closed_by": "user_admin",
+                    }
+                ],
+            },
+            {
+                "path": "financeRec.openings",
+                "expected_v": expected_openings,
+                "value": [
+                    {
+                        "finance_area_id": "farea_shop",
+                        "period_key": "2026-W41",
+                        "finance_source_id": "fsrc_1",
+                        "value": 250,
+                        "carried": True,
+                        "is_manual": False,
+                    }
+                ],
+            },
+            {
+                "path": "financeRec.audit",
+                "expected_v": expected_audit,
+                "value": [
+                    {"audit_id": "faud_0", "kind": "seed"},
+                    {"audit_id": "faud_close", "kind": "close", "new_value": "closed"},
+                ],
+            },
+        ]
+
+    def test_atomic_success_writes_all_three_paths(self):
+        cookie = self.login()
+        st, data, *_ = self.batch(cookie, self._close_like_ops(), atomic=True)
+        self.assertTrue(st.startswith("200"), (st, data))
+        self.assertTrue(data.get("ok"))
+        self.assertTrue(data.get("atomic"))
+        fr = self.store["payload"]["financeRec"]
+        self.assertEqual(fr["period_states"][0]["status"], "closed")
+        self.assertEqual(fr["openings"][0]["value"], 250)
+        self.assertTrue(fr["openings"][0]["carried"])
+        self.assertEqual(len(fr["audit"]), 2)
+        self.assertEqual(fr["audit"][1]["kind"], "close")
+        # Несвязанная операция не тронута.
+        self.assertEqual(fr["operations"][0]["amount"], 10)
+
+    def test_atomic_second_path_conflict_rolls_back_first(self):
+        """Отказ openings (2-я ops) — period_states на сервере не должен закрыться."""
+        cookie = self.login()
+        # Поднимаем record_v openings отдельной записью.
+        st0, *_ = tw.call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "financeRec.openings",
+                    "expected_v": 0,
+                    "value": [
+                        {
+                            "finance_area_id": "farea_shop",
+                            "period_key": "2026-W41",
+                            "finance_source_id": "fsrc_1",
+                            "value": 111,
+                            "carried": False,
+                        }
+                    ],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st0.startswith("200"), st0)
+        self.assertEqual(self.store["payload"]["financeRec"]["openings"][0]["value"], 111)
+
+        ops = self._close_like_ops(expected_states=0, expected_openings=0, expected_audit=0)
+        st, data, *_ = self.batch(cookie, ops, atomic=True)
+        self.assertTrue(st.startswith("409"), (st, data))
+        self.assertEqual(data.get("error"), "conflict")
+        fr = self.store["payload"]["financeRec"]
+        # Первая ops не применена (атомарный откат в памяти + rollback БД).
+        self.assertEqual(fr["period_states"][0]["status"], "review")
+        self.assertEqual(fr["openings"][0]["value"], 111)
+        self.assertEqual(len(fr["audit"]), 1)
+        self.assertEqual(fr["operations"][0]["amount"], 10)
+
+    def test_atomic_third_path_conflict_rolls_back_group(self):
+        """Конфликт audit (3-я) — ни status, ни openings не меняются."""
+        cookie = self.login()
+        st0, *_ = tw.call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "financeRec.audit",
+                    "expected_v": 0,
+                    "value": [{"audit_id": "faud_0", "kind": "seed"}, {"audit_id": "faud_x", "kind": "x"}],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st0.startswith("200"), st0)
+        ops = self._close_like_ops(expected_states=0, expected_openings=0, expected_audit=0)
+        st, data, *_ = self.batch(cookie, ops, atomic=True)
+        self.assertTrue(st.startswith("409"), (st, data))
+        fr = self.store["payload"]["financeRec"]
+        self.assertEqual(fr["period_states"][0]["status"], "review")
+        self.assertEqual(fr["openings"][0]["value"], 100)
+        self.assertEqual(len(fr["audit"]), 2)
+        self.assertEqual(fr["audit"][1]["kind"], "x")
+
+    def test_non_atomic_second_conflict_keeps_first(self):
+        """Контроль: без atomic первая ops остаётся при конфликте второй."""
+        cookie = self.login()
+        st0, *_ = tw.call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "financeRec.openings",
+                    "expected_v": 0,
+                    "value": [
+                        {
+                            "finance_area_id": "farea_shop",
+                            "period_key": "2026-W41",
+                            "finance_source_id": "fsrc_1",
+                            "value": 111,
+                            "carried": False,
+                        }
+                    ],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st0.startswith("200"), st0)
+        ops = self._close_like_ops(expected_states=0, expected_openings=0, expected_audit=0)
+        # Уникальный idem — иначе кэш от atomic-теста.
+        st, data, *_ = tw.call(
+            "POST",
+            "/api/state/op/batch",
+            {"ops": ops, "atomic": False, "idempotency_key": "fr-close-non-atomic"},
+            cookie=cookie,
+        )
+        # partial: 200 с results или 409 — зависит от реализации non-atomic
+        fr = self.store["payload"]["financeRec"]
+        # period_states должен успеть закрыться при non-atomic
+        self.assertEqual(fr["period_states"][0]["status"], "closed", (st, data))
+        self.assertEqual(fr["openings"][0]["value"], 111)
+
+    def test_formula_single_path_conflict(self):
+        cookie = self.login()
+        tw.call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "financeRec.formulas",
+                    "expected_v": 0,
+                    "value": [{"finance_area_id": "farea_shop", "terms": [{"metric_id": "finm_income", "sign": "-"}]}],
+                }
+            },
+            cookie=cookie,
+        )
+        st, data, *_ = tw.call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [
+                    {
+                        "path": "financeRec.formulas",
+                        "expected_v": 0,
+                        "value": [{"finance_area_id": "farea_shop", "terms": [{"metric_id": "finm_income", "sign": "+"}]}],
+                    }
+                ],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("409"), (st, data))
+        self.assertEqual(
+            self.store["payload"]["financeRec"]["formulas"][0]["terms"][0]["sign"],
+            "-",
+        )
 
 
 if __name__ == "__main__":
