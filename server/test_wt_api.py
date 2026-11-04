@@ -7412,6 +7412,64 @@ class WtVacationPlanOpsTests(unittest.TestCase):
         # vacation block before timesheet status heuristic
         self.assertLess(fmt.find("vacation_plan_id"), fmt.find("ячейка табеля"))
 
+    def test_client_markers_no_fake_summary_admin_for_vacation_only(self):
+        """Светлана (только vacationPlan): без фейкового summary admin и без salary OPS на render."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = (Path(root) / "app.html").read_text(encoding="utf-8")
+        legacy = html.split("function applyLegacyRolesFromUser(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("else currentSummaryRole = null;", legacy)
+        self.assertNotIn('else currentSummaryRole = "admin";', legacy)
+        calc = html.split("function canSalaryCalc(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertNotIn('currentSummaryRole === "admin"', calc)
+        pay = html.split("function canSalaryPay(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertNotIn('currentSummaryRole === "admin"', pay)
+        perm = html.split("function userHasPerm(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn('currentSummaryRole === "admin" && !currentAuthUser()', perm)
+        leaves = html.split("function wtPersistSalaryVacationPayLeaves(", 1)[1].split(
+            "\nfunction ", 1
+        )[0]
+        self.assertIn("silentFail: !!options.silentFail", leaves)
+        # График отпускных по-прежнему через vacationPlan, не через фейковый admin.
+        self.assertIn("userHasPerm(\"vacationPlan\", \"edit\")", html)
+        self.assertIn("userHasPerm(\"vacationPlan\", \"view\")", html)
+
+    def test_vacation_plan_only_forbidden_salary_vacation_pay_op(self):
+        """HR с vacationPlan:edit не пишет salary.*.vacationPay напрямую (клиент тоже не должен)."""
+        payload = self.store["payload"]
+        payload["users"] = list(payload.get("users") or []) + [
+            {
+                "user_id": "usr_svetlana_vp",
+                "display_name": "Светлана",
+                "pin": "8888",
+                "role": "user",
+                "legacy_role": "staff",
+                "is_active": True,
+                "departments": ["summary"],
+                "permissions": {"vacationPlan": "edit", "salaryCalc": "none", "salaryPay": "none"},
+            }
+        ]
+        cookie, _ = self.login("usr_svetlana_vp", "8888")
+        st, d, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-06.e_shop.vacationPay",
+                    "expected_v": 0,
+                    "value": 99999,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), (st, d))
+        self.assertNotEqual(
+            (self.store["payload"].get("salary") or {})
+            .get("2026-06", {})
+            .get("e_shop", {})
+            .get("vacationPay"),
+            99999,
+        )
+
 
 class WtShopPayrollKpiOpsTests(unittest.TestCase):
     """Узкое сохранение KPI через OPS: kpiDefs / assignments, конфликт, изоляция других разделов."""

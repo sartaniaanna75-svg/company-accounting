@@ -9213,7 +9213,9 @@ function userHasPerm(key, min) {
             return permRank(v) >= permRank(need);
         }
     }
-    if (currentSummaryRole === "admin") return true;
+    // Legacy PIN summary-admin без объекта users — полный доступ.
+    // Аутентифицированный пользователь — только по своим permissions (не «фейковый admin»).
+    if (currentSummaryRole === "admin" && !currentAuthUser()) return true;
     if (key === "salary") {
         if (currentSummaryRole === "adjust") return permRank("edit") >= permRank(need);
         if (currentSummaryRole === "pay") return permRank("view") >= permRank(need);
@@ -9416,7 +9418,9 @@ function applyLegacyRolesFromUser(user, code) {
         else if (user.legacy_role === "pay") currentSummaryRole = "pay";
         else if (userHasPerm("salary", "edit")) currentSummaryRole = "adjust";
         else if (userHasPerm("salary", "view")) currentSummaryRole = "pay";
-        else currentSummaryRole = "admin";
+        // Не ставить «admin» только из-за summary: vacationPlan/org без salary
+        // иначе клиент шлёт salary.* OPS → 403 при открытии ведомости/графика.
+        else currentSummaryRole = null;
         return;
     }
     currentSummaryRole = null;
@@ -9924,13 +9928,14 @@ function adminPin() {
 
 function canSalaryCalc() {
     if (isAppAdmin()) return true;
-    if (currentSummaryRole === "adjust" || currentSummaryRole === "admin") return true;
+    // Только роль расчёта / право salaryCalc — не summary «admin» без зарплатных прав.
+    if (currentSummaryRole === "adjust") return true;
     return userHasPerm("salaryCalc", "edit") || userHasPerm("salary", "edit");
 }
 
 function canSalaryPay() {
     if (isAppAdmin()) return true;
-    if (currentSummaryRole === "pay" || currentSummaryRole === "admin") return true;
+    if (currentSummaryRole === "pay") return true;
     const u = currentAuthUser();
     if (u && u.legacy_role === "pay") return true;
     return permRank((u && u.permissions && u.permissions.salaryPay) || "none") > 0;
@@ -9938,7 +9943,6 @@ function canSalaryPay() {
 
 function canSalary1c() {
     if (isAppAdmin()) return true;
-    if (currentSummaryRole === "admin") return true;
     return userHasPerm("salary1c", "edit");
 }
 
@@ -12549,10 +12553,12 @@ function wtDomainWriterScheduleDeferred() {
  *  - atomic: true — все ops атомарно
  *  - ops: [{path,value,expected_v?}] — явный список (без diff)
  *  - silent: true — без toast об «нечего сохранять»
+ *  - silentFail: true — без toast при отказе OPS (фон once); ручные save не ставят
  *  - _fromDeferred: внутренний повтор после softApplying / incidental OPS
  */
 function wtDomainWriterSave(options) {
     options = options || {};
+    const silentFail = !!options.silentFail;
     if (!wtServerMode || !appData) return Promise.resolve(false);
     if (wtSessionIdentityMismatch) {
         wtToastSessionIdentityMismatch();
@@ -12814,7 +12820,9 @@ function wtDomainWriterSave(options) {
                     };
                 }
                 if (!res.ok && !(body && body.results)) {
-                    toast((body && body.message) || ("Не удалось сохранить (HTTP " + res.status + "). Изменения не записаны."), "error");
+                    if (!silentFail) {
+                        toast((body && body.message) || ("Не удалось сохранить (HTTP " + res.status + "). Изменения не записаны."), "error");
+                    }
                     return false;
                 }
                 const results = (body && body.results) || [];
@@ -12848,13 +12856,15 @@ function wtDomainWriterSave(options) {
                         keptFailed.push(r);
                     });
                     failed = keptFailed;
-                    if (failed.length) {
+                    if (failed.length && !silentFail) {
                         toast((failed[0] && failed[0].message) || "Часть изменений не записана на сервер.", "error");
                     }
                 }
                 if (!conflicts.length) {
                     if (!saved.length && !res.ok) {
-                        toast((body && body.message) || "Изменения не записаны.", "error");
+                        if (!silentFail) {
+                            toast((body && body.message) || "Изменения не записаны.", "error");
+                        }
                         return false;
                     }
                     try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
@@ -31353,7 +31363,11 @@ function wtPersistSalaryVacationPayLeaves(entries, options) {
             function () { return false; }
         );
     }
-    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: ops.length > 1 })).then(
+    return Promise.resolve(wtDomainWriterSave({
+        ops: ops,
+        atomic: ops.length > 1,
+        silentFail: !!options.silentFail
+    })).then(
         function (ok) { return !!ok; },
         function () { return false; }
     );
