@@ -5157,6 +5157,7 @@
                                 <tr>
                                     <th>Сотрудник</th>
                                     <th>Выполнение</th>
+                                    <th>Отработано дней</th>
                                     <th>Бонус при 100%</th>
                                     <th>Начислено</th>
                                 </tr>
@@ -6399,6 +6400,9 @@ const OFFICE_MANAGED_KPI_FROM = "2026-10";
 /** Sentinel в shopPayroll.assignments: офисная галочка «Активно» для общих KPI (не трогает правило). */
 const OFFICE_KPI_SCOPE_EMP_ID = "__office_kpi_scope__";
 const OFFICE_KPI_SCOPE_MARK = "office_active";
+/** План продаж Володарского: норма дней для премии участников (с SHOP_SALES_PLAN_DAYS_FROM). */
+const SHOP_SALES_PLAN_DAYS_NORM = 22;
+const SHOP_SALES_PLAN_DAYS_FROM = "2026-10";
 const SALES_REP_POSITION = "Торговый представитель";
 const REP_BAG_PAY = 5;
 const DEPT_POSITIONS = {
@@ -23338,13 +23342,46 @@ function shopSalesPlanIsParticipant(employeeId, month) {
     return salesPlanIsParticipant(SALES_PLAN_VIEWS.shop, employeeId, month);
 }
 
+/** Месяц, с которого премия плана Володарского режется по отработанным дням / 22. */
+function shopSalesPlanUsesWorkedDays(month) {
+    const raw = String(month || selectedMonth || "");
+    const m = raw.length >= 7 ? raw.slice(0, 7) : raw;
+    return !!(m && m >= SHOP_SALES_PLAN_DAYS_FROM);
+}
+
+/**
+ * Дни для премии плана продаж: число календарных дней со статусом «Я» или «О»
+ * (как presenceDays в calculateEmployee: ya + lateCount). Часы не влияют.
+ * Без calculateEmployee — иначе цикл bonus → days → calculateEmployee → bonus.
+ */
+function shopSalesPlanAttendanceDays(employeeId, month) {
+    const monthKeep = selectedMonth;
+    if (month) selectedMonth = month;
+    const home = employeeHome(employeeId) || findWorkspaceByCode("shop");
+    const acc = emptyTotals();
+    if (home) addTimesheetTotals(employeeId, home, acc);
+    if (month) selectedMonth = monthKeep;
+    const days = Number(acc.ya || 0) + Number(acc.lateCount || 0);
+    return days > 0 ? days : 0;
+}
+
+function shopSalesPlanDaysFactor(employeeId, month) {
+    if (!shopSalesPlanUsesWorkedDays(month)) return 1;
+    const days = shopSalesPlanAttendanceDays(employeeId, month);
+    const capped = Math.min(days, SHOP_SALES_PLAN_DAYS_NORM);
+    return capped / SHOP_SALES_PLAN_DAYS_NORM;
+}
+
 function salesPlanEmployeeBonus(view, employeeId, month) {
     if (!view || !salesPlanIsParticipant(view, employeeId, month)) return 0;
     const rec = salesPlanMonth(view, month, false);
     if (rec.is_active === false) return 0;
     const plan = Number(rec.plan_sales || 0);
     if (!plan) return 0;
-    return Math.round(salesPlanMaxBonus(rec, employeeId) * salesPlanRate(view, month));
+    let amount = salesPlanMaxBonus(rec, employeeId) * salesPlanRate(view, month);
+    // Только магазин Володарского с SHOP_SALES_PLAN_DAYS_FROM; офис/склад/ТП — без изменений.
+    if (view.id === "shop") amount *= shopSalesPlanDaysFactor(employeeId, month);
+    return Math.round(amount);
 }
 
 function shopSalesPlanEmployeeBonus(employeeId, month) {
@@ -23547,15 +23584,25 @@ function renderShopSalesPlan() {
         return salesPlanIsParticipant(view, e.id, selectedMonth);
     });
     if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="4"><div class="empty-row">Отметьте участников коллективного бонуса.</div></td></tr>';
+        body.innerHTML = '<tr><td colspan="5"><div class="empty-row">Отметьте участников коллективного бонуса.</div></td></tr>';
         return;
     }
+    const showDays = view.id === "shop";
     body.innerHTML = rows.map(function (e) {
         const maxB = salesPlanMaxBonus(rec, e.id);
         const amount = salesPlanEmployeeBonus(view, e.id, selectedMonth);
+        const days = showDays ? shopSalesPlanAttendanceDays(e.id, selectedMonth) : null;
+        const daysCell = showDays
+            ? ("<td>" + formatShopDays(days)
+                + (shopSalesPlanUsesWorkedDays(selectedMonth)
+                    ? '<div class="note">норма ' + SHOP_SALES_PLAN_DAYS_NORM + "</div>"
+                    : "")
+                + "</td>")
+            : "<td class=\"note\">—</td>";
         return "<tr><td>" + escapeHtml(e.name || "") + "</td><td>"
-            + (plan ? formatShopCoefPct(rate) : "—") + "</td><td>"
-            + money(maxB) + "</td><td>" + money(amount) + "</td></tr>";
+            + (plan ? formatShopCoefPct(rate) : "—") + "</td>"
+            + daysCell
+            + "<td>" + money(maxB) + "</td><td>" + money(amount) + "</td></tr>";
     }).join("");
 }
 
