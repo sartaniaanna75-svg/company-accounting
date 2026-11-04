@@ -8308,22 +8308,30 @@ class WtSalaryAdjOpsTests(unittest.TestCase):
         self.assertIn("function saveSalaryAdjFieldOp(", html)
         self.assertIn("SALARY_ADJ_OPS_FIELDS", html)
         self.assertIn("saveSalaryAdjFieldOp(employeeId, field)", html)
-        # Не широкий saveApp в setRepSalaryAdj / setAdjustment после write.
+        self.assertIn("wtMeConfirmInflight", html)
+        # Один money-leaf: без sources/updated_at в OPS (нет гонки на общем updated_at).
+        adj_op = html.split("function saveSalaryAdjFieldOp(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertNotIn(".sources.", adj_op)
+        self.assertNotIn(".updated_at", adj_op)
+        # Не широкий saveApp; при отказе — откат локального значения.
         rep = html.split("function setRepSalaryAdj(", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("saveSalaryAdjFieldOp(", rep)
         self.assertNotIn("saveApp();", rep)
+        self.assertIn("rec[field] = prev;", rep)
         adj = html.split("function setAdjustment(", 1)[1].split("\nfunction ", 1)[0]
         self.assertIn("saveSalaryAdjFieldOp(", adj)
         self.assertNotIn("saveApp();", adj)
+        self.assertIn("rec[field] = prev;", adj)
 
     def test_olga_products_taxes_persist_and_reread(self):
         cookie, _ = self.login()
+        # Как клиент после фикса: только money-leaf, без sources/updated_at.
         st, d, *_ = call(
             "POST",
             "/api/state/op/batch",
             {
                 "idempotency_key": "sal-adj-boro-1",
-                "atomic": True,
+                "atomic": False,
                 "ops": [
                     {
                         "path": "salary.2026-11.e_boro.products",
@@ -8334,24 +8342,6 @@ class WtSalaryAdjOpsTests(unittest.TestCase):
                         "path": "salary.2026-11.e_boro.taxes",
                         "expected_v": 0,
                         "value": 100,
-                    },
-                    {
-                        "path": "salary.2026-11.e_boro.sources.products",
-                        "expected_v": 0,
-                        "value": {
-                            "source": "manual",
-                            "external_1c_id": "",
-                            "updated_at": "2026-11-04T12:00:00.000Z",
-                        },
-                    },
-                    {
-                        "path": "salary.2026-11.e_boro.sources.taxes",
-                        "expected_v": 0,
-                        "value": {
-                            "source": "manual",
-                            "external_1c_id": "",
-                            "updated_at": "2026-11-04T12:00:01.000Z",
-                        },
                     },
                 ],
             },
@@ -8373,6 +8363,37 @@ class WtSalaryAdjOpsTests(unittest.TestCase):
         again = ((pl.get("salary") or {}).get("2026-11") or {}).get("e_boro") or {}
         self.assertEqual(again.get("products"), 500)
         self.assertEqual(again.get("taxes"), 100)
+
+    def test_rapid_fields_two_employees_no_cross_wipe(self):
+        """Последовательные OPS разных полей/сотрудников не затирают друг друга."""
+        cookie, _ = self.login()
+        seq = [
+            ("salary.2026-11.e_boro.products", 1600),
+            ("salary.2026-11.e_boro.taxes", 100),
+            ("salary.2026-11.e_boro.bonus", 50),
+            ("salary.2026-11.e_boro.fines", 20),
+            ("salary.2026-11.e_boro.advance", 30),
+            ("salary.2026-11.e_other.products", 700),
+        ]
+        for path, val in seq:
+            meta = (self.store["payload"].get("_wt_records") or {}).get(path) or {}
+            rv = int(meta.get("v") or 0)
+            st, d, *_ = call(
+                "POST",
+                "/api/state/op",
+                {"op": {"path": path, "expected_v": rv, "value": val}},
+                cookie=cookie,
+            )
+            self.assertTrue(st.startswith("200"), (path, st, d))
+        boro = self.store["payload"]["salary"]["2026-11"]["e_boro"]
+        other = self.store["payload"]["salary"]["2026-11"]["e_other"]
+        self.assertEqual(boro.get("products"), 1600)
+        self.assertEqual(boro.get("taxes"), 100)
+        self.assertEqual(boro.get("bonus"), 50)
+        self.assertEqual(boro.get("fines"), 20)
+        self.assertEqual(boro.get("advance"), 30)
+        self.assertEqual(other.get("products"), 700)
+        self.assertEqual(other.get("taxes"), 20)
 
     def test_single_field_then_second_field(self):
         cookie, _ = self.login()

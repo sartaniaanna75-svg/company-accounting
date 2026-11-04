@@ -6192,6 +6192,8 @@ try {
     wtAuthTabId = "tab_x";
 }
 /** Кэш /api/me на короткое окно, чтобы PUT после OPS-проверки не дублировал запрос. */
+/** Общий in-flight /api/me: быстрые подряд OPS не штормят подтверждение сессии. */
+let wtMeConfirmInflight = null;
 let wtMeIdentityCache = { at: 0, userId: "" };
 /** Безопасные замеры этапов сохранения (консоль). Вкл: localStorage.wtSaveTiming = "1" */
 function wtSaveTimingEnabled() {
@@ -8871,6 +8873,8 @@ function wtConfirmSessionIdentity() {
         }
         return Promise.resolve(true);
     }
+    // Несколько быстрых OPS (Продукты→Налог→…) ждут один /api/me, а не шторм таймаутов.
+    if (wtMeConfirmInflight) return wtMeConfirmInflight;
     const canAbort = typeof AbortController !== "undefined";
     const ctrl = canAbort ? new AbortController() : null;
     let timer = null;
@@ -8887,7 +8891,7 @@ function wtConfirmSessionIdentity() {
             resolve({ kind: "timeout" });
         }, WT_ME_CONFIRM_TIMEOUT_MS);
     });
-    return Promise.race([fetchOutcome, timeoutOutcome]).then(function (outcome) {
+    const confirmJob = Promise.race([fetchOutcome, timeoutOutcome]).then(function (outcome) {
         if (timer) {
             try { clearTimeout(timer); } catch (errT) {}
             timer = null;
@@ -8917,6 +8921,17 @@ function wtConfirmSessionIdentity() {
             return wtRejectSessionConfirmTransient();
         });
     });
+    const tracked = Promise.resolve(confirmJob).then(
+        function (ok) { return !!ok; },
+        function () { return false; }
+    );
+    wtMeConfirmInflight = tracked;
+    tracked.then(function () {
+        if (wtMeConfirmInflight === tracked) wtMeConfirmInflight = null;
+    }, function () {
+        if (wtMeConfirmInflight === tracked) wtMeConfirmInflight = null;
+    });
+    return tracked;
 }
 
 function rememberServerUser(user) {
@@ -10457,7 +10472,8 @@ const SALARY_ADJ_OPS_FIELDS = {
 
 /**
  * Узкий OPS одного зарплатного поля — без полного DomainWriter-diff (лимит 200 / toast 4315).
- * Для products/taxes/vacationPay дополнительно пишет sources.<field> и updated_at.
+ * Только money-leaf (products/taxes/…): sources/updated_at остаются локально —
+ * иначе быстрые правки разных полей конфликтуют на общем salary.*.updated_at (atomic 409).
  */
 function saveSalaryAdjFieldOp(employeeId, field) {
     const month = String(selectedMonth || "");
@@ -10479,44 +10495,28 @@ function saveSalaryAdjFieldOp(employeeId, field) {
         const again = salaryRecordKey(appData.salary[month], employeeId);
         if (again != null) empKey = again;
     }
-    const base = "salary." + month + "." + String(empKey);
+    const path = "salary." + month + "." + String(empKey) + "." + key;
     const ops = [{
-        path: base + "." + key,
+        path: path,
         value: rec[key],
-        expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(base + "." + key) : 0
+        expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
     }];
-    if (key === "products" || key === "taxes" || key === "vacationPay") {
-        if (rec.sources && typeof rec.sources === "object" && rec.sources[key] != null) {
-            const sp = base + ".sources." + key;
-            ops.push({
-                path: sp,
-                value: rec.sources[key],
-                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(sp) : 0
-            });
-        }
-        if (rec.updated_at) {
-            const up = base + ".updated_at";
-            ops.push({
-                path: up,
-                value: rec.updated_at,
-                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(up) : 0
-            });
-        }
-    }
     try {
-        ops.forEach(function (op) {
-            if (op && op.path && typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(op.path);
-        });
+        if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path);
     } catch (errMark) {}
-    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: ops.length > 1 })).then(
+    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: false })).then(
         function (ok) { return !!ok; },
         function () { return false; }
     );
 }
 
 function salaryAdjSaveFailedToast() {
+    // Не дублировать только что показанный toast сессии (/api/me).
+    if (Date.now() - wtSessionConfirmToastAt < 4500) return;
+    if (Date.now() - wtSessionMismatchToastAt < 4500) return;
     toast("Изменение зарплаты не записано на сервер. Значение пока только на этом экране — не обновляйте страницу, повторите сохранение.", "error");
 }
+
 
 /** Галочки «Выдано» / «Ранее» — отдельные пути, не смешивать с SALARY_ADJ_OPS_FIELDS. */
 const SALARY_FLAG_OPS_FIELDS = {
@@ -27495,9 +27495,14 @@ function setRepSalaryPanel(panel) {
 /** Ручные поля ТП — те же appData.salary[month][id], что в общей зарплате и ведомостях склада. */
 function setRepSalaryAdj(employeeId, field, value) {
     if (!canEditShopSalaryAdj()) return;
+    const rec = ensureSalary(employeeId);
+    const prev = rec[field];
     writeSalaryAdj(employeeId, field, value);
     Promise.resolve(saveSalaryAdjFieldOp(employeeId, field)).then(function (ok) {
-        if (ok === false && wtServerMode) salaryAdjSaveFailedToast();
+        if (ok === false && wtServerMode) {
+            rec[field] = prev;
+            salaryAdjSaveFailedToast();
+        }
         renderRepSalary();
         if (isSummary()) renderSalary();
     });
@@ -30043,9 +30048,14 @@ function payrollAdjMoneyCell(employeeId, field, value, canEdit) {
 function setShopSalaryAdj(employeeId, field, value) {
     if (!canEditShopSalaryAdj()) return;
     if (currentSummaryRole === "admin") {
+        const rec = ensureSalary(employeeId);
+        const prev = rec[field];
         writeSalaryAdj(employeeId, field, value);
         Promise.resolve(saveSalaryAdjFieldOp(employeeId, field)).then(function (ok) {
-            if (ok === false && wtServerMode) salaryAdjSaveFailedToast();
+            if (ok === false && wtServerMode) {
+                rec[field] = prev;
+                salaryAdjSaveFailedToast();
+            }
             renderPayrollView(payrollViewFromSection());
             if (isSummary()) renderSalary();
         });
@@ -32688,9 +32698,14 @@ function diffSalarySums(now, before) {
 
 function setAdjustment(employeeId, field, value) {
     if (!canEditSalaryField(field)) return;
+    const rec = ensureSalary(employeeId);
+    const prev = rec[field];
     writeSalaryAdj(employeeId, field, value);
     Promise.resolve(saveSalaryAdjFieldOp(employeeId, field)).then(function (ok) {
-        if (ok === false && wtServerMode) salaryAdjSaveFailedToast();
+        if (ok === false && wtServerMode) {
+            rec[field] = prev;
+            salaryAdjSaveFailedToast();
+        }
         refreshAll();
     });
 }
