@@ -6639,6 +6639,373 @@ class WtOpsFoundationTests(unittest.TestCase):
         )
 
 
+class WtVacationPlanOpsTests(unittest.TestCase):
+    """
+    Узкое сохранение графика отпускных: vacationPlans.<year>.<vacation_plan_id>.
+    Формат года — массив (без миграции). FakeConn, без live БД.
+    """
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["vacationPlans"] = {
+            "2026": [
+                {
+                    "vacation_plan_id": "vplan_a",
+                    "employee_id": "e_shop",
+                    "year": "2026",
+                    "planned_date": "2026-06-01",
+                    "planned_amount": 10000,
+                    "status": "planned",
+                    "comment": "A",
+                    "history": [],
+                },
+                {
+                    "vacation_plan_id": "vplan_b",
+                    "employee_id": "e_wh",
+                    "year": "2026",
+                    "planned_date": "2026-07-15",
+                    "planned_amount": 20000,
+                    "status": "planned",
+                    "comment": "B",
+                    "history": [],
+                },
+                {
+                    "vacation_plan_id": "",
+                    "employee_id": "e_legacy",
+                    "year": "2026",
+                    "planned_date": "2026-08-01",
+                    "planned_amount": 5000,
+                    "status": "planned",
+                    "comment": "legacy-no-id",
+                    "history": [],
+                },
+            ]
+        }
+        self.store = {
+            "payload": payload,
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self, user_id="user_admin", pin="5555"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def _year_list(self):
+        return self.store["payload"]["vacationPlans"]["2026"]
+
+    def test_path_get_set_keeps_year_array(self):
+        root = self.store["payload"]
+        got = wt_api.get_path_value(root, "vacationPlans.2026.vplan_a")
+        self.assertEqual(got.get("employee_id"), "e_shop")
+        nxt = wt_api.set_path_value(
+            root,
+            "vacationPlans.2026.vplan_a",
+            {
+                "vacation_plan_id": "vplan_a",
+                "employee_id": "e_shop",
+                "year": "2026",
+                "planned_date": "2026-06-10",
+                "planned_amount": 11111,
+                "status": "planned",
+                "comment": "A2",
+                "history": [],
+            },
+        )
+        self.assertIsInstance(nxt["vacationPlans"]["2026"], list)
+        self.assertEqual(len(nxt["vacationPlans"]["2026"]), 3)
+        self.assertEqual(
+            wt_api.get_path_value(nxt, "vacationPlans.2026.vplan_a")["planned_amount"],
+            11111,
+        )
+        self.assertEqual(
+            wt_api.get_path_value(nxt, "vacationPlans.2026.vplan_b")["planned_amount"],
+            20000,
+        )
+
+    def test_two_users_different_records_same_year(self):
+        cookie, _ = self.login()
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "vp_a1",
+                "op": {
+                    "path": "vacationPlans.2026.vplan_a",
+                    "expected_v": 0,
+                    "value": {
+                        "vacation_plan_id": "vplan_a",
+                        "employee_id": "e_shop",
+                        "year": "2026",
+                        "planned_date": "2026-06-02",
+                        "planned_amount": 10000,
+                        "status": "planned",
+                        "comment": "A-edit",
+                        "history": [],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "vp_b1",
+                "op": {
+                    "path": "vacationPlans.2026.vplan_b",
+                    "expected_v": 0,
+                    "value": {
+                        "vacation_plan_id": "vplan_b",
+                        "employee_id": "e_wh",
+                        "year": "2026",
+                        "planned_date": "2026-07-16",
+                        "planned_amount": 22000,
+                        "status": "planned",
+                        "comment": "B-edit",
+                        "history": [],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        year = self._year_list()
+        self.assertIsInstance(year, list)
+        by_id = {str(r.get("vacation_plan_id")): r for r in year if isinstance(r, dict)}
+        self.assertEqual(by_id["vplan_a"]["planned_date"], "2026-06-02")
+        self.assertEqual(by_id["vplan_b"]["planned_amount"], 22000)
+        self.assertEqual(by_id["vplan_a"]["comment"], "A-edit")
+        self.assertEqual(d1.get("record_v"), 1)
+        self.assertEqual(d2.get("record_v"), 1)
+
+    def test_same_record_conflict(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "vacationPlans.2026.vplan_a",
+                    "expected_v": 0,
+                    "value": {
+                        "vacation_plan_id": "vplan_a",
+                        "employee_id": "e_shop",
+                        "year": "2026",
+                        "planned_date": "2026-06-01",
+                        "planned_amount": 15000,
+                        "status": "planned",
+                        "comment": "first",
+                        "history": [],
+                    },
+                }
+            },
+            cookie=cookie,
+        )
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "vacationPlans.2026.vplan_a",
+                    "expected_v": 0,
+                    "value": {
+                        "vacation_plan_id": "vplan_a",
+                        "employee_id": "e_shop",
+                        "year": "2026",
+                        "planned_date": "2026-06-01",
+                        "planned_amount": 99999,
+                        "status": "planned",
+                        "comment": "stale",
+                        "history": [],
+                    },
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("409"), st)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(
+            wt_api.get_path_value(self.store["payload"], "vacationPlans.2026.vplan_a")["planned_amount"],
+            15000,
+        )
+        # чужая запись не затронута
+        self.assertEqual(
+            wt_api.get_path_value(self.store["payload"], "vacationPlans.2026.vplan_b")["planned_amount"],
+            20000,
+        )
+
+    def test_reschedule_one_other_record_untouched(self):
+        cookie, _ = self.login()
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "vacationPlans.2026.vplan_a",
+                    "expected_v": 0,
+                    "value": {
+                        "vacation_plan_id": "vplan_a",
+                        "employee_id": "e_shop",
+                        "year": "2026",
+                        "planned_date": "2026-09-01",
+                        "planned_amount": 10000,
+                        "status": "moved",
+                        "comment": "A",
+                        "history": [{"status": "moved"}],
+                    },
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        b = wt_api.get_path_value(self.store["payload"], "vacationPlans.2026.vplan_b")
+        self.assertEqual(b["planned_date"], "2026-07-15")
+        self.assertEqual(b["planned_amount"], 20000)
+
+    def test_legacy_row_without_id_adopted_not_duplicated(self):
+        cookie, _ = self.login()
+        before = len(self._year_list())
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "vacationPlans.2026.vplan_legacy1",
+                    "expected_v": 0,
+                    "value": {
+                        "vacation_plan_id": "vplan_legacy1",
+                        "employee_id": "e_legacy",
+                        "year": "2026",
+                        "planned_date": "2026-08-02",
+                        "planned_amount": 5500,
+                        "status": "planned",
+                        "comment": "adopted",
+                        "history": [],
+                    },
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        year = self._year_list()
+        self.assertEqual(len(year), before)
+        legacy_rows = [r for r in year if str(r.get("employee_id")) == "e_legacy"]
+        self.assertEqual(len(legacy_rows), 1)
+        self.assertEqual(legacy_rows[0]["vacation_plan_id"], "vplan_legacy1")
+        self.assertEqual(legacy_rows[0]["planned_amount"], 5500)
+
+    def test_year_array_format_unchanged_after_reads(self):
+        root = json.loads(json.dumps(self.store["payload"]))
+        year = root["vacationPlans"]["2026"]
+        self.assertIsInstance(year, list)
+        self.assertEqual(len(year), 3)
+        # повторное чтение не мутирует
+        _ = wt_api.get_path_value(root, "vacationPlans.2026.vplan_a")
+        self.assertIsInstance(root["vacationPlans"]["2026"], list)
+        self.assertEqual(root["vacationPlans"]["2026"], year)
+
+    def test_salary_vacation_pay_once_guard_via_op(self):
+        """Повторная запись vacationPay при уже >0 не обязательна — клиент не шлёт; путь salary изолирован."""
+        cookie, _ = self.login()
+        st1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-06.e_shop.vacationPay",
+                    "expected_v": 0,
+                    "value": 10000,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        st2, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "salary.2026-06.e_shop.vacationPay",
+                    "expected_v": 0,
+                    "value": 10000,
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("409"), st2)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertEqual(
+            self.store["payload"]["salary"]["2026-06"]["e_shop"]["vacationPay"],
+            10000,
+        )
+
+    def test_client_markers_narrow_persist(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = (Path(root) / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function wtPersistVacationPlanRecords(", html)
+        self.assertIn("function wtVacationPlanPath(", html)
+        self.assertIn("wtPersistVacationPlanRecords([rec]", html)
+        self.assertIn("applyPlannedVacationPayOnce(ym, { narrow: true })", html)
+        self.assertIn("function wtPersistSalaryVacationPayLeaves(", html)
+        # patch больше не зовёт голый saveApp сразу после мутации поля
+        patch_fn = html.split("function patchVacationPlanEmp(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("wtPersistVacationPlanRecords", patch_fn)
+        self.assertNotIn("saveApp();", patch_fn)
+
+    def test_persist_after_reread(self):
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "vacationPlans.2026.vplan_a",
+                    "expected_v": 0,
+                    "value": {
+                        "vacation_plan_id": "vplan_a",
+                        "employee_id": "e_shop",
+                        "year": "2026",
+                        "planned_date": "2026-06-20",
+                        "planned_amount": 13000,
+                        "status": "planned",
+                        "comment": "reread",
+                        "history": [],
+                    },
+                }
+            },
+            cookie=cookie,
+        )
+        st, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st.startswith("200"), st)
+        payload = data.get("payload") or data
+        got = wt_api.get_path_value(payload, "vacationPlans.2026.vplan_a")
+        self.assertEqual(got["planned_date"], "2026-06-20")
+        self.assertEqual(got["planned_amount"], 13000)
+        self.assertIsInstance(payload["vacationPlans"]["2026"], list)
+
+
 class WtShopPayrollKpiOpsTests(unittest.TestCase):
     """Узкое сохранение KPI через OPS: kpiDefs / assignments, конфликт, изоляция других разделов."""
 

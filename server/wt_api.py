@@ -2395,13 +2395,14 @@ def _workspace_by_code(workspaces: Any, code: str) -> tuple[int, dict | None]:
     return -1, None
 
 
-def _list_item_by_id(items: Any, item_id: str) -> tuple[int, dict | None]:
-    """Список dict с полем id — путь ops использует id, не индекс."""
+def _list_item_by_id(items: Any, item_id: str, id_field: str = "id") -> tuple[int, dict | None]:
+    """Список dict — путь ops использует id_field, не индекс."""
     if not isinstance(items, list):
         return -1, None
     want = str(item_id or "")
+    field = str(id_field or "id")
     for idx, row in enumerate(items):
-        if isinstance(row, dict) and str(row.get("id") or "") == want:
+        if isinstance(row, dict) and str(row.get(field) or "") == want:
             return idx, row
     return -1, None
 
@@ -2458,6 +2459,26 @@ def get_path_value(root: Any, path: str) -> Any:
                 return None
             cur = found
             i += 2
+            continue
+        # vacationPlans.<year>.<vacation_plan_id>.… — год остаётся массивом.
+        if (
+            part == "vacationPlans"
+            and isinstance(cur, dict)
+            and isinstance(cur.get("vacationPlans"), dict)
+        ):
+            if i + 1 >= len(parts):
+                return cur.get("vacationPlans")
+            year = parts[i + 1]
+            year_list = cur["vacationPlans"].get(year)
+            if i + 2 >= len(parts):
+                return year_list
+            if not isinstance(year_list, list):
+                return None
+            idx, row = _list_item_by_id(year_list, parts[i + 2], "vacation_plan_id")
+            if idx < 0 or not isinstance(row, dict):
+                return None
+            cur = row
+            i += 3
             continue
         if isinstance(cur, dict) and part in cur:
             cur = cur[part]
@@ -2578,6 +2599,47 @@ def set_path_value(root: dict, path: str, value: Any) -> dict:
     if parts[0] == "users" and isinstance(out.get("users"), list) and len(parts) >= 2:
         ok = _set_in_id_list(out, "users", parts[1], parts[2:], value, "user_id")
         return out if ok else out
+    # vacationPlans.<year>.<vacation_plan_id>[.…] — формат года остаётся массивом.
+    if parts[0] == "vacationPlans" and len(parts) >= 3:
+        year = parts[1]
+        plan_id = parts[2]
+        rest = parts[3:]
+        vp = out.get("vacationPlans")
+        if not isinstance(vp, dict):
+            vp = {}
+        else:
+            vp = _clone(vp)
+        items = vp.get(year)
+        if not isinstance(items, list):
+            items = []
+        else:
+            items = _clone(items)
+        # Legacy: в массиве есть запись сотрудника без vacation_plan_id — не плодим дубликат.
+        idx, row = _list_item_by_id(items, plan_id, "vacation_plan_id")
+        if idx < 0 and isinstance(value, dict) and not rest:
+            emp = str(value.get("employee_id") or "")
+            if emp:
+                for i, cand in enumerate(items):
+                    if not isinstance(cand, dict):
+                        continue
+                    if str(cand.get("employee_id") or "") != emp:
+                        continue
+                    if str(cand.get("vacation_plan_id") or "") in ("", str(plan_id)):
+                        idx = i
+                        row = cand
+                        break
+        vp[year] = items
+        if idx >= 0 and isinstance(row, dict) and str(row.get("vacation_plan_id") or "") != str(plan_id):
+            # Закрепляем стабильный id на существующем слоте до _set_in_id_list.
+            fixed = _clone(row)
+            fixed["vacation_plan_id"] = plan_id
+            items[idx] = fixed
+            vp[year] = items
+        ok = _set_in_id_list(vp, year, plan_id, rest, value, "vacation_plan_id")
+        if not ok:
+            return out
+        out["vacationPlans"] = vp
+        return out
     cur = out
     for part in parts[:-1]:
         nxt = cur.get(part)

@@ -11944,6 +11944,50 @@ function wtCollectChangedLeaves(baseRoot, draftRoot) {
             });
             return;
         }
+        // vacationPlans.<year> — массив записей; лист = одна запись по vacation_plan_id.
+        const vplanParts = path.split(".");
+        if (vplanParts.length === 2 && vplanParts[0] === "vacationPlans") {
+            const leftList = Array.isArray(left) ? left : [];
+            const rightList = Array.isArray(right) ? right : [];
+            const ids = {};
+            let missingId = false;
+            leftList.concat(rightList).forEach(function (row) {
+                if (!row) return;
+                if (row.vacation_plan_id != null && row.vacation_plan_id !== "") {
+                    ids[String(row.vacation_plan_id)] = 1;
+                } else {
+                    missingId = true;
+                }
+            });
+            // Без стабильного id нельзя безопасно резать год — оставляем год целиком.
+            if (missingId || !Object.keys(ids).length) {
+                out.push({ path: path, value: right === undefined ? null : right });
+                return;
+            }
+            Object.keys(ids).forEach(function (vid) {
+                let lrow = null;
+                let rrow = null;
+                for (let i = 0; i < leftList.length; i++) {
+                    if (leftList[i] && String(leftList[i].vacation_plan_id) === vid) {
+                        lrow = leftList[i];
+                        break;
+                    }
+                }
+                for (let i = 0; i < rightList.length; i++) {
+                    if (rightList[i] && String(rightList[i].vacation_plan_id) === vid) {
+                        rrow = rightList[i];
+                        break;
+                    }
+                }
+                // Запись отпуска — атомарный лист (конфликт на всю запись, не по полям).
+                if (wtJsonCanonEqual(lrow, rrow)) return;
+                out.push({
+                    path: path + "." + vid,
+                    value: rrow === undefined ? null : rrow
+                });
+            });
+            return;
+        }
         const lObj = left && typeof left === "object" && !Array.isArray(left);
         const rObj = right && typeof right === "object" && !Array.isArray(right);
         if (lObj && rObj) {
@@ -12064,6 +12108,50 @@ function wtDomainWriterLeavesFromDirty() {
             return;
         }
         if (wtJsonCanonEqual(live, base)) return;
+        // Legacy dirty vacationPlans.<year> → по записям, не весь год.
+        const dirtyParts = String(path).split(".");
+        if (
+            dirtyParts.length === 2
+            && dirtyParts[0] === "vacationPlans"
+            && (Array.isArray(live) || Array.isArray(base))
+        ) {
+            const leftList = Array.isArray(base) ? base : [];
+            const rightList = Array.isArray(live) ? live : [];
+            const ids = {};
+            let missingId = false;
+            leftList.concat(rightList).forEach(function (row) {
+                if (!row) return;
+                if (row.vacation_plan_id != null && row.vacation_plan_id !== "") {
+                    ids[String(row.vacation_plan_id)] = 1;
+                } else {
+                    missingId = true;
+                }
+            });
+            if (!missingId && Object.keys(ids).length) {
+                Object.keys(ids).forEach(function (vid) {
+                    let lrow = null;
+                    let rrow = null;
+                    for (let i = 0; i < leftList.length; i++) {
+                        if (leftList[i] && String(leftList[i].vacation_plan_id) === vid) {
+                            lrow = leftList[i];
+                            break;
+                        }
+                    }
+                    for (let i = 0; i < rightList.length; i++) {
+                        if (rightList[i] && String(rightList[i].vacation_plan_id) === vid) {
+                            rrow = rightList[i];
+                            break;
+                        }
+                    }
+                    if (wtJsonCanonEqual(lrow, rrow)) return;
+                    out.push({
+                        path: path + "." + vid,
+                        value: rrow === undefined ? null : rrow
+                    });
+                });
+                return;
+            }
+        }
         out.push({ path: path, value: live === undefined ? null : live });
     });
     return out;
@@ -13247,6 +13335,33 @@ function wtGetByPath(root, path) {
             i += 2;
             continue;
         }
+        // vacationPlans.<year>.<vacation_plan_id>.…
+        if (
+            parts[i] === "vacationPlans"
+            && !Array.isArray(cur)
+            && cur.vacationPlans
+            && typeof cur.vacationPlans === "object"
+            && !Array.isArray(cur.vacationPlans)
+        ) {
+            if (i + 1 >= parts.length) return cur.vacationPlans;
+            const year = String(parts[i + 1]);
+            const yearList = cur.vacationPlans[year];
+            if (i + 2 >= parts.length) return yearList;
+            if (!Array.isArray(yearList)) return undefined;
+            const vid = String(parts[i + 2]);
+            let plan = null;
+            for (let j = 0; j < yearList.length; j++) {
+                const row = yearList[j];
+                if (row && String(row.vacation_plan_id) === vid) {
+                    plan = row;
+                    break;
+                }
+            }
+            if (!plan) return undefined;
+            cur = plan;
+            i += 3;
+            continue;
+        }
         cur = cur[parts[i]];
         i += 1;
     }
@@ -13364,6 +13479,70 @@ function wtSetByPath(root, path, value) {
         const leafU = parts[parts.length - 1];
         if (value === undefined || value === null) delete curU[leafU];
         else curU[leafU] = value;
+        return root;
+    }
+    // vacationPlans.<year>.<vacation_plan_id>[.…] — год остаётся массивом.
+    if (
+        parts[0] === "vacationPlans"
+        && parts.length >= 3
+        && root.vacationPlans
+        && typeof root.vacationPlans === "object"
+        && !Array.isArray(root.vacationPlans)
+    ) {
+        const year = String(parts[1]);
+        const vid = String(parts[2]);
+        if (!Array.isArray(root.vacationPlans[year])) root.vacationPlans[year] = [];
+        const list = root.vacationPlans[year];
+        let plan = null;
+        let planIdx = -1;
+        for (let j = 0; j < list.length; j++) {
+            const row = list[j];
+            if (row && String(row.vacation_plan_id) === vid) {
+                plan = row;
+                planIdx = j;
+                break;
+            }
+        }
+        if (planIdx < 0 && value && typeof value === "object" && value.employee_id != null) {
+            const emp = String(value.employee_id);
+            for (let j = 0; j < list.length; j++) {
+                const row = list[j];
+                if (!row || String(row.employee_id) !== emp) continue;
+                if (row.vacation_plan_id != null && row.vacation_plan_id !== "" && String(row.vacation_plan_id) !== vid) {
+                    continue;
+                }
+                plan = row;
+                planIdx = j;
+                plan.vacation_plan_id = vid;
+                break;
+            }
+        }
+        if (parts.length === 3) {
+            if (value === undefined || value === null) {
+                if (planIdx >= 0) list.splice(planIdx, 1);
+            } else if (value && typeof value === "object") {
+                const cloned = wtCloneJson(value);
+                if (cloned.vacation_plan_id == null || cloned.vacation_plan_id === "") {
+                    cloned.vacation_plan_id = vid;
+                }
+                if (planIdx >= 0) list[planIdx] = cloned;
+                else list.push(cloned);
+            }
+            return root;
+        }
+        if (!plan) {
+            plan = { vacation_plan_id: vid };
+            list.push(plan);
+        }
+        let curP = plan;
+        for (let i = 3; i < parts.length - 1; i++) {
+            const p = parts[i];
+            if (!curP[p] || typeof curP[p] !== "object" || Array.isArray(curP[p])) curP[p] = {};
+            curP = curP[p];
+        }
+        const leafP = parts[parts.length - 1];
+        if (value === undefined || value === null) delete curP[leafP];
+        else curP[leafP] = value;
         return root;
     }
     let cur = root;
@@ -30721,6 +30900,151 @@ function vacationPlanYearList(year) {
     return root[y];
 }
 
+/** OPS-путь одной записи графика: vacationPlans.<year>.<vacation_plan_id>. */
+function wtVacationPlanPath(year, vacationPlanId) {
+    return "vacationPlans." + String(year || "") + "." + String(vacationPlanId || "");
+}
+
+/**
+ * Стабильный id записи. При отсутствии — назначает локально и синхронизирует
+ * зеркало wtLastLoadedPayload (тот же employee_id без id), без смены формата года.
+ */
+function wtVacationPlanEnsureRecId(rec, year) {
+    if (!rec) return "";
+    if (rec.vacation_plan_id != null && String(rec.vacation_plan_id) !== "") {
+        return String(rec.vacation_plan_id);
+    }
+    const y = String(year || rec.year || salaryUi.planYear || salaryMonthYear());
+    const list = vacationPlanYearList(y);
+    const nid = nextPrefixedId("vplan", list.map(function (x) { return x && x.vacation_plan_id; }));
+    rec.vacation_plan_id = nid;
+    try {
+        const baseRoot = wtLastLoadedPayload && wtLastLoadedPayload.vacationPlans;
+        if (baseRoot && typeof baseRoot === "object" && !Array.isArray(baseRoot)) {
+            const baseList = baseRoot[y];
+            if (Array.isArray(baseList)) {
+                const emp = String(rec.employee_id || "");
+                for (let i = 0; i < baseList.length; i++) {
+                    const row = baseList[i];
+                    if (!row || String(row.employee_id || "") !== emp) continue;
+                    if (row.vacation_plan_id != null && String(row.vacation_plan_id) !== "") continue;
+                    row.vacation_plan_id = nid;
+                    break;
+                }
+            }
+        }
+    } catch (errId) {}
+    return nid;
+}
+
+/**
+ * Узкая запись указанных записей графика отпускных (без collect всего dirty).
+ * При OPS: явные ops по vacationPlans.<year>.<id>. Иначе — saveApp.
+ */
+function wtPersistVacationPlanRecords(recs, options) {
+    options = options || {};
+    const year = String(options.year || salaryUi.planYear || salaryMonthYear());
+    const list = (Array.isArray(recs) ? recs : []).filter(function (r) { return !!r; });
+    if (!list.length) return Promise.resolve(true);
+    const paths = [];
+    const ops = [];
+    let i;
+    for (i = 0; i < list.length; i++) {
+        const rec = list[i];
+        const vid = wtVacationPlanEnsureRecId(rec, year);
+        if (!vid) continue;
+        const path = wtVacationPlanPath(year, vid);
+        paths.push(path);
+        ops.push({
+            path: path,
+            value: typeof wtCloneJson === "function" ? wtCloneJson(rec) : rec,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        });
+    }
+    if (!ops.length) return Promise.resolve(true);
+    try {
+        // Снять legacy dirty всего года — иначе 421 / перезапись чужих записей.
+        if (typeof wtSoftClearDirty === "function") wtSoftClearDirty("vacationPlans." + year);
+        paths.forEach(function (p) {
+            if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(p);
+        });
+    } catch (errMark) {}
+
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return !!ok; },
+            function () { return false; }
+        );
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return Promise.resolve(saveApp()).then(
+            function (ok) { return !!ok; },
+            function () { return false; }
+        );
+    }
+    const atomic = options.atomic != null ? !!options.atomic : (ops.length > 1);
+    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: atomic })).then(
+        function (ok) {
+            if (ok) {
+                paths.forEach(function (p) {
+                    try { if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(p); } catch (errCd) {}
+                });
+            } else if (!options.silentFail) {
+                toast(options.errorToast
+                    || "График отпускных не записан на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение.",
+                    "error");
+            }
+            return !!ok;
+        },
+        function () {
+            if (!options.silentFail) {
+                toast(options.errorToast
+                    || "График отпускных не записан на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение.",
+                    "error");
+            }
+            return false;
+        }
+    );
+}
+
+/** Узкая запись только salary.<ym>.<emp>.vacationPay (после applyPlannedVacationPayOnce). */
+function wtPersistSalaryVacationPayLeaves(entries, options) {
+    options = options || {};
+    const list = (Array.isArray(entries) ? entries : []).filter(function (e) {
+        return e && e.month && e.empKey != null && e.empKey !== "";
+    });
+    if (!list.length) return Promise.resolve(true);
+    const ops = list.map(function (e) {
+        const path = "salary." + String(e.month) + "." + String(e.empKey) + ".vacationPay";
+        return {
+            path: path,
+            value: e.value,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        };
+    });
+    try {
+        ops.forEach(function (op) {
+            if (op && op.path && typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(op.path);
+        });
+    } catch (errMark) {}
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return !!ok; },
+            function () { return false; }
+        );
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return Promise.resolve(saveApp()).then(
+            function (ok) { return !!ok; },
+            function () { return false; }
+        );
+    }
+    return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: ops.length > 1 })).then(
+        function (ok) { return !!ok; },
+        function () { return false; }
+    );
+}
+
 function vacationPlanStatuses() {
     return [
         { id: "planned", label: "Запланировано" },
@@ -30906,9 +31230,10 @@ function buildNextVacationPlan() {
         rec.vacation_plan_id = nextPrefixedId("vplan", list.map(function (x) { return x && x.vacation_plan_id; }));
         list.push(rec);
     });
-    saveApp();
-    renderSalaryVacationPlan();
-    toast("В план " + target + " добавлено: " + fresh.length);
+    Promise.resolve(wtPersistVacationPlanRecords(fresh, { year: target, atomic: true })).then(function (ok) {
+        if (ok) toast("В план " + target + " добавлено: " + fresh.length);
+        renderSalaryVacationPlan();
+    });
 }
 
 function openVacationPlanForEmployee(employeeId) {
@@ -30948,11 +31273,12 @@ function confirmVacationPlanForEmployee(employeeId) {
     rec.status = rec.status === "declined" ? "planned" : (rec.status || "planned");
     rec.year = y;
     rec.department_id = rec.department_id || vacationPlanDeptId(rec.employee_id);
-    saveApp();
     const ym = plannedDateMonth(date);
-    if (ym) applyPlannedVacationPayOnce(ym);
     closeMgmtModal();
-    renderSalaryVacationPlan();
+    Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function (ok) {
+        if (ok && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
+        renderSalaryVacationPlan();
+    });
 }
 
 function vacationPlanMissingHtml(year) {
@@ -31087,13 +31413,15 @@ function plannedVacationAmount(v) {
     return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
 }
 
-function applyPlannedVacationPayOnce(month) {
+function applyPlannedVacationPayOnce(month, options) {
+    options = options || {};
     const ym = String(month || selectedMonth || "");
     if (!ym || !appData) return false;
     if (!appData.salary || typeof appData.salary !== "object") appData.salary = {};
     if (!appData.salary[ym] || typeof appData.salary[ym] !== "object") appData.salary[ym] = {};
     const bucket = appData.salary[ym];
     let changed = false;
+    const applied = [];
     eachVacationPlanRec(function (rec) {
         if (!rec || rec.status === "declined") return;
         if (plannedDateMonth(rec.planned_date) !== ym) return;
@@ -31106,13 +31434,22 @@ function applyPlannedVacationPayOnce(month) {
         const storeId = emp && emp.id != null ? emp.id : empId;
         const key = salaryRecordKey(bucket, storeId) || salaryRecordKey(bucket, empId);
         const cur = normalizeSalaryRecord(key != null ? bucket[key] : null);
+        // Уже начислено — не перезаписываем (защита от дублей при повторе/конфликте).
         if (Number(cur.vacationPay || 0) > 0) return;
         cur.vacationPay = planAmt;
-        bucket[key != null ? key : storeId] = cur;
+        const empKey = key != null ? key : storeId;
+        bucket[empKey] = cur;
+        applied.push({ month: ym, empKey: empKey, value: planAmt });
         changed = true;
     });
-    if (changed) saveApp();
-    return changed;
+    if (!changed) return false;
+    if (options.persist === false) return true;
+    if (options.narrow) {
+        wtPersistSalaryVacationPayLeaves(applied, { silentFail: !!options.silentFail });
+        return true;
+    }
+    saveApp();
+    return true;
 }
 
 function vacationDateRu(iso) {
@@ -31173,6 +31510,7 @@ function ensureVacationPlanRec(employeeId) {
     if (rec) {
         if (!rec.department_id) rec.department_id = vacationPlanDeptId(employeeId);
         rec.year = y;
+        wtVacationPlanEnsureRecId(rec, y);
         return rec;
     }
     rec = {
@@ -31302,13 +31640,16 @@ function setVacationPlanPayFilter(v) {
 
 function addVacationPlanRow(employeeId) {
     if (!canEditVacationPlan()) return;
-    ensureVacationPlanRec(employeeId);
-    saveApp();
-    renderSalaryVacationPlan();
+    const rec = ensureVacationPlanRec(employeeId);
+    const y = String(salaryUi.planYear || salaryMonthYear());
+    Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function () {
+        renderSalaryVacationPlan();
+    });
 }
 
 function patchVacationPlanEmp(employeeId, field, value) {
     if (!canEditVacationPlan()) return;
+    const y = String(salaryUi.planYear || salaryMonthYear());
     const rec = ensureVacationPlanRec(employeeId);
     if (field === "planned_amount") {
         rec.planned_amount = String(value || "").trim() === "" ? "" : parseMoney(value, 0);
@@ -31319,16 +31660,19 @@ function patchVacationPlanEmp(employeeId, field, value) {
         rec.comment = value;
     }
     rec.department_id = rec.department_id || vacationPlanDeptId(employeeId);
-    saveApp();
-    if (field === "planned_amount" || field === "planned_date") {
-        const ym = plannedDateMonth(rec.planned_date);
-        if (ym) applyPlannedVacationPayOnce(ym);
-    }
-    renderSalaryVacationPlan();
+    const needPay = (field === "planned_amount" || field === "planned_date");
+    const ym = needPay ? plannedDateMonth(rec.planned_date) : "";
+    Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function (ok) {
+        // Начисление только после успешной записи плана — иначе конфликт мог бы
+        // начислить по отвергнутому локальному значению.
+        if (ok && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
+        renderSalaryVacationPlan();
+    });
 }
 
 function declineVacationPlan(employeeId) {
     if (!canEditVacationPlan()) return;
+    const y = String(salaryUi.planYear || salaryMonthYear());
     const rec = ensureVacationPlanRec(employeeId);
     if (!Array.isArray(rec.history)) rec.history = [];
     rec.history.push({
@@ -31337,12 +31681,14 @@ function declineVacationPlan(employeeId) {
         planned_date: rec.planned_date || ""
     });
     rec.status = "declined";
-    saveApp();
-    renderSalaryVacationPlan();
+    Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function () {
+        renderSalaryVacationPlan();
+    });
 }
 
 function rescheduleVacationPlan(employeeId) {
     if (!canEditVacationPlan()) return;
+    const y = String(salaryUi.planYear || salaryMonthYear());
     const rec = ensureVacationPlanRec(employeeId);
     const nd = prompt("Новая плановая дата отпускных (ГГГГ-ММ-ДД):", rec.planned_date || "");
     if (!String(nd || "").trim()) return;
@@ -31356,8 +31702,11 @@ function rescheduleVacationPlan(employeeId) {
     rec.planned_date = normalizeVacationDate(nd);
     rec.status = "moved";
     rec.department_id = rec.department_id || vacationPlanDeptId(employeeId);
-    saveApp();
-    renderSalaryVacationPlan();
+    const ym = plannedDateMonth(rec.planned_date);
+    Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function (ok) {
+        if (ok && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
+        renderSalaryVacationPlan();
+    });
 }
 
 function setVacationPlanObject(v) {
