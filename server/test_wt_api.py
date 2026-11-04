@@ -7246,6 +7246,148 @@ class WtVacationPlanOpsTests(unittest.TestCase):
         self.assertEqual(got["planned_amount"], 13000)
         self.assertIsInstance(payload["vacationPlans"]["2026"], list)
 
+    def test_vacation_plan_only_user_gets_plans_not_salary(self):
+        """vacationPlan без salary: GET — график + узкий срез фактов; once vacationPay; прямой salary OPS 403."""
+        payload = self.store["payload"]
+        payload["users"].append(
+            {
+                "user_id": "usr_vplan_only",
+                "display_name": "Только график",
+                "pin": "2222",
+                "role": "user",
+                "legacy_role": "staff",
+                "is_active": True,
+                "departments": ["summary", "shop"],
+                "permissions": {
+                    "vacationPlan": "edit",
+                    "salary": "none",
+                    "salaryCalc": "none",
+                    "salaryPay": "none",
+                    "timesheet": "none",
+                    "metricsInput": "none",
+                },
+            }
+        )
+        self.store["payload"] = wt_api.hash_pins_in_payload(payload, None)
+        cookie, _ = self.login("usr_vplan_only", "2222")
+        rec = {
+            "vacation_plan_id": "vplan_new1",
+            "employee_id": "e_shop",
+            "year": "2026",
+            "planned_date": "2026-08-01",
+            "planned_amount": 15000,
+            "status": "planned",
+            "comment": "",
+            "history": [],
+        }
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "vacationPlans.2026.vplan_new1", "expected_v": 0, "value": rec}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        # Серверный once: ведомость получила vacationPay без права salary у HR.
+        pay = (
+            self.store["payload"]
+            .get("salary", {})
+            .get("2026-08", {})
+            .get("e_shop", {})
+            .get("vacationPay")
+        )
+        self.assertEqual(pay, 15000)
+        st_sal, data_sal, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "salary.2026-08.e_shop.vacationPay", "expected_v": 0, "value": 99999}},
+            cookie=cookie,
+        )
+        self.assertTrue(st_sal.startswith("403"), st_sal)
+        self.assertEqual(data_sal.get("error"), "forbidden")
+        self.assertEqual(
+            self.store["payload"]["salary"]["2026-08"]["e_shop"]["vacationPay"],
+            15000,
+        )
+        st_get, got, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st_get.startswith("200"), st_get)
+        pl = got.get("payload") or {}
+        self.assertIn("vacationPlans", pl)
+        self.assertNotIn("shopPayroll", pl)
+        self.assertNotIn("repSales", pl)
+        # Узкий срез salary — только факты отпускных, не полный расчёт.
+        slim = pl.get("salary") or {}
+        self.assertIn("2026-08", slim)
+        self.assertEqual(slim["2026-08"]["e_shop"].get("vacationPay"), 15000)
+        self.assertNotIn("rate", slim["2026-08"]["e_shop"])
+        year = (pl.get("vacationPlans") or {}).get("2026")
+        self.assertIsInstance(year, list)
+        found = next((r for r in year if r and r.get("vacation_plan_id") == "vplan_new1"), None)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.get("planned_amount"), 15000)
+
+    def test_vacation_pay_once_no_duplicate_on_resave(self):
+        cookie, _ = self.login()
+        rec = {
+            "vacation_plan_id": "vplan_once",
+            "employee_id": "e_shop",
+            "year": "2026",
+            "planned_date": "2026-09-01",
+            "planned_amount": 12000,
+            "status": "planned",
+            "comment": "",
+            "history": [],
+        }
+        call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "vacationPlans.2026.vplan_once", "expected_v": 0, "value": rec}},
+            cookie=cookie,
+        )
+        self.assertEqual(
+            self.store["payload"]["salary"]["2026-09"]["e_shop"]["vacationPay"],
+            12000,
+        )
+        # Ручная правка расчётчиком — once не должен затереть.
+        self.store["payload"]["salary"]["2026-09"]["e_shop"]["vacationPay"] = 13000
+        rec2 = dict(rec)
+        rec2["planned_amount"] = 15000
+        rec2["comment"] = "resave"
+        meta = self.store["payload"].setdefault("_wt_records", {})
+        rv = int((meta.get("vacationPlans.2026.vplan_once") or {}).get("v") or 1)
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "vacationPlans.2026.vplan_once", "expected_v": rv, "value": rec2}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(
+            self.store["payload"]["salary"]["2026-09"]["e_shop"]["vacationPay"],
+            13000,
+        )
+
+    def test_user_without_vacation_plan_perm_no_get(self):
+        cookie, _ = self.login("usr_001", "1111")
+        st, got, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st.startswith("200"), st)
+        pl = got.get("payload") or {}
+        self.assertNotIn("vacationPlans", pl)
+
+    def test_client_markers_salary_gate_and_conflict_format(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        html = (Path(root) / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function canPersistSalaryVacationPayOps(", html)
+        # Без зарплатного права клиент не шлёт salary.* (сервер once при OPS плана).
+        self.assertIn("if (!canPersistSalaryVacationPayOps()) {", html)
+        apply_fn = html.split("function applyPlannedVacationPayOnce(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("!canPersistSalaryVacationPayOps()", apply_fn)
+        self.assertNotIn("options.narrow && !canPersistSalaryVacationPayOps()", apply_fn)
+        fmt = html.split("function wtFormatConflictValue(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("vacation_plan_id", fmt)
+        self.assertIn("planned_amount", fmt)
+        # vacation block before timesheet status heuristic
+        self.assertLess(fmt.find("vacation_plan_id"), fmt.find("ячейка табеля"))
+
 
 class WtShopPayrollKpiOpsTests(unittest.TestCase):
     """Узкое сохранение KPI через OPS: kpiDefs / assignments, конфликт, изоляция других разделов."""

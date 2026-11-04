@@ -13872,6 +13872,30 @@ function wtFormatConflictValue(value) {
     }
     if (typeof value === "object") {
         try {
+            // Запись графика отпускных (не путать с ячейкой табеля по полю status).
+            if (
+                value.vacation_plan_id != null
+                || value.planned_date != null
+                || value.planned_amount != null
+                || (value.employee_id != null && value.year != null
+                    && value.hours == null && value.lateMinutes == null)
+            ) {
+                const bits = [];
+                if (value.planned_date != null && value.planned_date !== "") {
+                    bits.push(String(value.planned_date));
+                }
+                if (value.planned_amount != null && value.planned_amount !== "") {
+                    bits.push(String(value.planned_amount) + " ₽");
+                }
+                if (value.status != null && value.status !== "") {
+                    bits.push(String(value.status));
+                }
+                if (value.employee_id != null && value.employee_id !== "") {
+                    bits.push("сотр. " + String(value.employee_id));
+                }
+                if (value.vacation_plan_id) bits.push(String(value.vacation_plan_id));
+                return bits.length ? bits.join(" · ") : "запись отпуска";
+            }
             if (value.status != null || value.hours != null || value.lateMinutes != null) {
                 const bits = [];
                 if (value.status != null && value.status !== "") bits.push(String(value.status));
@@ -31164,6 +31188,9 @@ function wtPersistVacationPlanRecords(recs, options) {
 /** Узкая запись только salary.<ym>.<emp>.vacationPay (после applyPlannedVacationPayOnce). */
 function wtPersistSalaryVacationPayLeaves(entries, options) {
     options = options || {};
+    if (typeof canPersistSalaryVacationPayOps === "function" && !canPersistSalaryVacationPayOps()) {
+        return Promise.resolve(false);
+    }
     const list = (Array.isArray(entries) ? entries : []).filter(function (e) {
         return e && e.month && e.empKey != null && e.empKey !== "";
     });
@@ -31567,10 +31594,23 @@ function plannedVacationAmount(v) {
     return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
 }
 
+/** Можно ли писать salary.*.vacationPay через OPS (не путать с правом на график). */
+function canPersistSalaryVacationPayOps() {
+    if (typeof isAppAdmin === "function" && isAppAdmin()) return true;
+    if (typeof canEditSalaryField === "function" && canEditSalaryField("vacationPay")) return true;
+    if (typeof userHasPerm === "function" && userHasPerm("salary", "edit")) return true;
+    return false;
+}
+
 function applyPlannedVacationPayOnce(month, options) {
     options = options || {};
     const ym = String(month || selectedMonth || "");
     if (!ym || !appData) return false;
+    // Без зарплатного права: сервер сам once-начисляет при OPS плана.
+    // Клиент не шлёт salary.* и не делает широкий saveApp (ложный 403 / dirty).
+    if (!canPersistSalaryVacationPayOps()) {
+        return false;
+    }
     if (!appData.salary || typeof appData.salary !== "object") appData.salary = {};
     if (!appData.salary[ym] || typeof appData.salary[ym] !== "object") appData.salary[ym] = {};
     const bucket = appData.salary[ym];

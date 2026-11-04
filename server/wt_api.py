@@ -3332,7 +3332,143 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
         next_payload = hash_pins_in_payload(next_payload, payload)
     # set_path_value уже сделал полный _clone — второй полный clone в bump не нужен.
     next_payload = bump_record_meta(next_payload, path, uid, exclusive=True)
+    # График отпускных → once vacationPay в ведомости (без права salary у HR).
+    if path.startswith("vacationPlans.") and path.count(".") >= 2:
+        parts = path.split(".")
+        plan_path = ".".join(parts[:3])
+        plan_rec = get_path_value(next_payload, plan_path)
+        if isinstance(plan_rec, dict):
+            next_payload = apply_vacation_pay_once_from_plan(next_payload, plan_rec, uid)
     return next_payload, None
+
+
+def _planned_vacation_amount(raw: Any) -> int:
+    """Как клиентский plannedVacationAmount: только сумма > 0."""
+    if raw is None or raw == "":
+        return 0
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, (int, float)):
+        try:
+            n = int(round(float(raw)))
+        except (TypeError, ValueError, OverflowError):
+            return 0
+        return n if n > 0 else 0
+    s = str(raw).replace(" ", "").replace(",", ".")
+    try:
+        n = int(round(float(s)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return n if n > 0 else 0
+
+
+def apply_vacation_pay_once_from_plan(payload: dict, plan: dict, user_id: str) -> dict:
+    """
+    После разрешённой записи vacationPlans: один раз выставить
+    salary.<ym>.<emp>.vacationPay = planned_amount, если ещё не начислено.
+    Не трогает issued / vacationPaidEarlier / прочие поля.
+    """
+    if not isinstance(payload, dict) or not isinstance(plan, dict):
+        return payload
+    if str(plan.get("status") or "") == "declined":
+        return payload
+    date = str(plan.get("planned_date") or "").strip()
+    if len(date) < 7 or date[4] != "-":
+        return payload
+    ym = date[:7]
+    if len(ym) != 7:
+        return payload
+    amt = _planned_vacation_amount(plan.get("planned_amount"))
+    if amt <= 0:
+        return payload
+    emp_id = str(plan.get("employee_id") or "").strip()
+    if not emp_id:
+        return payload
+    out = payload
+    salary = out.get("salary")
+    if not isinstance(salary, dict):
+        salary = {}
+        out["salary"] = salary
+    else:
+        # отвязать верхний dict salary от возможного общего снимка
+        salary = dict(salary)
+        out["salary"] = salary
+    bucket = salary.get(ym)
+    if not isinstance(bucket, dict):
+        bucket = {}
+    else:
+        bucket = dict(bucket)
+    salary[ym] = bucket
+    key = emp_id if emp_id in bucket else None
+    if key is None:
+        for cand in bucket:
+            if str(cand) == emp_id:
+                key = cand
+                break
+    if key is None:
+        key = emp_id
+    cur = bucket.get(key)
+    if isinstance(cur, dict):
+        try:
+            existing = float(cur.get("vacationPay") or 0)
+        except (TypeError, ValueError):
+            existing = 0.0
+        if existing > 0:
+            return out
+        row = dict(cur)
+    else:
+        row = {}
+    row["vacationPay"] = amt
+    bucket[key] = row
+    pay_path = f"salary.{ym}.{key}.vacationPay"
+    out = bump_record_meta(out, pay_path, user_id, exclusive=True)
+    return out
+
+
+def vacation_plan_salary_facts(payload: dict) -> dict | None:
+    """
+    Узкий срез salary для зрителей графика без salary:view:
+    только vacationPay / issued / vacationPaidEarlier по сотрудникам из планов.
+    """
+    plans = payload.get("vacationPlans") if isinstance(payload, dict) else None
+    salary = payload.get("salary") if isinstance(payload, dict) else None
+    if not isinstance(plans, dict) or not isinstance(salary, dict):
+        return None
+    emp_ids: set[str] = set()
+    for year_list in plans.values():
+        if not isinstance(year_list, list):
+            continue
+        for rec in year_list:
+            if isinstance(rec, dict) and rec.get("employee_id") not in (None, ""):
+                emp_ids.add(str(rec.get("employee_id")))
+    if not emp_ids:
+        return None
+    out: dict[str, dict] = {}
+    for ym, bucket in salary.items():
+        if not isinstance(bucket, dict):
+            continue
+        slim: dict[str, dict] = {}
+        for emp_key, rec in bucket.items():
+            if str(emp_key) not in emp_ids or not isinstance(rec, dict):
+                continue
+            try:
+                vp = float(rec.get("vacationPay") or 0)
+            except (TypeError, ValueError):
+                vp = 0.0
+            if vp <= 0 and not rec.get("issued") and not rec.get("vacationPaidEarlier"):
+                continue
+            cell: dict[str, Any] = {}
+            if "vacationPay" in rec:
+                cell["vacationPay"] = rec.get("vacationPay")
+            if "issued" in rec:
+                cell["issued"] = bool(rec.get("issued"))
+            if "vacationPaidEarlier" in rec:
+                cell["vacationPaidEarlier"] = bool(rec.get("vacationPaidEarlier"))
+            if cell:
+                slim[str(emp_key)] = cell
+        if slim:
+            out[str(ym)] = slim
+    return out or None
 
 
 def ops_public_value(path: str, value: Any) -> Any:
@@ -3875,8 +4011,18 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
         out["salary"] = drop_closed_fields(payload.get("salary"), True, allow_finance)
     if allow_salary and "repSales" in payload:
         out["repSales"] = drop_closed_fields(payload.get("repSales"), True, allow_finance)
-    if allow_salary and "vacationPlans" in payload:
-        out["vacationPlans"] = drop_closed_fields(payload.get("vacationPlans"), True, allow_finance)
+    # График отпускных: право vacationPlan (view/edit), не только salary.
+    # Без salary не открываем полную ветку salary/repSales — только vacationPlans
+    # и узкий срез фактов выплаты для колонок графика.
+    allow_vacation_plan = user_has_perm(user, "vacationPlan", "view")
+    if (allow_salary or allow_vacation_plan) and "vacationPlans" in payload:
+        out["vacationPlans"] = drop_closed_fields(
+            payload.get("vacationPlans"), allow_salary, allow_finance
+        )
+    if allow_vacation_plan and not allow_salary and "salary" not in out:
+        facts = vacation_plan_salary_facts(payload)
+        if facts:
+            out["salary"] = facts
     if allow_finance and "financeRec" in payload:
         out["financeRec"] = drop_closed_fields(payload.get("financeRec"), allow_salary, True)
     if user_can_open_management(user) and "management" in payload:
