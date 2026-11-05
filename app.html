@@ -7813,6 +7813,7 @@ function timesheetEmployeesForView() {
     const list = [];
     function add(e) {
         if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+        if (isOutsourcingEmployee(e)) return;
         const home = employeeHomeDeptCode(e.id);
         // Как в зарплате: employeeIds + employees. Магазин не берёт территориальных.
         if (w.code === "shop" && isTerritoryCode(home)) return;
@@ -8658,7 +8659,7 @@ function employeeHasMonthActivity(employeeId) {
 }
 
 function includeInMonthPayroll(employee) {
-    if (isOutsourcingEmployee(employee)) return false;
+    // Аутсорсинг входит в зарплатные ведомости отдела/общую (фикс. оклад), но не в табель.
     if (isWorking(employee)) return true;
     return employeeHasMonthActivity(employee.id);
 }
@@ -9995,12 +9996,15 @@ function summaryEmployeeGroups() {
         assignedIds(w).forEach(function (id) {
             const e = findEmployeeIn(w, id);
             if (!e || !e.id || seen[e.id] || !includeInMonthPayroll(e)) return;
+            if (isOutsourcingEmployee(e)) return;
             seen[e.id] = true;
             people.push(e);
         });
         // Как payrollEmployees: карточка в отделе входит в ведомость даже без строки в employeeIds.
+        // Аутсорсинг в табель summary не ставим — только зарплатные списки.
         (w.employees || []).forEach(function (e) {
             if (!e || !e.id || seen[e.id] || !includeInMonthPayroll(e)) return;
+            if (isOutsourcingEmployee(e)) return;
             if (isSalesRep(e)) return;
             seen[e.id] = true;
             people.push(e);
@@ -10008,6 +10012,7 @@ function summaryEmployeeGroups() {
         if (w.code === "drivers") {
             (w.employees || []).forEach(function (e) {
                 if (!isSalesRep(e) || !includeInMonthPayroll(e) || seen[e.id]) return;
+                if (isOutsourcingEmployee(e)) return;
                 seen[e.id] = true;
                 people.push(e);
             });
@@ -31626,6 +31631,12 @@ function salaryEmployeeGroups() {
         assignedIds(w).forEach(function (id) {
             const e = findEmployeeIn(w, id);
             if (e && includeInMonthPayroll(e)) people.push(e);
+        });
+        // Аутсорсинг без employeeIds: в общую ведомость по своему отделу (те же salary.* данные).
+        (w.employees || []).forEach(function (e) {
+            if (!isOutsourcingEmployee(e) || !includeInMonthPayroll(e)) return;
+            if (people.some(function (p) { return p.id === e.id; })) return;
+            people.push(e);
         });
         if (w.code === "drivers") {
             (w.employees || []).forEach(function (e) {
