@@ -21485,6 +21485,61 @@ function wtEmployeeCardRecordPath(deptCode, employeeId) {
     return "workspaces." + code + ".employees." + eid;
 }
 
+/** Путь OPS для состава табеля подразделения (целый массив employeeIds). */
+function wtWorkspaceEmployeeIdsPath(code) {
+    const c = String(code || "").trim();
+    if (!c || c === "summary") return "";
+    return "workspaces." + c + ".employeeIds";
+}
+
+/**
+ * Узкое сохранение «В табель»: только workspaces.<code>.employeeIds.
+ * Не вызывает полный collect — накопленные чужие листья (>200) не блокируют галочку.
+ * Права по-прежнему проверяет сервер (admin / руководитель с timesheet:edit).
+ */
+function wtSaveWorkspaceEmployeeIds(ws, options) {
+    options = options || {};
+    if (!ws || ws.type === "summary") return Promise.resolve(false);
+    const path = wtWorkspaceEmployeeIdsPath(ws.code);
+    if (!path) return Promise.resolve(false);
+    const value = Array.isArray(ws.employeeIds) ? ws.employeeIds.slice() : [];
+    try {
+        if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path);
+    } catch (errMark) {}
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return ok !== false; },
+            function () { return false; }
+        );
+    }
+    if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return ok !== false; },
+            function () { return false; }
+        );
+    }
+    return Promise.resolve(wtDomainWriterSave({
+        ops: [{ path: path, value: value }],
+        atomic: false,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return ok === true; }, function () { return false; });
+}
+
+/** После отказа записи состава табеля — вернуть подтверждённый сервером список (не ложную галочку). */
+function wtRestoreWorkspaceEmployeeIdsFromBaseline(ws) {
+    if (!ws) return;
+    const path = wtWorkspaceEmployeeIdsPath(ws.code);
+    let confirmed;
+    try {
+        confirmed = path && wtLastLoadedPayload ? wtGetByPath(wtLastLoadedPayload, path) : undefined;
+    } catch (err) {
+        confirmed = undefined;
+    }
+    if (Array.isArray(confirmed)) {
+        ws.employeeIds = confirmed.slice();
+    }
+}
+
 /**
  * Узкие OPS для «Сохранить» карточки: сотрудник + его workAccess/extraAccess
  * и shopMetricCatalog.items только если sync реально изменил справочник.
@@ -27306,12 +27361,26 @@ function setTimesheetEmployee(fromId, toId) {
     } else if (toId && ids.indexOf(toId) === -1) {
         ids.push(toId);
     }
-    workspace().employeeIds = ids;
+    const w = workspace();
+    w.employeeIds = ids;
 
-    saveApp();
-    renderFio();
-    renderEmployees();
-    refreshAll();
+    function paintTimesheetAssign() {
+        try { renderFio(); } catch (errF) {}
+        try { renderEmployees(); } catch (errE) {}
+        try { refreshAll(); } catch (errR) {}
+    }
+    paintTimesheetAssign();
+    Promise.resolve(wtSaveWorkspaceEmployeeIds(w, { silentFail: true })).then(function (ok) {
+        if (!ok) {
+            wtRestoreWorkspaceEmployeeIdsFromBaseline(w);
+            paintTimesheetAssign();
+            toast("Не удалось сохранить состав табеля на сервер. Список возвращён.", "error");
+        }
+    }, function () {
+        wtRestoreWorkspaceEmployeeIdsFromBaseline(w);
+        paintTimesheetAssign();
+        toast("Не удалось сохранить состав табеля на сервер. Список возвращён.", "error");
+    });
 }
 
 function renderTimesheet() {
@@ -37978,14 +38047,30 @@ function toggleAssign(employeeId, checked) {
         toast("Этот сотрудник из другого отдела.", "error");
         return;
     }
-    const ids = Array.isArray(workspace().employeeIds) ? workspace().employeeIds : (workspace().employeeIds = []);
+    const w = workspace();
+    const ids = Array.isArray(w.employeeIds) ? w.employeeIds : (w.employeeIds = []);
     const has = ids.indexOf(employeeId) !== -1;
     if (checked && !has) ids.push(employeeId);
-    if (!checked && has) workspace().employeeIds = ids.filter(function (id) { return id !== employeeId; });
-    saveApp();
-    renderFio();
-    renderEmployees();
-    refreshAll();
+    if (!checked && has) w.employeeIds = ids.filter(function (id) { return id !== employeeId; });
+
+    function paintAssign() {
+        try { renderFio(); } catch (errF) {}
+        try { renderEmployees(); } catch (errE) {}
+        try { refreshAll(); } catch (errR) {}
+    }
+    paintAssign();
+    // Только employeeIds текущего отдела — не полный collect (иначе отказ при >200 чужих листьях).
+    Promise.resolve(wtSaveWorkspaceEmployeeIds(w, { silentFail: true })).then(function (ok) {
+        if (!ok) {
+            wtRestoreWorkspaceEmployeeIdsFromBaseline(w);
+            paintAssign();
+            toast("Не удалось сохранить состав табеля на сервер. Галочка возвращена.", "error");
+        }
+    }, function () {
+        wtRestoreWorkspaceEmployeeIdsFromBaseline(w);
+        paintAssign();
+        toast("Не удалось сохранить состав табеля на сервер. Галочка возвращена.", "error");
+    });
 }
 
 function dismissBlockingOverlays() {
