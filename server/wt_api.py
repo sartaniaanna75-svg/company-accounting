@@ -4641,6 +4641,29 @@ def filter_wt_records_meta(payload: dict, filtered: dict, _user: dict | None = N
     return out
 
 
+def filter_nav_layouts_for_user(payload: dict, user: dict) -> dict:
+    """
+    Порядок меню раздела — общее read-only для сотрудников доступных разделов.
+    Ключи navLayouts ограничиваются user_login_codes (права вкладок не расширяются).
+    """
+    raw = payload.get("navLayouts")
+    if not isinstance(raw, dict):
+        return {}
+    allowed = {str(c) for c in user_login_codes(user) if c}
+    if not allowed:
+        return {}
+    out: dict[str, Any] = {}
+    for key, layout in raw.items():
+        k = str(key or "").strip()
+        if not k or k not in allowed:
+            continue
+        if isinstance(layout, dict):
+            out[k] = _clone(layout)
+        else:
+            out[k] = layout
+    return out
+
+
 def filter_state_payload(payload: dict, user: dict) -> dict:
     """Сотруднику — только понятные разрешённые ветки. Неизвестное не отдаём."""
     allow_salary = user_has_perm(user, "salary", "view")
@@ -4656,6 +4679,11 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
                 if kept:
                     filtered.append(kept)
         out["workspaces"] = filtered
+
+    # Единый порядок вкладок раздела (admin пишет OPS; сотрудники только читают).
+    nav_layouts = filter_nav_layouts_for_user(payload, user)
+    if nav_layouts:
+        out["navLayouts"] = nav_layouts
 
     can_metrics = (
         user_has_perm(user, "metricsInput", "view")

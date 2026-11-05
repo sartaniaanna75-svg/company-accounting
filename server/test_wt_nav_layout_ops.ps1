@@ -37,11 +37,20 @@ Ok ($cfgBody -notmatch "isTableAdmin") "canConfigureNavLayout no isTableAdmin"
 Ok ($cfgBody -notmatch "userHasPerm\([^\)]*settings") "canConfigureNavLayout no settings perm check"
 Ok ($api -match '"navLayouts"') "server OPS allowlist has navLayouts"
 Ok ($api -match 'if top == "navLayouts"') "server ACL for navLayouts"
+Ok ($api -match "def filter_nav_layouts_for_user\(") "filter_nav_layouts_for_user present"
+Ok ($api -match "nav_layouts = filter_nav_layouts_for_user\(payload, user\)") "filter_state_payload includes navLayouts"
+Ok ($api -match 'out\["navLayouts"\] = nav_layouts') "staff payload gets navLayouts"
 $navIdx = $api.IndexOf('if top == "navLayouts"')
 Ok ($navIdx -ge 0) "navLayouts ACL block present"
 $navBody = if ($navIdx -ge 0) { $api.Substring($navIdx, [Math]::Min(220, $api.Length - $navIdx)) } else { "" }
 Ok ($navBody -match "is_app_admin\(user\)") "navLayouts OPS only is_app_admin"
 Ok ($navBody -notmatch 'user_has_perm\(user, "settings"') "navLayouts OPS not settings:edit"
+
+$tests = Get-Content -Raw -Encoding UTF8 (Join-Path $root "server\test_wt_api.py")
+Ok ($tests -match "test_get_state_admin_receives_all_nav_layouts") "test admin GET navLayouts"
+Ok ($tests -match "test_get_state_shop_staff_receives_only_shop_nav_layout") "test shop staff GET navLayouts"
+Ok ($tests -match "test_get_state_multi_dept_staff_receives_own_nav_layouts_only") "test multi-dept GET navLayouts"
+Ok ($tests -match "test_nav_layout_relative_order_kept_for_subset_rights") "test relative order subset rights"
 
 $harness = Join-Path $PSScriptRoot "wt_nav_layout_key_harness.js"
 Ok (Test-Path $harness) "key harness file exists"
@@ -67,6 +76,12 @@ if ($nodeExe) {
         & $nodeExe $aclHarness
         if ($LASTEXITCODE -ne 0) { throw "FAIL: wt_nav_layout_acl_harness.js" }
         Write-Host "OK: wt_nav_layout_acl_harness.js"
+    }
+    $deliveryHarness = Join-Path $PSScriptRoot "wt_nav_layout_delivery_harness.js"
+    if (Test-Path $deliveryHarness) {
+        & $nodeExe $deliveryHarness
+        if ($LASTEXITCODE -ne 0) { throw "FAIL: wt_nav_layout_delivery_harness.js" }
+        Write-Host "OK: wt_nav_layout_delivery_harness.js"
     }
 } else {
     Write-Host "SKIP: node not found for key harness"

@@ -6406,6 +6406,111 @@ class WtOpsFoundationTests(unittest.TestCase):
         self.assertEqual(nav.get("office", {}).get("groups", [])[0].get("title"), "Офис порядок")
         self.assertEqual(nav.get("shop", {}).get("groups", [])[0].get("title"), "Магазин")
 
+    def _seed_nav_layouts_multi(self):
+        shop_order = ["shop::metrics-managers", "dept::timesheet", "shop::revision", "dept::fio"]
+        warehouse_order = ["warehouse::fio", "warehouse::timesheet", "warehouse::revision"]
+        office_order = ["office::timesheet", "office::fio"]
+        self.store["payload"]["navLayouts"] = {
+            "shop": {
+                "saved": True,
+                "groups": [{"group_id": "ng_shop", "title": "", "item_ids": shop_order}],
+                "item_labels": {},
+                "item_hidden": {},
+                "custom_items": [],
+            },
+            "warehouse": {
+                "saved": True,
+                "groups": [{"group_id": "ng_wh", "title": "", "item_ids": warehouse_order}],
+                "item_labels": {},
+                "item_hidden": {},
+                "custom_items": [],
+            },
+            "office": {
+                "saved": True,
+                "groups": [{"group_id": "ng_off", "title": "", "item_ids": office_order}],
+                "item_labels": {},
+                "item_hidden": {},
+                "custom_items": [],
+            },
+            "admin": {
+                "saved": True,
+                "groups": [{"group_id": "ng_adm", "title": "", "item_ids": ["both::users"]}],
+                "item_labels": {},
+                "item_hidden": {},
+                "custom_items": [],
+            },
+        }
+        return shop_order, warehouse_order, office_order
+
+    def test_get_state_admin_receives_all_nav_layouts(self):
+        """Администратор видит все ключи navLayouts (полный payload)."""
+        shop_order, warehouse_order, office_order = self._seed_nav_layouts_multi()
+        cookie, _ = self.login()
+        st, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st.startswith("200"), st)
+        nav = (data.get("payload") or {}).get("navLayouts") or {}
+        self.assertIn("shop", nav)
+        self.assertIn("warehouse", nav)
+        self.assertIn("office", nav)
+        self.assertIn("admin", nav)
+        self.assertEqual(nav["shop"]["groups"][0]["item_ids"], shop_order)
+        self.assertEqual(nav["warehouse"]["groups"][0]["item_ids"], warehouse_order)
+        self.assertEqual(nav["office"]["groups"][0]["item_ids"], office_order)
+
+    def test_get_state_shop_staff_receives_only_shop_nav_layout(self):
+        """Сотрудник магазина получает navLayouts.shop с порядком админа; чужие разделы скрыты."""
+        shop_order, _, _ = self._seed_nav_layouts_multi()
+        cookie, _ = self.login("usr_001", "1111")
+        st, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st.startswith("200"), st)
+        nav = (data.get("payload") or {}).get("navLayouts") or {}
+        self.assertIn("shop", nav)
+        self.assertNotIn("warehouse", nav)
+        self.assertNotIn("office", nav)
+        self.assertNotIn("admin", nav)
+        self.assertTrue(nav["shop"].get("saved"))
+        self.assertEqual(nav["shop"]["groups"][0]["item_ids"], shop_order)
+
+    def test_get_state_multi_dept_staff_receives_own_nav_layouts_only(self):
+        """Сотрудник с shop+warehouse получает оба layout; office/admin не отдаются."""
+        shop_order, warehouse_order, _ = self._seed_nav_layouts_multi()
+        multi = {
+            "user_id": "usr_multi_nav",
+            "display_name": "Два отдела",
+            "pin": "7777",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop", "warehouse"],
+            "permissions": {"timesheet": "edit", "metricsInput": "edit"},
+        }
+        self.store["payload"]["users"].append(multi)
+        cookie, _ = self.login("usr_multi_nav", "7777")
+        st, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(st.startswith("200"), st)
+        nav = (data.get("payload") or {}).get("navLayouts") or {}
+        self.assertIn("shop", nav)
+        self.assertIn("warehouse", nav)
+        # territoryMetrics может появиться из login_codes для territory-отделов.
+        self.assertNotIn("office", nav)
+        self.assertNotIn("admin", nav)
+        self.assertEqual(nav["shop"]["groups"][0]["item_ids"], shop_order)
+        self.assertEqual(nav["warehouse"]["groups"][0]["item_ids"], warehouse_order)
+
+    def test_nav_layout_relative_order_kept_for_subset_rights(self):
+        """При урезанных правах относительный порядок админских вкладок сохраняется."""
+        shop_order, _, _ = self._seed_nav_layouts_multi()
+        allowed = ["dept::fio", "shop::metrics-managers", "dept::timesheet"]
+        shown = []
+        allow_set = set(allowed)
+        for item_id in shop_order:
+            if item_id in allow_set:
+                shown.append(item_id)
+                allow_set.discard(item_id)
+        self.assertEqual(shown, ["shop::metrics-managers", "dept::timesheet", "dept::fio"])
+        self.assertNotIn("shop::revision", shown)
+        filtered = wt_api.filter_nav_layouts_for_user(self.store["payload"], STAFF)
+        self.assertEqual(filtered["shop"]["groups"][0]["item_ids"], shop_order)
+
     def test_op_real_conflict_same_path(self):
         cookie, _ = self.login()
         call(
