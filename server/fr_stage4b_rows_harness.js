@@ -447,6 +447,53 @@ async function main() {
         api.eval("__form = { frTsFrom: 'fsrc_cash', frTsAmt: '700', frTsDate: '2026-11-06', frTsCom: 'в банк' }");
         out.result = await act("saveFrTransitSend()");
         out.local_transits = clone(localFr().money_transits);
+    } else if (SCENARIO.indexOf("ops250_") === 0) {
+        // 250+ операций: правка одной ячейки / операции — в пакете только она и запись журнала.
+        api.eval(`(function () {
+            document.querySelector = function () { return null; };
+            __api.cell = function (attrs, value, row) {
+                const tr = row ? {
+                    getAttribute: function (k) { return row.attrs[k] == null ? null : row.attrs[k]; },
+                    setAttribute: function (k, v) { row.attrs[k] = v; },
+                    querySelector: function (sel) { return sel === ".fr-ni-comment" ? { value: row.comment } : null; },
+                    querySelectorAll: function () { return []; }
+                } : null;
+                return {
+                    value: value,
+                    getAttribute: function (k) { return attrs[k] == null ? null : attrs[k]; },
+                    closest: function (sel) { return sel === "tr" ? tr : null; }
+                };
+            };
+        })()`);
+        const revenueCell = "frCommitRevenueCell(__api.cell({ 'data-source-id': 'fsrc_cash', 'data-date': '2026-11-06', 'data-op-kind': 'income' }, '777'))";
+        const nonIncomeCell = "frCommitNonIncomeCell(__api.cell({ 'data-date': '2026-11-06', 'data-ni-channel': 'cash' }, '150', { attrs: {}, comment: 'возврат поставщика' }))";
+        const editForm = "__form = { frOpId: 'fop_bulk_010', frOpAmt: '999', frOpKind: 'expense', frOpDate: '2026-11-04', frOpComment: 'правка', frOpSrc: 'fsrc_cash' }";
+        if (SCENARIO === "ops250_revenue_cell") out.result = await act(revenueCell);
+        if (SCENARIO === "ops250_non_income_cell") out.result = await act(nonIncomeCell);
+        if (SCENARIO === "ops250_edit_op") {
+            api.eval(editForm);
+            out.result = await act("saveFrOp()");
+        }
+        if (SCENARIO === "ops250_two_employees") {
+            // Б загрузил данные до записи А и правит другую операцию по своей версии.
+            const st0 = await getState(other);
+            out.revenue_result = await act(revenueCell);
+            const p100 = "financeRec.operations.fop_bulk_100";
+            const op100 = clone(serverFr(st0).operations.find(function (o) { return o.finance_operation_id === "fop_bulk_100"; }));
+            op100.amount = 4321;
+            out.other_after_a = (await postBatch(other, [{ path: p100, expected_v: recV(st0, p100), value: op100 }])).status;
+            // Б правит ещё одну операцию; у А данные загружены раньше — А правит свою через окно.
+            const st1 = await getState(other);
+            const p101 = "financeRec.operations.fop_bulk_101";
+            const op101 = clone(serverFr(st1).operations.find(function (o) { return o.finance_operation_id === "fop_bulk_101"; }));
+            op101.amount = 1234;
+            out.other_before_a = (await postBatch(other, [{ path: p101, expected_v: recV(st1, p101), value: op101 }])).status;
+            api.eval(editForm);
+            out.edit_result = await act("saveFrOp()");
+        }
+        // F5: повторная загрузка с сервера.
+        api.load(await getState(cookie));
+        out.reloaded_ops = clone(localFr().operations);
     } else {
         throw new Error("unknown scenario " + SCENARIO);
     }

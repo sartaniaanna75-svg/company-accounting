@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 
@@ -424,6 +425,111 @@ class FrStatusRowsLegacyFormatTests(_StatusRowsChecks, _FrStage4Harness):
         self.assertEqual(transits[1]["amount_sent"], 700)
         self.assertIn(new_id, [t.get("transit_id") for t in out["local_transits"]])
         self.assertIn("success", [t["kind"] for t in out["log"]["toasts"]])
+
+
+def ops250_seed():
+    seed = balance_seed()
+    dates = ("2026-10-27", "2026-10-31", "2026-11-04", "2026-11-06", "2026-11-08")
+    for i in range(250):
+        sid = "fsrc_cash" if i % 2 else "fsrc_bank"
+        seed["operations"].append({
+            "finance_operation_id": "fop_bulk_%03d" % i, "object_id": AREA, "finance_area_id": AREA,
+            "account_id": sid, "finance_source_id": sid, "date": dates[i % len(dates)], "type": "out",
+            "op_type": "expense", "movement_kind": "expense", "amount": 10 + i, "comment": "расход %d" % i,
+            "is_deleted": False,
+        })
+    return seed
+
+
+@unittest.skipUnless(NODE, "node не найден (WT_NODE_BIN)")
+class FrOps250SingleOpBatchTests(_FrStage4Harness):
+    """Больше 200 операций: правка одной ячейки / операции отправляет только её и запись журнала."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed = ops250_seed()
+        self.store["payload"]["financeRec"] = json.loads(json.dumps(self.seed))
+
+    def run_rows(self, name):
+        return self.run_scenario(name, harness=ROWS_HARNESS)
+
+    def op_versions(self):
+        recs = self.store["payload"].get("_wt_records") or {}
+        return sorted(p for p in recs if p.startswith("financeRec.operations."))
+
+    def assert_single_op_batches(self, out, count):
+        # Неатомарные пакеты — фоновая запись строк отрисовки (перенос, статус недели), без операций.
+        for b in out["log"]["batches"]:
+            if not b["atomic"]:
+                self.assertEqual([p for p in b["paths"] if p.startswith(("financeRec.operations", "financeRec.audit"))], [], b)
+        batches = [b for b in out["log"]["batches"] if b["atomic"]]
+        self.assertEqual(len(batches), count, batches)
+        for b in batches:
+            self.assertEqual(b["status"], 200, b)
+            self.assertTrue(b["atomic"], b)
+            ops = [p for p in b["paths"] if p.startswith("financeRec.operations.")]
+            aud = [p for p in b["paths"] if p.startswith("financeRec.audit.")]
+            self.assertEqual((len(ops), len(aud), len(b["paths"])), (1, 1, 2), b)
+        self.assertEqual(out["log"]["puts"], 0)
+        self.assertEqual(out["log"]["singleOps"], [])
+        self.assertNotIn("error", [t["kind"] for t in out["log"]["toasts"]], out["log"]["toasts"])
+
+    def assert_bulk_untouched(self, except_ids=()):
+        server = {o["finance_operation_id"]: o for o in self.stored_fr()["operations"]}
+        for o in self.seed["operations"]:
+            if o["finance_operation_id"] in except_ids:
+                continue
+            self.assertEqual(server[o["finance_operation_id"]], o)
+
+    def new_ops(self, ops):
+        seed_ids = {o["finance_operation_id"] for o in self.seed["operations"]}
+        return [o for o in ops if o["finance_operation_id"] not in seed_ids]
+
+    def test_revenue_cell_sends_only_new_op_and_audit(self):
+        out = self.run_rows("ops250_revenue_cell")
+        self.assert_single_op_batches(out, 1)
+        self.assert_bulk_untouched()
+        new = self.new_ops(self.stored_fr()["operations"])
+        self.assertEqual(len(new), 1, new)
+        self.assertEqual((new[0]["account_id"], new[0]["date"], new[0]["amount"], new[0]["grid_cell"]),
+                         ("fsrc_cash", "2026-11-06", 777, True))
+        self.assertEqual(self.op_versions(), ["financeRec.operations." + new[0]["finance_operation_id"]])
+        self.assertEqual([o["amount"] for o in self.new_ops(out["reloaded_ops"])], [777])
+        self.assertIn("revenue_grid", [a.get("kind") for a in self.stored_fr()["audit"]])
+
+    def test_non_income_cell_sends_only_new_op_and_audit(self):
+        out = self.run_rows("ops250_non_income_cell")
+        self.assert_single_op_batches(out, 1)
+        self.assert_bulk_untouched()
+        new = self.new_ops(self.stored_fr()["operations"])
+        self.assertEqual(len(new), 1, new)
+        self.assertEqual((new[0]["date"], new[0]["amount"], new[0]["comment"]), ("2026-11-06", 150, "возврат поставщика"))
+        self.assertEqual([o["amount"] for o in self.new_ops(out["reloaded_ops"])], [150])
+        self.assertIn("non_income_grid", [a.get("kind") for a in self.stored_fr()["audit"]])
+
+    def test_edit_op_modal_sends_only_edited_op_and_audit(self):
+        out = self.run_rows("ops250_edit_op")
+        self.assert_single_op_batches(out, 1)
+        self.assertEqual(out["log"]["batches"][0]["paths"][0], "financeRec.operations.fop_bulk_010")
+        self.assert_bulk_untouched(except_ids=("fop_bulk_010",))
+        server = [o for o in self.stored_fr()["operations"] if o["finance_operation_id"] == "fop_bulk_010"]
+        self.assertEqual((server[0]["amount"], server[0]["comment"]), (999, "правка"))
+        self.assertEqual(self.op_versions(), ["financeRec.operations.fop_bulk_010"])
+        reloaded = [o for o in out["reloaded_ops"] if o["finance_operation_id"] == "fop_bulk_010"]
+        self.assertEqual(reloaded[0]["amount"], 999)
+        self.assertEqual(len(self.stored_fr()["operations"]), len(self.seed["operations"]))
+
+    def test_two_employees_different_ops_no_false_conflict(self):
+        out = self.run_rows("ops250_two_employees")
+        self.assert_single_op_batches(out, 2)
+        self.assertEqual((out["other_after_a"], out["other_before_a"]), (200, 200))
+        self.assert_bulk_untouched(except_ids=("fop_bulk_010", "fop_bulk_100", "fop_bulk_101"))
+        amounts = {o["finance_operation_id"]: o["amount"] for o in self.stored_fr()["operations"]}
+        self.assertEqual((amounts["fop_bulk_010"], amounts["fop_bulk_100"], amounts["fop_bulk_101"]), (999, 4321, 1234))
+        self.assertEqual([o["amount"] for o in self.new_ops(self.stored_fr()["operations"])], [777])
+        self.assertNotIn("Конфликт", " ".join(t["msg"] for t in out["log"]["toasts"]))
+        reloaded = {o["finance_operation_id"]: o["amount"] for o in out["reloaded_ops"]}
+        self.assertEqual((reloaded["fop_bulk_010"], reloaded["fop_bulk_100"], reloaded["fop_bulk_101"]), (999, 4321, 1234))
 
 
 @unittest.skipUnless(NODE, "node не найден (WT_NODE_BIN)")

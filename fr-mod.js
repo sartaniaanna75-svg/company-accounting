@@ -731,7 +731,6 @@ function frCollectChangedOpIds(beforeById) {
         seen[sid] = true;
         ids.push(sid);
     }
-    Object.keys(beforeById || {}).forEach(add);
     ((appData.financeRec && appData.financeRec.operations) || []).forEach(function (o) {
         if (!o || !o.finance_operation_id) return;
         const id = String(o.finance_operation_id);
