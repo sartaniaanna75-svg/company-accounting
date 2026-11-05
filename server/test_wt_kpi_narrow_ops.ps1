@@ -32,8 +32,32 @@ if (($createStart -ge 0) -and ($toggleStart -gt $createStart)) {
     Ok (-not [regex]::IsMatch($createBlock, "(?<![A-Za-z_])saveApp\s*\(")) "createShopKpiDef without saveApp"
     $assignEnd = $html.IndexOf("function addShopKpi(")
     $assignBlock = $html.Substring($toggleStart, [Math]::Max(0, $assignEnd - $toggleStart))
-    Ok ($assignBlock.Contains("saveShopPayrollKpiAssignments()")) "toggle -> saveShopPayrollKpiAssignments"
+    Ok ($assignBlock.Contains("saveShopPayrollKpiAssignments(")) "toggle -> saveShopPayrollKpiAssignments"
+    Ok ($assignBlock.Contains("prevAssignments")) "toggle keeps rollback snapshot"
+    Ok ($assignBlock.Contains("ok === true")) "toggle success only on confirmed ok"
     Ok (-not [regex]::IsMatch($assignBlock, "(?<![A-Za-z_])saveApp\s*\(")) "toggle without saveApp"
+}
+
+# seed* больше не вызывает saveApp (полный collect при галочке KPI).
+$seedW = $html.IndexOf("function seedShopWriteoffLossesKpi(")
+$seedA = $html.IndexOf("function seedShopArrival730Kpi(")
+$norm = $html.IndexOf("function normalizeSharedKpiScopes(")
+Ok (($seedW -ge 0) -and ($seedA -gt $seedW) -and ($norm -gt $seedA)) "seed KPI helpers present"
+if (($seedW -ge 0) -and ($seedA -gt $seedW) -and ($norm -gt $seedA)) {
+    $seedWBlock = $html.Substring($seedW, $seedA - $seedW)
+    $seedABlock = $html.Substring($seedA, $norm - $seedA)
+    Ok (-not [regex]::IsMatch($seedWBlock, "(?<![A-Za-z_])saveApp\s*\(")) "seedWriteoff without saveApp"
+    Ok (-not [regex]::IsMatch($seedABlock, "(?<![A-Za-z_])saveApp\s*\(")) "seedArrival730 without saveApp"
+}
+
+$assignSaveStart = $html.IndexOf("function saveShopPayrollKpiAssignments(")
+$ensureStart = $html.IndexOf("function ensureShopPayroll(")
+Ok (($assignSaveStart -ge 0) -and ($ensureStart -gt $assignSaveStart)) "assign saver before ensureShopPayroll"
+if (($assignSaveStart -ge 0) -and ($ensureStart -gt $assignSaveStart)) {
+    $assignSave = $html.Substring($assignSaveStart, $ensureStart - $assignSaveStart)
+    Ok ($assignSave.Contains("forbidForcePut: true")) "assignments forbidForcePut"
+    Ok ($assignSave.Contains('WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH')) "assignments path used"
+    Ok (-not [regex]::IsMatch($assignSave, "(?<![A-Za-z_])saveApp\s*\(")) "assign saver without saveApp fallback"
 }
 
 $mutateStart = $html.IndexOf("function mutateShopKpiDef(")
@@ -63,6 +87,24 @@ Ok ($tests.Contains("test_kpi_persists_after_get_reload")) "reload persistence"
 Ok ($tests.Contains("test_batch_too_many_ops_still_capped_at_200")) "limit 200 kept"
 Ok ($tests.Contains("test_kpi_assignment_ops")) "assignment ops"
 Ok ($tests.Contains("test_kpi_mutate_and_close_via_ops")) "mutate and close"
+Ok ($tests.Contains("test_kpi_assign_toggle_ignores_unrelated_dirty_collect")) "toggle ignores 496 unrelated dirty"
+
+$harness = Join-Path $PSScriptRoot "wt_kpi_assign_save_harness.js"
+Ok (Test-Path $harness) "assign save harness exists"
+$nodeCandidates = @(
+    (Get-Command node -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
+    "$env:LOCALAPPDATA\Programs\cursor\resources\app\resources\helpers\node.exe",
+    "$env:LOCALAPPDATA\Programs\Cursor\resources\app\resources\helpers\node.exe",
+    "$env:ProgramFiles\nodejs\node.exe"
+) | Where-Object { $_ -and (Test-Path $_) }
+$nodeExe = if ($nodeCandidates) { $nodeCandidates[0] } else { $null }
+if ($nodeExe) {
+    & $nodeExe $harness
+    if ($LASTEXITCODE -ne 0) { throw "FAIL: wt_kpi_assign_save_harness.js" }
+    Write-Host "  OK  wt_kpi_assign_save_harness.js"
+} else {
+    Write-Host "  SKIP  node not found for assign harness"
+}
 
 Write-Host ""
 Write-Host ("=== Result: passed={0} failed={1} ===" -f $passed, $failed)

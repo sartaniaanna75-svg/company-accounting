@@ -28339,35 +28339,66 @@ const WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH = "shopPayroll.assignments";
 
 /**
  * Сохранить только kpiDefs — без полного DomainWriter-diff приложения.
- * При OPS: один leaf с expected_v. Без OPS — прежний saveApp (локально / fallback PUT).
+ * При OPS: один leaf. Без OPS на сервере — отказ (не saveApp / forcePut).
  */
-function saveShopPayrollKpiDefs() {
-    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
-        return saveApp();
+function saveShopPayrollKpiDefs(options) {
+    options = options || {};
+    if (!wtServerMode) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+            return Promise.resolve(true);
+        } catch (errLocal) {
+            return Promise.resolve(false);
+        }
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        if (!options.silentFail) {
+            toast("Точечное сохранение правил KPI недоступно. Изменения не записаны — обновите страницу или повторите позже.", "error");
+        }
+        return Promise.resolve(false);
     }
     const p = ensureShopPayroll();
-    return wtDomainWriterSave({
+    return Promise.resolve(wtDomainWriterSave({
         ops: [{
             path: WT_SHOP_PAYROLL_KPI_DEFS_PATH,
             value: Array.isArray(p.kpiDefs) ? p.kpiDefs : [],
             expected_v: wtRecordVersion(WT_SHOP_PAYROLL_KPI_DEFS_PATH)
-        }]
-    });
+        }],
+        forbidForcePut: true,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return ok === true; }, function () { return false; });
 }
 
-/** Сохранить только assignments KPI. */
-function saveShopPayrollKpiAssignments() {
-    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
-        return saveApp();
+/**
+ * Сохранить только assignments KPI (одна галочка / пакет назначений).
+ * Без OPS — отказ, без полного saveApp (иначе collect >200 при чужом dirty).
+ */
+function saveShopPayrollKpiAssignments(options) {
+    options = options || {};
+    if (!wtServerMode) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+            return Promise.resolve(true);
+        } catch (errLocal) {
+            return Promise.resolve(false);
+        }
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        if (!options.silentFail) {
+            toast("Точечное сохранение назначений KPI недоступно. Изменения не записаны — обновите страницу или повторите позже.", "error");
+        }
+        return Promise.resolve(false);
     }
     const p = ensureShopPayroll();
-    return wtDomainWriterSave({
+    return Promise.resolve(wtDomainWriterSave({
         ops: [{
             path: WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH,
             value: Array.isArray(p.assignments) ? p.assignments : [],
             expected_v: wtRecordVersion(WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH)
-        }]
-    });
+        }],
+        forbidForcePut: true,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return ok === true; }, function () { return false; });
 }
 
 function ensureShopPayroll() {
@@ -28548,7 +28579,8 @@ function seedShopWriteoffLossesKpi(p) {
     } finally {
         shopKpiMigrating = keep;
     }
-    saveApp();
+    // Без полного DomainWriter-collect: ensureShopPayroll вызывается из галочки KPI.
+    // Seed остаётся в памяти; запись правил — только узкий saveShopPayrollKpiDefs / экран правил.
 }
 
 function seedShopArrival730Kpi(p) {
@@ -28584,7 +28616,7 @@ function seedShopArrival730Kpi(p) {
     } finally {
         shopKpiMigrating = keep;
     }
-    saveApp();
+    // Без полного collect из ensureShopPayroll / галочки назначения KPI (см. seedShopWriteoffLossesKpi).
 }
 
 function normalizeSharedKpiScopes(p) {
@@ -31478,8 +31510,15 @@ function createShopKpiDef(templateId, participationRole, submetricId) {
 
 function toggleShopKpiAssignment(employeeId, kpiId, on) {
     if (!canEditShopPayrollRules()) return;
+    if (toggleShopKpiAssignment.busy) {
+        toast("Сохранение назначения KPI ещё выполняется. Подождите ответа сервера.", "error");
+        return;
+    }
     const payroll = ensureShopPayroll();
     const month = selectedMonth;
+    const prevAssignments = typeof wtCloneJson === "function"
+        ? wtCloneJson(payroll.assignments || [])
+        : JSON.parse(JSON.stringify(payroll.assignments || []));
     const rec = shopKpiAssigned(employeeId, kpiId, month);
     if (on) {
         if (rec) return;
@@ -31500,9 +31539,30 @@ function toggleShopKpiAssignment(employeeId, kpiId, on) {
             rec.validTo = shiftMonth(month, -1);
             rec.valid_to = rec.validTo;
         }
+    } else {
+        return;
     }
-    saveShopPayrollKpiAssignments();
-    renderShopSalarySettings();
+    toggleShopKpiAssignment.busy = true;
+    function restoreAssignments() {
+        try {
+            payroll.assignments = prevAssignments;
+        } catch (errRest) {}
+    }
+    Promise.resolve(saveShopPayrollKpiAssignments({ silentFail: true })).then(function (ok) {
+        toggleShopKpiAssignment.busy = false;
+        if (ok === true) {
+            renderShopSalarySettings();
+            return;
+        }
+        restoreAssignments();
+        renderShopSalarySettings();
+        toast("Не удалось сохранить назначение KPI. Изменения не записаны — повторите сохранение.", "error");
+    }, function () {
+        toggleShopKpiAssignment.busy = false;
+        restoreAssignments();
+        renderShopSalarySettings();
+        toast("Не удалось сохранить назначение KPI. Изменения не записаны — повторите сохранение.", "error");
+    });
 }
 
 function addShopKpi(employeeId) {

@@ -7719,7 +7719,9 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
             src.find("function toggleShopKpiAssignment(")
             : src.find("function addShopKpi(")
         ]
-        self.assertIn("saveShopPayrollKpiAssignments()", assign)
+        self.assertIn("saveShopPayrollKpiAssignments(", assign)
+        self.assertIn("prevAssignments", assign)
+        self.assertIn("ok === true", assign)
         self.assertNotIn("saveApp()", assign)
         mutate = src[
             src.find("function mutateShopKpiDef(")
@@ -7731,6 +7733,22 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
             : src.find("function createShopKpiDef(")
         ]
         self.assertIn("saveShopPayrollKpiDefs()", close)
+        seed_w = src[
+            src.find("function seedShopWriteoffLossesKpi(")
+            : src.find("function seedShopArrival730Kpi(")
+        ]
+        seed_a = src[
+            src.find("function seedShopArrival730Kpi(")
+            : src.find("function normalizeSharedKpiScopes(")
+        ]
+        self.assertNotIn("saveApp()", seed_w)
+        self.assertNotIn("saveApp()", seed_a)
+        assign_save = src[
+            src.find("function saveShopPayrollKpiAssignments(")
+            : src.find("function ensureShopPayroll(")
+        ]
+        self.assertIn("forbidForcePut: true", assign_save)
+        self.assertNotIn("saveApp()", assign_save)
         dw = src[
             src.find("function wtDomainWriterSave(")
             : src.find("function wtDomainWriterSave(") + 12000
@@ -7740,6 +7758,52 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
         self.assertIn("const hasExplicitOps = !!(options.ops && options.ops.length)", dw)
         self.assertIn("const explicitOps = options.ops || null", dw)
         self.assertEqual(dw.count("const explicitOps"), 1)
+
+    def test_kpi_assign_toggle_ignores_unrelated_dirty_collect(self):
+        """Одна галочка KPI: узкий OPS assignments, чужой collect 496 не уходит в batch."""
+        cookie, _ = self.login()
+        # На сервере уже «шум» >200 фактов (setUp). Узкий op assignments всё равно проходит.
+        self.assertGreaterEqual(len(self.store["payload"]["shopMetrics"]["facts"]), 200)
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [{
+                    "path": "shopPayroll.assignments",
+                    "expected_v": 0,
+                    "value": [{
+                        "id": "asg_one",
+                        "employee_id": "e_shop",
+                        "kpi_id": "kpi_one",
+                        "validFrom": "2026-11",
+                        "validTo": None,
+                        "is_active": True,
+                    }],
+                }],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        results = data.get("results") or []
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].get("status"), "saved")
+        self.assertEqual(
+            self.store["payload"]["shopPayroll"]["assignments"][0]["id"],
+            "asg_one",
+        )
+        # Чужие факты не затронуты.
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_000"], 0)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_249"], 249)
+        # Клиентский контракт: toggle не зовёт saveApp; seed без saveApp.
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        toggle = src[
+            src.find("function toggleShopKpiAssignment(")
+            : src.find("function addShopKpi(")
+        ]
+        self.assertIn("saveShopPayrollKpiAssignments(", toggle)
+        self.assertNotIn("saveApp()", toggle)
+        self.assertIn("prevAssignments", toggle)
 
     def test_admin_creates_two_kpi_defs_via_ops(self):
         cookie, _ = self.login()
