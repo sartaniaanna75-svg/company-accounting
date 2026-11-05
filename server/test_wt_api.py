@@ -6142,6 +6142,39 @@ class ConcurrentEmployeeCreateApiTests(StoreApiTests):
         self.assertEqual(names.get("e_wh"), "Кладовщик Renamed")
         self.assertEqual(names.get(created["employee_id"]), "Created")
 
+    def test_create_outsourcing_skips_employee_ids(self):
+        """Аутсорсинг: карточка создаётся, в employeeIds (табель) не попадает."""
+        self.store["payload"]["workspaces"].append(
+            {"id": "ws_office", "code": "office", "name": "Офис", "employees": [], "employeeIds": []}
+        )
+        cookie, _ = self.login()
+        status, data, *_ = call(
+            "POST",
+            "/api/employees",
+            {
+                "department_id": "office",
+                "name": "Финансист Аутсорс",
+                "position": "Финансист",
+                "work_tab_id": "office",
+                "outsourcing": True,
+                "outsourcingFixedPay": 100000,
+                "rate": 100000,
+                "terms": {"2026-11": {"rate": 100000, "taxiDaily": 0}},
+                "client_request_id": "req-outsource-1",
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        eid = data["employee_id"]
+        office = next(w for w in self.store["payload"]["workspaces"] if w["code"] == "office")
+        emp = next(e for e in office["employees"] if e["id"] == eid)
+        self.assertTrue(emp.get("outsourcing") is True)
+        self.assertEqual(float(emp.get("rate") or 0), 100000)
+        self.assertEqual(float(emp.get("outsourcingFixedPay") or 0), 100000)
+        self.assertEqual(float((emp.get("terms") or {}).get("2026-11", {}).get("rate") or 0), 100000)
+        ids = [str(x) for x in (office.get("employeeIds") or [])]
+        self.assertNotIn(eid, ids)
+
 
 class WtOpsFoundationTests(unittest.TestCase):
     """Точечные операции /api/state/op и защита старого PUT. Без PostgreSQL."""

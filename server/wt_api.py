@@ -1898,6 +1898,33 @@ def build_created_employee_record(employee_id: str, data: dict, dept_code: str, 
     work_tab_id = str(data.get("work_tab_id") or data.get("work_group_id") or "").strip()
     job_status = "fired" if str(data.get("jobStatus") or "") == "fired" else "working"
     meet_on = data.get("participates_in_spu_meetings") is True or data.get("meeting_participant") is True
+    outsourcing = data.get("outsourcing") is True
+    try:
+        fixed_pay = float(data.get("outsourcingFixedPay") if data.get("outsourcingFixedPay") is not None else data.get("rate") or 0)
+    except (TypeError, ValueError):
+        fixed_pay = 0.0
+    if fixed_pay < 0:
+        fixed_pay = 0.0
+    rate_val = fixed_pay if outsourcing else 0.0
+    terms: dict = {}
+    raw_terms = data.get("terms")
+    if isinstance(raw_terms, dict):
+        for mk, mv in raw_terms.items():
+            key = str(mk or "").strip()
+            if not key or not isinstance(mv, dict):
+                continue
+            try:
+                t_rate = float(mv.get("rate") or 0)
+            except (TypeError, ValueError):
+                t_rate = 0.0
+            try:
+                t_taxi = float(mv.get("taxiDaily") or 0)
+            except (TypeError, ValueError):
+                t_taxi = 0.0
+            terms[key] = {"rate": t_rate if t_rate > 0 else rate_val, "taxiDaily": t_taxi}
+    if outsourcing and rate_val > 0 and not terms:
+        # Без месяца от клиента — только карточка; клиент допишет terms текущего месяца.
+        pass
     rec = {
         "id": eid,
         "employee_id": eid,
@@ -1914,12 +1941,14 @@ def build_created_employee_record(employee_id: str, data: dict, dept_code: str, 
         "department": dept_name or str(data.get("department") or "").strip(),
         "start": str(data.get("start") or "08:00"),
         "end": str(data.get("end") or "17:00"),
-        "rate": 0,
+        "rate": rate_val,
         "taxiDaily": 0,
         "jobStatus": job_status,
         "participates_in_spu_meetings": meet_on,
         "meeting_participant": meet_on,
-        "terms": {},
+        "outsourcing": outsourcing,
+        "outsourcingFixedPay": rate_val if outsourcing else 0,
+        "terms": terms,
     }
     return rec
 
@@ -5797,7 +5826,12 @@ def handle_create_employee(environ):
             if not isinstance(ws.get("employeeIds"), list):
                 ws["employeeIds"] = []
             ws["employees"].append(employee)
-            if employee.get("jobStatus") != "fired" and eid not in [str(x) for x in ws["employeeIds"]]:
+            # Аутсорсинг: карточка есть, в табель (employeeIds) не ставим.
+            if (
+                employee.get("outsourcing") is not True
+                and employee.get("jobStatus") != "fired"
+                and eid not in [str(x) for x in ws["employeeIds"]]
+            ):
                 ws["employeeIds"].append(eid)
             idem[client_req] = {
                 "employee_id": eid,

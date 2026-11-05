@@ -5175,6 +5175,7 @@
             <section id="salary" class="section">
                 <div class="sal-tabs" id="salaryInnerTabs">
                     <button type="button" class="metrics-tab active" data-sal-tab="sheet" onclick="setSalaryInner('sheet')">Ведомость</button>
+                    <button type="button" class="metrics-tab" data-sal-tab="outsourcing" onclick="setSalaryInner('outsourcing')">Аутсорсинг</button>
                     <button type="button" class="metrics-tab" data-sal-tab="vac" onclick="setSalaryInner('vac')">Отпускные</button>
                 </div>
                 <div class="card" id="salaryMainHead">
@@ -8633,6 +8634,19 @@ function isWorking(employee) {
     return !employee || employee.jobStatus !== "fired";
 }
 
+/** Внешний специалист с фиксированной оплатой без табеля (не штатный расчёт от дней). */
+function isOutsourcingEmployee(employee) {
+    return !!(employee && employee.outsourcing === true);
+}
+
+function outsourcingFixedAmount(employee, monthValue) {
+    if (!isOutsourcingEmployee(employee)) return 0;
+    const terms = getEmployeeTerms(employee, monthValue);
+    const fromTerms = parseMoney(terms && terms.rate, 0);
+    if (fromTerms > 0) return fromTerms;
+    return parseMoney(employee && (employee.outsourcingFixedPay != null ? employee.outsourcingFixedPay : employee.rate), 0);
+}
+
 function employeeHasMonthActivity(employeeId) {
     const acc = emptyTotals();
     (employeeDepartments(employeeId) || []).forEach(function (w) {
@@ -8644,6 +8658,7 @@ function employeeHasMonthActivity(employeeId) {
 }
 
 function includeInMonthPayroll(employee) {
+    if (isOutsourcingEmployee(employee)) return false;
     if (isWorking(employee)) return true;
     return employeeHasMonthActivity(employee.id);
 }
@@ -10374,6 +10389,16 @@ function normalizeEmployee(e) {
     e.taxiDaily = parseHours(e.taxiDaily, 0);
     if (e.jobStatus !== "fired") e.jobStatus = "working";
     if (!e.terms || typeof e.terms !== "object") e.terms = {};
+    e.outsourcing = e.outsourcing === true;
+    if (e.outsourcing) {
+        e.outsourcingFixedPay = parseMoney(
+            e.outsourcingFixedPay != null ? e.outsourcingFixedPay : e.rate,
+            0
+        );
+        if (!(Number(e.rate) > 0) && e.outsourcingFixedPay > 0) e.rate = e.outsourcingFixedPay;
+    } else if (e.outsourcingFixedPay == null) {
+        e.outsourcingFixedPay = 0;
+    }
 }
 
 function normalizeWorkspace(w) {
@@ -10619,6 +10644,11 @@ function cloneEmployeeRecord(src) {
         jobStatus: src.jobStatus === "fired" ? "fired" : "working",
         participates_in_spu_meetings: src.participates_in_spu_meetings === true,
         meeting_participant: src.participates_in_spu_meetings === true,
+        outsourcing: src.outsourcing === true,
+        outsourcingFixedPay: parseMoney(
+            src.outsourcingFixedPay != null ? src.outsourcingFixedPay : (src.outsourcing ? src.rate : 0),
+            0
+        ),
         terms: src.terms && typeof src.terms === "object" ? Object.assign({}, src.terms) : {}
     };
 }
@@ -15650,6 +15680,227 @@ function employeeSpuMeetingsFieldHtml(employee, disabled, deptCode) {
     );
 }
 
+function employeeOutsourcingFieldsHtml(employee, disabled, deptCode) {
+    if (!employee || !employee.id) return "";
+    const on = isOutsourcingEmployee(employee);
+    const code = String(deptCode || (workspace() && workspace().code) || "");
+    const deptArg = code ? (",'" + code + "'") : "";
+    const block = !on && employeeBlockedFromEnablingOutsourcing(employee.id);
+    const dis = disabled || (block && !on);
+    return fieldBlock(
+        "Аутсорсинг",
+        '<label class="check"><input type="checkbox" class="emp-outsourcing"'
+            + (on ? " checked" : "") + (dis ? " disabled" : "")
+            + ' onchange="setEmployeeOutsourcingFlag(\'' + employee.id + '\', this.checked' + deptArg + ')">'
+            + " Аутсорсинг (фикс. оплата без табеля)</label>"
+            + (block && !on
+                ? '<div class="note">Недоступно: сотрудник уже в табеле или есть отметки рабочего времени.</div>'
+                : ""),
+        "emp-field-outsourcing"
+    );
+}
+
+/** Уже в составе табеля (employeeIds) любого отдела. */
+function employeeInAnyTimesheetRoster(employeeId) {
+    const eid = String(employeeId || "");
+    if (!eid) return false;
+    return (typeof deptWorkspaces === "function" ? deptWorkspaces() : []).some(function (w) {
+        return !!(w && Array.isArray(w.employeeIds) && w.employeeIds.indexOf(eid) !== -1);
+    });
+}
+
+/** Есть хотя бы одна отметка статуса в табеле любого отдела. */
+function employeeHasTimesheetMarks(employeeId) {
+    const eid = String(employeeId || "");
+    if (!eid) return false;
+    return (typeof deptWorkspaces === "function" ? deptWorkspaces() : []).some(function (w) {
+        return !!(w && typeof timesheetFillCount === "function" && timesheetFillCount(w, eid) > 0);
+    });
+}
+
+/** Штатный с табелем: перевод в аутсорсинг запрещён (без авто-удаления из employeeIds). */
+function employeeBlockedFromEnablingOutsourcing(employeeId) {
+    return employeeInAnyTimesheetRoster(employeeId) || employeeHasTimesheetMarks(employeeId);
+}
+
+/**
+ * Узкий OPS полей аутсорсинга: только изменённые leaf карточки.
+ * Не трогает DomainWriter collect / employeeIds / чужие разделы.
+ */
+function wtSaveOutsourcingCardOps(employeeId, deptCode, options) {
+    options = options || {};
+    const eid = String(employeeId || "");
+    const code = String(deptCode || (typeof employeeHomeDeptCode === "function" && employeeHomeDeptCode(eid)) || "").trim();
+    if (!eid || !code || code === "summary") return Promise.resolve(false);
+    let employee = null;
+    try {
+        if (deptCode) {
+            const resolved = resolveEmployeeCardForSave(code, eid);
+            employee = resolved && resolved.employee;
+        }
+    } catch (errR) { employee = null; }
+    if (!employee) {
+        try { employee = getEmployee(eid); } catch (errG) { employee = null; }
+    }
+    if (!employee) return Promise.resolve(false);
+
+    const base = "workspaces." + code + ".employees." + eid;
+    const ops = [];
+    function pushLeaf(path, value) {
+        if (!path) return;
+        ops.push({
+            path: path,
+            value: value,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        });
+        try {
+            if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path);
+        } catch (errM) {}
+    }
+    if (options.includeFlag !== false) {
+        pushLeaf(base + ".outsourcing", employee.outsourcing === true);
+    }
+    if (options.includeFixed) {
+        const fixed = parseMoney(
+            employee.outsourcingFixedPay != null ? employee.outsourcingFixedPay : employee.rate,
+            0
+        );
+        pushLeaf(base + ".outsourcingFixedPay", fixed);
+        pushLeaf(base + ".rate", parseMoney(employee.rate, fixed));
+        const month = (typeof shopPeriodMonthKey === "function"
+            ? shopPeriodMonthKey(selectedMonth)
+            : "") || String(selectedMonth || "");
+        if (month && employee.terms && employee.terms[month]
+            && typeof employee.terms[month] === "object") {
+            pushLeaf(base + ".terms." + month + ".rate", parseMoney(employee.terms[month].rate, fixed));
+        }
+    }
+    if (!ops.length) return Promise.resolve(true);
+
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return ok !== false; },
+            function () { return false; }
+        );
+    }
+    if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return ok !== false; },
+            function () { return false; }
+        );
+    }
+    return Promise.resolve(wtDomainWriterSave({
+        ops: ops,
+        atomic: true,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return ok === true; }, function () { return false; });
+}
+
+function paintOutsourcingEmployeeUi() {
+    try { renderFio(); } catch (errF) {}
+    try { renderEmployees(); } catch (errE) {}
+    try { renderSummaryStaff(); } catch (errS) {}
+    try { renderSalary(); } catch (errSal) {}
+    try { refreshAll(); } catch (errR) {}
+}
+
+/**
+ * Вкл/выкл аутсорсинг. Включение запрещено, если сотрудник уже в табеле или есть отметки.
+ * Табель (employeeIds) не трогаем. Сохранение — узкий OPS.
+ */
+function setEmployeeOutsourcingFlag(employeeId, on, deptCode) {
+    if (shopUiQuiet) return;
+    if (!canEditStaff()) return;
+    let employee = null;
+    const code = String(deptCode || "").trim();
+    if (code) {
+        const resolved = resolveEmployeeCardForSave(code, employeeId);
+        if (resolved.error) {
+            toast(resolved.error, "error");
+            return;
+        }
+        employee = resolved.employee;
+    } else {
+        employee = getEmployee(employeeId);
+    }
+    if (!employee) return;
+    const enable = on === true || on === "true";
+    const homeCode = code || (typeof employeeHomeDeptCode === "function" && employeeHomeDeptCode(employeeId)) || "";
+
+    if (enable && employeeBlockedFromEnablingOutsourcing(employeeId)) {
+        toast(
+            "Нельзя включить «Аутсорсинг»: сотрудник уже в табеле или есть отметки рабочего времени. Перевод штатных не поддерживается.",
+            "error"
+        );
+        paintOutsourcingEmployeeUi();
+        return;
+    }
+
+    const prevFlag = employee.outsourcing === true;
+    const prevFixed = employee.outsourcingFixedPay;
+    const prevRate = employee.rate;
+    const monthKey = String(selectedMonth || "");
+    const prevTermsRec = (monthKey && employee.terms && employee.terms[monthKey]
+        && typeof employee.terms[monthKey] === "object")
+        ? Object.assign({}, employee.terms[monthKey])
+        : null;
+
+    employee.outsourcing = enable;
+    let includeFixed = false;
+    if (enable) {
+        const fixed = parseMoney(
+            employee.outsourcingFixedPay != null && Number(employee.outsourcingFixedPay) > 0
+                ? employee.outsourcingFixedPay
+                : employee.rate,
+            0
+        );
+        employee.outsourcingFixedPay = fixed;
+        if (fixed > 0) {
+            employee.rate = fixed;
+            includeFixed = true;
+            if (monthKey) {
+                if (!employee.terms || typeof employee.terms !== "object") employee.terms = {};
+                const prev = employee.terms[monthKey];
+                if (!(prev && typeof prev === "object" && parseMoney(prev.rate, 0) > 0)) {
+                    employee.terms[monthKey] = Object.assign(
+                        {},
+                        prev && typeof prev === "object" ? prev : {},
+                        { rate: fixed }
+                    );
+                }
+            }
+        }
+    }
+
+    paintOutsourcingEmployeeUi();
+    Promise.resolve(wtSaveOutsourcingCardOps(employeeId, homeCode, {
+        includeFlag: true,
+        includeFixed: includeFixed,
+        silentFail: true
+    })).then(function (ok) {
+        if (ok) return;
+        employee.outsourcing = prevFlag;
+        employee.outsourcingFixedPay = prevFixed;
+        employee.rate = prevRate;
+        if (monthKey && employee.terms) {
+            if (prevTermsRec) employee.terms[monthKey] = prevTermsRec;
+            else delete employee.terms[monthKey];
+        }
+        paintOutsourcingEmployeeUi();
+        toast("Не удалось сохранить признак «Аутсорсинг» на сервер. Значение возвращено.", "error");
+    }, function () {
+        employee.outsourcing = prevFlag;
+        employee.outsourcingFixedPay = prevFixed;
+        employee.rate = prevRate;
+        if (monthKey && employee.terms) {
+            if (prevTermsRec) employee.terms[monthKey] = prevTermsRec;
+            else delete employee.terms[monthKey];
+        }
+        paintOutsourcingEmployeeUi();
+        toast("Не удалось сохранить признак «Аутсорсинг» на сервер. Значение возвращено.", "error");
+    });
+}
+
 function updateEmployeeNamePart(employeeId, part, value) {
     if (shopUiQuiet) return;
     if (!canEditStaff()) return;
@@ -15915,6 +16166,67 @@ function calculateEmployee(employeeId, monthOverride, workspacesOverride) {
     if (monthOverride) selectedMonth = monthOverride;
 
     const employee = getEmployee(employeeId);
+    // Аутсорсинг: фиксированная сумма вместо оклада по табелю; премия/аванс/удержания/выплата — те же поля salary.
+    if (isOutsourcingEmployee(employee)) {
+        const adjOut = normalizeSalaryRecord(appData.salary[selectedMonth] && appData.salary[selectedMonth][employeeId]);
+        const finesOut = parseMoney(adjOut.fines, 0);
+        const bonusOut = parseMoney(adjOut.bonus, 0);
+        const advanceOut = parseMoney(adjOut.advance, 0);
+        const productsOut = parseMoney(adjOut.products, 0);
+        const vacationPayOut = parseMoney(adjOut.vacationPay, 0);
+        const taxesOut = parseMoney(adjOut.taxes, 0);
+        const fixedOut = outsourcingFixedAmount(employee, selectedMonth);
+        const accruedOut = Math.round(Number(fixedOut || 0));
+        const payOut = accruedOut + bonusOut - finesOut - productsOut - advanceOut + vacationPayOut - taxesOut;
+        const accruedTotalOut = payOut + productsOut + advanceOut;
+        const toHandOut = payOut - (adjOut.vacationPaidEarlier ? vacationPayOut : 0);
+        if (monthOverride) selectedMonth = monthKeep;
+        return {
+            hours: 0,
+            ya: 0,
+            lateCount: 0,
+            lateMinutes: 0,
+            sick: 0,
+            vacation: 0,
+            weekend: 0,
+            skip: 0,
+            personal: 0,
+            workedDays: 0,
+            rate: fixedOut,
+            accrued: accruedOut,
+            kpiBonus: 0,
+            kpiBonusOnly: 0,
+            salesPlanBonus: 0,
+            shopHome: false,
+            payrollHome: false,
+            salesRep: false,
+            outsourcing: true,
+            lateAmount: 0,
+            fines: finesOut,
+            fineTotal: finesOut,
+            skipFine: 0,
+            skipFineStored: 0,
+            bonus: bonusOut,
+            earlyDays: 0,
+            earlyPay: 0,
+            bonusTotal: bonusOut,
+            advance: advanceOut,
+            products: productsOut,
+            taxiDaily: 0,
+            taxiTotal: 0,
+            taxiIncluded: false,
+            vacationPay: vacationPayOut,
+            taxes: taxesOut,
+            issued: !!adjOut.issued,
+            vacationPaidEarlier: !!adjOut.vacationPaidEarlier,
+            pay: payOut,
+            accruedTotal: accruedTotalOut,
+            toHand: toHandOut,
+            reflect1c: accruedTotalOut - advanceOut,
+            expenseZp: accruedTotalOut - advanceOut - (adjOut.vacationPaidEarlier ? vacationPayOut : 0)
+        };
+    }
+
     const scopes = workspacesOverride || (isSummary()
         ? employeeDepartments(employeeId)
         : [workspace()]);
@@ -24066,6 +24378,7 @@ function shopSalesPlanEmployeeBonus(employeeId, month) {
 }
 
 function salesPlanBonusForEmployee(employeeId, month) {
+    if (isOutsourcingEmployee(getEmployee(employeeId))) return 0;
     const view = salesPlanViewForEmployee(employeeId);
     if (!view) return 0;
     return salesPlanEmployeeBonus(view, employeeId, month);
@@ -27191,7 +27504,9 @@ function finishTimesheetCellSave(employeeId, day) {
 }
 
 function setStatus(employeeId, day, status) {
-    if (!isWorking(getEmployee(employeeId))) return;
+    const empForStatus = getEmployee(employeeId);
+    if (!isWorking(empForStatus)) return;
+    if (isOutsourcingEmployee(empForStatus)) return;
     const record = getDayRecord(employeeId, day);
     const defaults = workspace().defaultHours;
     record.status = status;
@@ -27298,6 +27613,7 @@ function employeePicker(selectedId) {
 
     directoryEmployees().forEach(function (e) {
         if (!e || !e.id) return;
+        if (isOutsourcingEmployee(e) && e.id !== selectedId) return;
         const home = employeeHomeDeptCode(e.id);
         if (code === "shop" && isTerritoryCode(home)) return;
         if (tab && !employeeBelongsToWorkGroup(e, code, tab, selectedMonth)) return;
@@ -27337,6 +27653,11 @@ function setTimesheetEmployee(fromId, toId) {
         return;
     }
 
+    if (toId && isOutsourcingEmployee(getEmployee(toId))) {
+        toast("Сотрудник аутсорсинга в табель не ставится — оплата фиксированная.", "error");
+        renderTimesheet();
+        return;
+    }
     if (toId && !isWorking(getEmployee(toId))) {
         toast("Уволенный сотрудник неактивен и в табель не ставится.", "error");
         renderTimesheet();
@@ -28390,6 +28711,7 @@ function setOfficeSharedKpiActive(kpiId, on) {
 
 /** Сумма KPI офиса с учётом офисной галочки «Активно» (назначения сохраняются). */
 function officeEmployeeBonusTotal(employeeId, month) {
+    if (isOutsourcingEmployee(getEmployee(employeeId))) return 0;
     const m = month || selectedMonth;
     return shopEmployeeBonusLines(employeeId, m).filter(function (line) {
         const kid = line.rule && line.rule.kpi_id;
@@ -29664,6 +29986,7 @@ function shopEmployeeActiveRules(employeeId, month) {
 }
 
 function shopEmployeeBonusTotal(employeeId, month) {
+    if (isOutsourcingEmployee(getEmployee(employeeId))) return 0;
     return shopEmployeeBonusLines(employeeId, month).reduce(function (s, line) { return s + line.amount; }, 0);
 }
 
@@ -31527,7 +31850,7 @@ function vacationPlanStatusLabel(id) {
 }
 
 function setSalaryInner(tab) {
-    salaryUi.inner = tab === "vac" ? "vac" : "sheet";
+    salaryUi.inner = tab === "vac" ? "vac" : (tab === "outsourcing" ? "outsourcing" : "sheet");
     currentSection = "salary";
     try { saveSession(); } catch (err) {}
     document.querySelectorAll(".nav-btn[data-section]").forEach(function (btn) {
@@ -31539,6 +31862,28 @@ function setSalaryInner(tab) {
     const monthBar = document.querySelector(".month-bar");
     if (monthBar) monthBar.style.display = "";
     renderSalary();
+}
+
+/** Карточки с галочкой «Аутсорсинг» — отдельная ведомость, без табеля и dept payroll. */
+function outsourcingEmployees() {
+    const list = [];
+    const seen = {};
+    orderedDeptWorkspaces().forEach(function (w) {
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id || seen[e.id] || !isOutsourcingEmployee(e)) return;
+            if (!includeOutsourcingInMonth(e)) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+    });
+    list.sort(compareEmployeesByStatusThenName);
+    return list;
+}
+
+function includeOutsourcingInMonth(employee) {
+    if (!isOutsourcingEmployee(employee)) return false;
+    if (isWorking(employee)) return true;
+    return employeeHasMonthActivity(employee.id);
 }
 
 function changeVacationPlanYear(delta) {
@@ -32253,7 +32598,9 @@ function renderSalary() {
     if (!salaryUi.vacYear) salaryUi.vacYear = salaryMonthYear() || String(new Date().getFullYear());
     if (!salaryUi.planYear) salaryUi.planYear = salaryMonthYear() || String(new Date().getFullYear());
     if (salaryUi.inner === "plan") salaryUi.inner = "sheet";
-    const inner = salaryUi.inner === "vac" ? "vac" : "sheet";
+    const inner = salaryUi.inner === "vac"
+        ? "vac"
+        : (salaryUi.inner === "outsourcing" ? "outsourcing" : "sheet");
     const show1c = canSalary1c();
     const payOnly = isSalaryPayOnlyView();
     const tabs = document.getElementById("salaryInnerTabs");
@@ -32264,13 +32611,27 @@ function renderSalary() {
         });
     }
     const mainHead = document.getElementById("salaryMainHead");
-    if (mainHead) mainHead.style.display = inner === "sheet" ? "" : "none";
+    if (mainHead) mainHead.style.display = (inner === "sheet" || inner === "outsourcing") ? "" : "none";
     const sheetCard = document.getElementById("salarySheetCard");
     const vacCard = document.getElementById("salaryVacCard");
-    if (sheetCard) sheetCard.style.display = inner === "sheet" ? "" : "none";
+    if (sheetCard) sheetCard.style.display = (inner === "sheet" || inner === "outsourcing") ? "" : "none";
     if (vacCard) vacCard.style.display = inner === "vac" ? "" : "none";
     const toolbar = document.getElementById("salaryToolbar");
     if (toolbar) toolbar.style.display = inner === "sheet" ? "" : "none";
+    const formulaNote = document.getElementById("salaryFormulaNote");
+    if (formulaNote) {
+        if (inner === "outsourcing") {
+            formulaNote.textContent = "Аутсорсинг: оклад = фиксированная сумма за месяц (без табеля и KPI). Премия, налог, штраф, аванс, продукты, отпускные и «Выдано» — те же поля, что в общей ведомости.";
+        } else {
+            formulaNote.textContent = "Оклад считается как раньше (дни × ставка / зарплата ТП). Налог и штраф в итогах удерживаются с тем же знаком, что и сейчас. «Итого начислено» стоит до продуктов и аванса. Отпускные входят в начисление. Галочка «Выданы ранее» ставится в зарплате Володарского, Склада или Водителей и убирает отпускные только из суммы к выдаче.";
+        }
+    }
+    const cardTitle = document.querySelector("#salaryMainHead .card-title");
+    if (cardTitle) {
+        cardTitle.textContent = inner === "outsourcing"
+            ? "Аутсорсинг — фиксированные начисления"
+            : "Зарплата по всем отделам";
+    }
 
     if (inner === "vac") {
         renderSalaryVacationRegistry();
@@ -32280,20 +32641,29 @@ function renderSalary() {
     const wrap = document.getElementById("salaryWrap");
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
-    const groups = salaryEmployeeGroups();
+    const outsourcingMode = inner === "outsourcing";
+    const groups = outsourcingMode ? null : salaryEmployeeGroups();
+    const outsourcingList = outsourcingMode ? outsourcingEmployees() : null;
     const byName = summarySortMode === "name";
     const colCount = 13 + (show1c ? 2 : 0);
     const head = document.getElementById("salaryHead");
     if (head) {
         head.innerHTML = "<tr>"
             + "<th>№</th><th>Сотрудник</th><th>Должность</th>"
-            + '<th class="salary-accrued">Оклад</th><th>Премия</th><th>Налог</th><th>Штраф</th><th>Отпускные</th>'
+            + '<th class="salary-accrued">' + (outsourcingMode ? "Фикс. сумма" : "Оклад") + "</th><th>Премия</th><th>Налог</th><th>Штраф</th><th>Отпускные</th>"
             + "<th>Итого начислено</th><th>Продукты</th><th>Аванс</th><th>К выдаче на руки</th>"
             + (show1c ? "<th>Для отражения в 1С УТ</th><th>Расходники для ЗП</th>" : "")
             + "<th>Выдано</th></tr>";
     }
 
-    if (!groups.length) {
+    if (outsourcingMode && (!outsourcingList || !outsourcingList.length)) {
+        document.getElementById("salaryBody").innerHTML =
+            '<tr><td colspan="' + colCount + '"><div class="empty-row">Нет сотрудников с галочкой «Аутсорсинг». Отметьте галочку при создании или в карточке сотрудника.</div></td></tr>';
+        renderSalarySumCards(emptySalarySums(), []);
+        return;
+    }
+
+    if (!outsourcingMode && !groups.length) {
         document.getElementById("salaryBody").innerHTML =
             '<tr><td colspan="' + colCount + '"><div class="empty-row">В подразделениях никто не выбран в табель — в общую зарплату переносить некого.</div></td></tr>';
         renderSalarySumCards(emptySalarySums(), []);
@@ -32401,8 +32771,12 @@ function renderSalary() {
             + "<td></td></tr>";
     }
 
-    if (byName) {
+    if (outsourcingMode) {
+        outsourcingList.forEach(function (employee) { html += salaryRow(employee); });
+        html += subtotalRow("Итого по аутсорсингу", sums);
+    } else if (byName) {
         salaryVisibleEmployees().forEach(function (employee) { html += salaryRow(employee); });
+        html += subtotalRow(salaryTotalRowTitle(byName, groups), sums);
     } else {
         groups.forEach(function (g) {
             const code = g.dept && g.dept.code;
@@ -32423,12 +32797,8 @@ function renderSalary() {
                 html += subtotalRow("Итого: " + officialName(g.dept), part);
             }
         });
+        html += subtotalRow(salaryTotalRowTitle(byName, groups), sums);
     }
-
-    html += subtotalRow(
-        salaryTotalRowTitle(byName, groups),
-        sums
-    );
 
     document.getElementById("salaryBody").innerHTML = html;
     renderSalarySumCards(sums, issuedRows);
@@ -37649,6 +38019,14 @@ function renderFio() {
             + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value,\'' + deptCode + '\')">', "emp-field-time")
             + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff(), deptCode), "emp-field-status")
             + employeeSpuMeetingsFieldHtml(employee, !canEditStaff(), deptCode)
+            + employeeOutsourcingFieldsHtml(employee, !canEditStaff() || fired, deptCode)
+            + (isOutsourcingEmployee(employee)
+                ? fieldBlock("Фиксированная сумма в месяц",
+                    '<input type="number" min="0" step="1" inputmode="numeric" value="'
+                    + blankZeroInt(getEmployeeTerms(employee).rate || employee.outsourcingFixedPay || employee.rate)
+                    + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value,\'' + deptCode + '\')"'
+                    + (!canEditStaff() || fired ? " disabled" : "") + ">", "emp-field-rate")
+                : "")
             + employeeCardActionsHtml(employee, deptCode)
             + "</div>";
     }).join("");
@@ -37705,16 +38083,21 @@ function renderEmployees() {
     host.innerHTML = pool.map(function (employee) {
         const on = isAssignedTo(workspace(), employee.id);
         const fired = !isWorking(employee);
+        const outsrc = isOutsourcingEmployee(employee);
+        const assignDisabled = fired || outsrc;
         return '<div class="pick-row' + (fired ? " staff-fired" : (on ? "" : " off")) + '">'
-            + '<label class="check"><input type="checkbox"' + (on ? " checked" : "") + (fired ? " disabled" : "")
+            + '<label class="check"><input type="checkbox"' + (on ? " checked" : "") + (assignDisabled ? " disabled" : "")
             + ' onchange="toggleAssign(\'' + employee.id + '\', this.checked)"> В табель</label>'
             + "<div><strong>" + escapeHtml(employee.name) + "</strong>"
-            + '<div class="note">' + escapeHtml(employee.position || "") + "</div></div>"
+            + '<div class="note">' + escapeHtml(employee.position || "")
+            + (outsrc ? " · аутсорсинг" : "") + "</div></div>"
             + fieldBlock("Статус", jobStatusSelect(employee, false))
             + "<div class=\"note\">" + escapeHtml(employee.start || "08:00") + "–" + escapeHtml(employee.end || "17:00") + "</div>"
-            + (on && !fired
-                ? '<button type="button" class="btn btn-secondary btn-small" onclick="toggleAssign(\'' + employee.id + '\', false)">Убрать из табеля</button>'
-                : (fired ? '<div class="note">неактивен</div>' : ""))
+            + (outsrc
+                ? '<div class="note">аутсорсинг — без табеля</div>'
+                : (on && !fired
+                    ? '<button type="button" class="btn btn-secondary btn-small" onclick="toggleAssign(\'' + employee.id + '\', false)">Убрать из табеля</button>'
+                    : (fired ? '<div class="note">неактивен</div>' : "")))
             + "</div>";
     }).join("");
 }
@@ -38038,6 +38421,11 @@ function toggleAssign(employeeId, checked) {
         renderEmployees();
         return;
     }
+    if (checked && isOutsourcingEmployee(employee)) {
+        toast("Сотрудник аутсорсинга в табель не ставится — оплата фиксированная.", "error");
+        renderEmployees();
+        return;
+    }
     if (checked && !isWorking(employee)) {
         toast("Уволенный сотрудник неактивен и в табель не ставится.", "error");
         renderEmployees();
@@ -38228,6 +38616,9 @@ function openEmployeeCreateForm() {
         + '<option value="working" selected>Работает</option>'
         + '<option value="fired">Уволен</option></select></div>'
         + '<div class="form-group"><label class="check"><input type="checkbox" id="empFormSpuMeet"> Участвует в СПУ</label></div>'
+        + '<div class="form-group"><label class="check"><input type="checkbox" id="empFormOutsourcing" onchange="toggleEmpFormOutsourcingFields()"> Аутсорсинг</label></div>'
+        + '<div class="form-group" id="empFormFixedWrap" style="display:none"><label for="empFormFixedPay">Фиксированная сумма в месяц</label>'
+        + '<input type="number" id="empFormFixedPay" class="no-spin" min="0" step="1" inputmode="numeric" placeholder="например 100000"></div>'
         + "</div>"
         + "</div>"
         + '<div class="rev-modal-actions">'
@@ -38241,6 +38632,18 @@ function openEmployeeCreateForm() {
             try { input.focus(); } catch (err) {}
         }
     }, 30);
+}
+
+function toggleEmpFormOutsourcingFields() {
+    const on = !!(document.getElementById("empFormOutsourcing") && document.getElementById("empFormOutsourcing").checked);
+    const wrap = document.getElementById("empFormFixedWrap");
+    if (wrap) wrap.style.display = on ? "" : "none";
+    if (on) {
+        const inp = document.getElementById("empFormFixedPay");
+        if (inp) {
+            try { inp.focus(); } catch (err) {}
+        }
+    }
 }
 
 function applyCreatedEmployeeToLocalState(body) {
@@ -38261,7 +38664,10 @@ function applyCreatedEmployeeToLocalState(body) {
     const idx = w.employees.findIndex(function (e) { return e && e.id === body.employee_id; });
     if (idx >= 0) w.employees[idx] = employee;
     else w.employees.push(employee);
-    if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
+    // Аутсорсинг не попадает в табель / обычные ведомости подразделений.
+    if (!isOutsourcingEmployee(employee)
+        && employee.jobStatus !== "fired"
+        && w.employeeIds.indexOf(employee.id) === -1) {
         w.employeeIds.push(employee.id);
     }
     if (body.version != null) wtStateVersion = Number(body.version) || wtStateVersion;
@@ -38376,6 +38782,16 @@ function saveEmployeeCreateForm() {
         const statusEl = document.getElementById("empFormStatus");
         const meetOn = !!(document.getElementById("empFormSpuMeet") && document.getElementById("empFormSpuMeet").checked);
         const jobStatus = (statusEl && statusEl.value === "fired") ? "fired" : "working";
+        const outsourcingOn = !!(document.getElementById("empFormOutsourcing")
+            && document.getElementById("empFormOutsourcing").checked);
+        const fixedPayRaw = document.getElementById("empFormFixedPay");
+        const fixedPay = parseMoney(fixedPayRaw && fixedPayRaw.value, 0);
+        if (outsourcingOn && !(fixedPay > 0)) {
+            unlockCreate(true);
+            toast("Укажите фиксированную сумму в месяц для аутсорсинга.", "error");
+            if (fixedPayRaw) fixedPayRaw.focus();
+            return;
+        }
 
         // Один client_request_id на попытку формы — повтор после сети не создаёт вторую карточку.
         if (!saveEmployeeCreateForm._reqId) {
@@ -38392,8 +38808,15 @@ function saveEmployeeCreateForm() {
             department: officialName(w),
             jobStatus: jobStatus,
             participates_in_spu_meetings: meetOn,
-            meeting_participant: meetOn
+            meeting_participant: meetOn,
+            outsourcing: outsourcingOn,
+            outsourcingFixedPay: outsourcingOn ? fixedPay : 0,
+            rate: outsourcingOn ? fixedPay : 0
         };
+        if (outsourcingOn && selectedMonth) {
+            createPayload.terms = {};
+            createPayload.terms[selectedMonth] = { rate: fixedPay, taxiDaily: 0 };
+        }
 
         function finishOk(body) {
             const employee = applyCreatedEmployeeToLocalState(body);
@@ -38423,18 +38846,25 @@ function saveEmployeeCreateForm() {
                     department: officialName(w),
                     start: "08:00",
                     end: "17:00",
-                    rate: 0,
+                    rate: outsourcingOn ? fixedPay : 0,
                     taxiDaily: 0,
                     jobStatus: jobStatus,
                     participates_in_spu_meetings: meetOn,
                     meeting_participant: meetOn,
+                    outsourcing: outsourcingOn,
+                    outsourcingFixedPay: outsourcingOn ? fixedPay : 0,
                     terms: {}
                 };
+                if (outsourcingOn && selectedMonth) {
+                    employee.terms[selectedMonth] = { rate: fixedPay, taxiDaily: 0 };
+                }
                 applyEmployeeFullName(employee, fullName);
                 if (!Array.isArray(w.employees)) w.employees = [];
                 if (!Array.isArray(w.employeeIds)) w.employeeIds = [];
                 w.employees.push(employee);
-                if (employee.jobStatus !== "fired" && w.employeeIds.indexOf(employee.id) === -1) {
+                if (!outsourcingOn
+                    && employee.jobStatus !== "fired"
+                    && w.employeeIds.indexOf(employee.id) === -1) {
                     w.employeeIds.push(employee.id);
                 }
                 justAddedEmployeeId = employee.id;
@@ -38736,6 +39166,46 @@ function setEmployeeTermsField(employeeId, field, value, deptCode) {
         return;
     }
     const amount = parseMoney(value, 0);
+    if (field === "rate" && isOutsourcingEmployee(employee)) {
+        const prevFixed = employee.outsourcingFixedPay;
+        const prevRate = employee.rate;
+        const prevTermsRaw = employee.terms && employee.terms[monthKey];
+        const prevTermsRec = prevTermsRaw && typeof prevTermsRaw === "object"
+            ? Object.assign({}, prevTermsRaw)
+            : null;
+        rec[field] = amount;
+        employee[field] = amount;
+        employee.terms[monthKey] = rec;
+        employee.outsourcingFixedPay = amount;
+        const homeCode = String(deptCode || employeeHomeDeptCode(employeeId) || "").trim();
+        Promise.resolve(wtSaveOutsourcingCardOps(employeeId, homeCode, {
+            includeFlag: true,
+            includeFixed: true,
+            silentFail: true
+        })).then(function (ok) {
+            if (!ok) {
+                employee.outsourcingFixedPay = prevFixed;
+                employee.rate = prevRate;
+                if (prevTermsRec) employee.terms[monthKey] = prevTermsRec;
+                else if (employee.terms) delete employee.terms[monthKey];
+                toast("Фиксированная сумма не записана на сервер. Значение возвращено.", "error");
+            }
+            if (isSummary()) {
+                try { renderSummaryStaff(); } catch (errS) {}
+            }
+            try { renderFio(); } catch (errF) {}
+            try { renderSalary(); } catch (errSal) {}
+            try { refreshAll(); } catch (errR) {}
+        }, function () {
+            employee.outsourcingFixedPay = prevFixed;
+            employee.rate = prevRate;
+            if (prevTermsRec) employee.terms[monthKey] = prevTermsRec;
+            else if (employee.terms) delete employee.terms[monthKey];
+            toast("Фиксированная сумма не записана на сервер. Значение возвращено.", "error");
+            try { paintOutsourcingEmployeeUi(); } catch (errP) {}
+        });
+        return;
+    }
     rec[field] = amount;
     employee[field] = amount;
     employee.terms[monthKey] = rec;
@@ -38866,11 +39336,14 @@ function renderSummaryStaff() {
                 + fieldBlock("Статус", statusSel, "emp-field-status")
                 + employeeSpuMeetingsFieldHtml(employee, locked, deptCode)
                 + shopExtraFunctionsHtml(employee)
-                + fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value' + deptArg + ')"' + dis + ">", "emp-field-rate")
-                + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value' + deptArg + ')"' + dis + ">", "emp-field-taxi")
+                + employeeOutsourcingFieldsHtml(employee, locked || fired, deptCode)
+                + (isOutsourcingEmployee(employee)
+                    ? fieldBlock("Фиксированная сумма в месяц", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate || employee.outsourcingFixedPay || employee.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value' + deptArg + ')"' + dis + ">", "emp-field-rate")
+                    : (fieldBlock("Ставка / день", '<input type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.rate) + '" onchange="updateEmployee(\'' + employee.id + '\',\'rate\',this.value' + deptArg + ')"' + dis + ">", "emp-field-rate")
+                        + fieldBlock("Такси / день", '<input class="taxi-input" type="number" min="0" step="1" inputmode="numeric" value="' + blankZeroInt(terms.taxiDaily) + '" onchange="updateEmployee(\'' + employee.id + '\',\'taxiDaily\',this.value' + deptArg + ')"' + dis + ">", "emp-field-taxi")))
                 + (isDrivers && isRep ? percentBlock : "")
                 + '<div class="emp-actions">'
-                + (deptCode === "shop" && canEditShopPayrollRules()
+                + (deptCode === "shop" && canEditShopPayrollRules() && !isOutsourcingEmployee(employee)
                     ? '<button type="button" class="btn btn-secondary btn-small" onclick="openShopEmployeeKpiFromStaff(\'' + employee.id + '\')">Настройки зарплаты</button>'
                     : "")
                 + (locked
