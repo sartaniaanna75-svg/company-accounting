@@ -3486,7 +3486,8 @@ def ops_path_allowed(user: dict | None, path: str, payload: dict | None = None) 
             _can_edit_metric_input(user) or _can_edit_metric_setup(user)
         )
     if top == "navLayouts":
-        return user_has_perm(user, "settings", "edit")
+        # Единое меню разделов — только системный администратор (не settings:edit).
+        return is_app_admin(user)
     if top == "vacationPlans":
         return user_has_perm(user, "vacationPlan", "edit") or user_has_perm(user, "salary", "edit")
     if top == "repSales":

@@ -27,8 +27,21 @@ Ok ($app -match "forbidForcePut: true") "menu forbids broad PUT fallback"
 Ok ($app -match "wtOpsUiEnabled\(true\)\) \{\s*\r?\n\s*if \(!options\.silentFail\)") "no-OPS refuses without saveApp"
 Ok ($app -notmatch "function wtSaveNavLayoutOp\([\s\S]{0,900}?saveApp\(\)") "nav saver has no saveApp fallback"
 Ok ($app -notmatch "function copyNavLayout|function migrateNavLayout|adminToSummary") "no auto admin->summary copy helper"
+Ok ($app -match "return typeof isAppAdmin === `"function`" && isAppAdmin\(\);") "canConfigureNavLayout returns isAppAdmin"
+# Тело canConfigureNavLayout без isTableAdmin / settings (только isAppAdmin).
+$cfgIdx = $app.IndexOf("function canConfigureNavLayout")
+Ok ($cfgIdx -ge 0) "canConfigureNavLayout present"
+$cfgBody = if ($cfgIdx -ge 0) { $app.Substring($cfgIdx, [Math]::Min(350, $app.Length - $cfgIdx)) } else { "" }
+Ok ($cfgBody -match "isAppAdmin") "canConfigureNavLayout uses isAppAdmin"
+Ok ($cfgBody -notmatch "isTableAdmin") "canConfigureNavLayout no isTableAdmin"
+Ok ($cfgBody -notmatch "userHasPerm\([^\)]*settings") "canConfigureNavLayout no settings perm check"
 Ok ($api -match '"navLayouts"') "server OPS allowlist has navLayouts"
 Ok ($api -match 'if top == "navLayouts"') "server ACL for navLayouts"
+$navIdx = $api.IndexOf('if top == "navLayouts"')
+Ok ($navIdx -ge 0) "navLayouts ACL block present"
+$navBody = if ($navIdx -ge 0) { $api.Substring($navIdx, [Math]::Min(220, $api.Length - $navIdx)) } else { "" }
+Ok ($navBody -match "is_app_admin\(user\)") "navLayouts OPS only is_app_admin"
+Ok ($navBody -notmatch 'user_has_perm\(user, "settings"') "navLayouts OPS not settings:edit"
 
 $harness = Join-Path $PSScriptRoot "wt_nav_layout_key_harness.js"
 Ok (Test-Path $harness) "key harness file exists"
@@ -48,6 +61,12 @@ if ($nodeExe) {
         & $nodeExe $saveHarness
         if ($LASTEXITCODE -ne 0) { throw "FAIL: wt_nav_layout_save_harness.js" }
         Write-Host "OK: wt_nav_layout_save_harness.js"
+    }
+    $aclHarness = Join-Path $PSScriptRoot "wt_nav_layout_acl_harness.js"
+    if (Test-Path $aclHarness) {
+        & $nodeExe $aclHarness
+        if ($LASTEXITCODE -ne 0) { throw "FAIL: wt_nav_layout_acl_harness.js" }
+        Write-Host "OK: wt_nav_layout_acl_harness.js"
     }
 } else {
     Write-Host "SKIP: node not found for key harness"

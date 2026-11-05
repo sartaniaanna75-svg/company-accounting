@@ -6337,6 +6337,75 @@ class WtOpsFoundationTests(unittest.TestCase):
         nav = (self.store["payload"].get("navLayouts") or {}).get("summary") or {}
         self.assertEqual(nav.get("groups", [])[0].get("title"), "Первый")
 
+    def test_nav_layout_op_forbidden_for_settings_edit_staff(self):
+        """settings:edit не даёт писать navLayouts — только системный администратор."""
+        self.store["payload"]["navLayouts"] = {
+            "office": {
+                "saved": True,
+                "groups": [{"group_id": "ng1", "title": "Админский офис", "item_ids": ["timesheet"]}],
+                "item_labels": {},
+                "item_hidden": {},
+                "custom_items": [],
+            }
+        }
+        cookie, _ = self.login("usr_set", "3333")
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "nav-settings-forbid-1",
+                "op": {
+                    "path": "navLayouts.office",
+                    "expected_v": 0,
+                    "value": {
+                        "saved": True,
+                        "groups": [{"group_id": "ng9", "title": "Чужой", "item_ids": ["x"]}],
+                        "item_labels": {},
+                        "item_hidden": {},
+                        "custom_items": [],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+        office = (self.store["payload"].get("navLayouts") or {}).get("office") or {}
+        self.assertEqual(office.get("groups", [])[0].get("title"), "Админский офис")
+
+    def test_nav_layout_op_admin_can_save_office(self):
+        """Системный администратор сохраняет меню отдела; чужой ключ не трогается."""
+        self.store["payload"]["navLayouts"] = {
+            "shop": {
+                "saved": True,
+                "groups": [{"group_id": "ngs", "title": "Магазин", "item_ids": ["a"]}],
+                "item_labels": {},
+                "item_hidden": {},
+                "custom_items": [],
+            }
+        }
+        cookie, _ = self.login()
+        layout = {
+            "saved": True,
+            "groups": [{"group_id": "ngo", "title": "Офис порядок", "item_ids": ["fio", "timesheet"]}],
+            "item_labels": {},
+            "item_hidden": {},
+            "custom_items": [],
+        }
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "nav-admin-office-1",
+                "op": {"path": "navLayouts.office", "expected_v": 0, "value": layout},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        nav = self.store["payload"].get("navLayouts") or {}
+        self.assertEqual(nav.get("office", {}).get("groups", [])[0].get("title"), "Офис порядок")
+        self.assertEqual(nav.get("shop", {}).get("groups", [])[0].get("title"), "Магазин")
+
     def test_op_real_conflict_same_path(self):
         cookie, _ = self.login()
         call(
