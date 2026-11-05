@@ -2063,6 +2063,11 @@ def _merge_admin_payload(current: dict, incoming: dict) -> dict:
 def _staff_put_forbidden(current: dict, incoming: dict, user: dict) -> bool:
     codes = user_dept_codes(user)
     for key, val in incoming.items():
+        # Служебные карты версий/идемпотентности: не право записи раздела.
+        # Клиент часто шлёт отфильтрованный _wt_records (подмножество) — это не 403.
+        # Фактические версии остаются серверными через protect_wt_records_on_put.
+        if key in WT_OPS_META_KEYS:
+            continue
         if key == "employeeRemovals":
             if not can_write_dept_employees(user):
                 return True

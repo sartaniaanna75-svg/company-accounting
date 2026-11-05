@@ -1942,9 +1942,10 @@ class StoreApiTests(unittest.TestCase):
         }
 
     def test_manager_saves_and_clears_own_metric_checkboxes(self):
+        """Назначение и снятие галочек. Повторный PUT — с _wt_records как у metricCatalogPutSlice."""
         self._seed_metric_access()
         cookie = self._add_shop_manager()
-        status, *_ = call(
+        status, data, *_ = call(
             "PUT",
             "/api/state",
             {
@@ -1962,6 +1963,59 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(self.store["payload"]["shopMetrics"]["extraAccess"]["e_wh"], ["m_wh"])
         self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["ok"], 1)
         self.assertEqual(self.store["payload"]["shopMetrics"]["nested"]["employees"][0]["rate"], 777)
+        # После PUT сервер поднял record_v — клиент шлёт актуальный _wt_records (record_updates).
+        records = dict(data.get("record_updates") or {})
+        records.update(self.store["payload"].get("_wt_records") or {})
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {"workAccess": {"2026-10": {"e_shop": []}}},
+                    "_wt_records": records,
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        access = self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]
+        self.assertEqual(access["e_shop"], [])
+        self.assertEqual(access["e_wh"], ["m_wh"])
+        # Повторное сохранение пустого списка и GET.
+        records = dict(self.store["payload"].get("_wt_records") or {})
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {"workAccess": {"2026-10": {"e_shop": []}}},
+                    "_wt_records": records,
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(data["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"], [])
+        self.assertEqual(data["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_wh"], ["m_wh"])
+
+    def test_work_access_put_without_records_does_not_clobber_newer_leaf(self):
+        """PUT без _wt_records не затирает лист, уже поднятый record_v (защита concurrent OPS/PUT)."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"workAccess": {"2026-10": {"e_shop": ["m_keep"]}}}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
         status, *_ = call(
             "PUT",
             "/api/state",
@@ -1972,9 +2026,47 @@ class StoreApiTests(unittest.TestCase):
             cookie=cookie,
         )
         self.assertTrue(status.startswith("200"), status)
-        access = self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]
-        self.assertEqual(access["e_shop"], [])
-        self.assertEqual(access["e_wh"], ["m_wh"])
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"],
+            ["m_keep"],
+        )
+
+    def test_work_access_stale_client_version_keeps_newer_assignment(self):
+        """Устаревший client_v < server_v — protect сохраняет более новое назначение."""
+        self._seed_metric_access()
+        cookie_a = self._add_shop_manager("usr_dir_a")
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetrics": {"workAccess": {"2026-10": {"e_shop": ["m_keep"]}}}},
+            },
+            cookie=cookie_a,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        path = "shopMetrics.workAccess.2026-10.e_shop"
+        server_v = int((data.get("record_updates") or {}).get(path, {}).get("v") or 0)
+        self.assertGreaterEqual(server_v, 1)
+        # Второй менеджер «не видел» обновление — шлёт stale v=0 и старый снимок.
+        cookie_b = self._add_shop_manager("usr_dir_b")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {"workAccess": {"2026-10": {"e_shop": ["m_drop"]}}},
+                    "_wt_records": {path: {"v": 0}},
+                },
+            },
+            cookie=cookie_b,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"],
+            ["m_keep"],
+        )
 
     def test_metric_checkboxes_survive_reread(self):
         self._seed_metric_access()
@@ -2534,6 +2626,200 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(items["m_ter"]["assignments"][0]["employee_ids"], ["e_wh"])
         self.assertEqual(items["m_shop"]["assignments"][0]["employee_ids"], ["e_shop"])
 
+    def test_staff_metric_catalog_put_with_filtered_wt_records_no_false_403(self):
+        """Руководитель с metricsSetup: PUT каталога + урезанный _wt_records не даёт ложный 403."""
+        self._seed_metric_access()
+        # На сервере «чужие» версии (как после OPS других разделов).
+        self.store["payload"]["_wt_records"] = {
+            "workspaces.shop.timesheet.2026-10.e_shop.1": {"v": 3},
+            "workspaces.warehouse.timesheet.2026-10.e_wh.1": {"v": 9},
+            "salary.2026-10": {"v": 7},
+            "financeRec.audit": {"v": 5},
+            "deptMetrics.drivers.workAccess": {"v": 2},
+        }
+        self.add_user({
+            "user_id": "usr_drv_metrics",
+            "display_name": "Руководитель логистики",
+            "pin": "4545",
+            "role": "user",
+            "legacy_role": "manager",
+            "is_active": True,
+            "departments": ["drivers"],
+            "permissions": {"metricsSetup": "edit", "metricsInput": "edit", "timesheet": "edit"},
+        })
+        # Подразделение Логистика + Торговые (как на Timeweb).
+        workspaces = self.store["payload"].setdefault("workspaces", [])
+        if not any(isinstance(w, dict) and w.get("code") == "drivers" for w in workspaces):
+            workspaces.append({
+                "id": "ws_drivers",
+                "code": "drivers",
+                "name": "Логистика + Торговые",
+                "employees": [{"id": "e_drv", "name": "ТП", "rate": 1000}],
+                "employeeIds": ["e_drv"],
+                "timesheet": {},
+            })
+        # Метрика «Продажи ОПТ» (категория sales_opt → dept drivers).
+        self.store["payload"]["shopMetricCatalog"]["items"].append({
+            "id": "m_sales_opt",
+            "name": "Продажи ОПТ",
+            "department_id": "drivers",
+            "territory_category": "sales_opt",
+            "assignments": [{
+                "assignment_id": "a_opt",
+                "department_id": "drivers",
+                "work_tab_id": "sales",
+                "assign_mode": "specific",
+                "employee_ids": [],
+            }],
+        })
+        self.store["payload"].setdefault("deptMetrics", {})["drivers"] = {
+            "workAccess": {"2026-11": {}},
+            "extraAccess": {},
+        }
+        cookie, _ = self.login("usr_drv_metrics", "4545")
+        # Как metricCatalogPutSlice: каталог + workAccess своего отдела + отфильтрованный _wt_records.
+        filtered_records = {
+            "deptMetrics.drivers.workAccess": {"v": 2},
+        }
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_sales_opt",
+                        "name": "Продажи ОПТ",
+                        "department_id": "drivers",
+                        "territory_category": "sales_opt",
+                        "assignments": [{
+                            "assignment_id": "a_opt",
+                            "department_id": "drivers",
+                            "work_tab_id": "sales",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_drv"],
+                        }],
+                    }]},
+                    "deptMetrics": {
+                        "drivers": {
+                            "workAccess": {"2026-11": {"e_drv": ["m_sales_opt"]}},
+                            "extraAccess": {"e_drv": ["m_sales_opt"]},
+                        }
+                    },
+                    "_wt_records": filtered_records,
+                    "_wt_idempotency": {"client_key": {"at": "t", "result": {"ok": True}}},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertNotEqual(data.get("error"), "forbidden")
+        items = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(items["m_sales_opt"]["assignments"][0]["employee_ids"], ["e_drv"])
+        # Чужие meta-версии на сервере не стёрты клиентским подмножеством.
+        meta = self.store["payload"].get("_wt_records") or {}
+        self.assertEqual(int((meta.get("salary.2026-10") or {}).get("v") or 0), 7)
+        self.assertEqual(int((meta.get("financeRec.audit") or {}).get("v") or 0), 5)
+        # Подмена _wt_idempotency клиентом не принята.
+        idem = self.store["payload"].get("_wt_idempotency")
+        if isinstance(idem, dict):
+            self.assertNotIn("client_key", idem)
+
+    def test_staff_filtered_wt_records_cannot_forge_versions_or_touch_salary(self):
+        """Отфильтрованный _wt_records не открывает зарплату и не поднимает forged v."""
+        self._seed_metric_access()
+        self.store["payload"]["_wt_records"] = {
+            "shopMetrics.facts.ok": {"v": 1},
+            "salary.2026-10": {"v": 4},
+        }
+        cookie = self._add_shop_manager(
+            "usr_setup_norec",
+            {"metricsSetup": "edit", "metricsInput": "edit", "timesheet": "edit"},
+        )
+        before_salary = json.loads(json.dumps(self.store["payload"].get("salary")))
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_shop",
+                        "name": "Показатель магазина",
+                        "department_id": "shop",
+                        "assignments": [{
+                            "assignment_id": "a_shop",
+                            "department_id": "shop",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_shop"],
+                        }],
+                    }]},
+                    "salary": {"2026-10": {"e_shop": {"rate": 1, "issued": True}}},
+                    "_wt_records": {
+                        "shopMetrics.facts.ok": {"v": 99},
+                        "salary.2026-10": {"v": 99},
+                        "forged.path": {"v": 9},
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        # Зарплата без права — 403 (данные), не из-за _wt_records.
+        self.assertTrue(status.startswith("403"), status)
+        self.assertEqual(self.store["payload"].get("salary"), before_salary)
+        meta = self.store["payload"].get("_wt_records") or {}
+        self.assertEqual(int((meta.get("shopMetrics.facts.ok") or {}).get("v") or 0), 1)
+        self.assertNotIn("forged.path", meta)
+
+    def test_staff_cannot_change_foreign_dept_metrics_via_catalog_put(self):
+        """Сотрудник drivers не меняет назначения магазина через полный каталог в PUT."""
+        self._seed_metric_access()
+        self.add_user({
+            "user_id": "usr_drv_only",
+            "display_name": "Только drivers",
+            "pin": "4646",
+            "role": "user",
+            "is_active": True,
+            "departments": ["drivers"],
+            "permissions": {"metricsSetup": "edit"},
+        })
+        before_shop = json.loads(json.dumps(
+            next(
+                row for row in self.store["payload"]["shopMetricCatalog"]["items"]
+                if row.get("id") == "m_shop"
+            )
+        ))
+        cookie, _ = self.login("usr_drv_only", "4646")
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_shop",
+                        "name": "Взломанный магазин",
+                        "department_id": "shop",
+                        "assignments": [{
+                            "assignment_id": "a_shop",
+                            "department_id": "shop",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_hack"],
+                        }],
+                    }]},
+                    "_wt_records": {"deptMetrics.drivers.workAccess": {"v": 1}},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        after = next(
+            row for row in self.store["payload"]["shopMetricCatalog"]["items"]
+            if row.get("id") == "m_shop"
+        )
+        self.assertEqual(after.get("name"), before_shop.get("name"))
+        self.assertEqual(after.get("assignments"), before_shop.get("assignments"))
+
     def test_merge_metric_assignments_territory_updates_position_and_work_tab(self):
         """Территория: при том же assignment_id сохраняются position_id и work_tab_id."""
         current = [{
@@ -2736,7 +3022,7 @@ class StoreApiTests(unittest.TestCase):
             },
         )
         # Установка нескольких назначений + правка карточки.
-        status, *_ = call(
+        status, data, *_ = call(
             "PUT",
             "/api/state",
             {
@@ -2771,7 +3057,9 @@ class StoreApiTests(unittest.TestCase):
             cookie=cookie,
         )
         self.assertTrue(status.startswith("200"), status)
-        # Снятие одной галочки, остальные остаются.
+        records = dict(data.get("record_updates") or {})
+        records.update(self.store["payload"].get("_wt_records") or {})
+        # Снятие одной галочки, остальные остаются (с актуальными record_v).
         status, *_ = call(
             "PUT",
             "/api/state",
@@ -2791,6 +3079,7 @@ class StoreApiTests(unittest.TestCase):
                         "workAccess": {"2026-10": {"e_shop": ["m_shop"]}},
                         "extraAccess": {"e_shop": []},
                     },
+                    "_wt_records": records,
                 },
             },
             cookie=cookie,
@@ -7140,8 +7429,8 @@ class WtAccessUserOpsTests(unittest.TestCase):
         self.assertTrue(st_login.startswith("200"), st_login)
 
     def test_client_markers_narrow_persist_no_wide_saveapp(self):
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        html = (Path(root) / "app.html").read_text(encoding="utf-8")
+        # resolve() — через junction (C:\wt_ca_server) к реальному корню репо.
+        html = (Path(__file__).resolve().parent.parent / "app.html").read_text(encoding="utf-8")
         self.assertIn("function wtPersistAccessUser(", html)
         self.assertIn("function wtAccessUserPath(", html)
         save_fn = html.split("function saveAccessUser(", 1)[1].split("\nfunction ", 1)[0]
@@ -7149,10 +7438,14 @@ class WtAccessUserOpsTests(unittest.TestCase):
         self.assertIn("syncLegacyPinsFromUsers", save_fn)
         self.assertNotIn("saveApp()", save_fn)
         persist_fn = html.split("function wtPersistAccessUser(", 1)[1].split("\nfunction ", 1)[0]
-        self.assertIn("wtDomainWriterSave({ ops:", persist_fn)
+        self.assertIn("wtOpsProbeServerCapability(true)", persist_fn)
+        self.assertIn("forbidForcePut: true", persist_fn)
+        self.assertIn("wtDomainWriterSave({", persist_fn)
         self.assertIn("OPS выключен", persist_fn)
-        # При OPS выкл. на сервере — не широкий saveApp
-        self.assertIn("return Promise.resolve(false)", persist_fn)
+        # Серверная ветка (после локального saveApp): только OPS, без forcePut/saveApp.
+        server_persist = persist_fn.split("function writeAccessUserOps()", 1)[1]
+        self.assertNotIn("saveApp()", server_persist)
+        self.assertNotIn("forcePut: true", server_persist)
 
     def test_ops_disabled_blocks_user_op(self):
         cookie, _ = self.login()
@@ -8435,6 +8728,23 @@ class WtEmployeeCardOpsTests(unittest.TestCase):
         self.assertEqual(wa["e_shop"], ["metric_assembly", "metric_recount"])
         self.assertEqual(wa["e_other"], ["metric_assembly"])
         self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_0"], 0)
+        # Снятие всех метрик сотрудника (пустой список) через OPS.
+        v = int(body.get("record_v") or 0)
+        if not v:
+            v = int((self.store["payload"].get("_wt_records") or {}).get(path, {}).get("v") or 0)
+        st2, body2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "emp-wa-clear",
+                "op": {"path": path, "expected_v": v, "value": []},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), (st2, body2))
+        wa = self.store["payload"]["shopMetrics"]["workAccess"]["2026-11"]
+        self.assertEqual(wa["e_shop"], [])
+        self.assertEqual(wa["e_other"], ["metric_assembly"])
 
     def test_employee_card_batch_atomic_with_noise_facts(self):
         cookie, _ = self.login()
