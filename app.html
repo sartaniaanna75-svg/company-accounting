@@ -12612,6 +12612,7 @@ function wtDomainWriterScheduleDeferred() {
  *  - ops: [{path,value,expected_v?}] — явный список (без diff)
  *  - silent: true — без toast об «нечего сохранять»
  *  - silentFail: true — без toast при отказе OPS (фон once); ручные save не ставят
+ *  - forbidForcePut: true — при 503/404 OPS не уходить в широкий PUT (меню и т.п.)
  *  - _fromDeferred: внутренний повтор после softApplying / incidental OPS
  */
 function wtDomainWriterSave(options) {
@@ -12844,15 +12845,28 @@ function wtDomainWriterSave(options) {
                 return false;
             }
             if (res.status === 503) {
-                toast("Точечное сохранение на сервере отключено — сохраняем через полный снимок.", "error");
                 wtOpsServerCapable = false;
                 wtOpsUiEnabledCache = null;
+                // Меню и др. opsOnly: без широкого PUT (лимит 200 / чужой diff).
+                if (options.forbidForcePut) {
+                    if (!silentFail) {
+                        toast("Точечное сохранение на сервере отключено. Изменения не записаны.", "error");
+                    }
+                    return false;
+                }
+                toast("Точечное сохранение на сервере отключено — сохраняем через полный снимок.", "error");
                 return wtDomainWriterSave({ forcePut: true });
             }
             if (res.status === 404 || res.status === 405) {
-                toast("Сервер без OPS API — сохраняем через полный снимок. Синхронизация остаётся включённой.", "error");
                 wtOpsServerCapable = false;
                 wtOpsUiEnabledCache = null;
+                if (options.forbidForcePut) {
+                    if (!silentFail) {
+                        toast("Сервер без OPS API. Изменения не записаны.", "error");
+                    }
+                    return false;
+                }
+                toast("Сервер без OPS API — сохраняем через полный снимок. Синхронизация остаётся включённой.", "error");
                 // SoftSync НЕ останавливаем: dirty + PUT защищают черновики.
                 return wtDomainWriterSave({ forcePut: true });
             }
@@ -17978,8 +17992,54 @@ function onNavLayoutDropItem(ev, targetG, targetI) {
     renderNavLayoutEditor();
 }
 
+/**
+ * Узкое сохранение меню раздела: только navLayouts.<code>.
+ * Не вызывает полный collect (лимит 200 / чужие листья).
+ */
+function wtSaveNavLayoutOp(navCode, layout, options) {
+    options = options || {};
+    const key = String(navCode || "").trim();
+    if (!key || !layout || typeof layout !== "object") return Promise.resolve(false);
+    const path = "navLayouts." + key;
+    const value = typeof wtCloneJson === "function" ? wtCloneJson(layout) : JSON.parse(JSON.stringify(layout));
+    try {
+        if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path);
+    } catch (errMark) {}
+    // Локальный режим (без сервера): только localStorage, без DomainWriter-collect.
+    if (!wtServerMode) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+            return Promise.resolve(true);
+        } catch (errLocal) {
+            return Promise.resolve(false);
+        }
+    }
+    // Меню: без OPS не уходим в полный saveApp/PUT (иначе снова лимит 200).
+    if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
+        if (!options.silentFail) {
+            toast("Точечное сохранение меню недоступно. Настройки не записаны — обновите страницу или повторите позже.", "error");
+        }
+        return Promise.resolve(false);
+    }
+    const ops = [{
+        path: path,
+        value: value,
+        expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+    }];
+    return Promise.resolve(wtDomainWriterSave({
+        ops: ops,
+        atomic: true,
+        silentFail: !!options.silentFail,
+        forbidForcePut: true
+    })).then(function (ok) { return ok === true; }, function () { return false; });
+}
+
 function saveNavLayoutEditor() {
     if (!canConfigureNavLayout() || !navLayoutDraft) return;
+    if (saveNavLayoutEditor.busy) {
+        toast("Сохранение меню ещё выполняется. Подождите ответа сервера.", "error");
+        return;
+    }
     const key = currentNavCode();
     if (!key) return;
     ensureCustomNavButtons(navLayoutDraft.custom_items);
@@ -18039,7 +18099,7 @@ function saveNavLayoutEditor() {
             created_at: c.created_at || new Date().toISOString()
         };
     }).filter(function (c) { return !!c.item_id; });
-    ensureNavLayouts()[key] = {
+    const nextLayout = {
         saved: true,
         groups: navLayoutDraft.groups.map(function (g) {
             return { group_id: g.group_id, title: g.title, item_ids: g.item_ids.slice() };
@@ -18048,11 +18108,46 @@ function saveNavLayoutEditor() {
         item_hidden: hidden,
         custom_items: customItems
     };
-    navLayoutDraft = null;
-    saveApp();
-    if (typeof closeMgmtModal === "function") closeMgmtModal();
-    applyModeUI();
-    toast("Меню раздела сохранено.");
+    const layouts = ensureNavLayouts();
+    const prevLayout = layouts[key]
+        ? (typeof wtCloneJson === "function" ? wtCloneJson(layouts[key]) : JSON.parse(JSON.stringify(layouts[key])))
+        : null;
+    layouts[key] = nextLayout;
+    saveNavLayoutEditor.busy = true;
+    function restoreIfStillOurs() {
+        // Не затираем вариант, который DomainWriter уже принял с сервера при конфликте.
+        try {
+            const live = layouts[key];
+            const stillOurs = typeof wtJsonCanonEqual === "function"
+                ? wtJsonCanonEqual(live, nextLayout)
+                : (JSON.stringify(live) === JSON.stringify(nextLayout));
+            if (stillOurs) {
+                if (prevLayout) layouts[key] = prevLayout;
+                else delete layouts[key];
+            }
+        } catch (errRest) {
+            if (prevLayout) layouts[key] = prevLayout;
+            else delete layouts[key];
+        }
+        try { applyModeUI(); } catch (errUi) {}
+    }
+    Promise.resolve(wtSaveNavLayoutOp(key, nextLayout, { silentFail: true })).then(function (ok) {
+        saveNavLayoutEditor.busy = false;
+        if (ok === true) {
+            navLayoutDraft = null;
+            if (typeof closeMgmtModal === "function") closeMgmtModal();
+            try { applyModeUI(); } catch (errUiOk) {}
+            toast("Меню раздела сохранено.");
+            return;
+        }
+        // Отказ / конфликт без записи: черновик оставляем — можно повторить.
+        restoreIfStillOurs();
+        toast("Не удалось сохранить меню раздела. Изменения не записаны — повторите сохранение.", "error");
+    }, function () {
+        saveNavLayoutEditor.busy = false;
+        restoreIfStillOurs();
+        toast("Не удалось сохранить меню раздела. Изменения не записаны — повторите сохранение.", "error");
+    });
 }
 
 function navCustomPageTitle() {

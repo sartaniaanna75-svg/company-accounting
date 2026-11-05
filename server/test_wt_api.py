@@ -6255,6 +6255,88 @@ class WtOpsFoundationTests(unittest.TestCase):
         self.assertEqual(facts.get("cashier_b"), 20)
         self.assertEqual(facts.get("ok"), 1)
 
+    def test_nav_layout_op_saves_only_target_section(self):
+        """Узкий OPS navLayouts.<code>: пишет только выбранный раздел, чужой ключ не трогает."""
+        self.store["payload"]["navLayouts"] = {
+            "office": {
+                "saved": True,
+                "groups": [{"group_id": "ng1", "title": "Офис", "item_ids": ["a"]}],
+                "item_labels": {},
+                "item_hidden": {},
+                "custom_items": [],
+            }
+        }
+        cookie, _ = self.login()
+        layout = {
+            "saved": True,
+            "groups": [{"group_id": "ng2", "title": "Общая", "item_ids": ["salary", "fio"]}],
+            "item_labels": {"salary": "Зарплата"},
+            "item_hidden": {},
+            "custom_items": [],
+        }
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "nav-summary-1",
+                "op": {
+                    "path": "navLayouts.summary",
+                    "expected_v": 0,
+                    "value": layout,
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(data.get("record_v"), 1)
+        nav = self.store["payload"].get("navLayouts") or {}
+        self.assertEqual(nav.get("summary", {}).get("groups", [])[0].get("title"), "Общая")
+        self.assertEqual(nav.get("summary", {}).get("item_labels", {}).get("salary"), "Зарплата")
+        self.assertEqual(nav.get("office", {}).get("groups", [])[0].get("title"), "Офис")
+
+    def test_nav_layout_op_conflict_stale_expected_v(self):
+        """Устаревший expected_v не перезаписывает чужие изменения меню."""
+        cookie, _ = self.login()
+        first = {
+            "saved": True,
+            "groups": [{"group_id": "ng1", "title": "Первый", "item_ids": ["a"]}],
+            "item_labels": {},
+            "item_hidden": {},
+            "custom_items": [],
+        }
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "nav-c1",
+                "op": {"path": "navLayouts.summary", "expected_v": 0, "value": first},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), st1)
+        rec_v = int(d1.get("record_v") or 0)
+        self.assertGreaterEqual(rec_v, 1)
+        stale = {
+            "saved": True,
+            "groups": [{"group_id": "ng1", "title": "Устаревший", "item_ids": ["b"]}],
+            "item_labels": {},
+            "item_hidden": {},
+            "custom_items": [],
+        }
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "nav-c2",
+                "op": {"path": "navLayouts.summary", "expected_v": 0, "value": stale},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("409"), st2)
+        self.assertEqual(d2.get("error"), "conflict")
+        nav = (self.store["payload"].get("navLayouts") or {}).get("summary") or {}
+        self.assertEqual(nav.get("groups", [])[0].get("title"), "Первый")
+
     def test_op_real_conflict_same_path(self):
         cookie, _ = self.login()
         call(
