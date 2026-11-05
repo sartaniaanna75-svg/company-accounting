@@ -7707,8 +7707,14 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
         self.assertIn("function saveShopPayrollKpiDefs(", src)
         self.assertIn("function saveShopPayrollKpiAssignments(", src)
+        self.assertIn("function saveShopPayrollSalaries(", src)
+        self.assertIn("function saveShopPayrollReceivingShared(", src)
+        self.assertIn("function saveShopPayrollSharedBudgets(", src)
         self.assertIn('WT_SHOP_PAYROLL_KPI_DEFS_PATH = "shopPayroll.kpiDefs"', src)
         self.assertIn('WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH = "shopPayroll.assignments"', src)
+        self.assertIn('WT_SHOP_PAYROLL_SALARIES_PATH = "shopPayroll.salaries"', src)
+        self.assertIn('WT_SHOP_PAYROLL_RECEIVING_SHARED_PATH = "shopPayroll.receivingShared"', src)
+        self.assertIn('WT_SHOP_PAYROLL_SHARED_BUDGETS_PATH = "shopPayroll.sharedBudgets"', src)
         create = src[
             src.find("function createShopKpiDef(")
             : src.find("function toggleShopKpiAssignment(")
@@ -7745,10 +7751,28 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
         self.assertNotIn("saveApp()", seed_a)
         assign_save = src[
             src.find("function saveShopPayrollKpiAssignments(")
-            : src.find("function ensureShopPayroll(")
+            : src.find("function saveShopPayrollSalaries(")
         ]
         self.assertIn("forbidForcePut: true", assign_save)
         self.assertNotIn("saveApp()", assign_save)
+        salaries_save = src[
+            src.find("function saveShopPayrollSalaries(")
+            : src.find("function saveShopPayrollReceivingShared(")
+        ]
+        self.assertIn("forbidForcePut: true", salaries_save)
+        self.assertNotIn("saveApp()", salaries_save)
+        recv_save = src[
+            src.find("function saveShopPayrollReceivingShared(")
+            : src.find("function saveShopPayrollSharedBudgets(")
+        ]
+        self.assertIn("forbidForcePut: true", recv_save)
+        self.assertNotIn("saveApp()", recv_save)
+        budget_save = src[
+            src.find("function saveShopPayrollSharedBudgets(")
+            : src.find("function ensureShopPayroll(")
+        ]
+        self.assertIn("forbidForcePut: true", budget_save)
+        self.assertNotIn("saveApp()", budget_save)
         dw = src[
             src.find("function wtDomainWriterSave(")
             : src.find("function wtDomainWriterSave(") + 12000
@@ -7758,6 +7782,56 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
         self.assertIn("const hasExplicitOps = !!(options.ops && options.ops.length)", dw)
         self.assertIn("const explicitOps = options.ops || null", dw)
         self.assertEqual(dw.count("const explicitOps"), 1)
+
+    def test_client_day_rate_save_uses_narrow_ops(self):
+        """Стоимость дня: узкий OPS salaries, без saveApp / forcePut, с откатом."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        day = src[
+            src.find("function setShopEmployeeDayRate(")
+            : src.find("function shopRuleForCard(")
+        ]
+        self.assertIn("saveShopPayrollSalaries(", day)
+        self.assertIn("prevSalaries", day)
+        self.assertIn("ok === true", day)
+        self.assertNotIn("saveApp()", day)
+        saver = src[
+            src.find("function saveShopPayrollSalaries(")
+            : src.find("function saveShopPayrollReceivingShared(")
+        ]
+        self.assertIn('WT_SHOP_PAYROLL_SALARIES_PATH', saver)
+        self.assertIn("forbidForcePut: true", saver)
+        self.assertNotIn("saveApp()", saver)
+
+    def test_client_receiving_shared_save_uses_narrow_ops(self):
+        """Приёмка: узкий OPS receivingShared/sharedBudgets, без saveApp, с откатом."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        shared = src[
+            src.find("function setShopReceivingShared(value)")
+            : src.find("function setShopReceivingSharedBudget(raw)")
+        ]
+        self.assertIn("saveShopPayrollReceivingShared(", shared)
+        self.assertIn("ok === true", shared)
+        self.assertNotIn("saveApp()", shared)
+        budget = src[
+            src.find("function setShopReceivingSharedBudget(raw)")
+            : src.find("function shopTimesheetDayRecord(")
+        ]
+        self.assertIn("saveShopPayrollSharedBudgets(", budget)
+        self.assertIn("prevBudgets", budget)
+        self.assertIn("ok === true", budget)
+        self.assertNotIn("saveApp()", budget)
+        saver_shared = src[
+            src.find("function saveShopPayrollReceivingShared(")
+            : src.find("function saveShopPayrollSharedBudgets(")
+        ]
+        self.assertIn("forbidForcePut: true", saver_shared)
+        self.assertNotIn("saveApp()", saver_shared)
+        saver_budget = src[
+            src.find("function saveShopPayrollSharedBudgets(")
+            : src.find("function ensureShopPayroll(")
+        ]
+        self.assertIn("forbidForcePut: true", saver_budget)
+        self.assertNotIn("saveApp()", saver_budget)
 
     def test_kpi_assign_toggle_ignores_unrelated_dirty_collect(self):
         """Одна галочка KPI: узкий OPS assignments, чужой collect 496 не уходит в batch."""
@@ -7804,6 +7878,116 @@ class WtShopPayrollKpiOpsTests(unittest.TestCase):
         self.assertIn("saveShopPayrollKpiAssignments(", toggle)
         self.assertNotIn("saveApp()", toggle)
         self.assertIn("prevAssignments", toggle)
+
+    def test_day_rate_ops_ignores_unrelated_dirty_collect(self):
+        """Стоимость дня: узкий OPS salaries, чужой collect 458 не уходит в batch."""
+        cookie, _ = self.login()
+        self.assertGreaterEqual(len(self.store["payload"]["shopMetrics"]["facts"]), 200)
+        before_asg = list(self.store["payload"]["shopPayroll"].get("assignments") or [])
+        before_defs = list(self.store["payload"]["shopPayroll"].get("kpiDefs") or [])
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [{
+                    "path": "shopPayroll.salaries",
+                    "expected_v": 0,
+                    "value": [{
+                        "id": "sr_day",
+                        "employeeId": "e_shop",
+                        "dayRate": 2800,
+                        "amount": 2800,
+                        "validFrom": "2026-11",
+                        "validTo": None,
+                    }],
+                }],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        results = data.get("results") or []
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].get("status"), "saved")
+        saved = self.store["payload"]["shopPayroll"]["salaries"]
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].get("dayRate"), 2800)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_000"], 0)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_249"], 249)
+        self.assertEqual(self.store["payload"]["shopPayroll"].get("assignments"), before_asg)
+        self.assertEqual(self.store["payload"]["shopPayroll"].get("kpiDefs"), before_defs)
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        day = src[
+            src.find("function setShopEmployeeDayRate(")
+            : src.find("function shopRuleForCard(")
+        ]
+        self.assertIn("saveShopPayrollSalaries(", day)
+        self.assertNotIn("saveApp()", day)
+        self.assertIn("prevSalaries", day)
+
+    def test_receiving_shared_ops_ignores_unrelated_dirty_collect(self):
+        """Приёмка: узкий OPS receivingShared/sharedBudgets, чужой collect 458 не уходит в batch."""
+        cookie, _ = self.login()
+        self.assertGreaterEqual(len(self.store["payload"]["shopMetrics"]["facts"]), 200)
+        before_asg = list(self.store["payload"]["shopPayroll"].get("assignments") or [])
+        before_defs = list(self.store["payload"]["shopPayroll"].get("kpiDefs") or [])
+        before_salaries = list(self.store["payload"]["shopPayroll"].get("salaries") or [])
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [{
+                    "path": "shopPayroll.receivingShared",
+                    "expected_v": 0,
+                    "value": True,
+                }],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        results = data.get("results") or []
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].get("status"), "saved")
+        self.assertTrue(self.store["payload"]["shopPayroll"].get("receivingShared"))
+        st2, data2, *_ = call(
+            "POST",
+            "/api/state/op/batch",
+            {
+                "atomic": True,
+                "ops": [{
+                    "path": "shopPayroll.sharedBudgets",
+                    "expected_v": self._record_v("shopPayroll.sharedBudgets"),
+                    "value": {"2026-11": {"metric_receiving": 4500}},
+                }],
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        results2 = data2.get("results") or []
+        self.assertEqual(len(results2), 1)
+        self.assertEqual(results2[0].get("status"), "saved")
+        budgets = self.store["payload"]["shopPayroll"].get("sharedBudgets") or {}
+        self.assertEqual((budgets.get("2026-11") or {}).get("metric_receiving"), 4500)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_000"], 0)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["noise_249"], 249)
+        self.assertEqual(self.store["payload"]["shopPayroll"].get("assignments"), before_asg)
+        self.assertEqual(self.store["payload"]["shopPayroll"].get("kpiDefs"), before_defs)
+        self.assertEqual(self.store["payload"]["shopPayroll"].get("salaries"), before_salaries)
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        shared = src[
+            src.find("function setShopReceivingShared(value)")
+            : src.find("function setShopReceivingSharedBudget(raw)")
+        ]
+        self.assertIn("saveShopPayrollReceivingShared(", shared)
+        self.assertNotIn("saveApp()", shared)
+        budget = src[
+            src.find("function setShopReceivingSharedBudget(raw)")
+            : src.find("function shopTimesheetDayRecord(")
+        ]
+        self.assertIn("saveShopPayrollSharedBudgets(", budget)
+        self.assertNotIn("saveApp()", budget)
+        self.assertIn("prevBudgets", budget)
 
     def test_admin_creates_two_kpi_defs_via_ops(self):
         cookie, _ = self.login()

@@ -28333,9 +28333,12 @@ function renderRepSalary() {
 ============================================================ */
 let shopKpiMigrating = false;
 
-/** Узкие пути OPS для денежных KPI (только администратор на сервере). */
+/** Узкие пути OPS для денежных KPI / ставок дня / приёмки (только администратор на сервере). */
 const WT_SHOP_PAYROLL_KPI_DEFS_PATH = "shopPayroll.kpiDefs";
 const WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH = "shopPayroll.assignments";
+const WT_SHOP_PAYROLL_SALARIES_PATH = "shopPayroll.salaries";
+const WT_SHOP_PAYROLL_RECEIVING_SHARED_PATH = "shopPayroll.receivingShared";
+const WT_SHOP_PAYROLL_SHARED_BUDGETS_PATH = "shopPayroll.sharedBudgets";
 
 /**
  * Сохранить только kpiDefs — без полного DomainWriter-diff приложения.
@@ -28395,6 +28398,102 @@ function saveShopPayrollKpiAssignments(options) {
             path: WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH,
             value: Array.isArray(p.assignments) ? p.assignments : [],
             expected_v: wtRecordVersion(WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH)
+        }],
+        forbidForcePut: true,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return ok === true; }, function () { return false; });
+}
+
+/**
+ * Сохранить только ставки дня (shopPayroll.salaries).
+ * Без OPS — отказ; полный saveApp/forcePut не используется — иначе collect >200 при чужом dirty.
+ */
+function saveShopPayrollSalaries(options) {
+    options = options || {};
+    if (!wtServerMode) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+            return Promise.resolve(true);
+        } catch (errLocal) {
+            return Promise.resolve(false);
+        }
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        if (!options.silentFail) {
+            toast("Точечное сохранение стоимости дня недоступно. Изменения не записаны — обновите страницу или повторите позже.", "error");
+        }
+        return Promise.resolve(false);
+    }
+    const p = ensureShopPayroll();
+    return Promise.resolve(wtDomainWriterSave({
+        ops: [{
+            path: WT_SHOP_PAYROLL_SALARIES_PATH,
+            value: Array.isArray(p.salaries) ? p.salaries : [],
+            expected_v: wtRecordVersion(WT_SHOP_PAYROLL_SALARIES_PATH)
+        }],
+        forbidForcePut: true,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return ok === true; }, function () { return false; });
+}
+
+/**
+ * Сохранить только флаг общей приёмки (shopPayroll.receivingShared).
+ * Без OPS — отказ; полный saveApp/forcePut не используется.
+ */
+function saveShopPayrollReceivingShared(options) {
+    options = options || {};
+    if (!wtServerMode) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+            return Promise.resolve(true);
+        } catch (errLocal) {
+            return Promise.resolve(false);
+        }
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        if (!options.silentFail) {
+            toast("Точечное сохранение настроек приёмки недоступно. Изменения не записаны — обновите страницу или повторите позже.", "error");
+        }
+        return Promise.resolve(false);
+    }
+    const p = ensureShopPayroll();
+    return Promise.resolve(wtDomainWriterSave({
+        ops: [{
+            path: WT_SHOP_PAYROLL_RECEIVING_SHARED_PATH,
+            value: !!p.receivingShared,
+            expected_v: wtRecordVersion(WT_SHOP_PAYROLL_RECEIVING_SHARED_PATH)
+        }],
+        forbidForcePut: true,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return ok === true; }, function () { return false; });
+}
+
+/**
+ * Сохранить только sharedBudgets приёмки/метрик.
+ * Без OPS — отказ; полный saveApp/forcePut не используется.
+ */
+function saveShopPayrollSharedBudgets(options) {
+    options = options || {};
+    if (!wtServerMode) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+            return Promise.resolve(true);
+        } catch (errLocal) {
+            return Promise.resolve(false);
+        }
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        if (!options.silentFail) {
+            toast("Точечное сохранение бюджета приёмки недоступно. Изменения не записаны — обновите страницу или повторите позже.", "error");
+        }
+        return Promise.resolve(false);
+    }
+    const p = ensureShopPayroll();
+    return Promise.resolve(wtDomainWriterSave({
+        ops: [{
+            path: WT_SHOP_PAYROLL_SHARED_BUDGETS_PATH,
+            value: (p.sharedBudgets && typeof p.sharedBudgets === "object") ? p.sharedBudgets : {},
+            expected_v: wtRecordVersion(WT_SHOP_PAYROLL_SHARED_BUDGETS_PATH)
         }],
         forbidForcePut: true,
         silentFail: !!options.silentFail
@@ -29590,18 +29689,66 @@ function shopSharedBudget(metricId, month) {
 
 function setShopReceivingShared(value) {
     if (!canEditShopPayrollRules()) return;
-    ensureShopPayroll().receivingShared = value === "yes" || value === true;
-    saveApp();
-    renderShopSalary();
+    if (setShopReceivingShared.busy) {
+        toast("Сохранение настроек приёмки ещё выполняется. Подождите ответа сервера.", "error");
+        return;
+    }
+    const payroll = ensureShopPayroll();
+    const prev = !!payroll.receivingShared;
+    const next = value === "yes" || value === true;
+    if (prev === next) return;
+    payroll.receivingShared = next;
+    setShopReceivingShared.busy = true;
+    Promise.resolve(saveShopPayrollReceivingShared({ silentFail: true })).then(function (ok) {
+        setShopReceivingShared.busy = false;
+        if (ok === true) {
+            renderShopSalary();
+            return;
+        }
+        payroll.receivingShared = prev;
+        renderShopSalary();
+        toast("Не удалось сохранить режим приёмки. Изменения не записаны — повторите сохранение.", "error");
+    }, function () {
+        setShopReceivingShared.busy = false;
+        payroll.receivingShared = prev;
+        renderShopSalary();
+        toast("Не удалось сохранить режим приёмки. Изменения не записаны — повторите сохранение.", "error");
+    });
 }
 
 function setShopReceivingSharedBudget(raw) {
     if (!canEditShopPayrollRules()) return;
+    if (setShopReceivingSharedBudget.busy) {
+        toast("Сохранение бюджета приёмки ещё выполняется. Подождите ответа сервера.", "error");
+        return;
+    }
     const p = ensureShopPayroll();
+    const prevBudgets = typeof wtCloneJson === "function"
+        ? wtCloneJson(p.sharedBudgets || {})
+        : JSON.parse(JSON.stringify(p.sharedBudgets || {}));
     if (!p.sharedBudgets[selectedMonth]) p.sharedBudgets[selectedMonth] = {};
     p.sharedBudgets[selectedMonth].metric_receiving = parseMoney(raw, 0);
-    saveApp();
-    renderShopSalary();
+    setShopReceivingSharedBudget.busy = true;
+    function restoreBudgets() {
+        try {
+            p.sharedBudgets = prevBudgets;
+        } catch (errRest) {}
+    }
+    Promise.resolve(saveShopPayrollSharedBudgets({ silentFail: true })).then(function (ok) {
+        setShopReceivingSharedBudget.busy = false;
+        if (ok === true) {
+            renderShopSalary();
+            return;
+        }
+        restoreBudgets();
+        renderShopSalary();
+        toast("Не удалось сохранить бюджет приёмки. Изменения не записаны — повторите сохранение.", "error");
+    }, function () {
+        setShopReceivingSharedBudget.busy = false;
+        restoreBudgets();
+        renderShopSalary();
+        toast("Не удалось сохранить бюджет приёмки. Изменения не записаны — повторите сохранение.", "error");
+    });
 }
 
 function shopTimesheetDayRecord(employeeId, day, month) {
@@ -30745,9 +30892,16 @@ function stampBonusRule(rule) {
 
 function setShopEmployeeDayRate(employeeId, raw) {
     if (!canEditShopPayrollRules()) return;
+    if (setShopEmployeeDayRate.busy) {
+        toast("Сохранение стоимости дня ещё выполняется. Подождите ответа сервера.", "error");
+        return;
+    }
     const dayRate = parseMoney(raw, 0);
     const payroll = ensureShopPayroll();
     const month = selectedMonth;
+    const prevSalaries = typeof wtCloneJson === "function"
+        ? wtCloneJson(payroll.salaries || [])
+        : JSON.parse(JSON.stringify(payroll.salaries || []));
     const current = shopPickPeriodRecord(payroll.salaries, employeeId, month);
     if (current && shopPeriodMonthKey(current.validFrom || current.valid_from) !== shopPeriodMonthKey(month)) {
         current.validTo = shiftMonth(month, -1);
@@ -30773,9 +30927,30 @@ function setShopEmployeeDayRate(employeeId, raw) {
         rec.amount = dayRate;
         stampSalaryRate(rec);
     }
-    saveApp();
-    renderPayrollView(payrollViewFromSection());
-    if (isSummary()) renderSalary();
+    setShopEmployeeDayRate.busy = true;
+    function restoreSalaries() {
+        try {
+            payroll.salaries = prevSalaries;
+        } catch (errRest) {}
+    }
+    Promise.resolve(saveShopPayrollSalaries({ silentFail: true })).then(function (ok) {
+        setShopEmployeeDayRate.busy = false;
+        if (ok === true) {
+            renderPayrollView(payrollViewFromSection());
+            if (isSummary()) renderSalary();
+            return;
+        }
+        restoreSalaries();
+        renderPayrollView(payrollViewFromSection());
+        if (isSummary()) renderSalary();
+        toast("Не удалось сохранить стоимость дня. Изменения не записаны — повторите сохранение.", "error");
+    }, function () {
+        setShopEmployeeDayRate.busy = false;
+        restoreSalaries();
+        renderPayrollView(payrollViewFromSection());
+        if (isSummary()) renderSalary();
+        toast("Не удалось сохранить стоимость дня. Изменения не записаны — повторите сохранение.", "error");
+    });
 }
 
 function shopRuleForCard(employeeId, metricId) {
