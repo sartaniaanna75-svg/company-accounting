@@ -9367,6 +9367,35 @@ function currentNavCode() {
     return (workspace() && workspace().code) || "";
 }
 
+/**
+ * Единый серверный ключ меню раздела: admin и сотрудник одного раздела
+ * читают/пишут один и тот же navLayouts.<key>.
+ * admin ≠ summary: у входа «Администратор» другой набор пунктов.
+ * Чистая функция — для тестов без DOM.
+ */
+function resolveNavLayoutStorageKey(ctx) {
+    ctx = ctx || {};
+    if (ctx.territoryMetrics) return "territoryMetrics";
+    if (ctx.org) return "org";
+    if (ctx.spu) return "spu";
+    if (ctx.financeRec) return "financeRec";
+    if (ctx.adminEntry) return "admin";
+    if (ctx.summary) return "summary";
+    return String(ctx.workspaceCode || "").trim();
+}
+
+function navLayoutStorageKey() {
+    return resolveNavLayoutStorageKey({
+        territoryMetrics: typeof isTerritoryMetricsMode === "function" && isTerritoryMetricsMode(),
+        org: typeof isOrgMode === "function" && isOrgMode(),
+        spu: typeof isSpuMode === "function" && isSpuMode(),
+        financeRec: typeof isFinanceRecMode === "function" && isFinanceRecMode(),
+        adminEntry: typeof isAdminEntry === "function" && isAdminEntry(),
+        summary: typeof isSummary === "function" && isSummary(),
+        workspaceCode: (typeof workspace === "function" && workspace() && workspace().code) || ""
+    });
+}
+
 function entryLabel(code) {
     if (code === "summary") return "Общее";
     if (code === "org") return "Оргструктура";
@@ -9378,6 +9407,20 @@ function entryLabel(code) {
     if (d) return d.name;
     const w = findWorkspaceByCode(code);
     return officialName(w) || code || "";
+}
+
+/** Подпись редактора: для какого раздела сохраняется меню. */
+function navLayoutEditorScopeNote(key) {
+    const k = String(key || "").trim();
+    const title = entryLabel(k) || k || "—";
+    let note = "Раздел: " + title + ". Серверный ключ: navLayouts." + (k || "?")
+        + ". Один порядок для всех пользователей этого раздела. Права доступа не меняются.";
+    if (k === "admin") {
+        note += " Это меню входа «Администратор», не «Общее». Для Общего откройте раздел «Общее» и настройте там.";
+    } else if (k === "summary") {
+        note += " Меню раздела «Общее» для всех, кто в него входит.";
+    }
+    return note;
 }
 
 function findActiveUserByPin(entered) {
@@ -17371,7 +17414,7 @@ function ensureNavLayouts() {
 
 function ensureNavLayoutMeta(navCode) {
     const layouts = ensureNavLayouts();
-    const key = String(navCode || currentNavCode() || "");
+    const key = String(navCode || navLayoutStorageKey() || "");
     if (!key) return { saved: false, groups: [], item_labels: {}, item_hidden: {}, custom_items: [] };
     if (!layouts[key] || typeof layouts[key] !== "object") {
         layouts[key] = { saved: false, groups: [], item_labels: {}, item_hidden: {}, custom_items: [] };
@@ -17470,7 +17513,7 @@ function visibleNavItemIds() {
 }
 
 function navItemLabel(id) {
-    const code = currentNavCode();
+    const code = navLayoutStorageKey();
     const meta = ensureNavLayoutMeta(code);
     if (meta.item_labels && meta.item_labels[id]) {
         return String(meta.item_labels[id]).replace(/\s+/g, " ").trim();
@@ -17534,7 +17577,7 @@ function ensureCustomNavButtons(overrideItemsForCurrent) {
     const host = document.getElementById("navCustomArea");
     if (!host) return;
     const layouts = ensureNavLayouts();
-    const currentCode = currentNavCode();
+    const currentCode = navLayoutStorageKey();
     const activeMap = {};
     Object.keys(layouts).forEach(function (navCode) {
         const meta = ensureNavLayoutMeta(navCode);
@@ -17600,7 +17643,7 @@ function ensureCustomNavButtons(overrideItemsForCurrent) {
 }
 
 function applyNavItemLabels() {
-    const code = currentNavCode();
+    const code = navLayoutStorageKey();
     const meta = ensureNavLayoutMeta(code);
     const labels = meta.item_labels || {};
     Object.keys(labels).forEach(function (id) {
@@ -17614,7 +17657,7 @@ function applyNavItemLabels() {
 }
 
 function applyNavItemHidden() {
-    const code = currentNavCode();
+    const code = navLayoutStorageKey();
     const meta = ensureNavLayoutMeta(code);
     const hidden = meta.item_hidden || {};
     Object.keys(hidden).forEach(function (id) {
@@ -17671,7 +17714,7 @@ function applyNavLayout() {
     const host = document.getElementById("navCustomArea");
     if (!host || !navSourceNodes) return;
     host.querySelectorAll(".nav-layout-group").forEach(function (el) { el.remove(); });
-    const key = currentNavCode();
+    const key = navLayoutStorageKey();
     const stored = ensureNavLayoutMeta(key);
     if (!stored || !stored.saved) {
         navSourceNodes.forEach(function (n) {
@@ -17721,7 +17764,7 @@ function openNavLayoutEditor() {
     }
     ensureCustomNavButtons();
     snapshotNavSourceNodes();
-    const key = currentNavCode();
+    const key = navLayoutStorageKey();
     const stored = ensureNavLayoutMeta(key);
     navLayoutDraft = mergeVisibleIntoNavLayout(stored && stored.saved ? stored : {
         saved: false,
@@ -17769,10 +17812,9 @@ function openNavLayoutEditor() {
 
 function renderNavLayoutEditor() {
     if (!navLayoutDraft) return;
-    const key = currentNavCode();
+    const key = navLayoutStorageKey();
     let html = "<h3>Настройка меню</h3>"
-        + '<div class="note">' + escapeHtml(entryLabel(key) || key)
-        + ". Порядок, названия и видимость. Стабильные ID пунктов не меняются. Права доступа не меняются.</div>"
+        + '<div class="note">' + escapeHtml(navLayoutEditorScopeNote(key)) + "</div>"
         + '<div class="nav-ed-tools">'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="addNavLayoutGroup()">+ Группа</button>'
         + "</div><div class=\"nav-ed-list\">";
@@ -17897,7 +17939,7 @@ function addNavLayoutCustomItem() {
         toast("Введите название пункта.", "error");
         return;
     }
-    const key = currentNavCode();
+    const key = navLayoutStorageKey();
     const item_id = nextNavCustomItemId();
     if (!navLayoutDraft.custom_items) navLayoutDraft.custom_items = [];
     navLayoutDraft.custom_items.push({
@@ -18040,7 +18082,7 @@ function saveNavLayoutEditor() {
         toast("Сохранение меню ещё выполняется. Подождите ответа сервера.", "error");
         return;
     }
-    const key = currentNavCode();
+    const key = navLayoutStorageKey();
     if (!key) return;
     ensureCustomNavButtons(navLayoutDraft.custom_items);
     invalidateNavSourceSnapshot();
