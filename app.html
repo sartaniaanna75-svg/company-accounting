@@ -12000,6 +12000,111 @@ function wtSaveOutcomeOk(ok) {
     return ok === true;
 }
 
+/**
+ * Дождаться saveApp/DomainWriter и показать исход.
+ * Локальный UI уже обновлён; при отказе черновик на экране остаётся (без авто-retry).
+ */
+function wtAwaitSaveAppFeedback(options) {
+    options = options || {};
+    function paint() {
+        if (typeof options.paint === "function") {
+            try { options.paint(); } catch (errPaint) {}
+        }
+    }
+    function failToast(ok) {
+        if (ok === "timeout") {
+            toast(options.timeoutToast
+                || "Ответ сервера не получен. Данные на экране — не обновляйте страницу, проверьте сохранение.",
+                "error");
+            return;
+        }
+        if (ok === "conflict_review") {
+            toast(options.conflictToast
+                || "Конфликт версий: данные на экране обновлены. На сервер ещё не записано — повторите сохранение.",
+                "error");
+            return;
+        }
+        toast(options.errorToast
+            || "Изменения не записаны на сервер. Данные остались на экране — повторите сохранение.",
+            "error");
+    }
+    return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(function (ok) {
+        paint();
+        if (wtSaveOutcomeOk(ok)) {
+            if (options.okToast) toast(options.okToast);
+            return true;
+        }
+        failToast(ok);
+        return false;
+    }, function () {
+        paint();
+        failToast(false);
+        return false;
+    });
+}
+
+/**
+ * Узкая запись листьев shopMetrics / shopWriteoffLosses через DomainWriter.
+ * При OPS выкл. / локально — wtAwaitSaveAppFeedback (тот же строгий исход).
+ */
+function wtPersistExplicitOps(ops, options) {
+    options = options || {};
+    const list = (Array.isArray(ops) ? ops : []).filter(function (op) {
+        return op && op.path;
+    });
+    if (!list.length) return Promise.resolve(true);
+    try {
+        list.forEach(function (op) {
+            if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(op.path);
+        });
+    } catch (errMark) {}
+    function after(ok) {
+        if (typeof options.paint === "function") {
+            try { options.paint(); } catch (errP) {}
+        }
+        if (wtSaveOutcomeOk(ok)) {
+            try {
+                list.forEach(function (op) {
+                    if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(op.path);
+                });
+            } catch (errClr) {}
+            if (options.okToast) toast(options.okToast);
+            return true;
+        }
+        if (ok === "timeout") {
+            toast(options.timeoutToast
+                || "Ответ сервера не получен. Данные на экране — не обновляйте страницу, проверьте сохранение.",
+                "error");
+            return false;
+        }
+        if (ok === "conflict_review") {
+            toast(options.conflictToast
+                || "Конфликт версий: данные на экране обновлены. На сервер ещё не записано — повторите сохранение.",
+                "error");
+            return false;
+        }
+        toast(options.errorToast
+            || "Изменения не записаны на сервер. Данные остались на экране — повторите сохранение.",
+            "error");
+        return false;
+    }
+    if (!wtServerMode || !(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        return wtAwaitSaveAppFeedback(options);
+    }
+    return Promise.resolve(wtDomainWriterSave({
+        ops: list.map(function (op) {
+            return {
+                path: op.path,
+                value: op.value,
+                expected_v: op.expected_v != null
+                    ? op.expected_v
+                    : (typeof wtRecordVersion === "function" ? wtRecordVersion(op.path) : 0)
+            };
+        }),
+        atomic: options.atomic != null ? !!options.atomic : (list.length > 1)
+    })).then(after, function () { return after(false); });
+}
+
 function putServerStateOnce(options) {
     options = options || {};
     if (!wtServerMode || !appData) return Promise.resolve(false);
@@ -15516,7 +15621,9 @@ function updateEmployeeFullName(employeeId, value, deptCode) {
     wtFioSaveTimer = setTimeout(function () {
         wtFioSaveTimer = null;
         wtFioSavePending = null;
-        saveApp();
+        wtAwaitSaveAppFeedback({
+            errorToast: "ФИО не записано на сервер. Значение на экране — не обновляйте страницу, повторите сохранение."
+        });
     }, 450);
 }
 
@@ -16024,7 +16131,9 @@ function updateEmployeeNamePart(employeeId, part, value) {
     if (isBlankName(employee.name) && part === "last_name") {
         toast("Введите ФИО сотрудника.", "error");
     }
-    saveApp();
+    wtAwaitSaveAppFeedback({
+        errorToast: "ФИО не записано на сервер. Значение на экране — не обновляйте страницу, повторите сохранение."
+    });
 }
 
 function isPlaceholderEmployeeName(name) {
@@ -20727,7 +20836,9 @@ function saveDriverMetricEntry(entry, month) {
     if (idx >= 0) list[idx] = entry;
     else list.push(entry);
     rebuildDriverDayFactsFromEntries(entry.employee_id, entry.day, m);
-    saveApp();
+    wtAwaitSaveAppFeedback({
+        errorToast: "Запись водителя не записана на сервер. Данные на экране — не обновляйте страницу, повторите сохранение."
+    });
     return entry;
 }
 
@@ -20741,7 +20852,9 @@ function deleteDriverMetricEntry(entryId, month) {
     const next = list.filter(function (e) { return !e || e.entry_id !== entryId; });
     ensureDeptMetrics("drivers").entries[m] = next;
     rebuildDriverDayFactsFromEntries(emp, day, m);
-    saveApp();
+    wtAwaitSaveAppFeedback({
+        errorToast: "Удаление записи водителя не записано на сервер. Список на экране — повторите действие."
+    });
 }
 
 let driverStmtFilter = { day: "", employeeId: "" };
@@ -22625,9 +22738,29 @@ function setShopRecountResponsible(day, employeeId) {
         invRec.conducted_by_employee_id = id;
         shopInventoryPersistDay(day, invRec);
     }
-    saveApp();
-    refreshShopRecountTotalsUi();
-    refreshShopInventoryUi(day);
+    const month = selectedMonth;
+    const ops = [{
+        path: "shopMetrics.recountResponsible." + month + "." + dayKey,
+        value: store[dayKey]
+            ? (typeof wtCloneJson === "function" ? wtCloneJson(store[dayKey]) : store[dayKey])
+            : null
+    }];
+    if (invRec && typeof invRec === "object") {
+        const liveInv = shopInventoryMonth(month)[dayKey];
+        ops.push({
+            path: "shopMetrics.inventoryResults." + month + "." + dayKey,
+            value: liveInv
+                ? (typeof wtCloneJson === "function" ? wtCloneJson(liveInv) : liveInv)
+                : null
+        });
+    }
+    wtPersistExplicitOps(ops, {
+        paint: function () {
+            refreshShopRecountTotalsUi();
+            refreshShopInventoryUi(day);
+        },
+        errorToast: "Ответственный за пересчёт не записан на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function shopRecountSelectHtml(day) {
@@ -22851,8 +22984,16 @@ function setShopInventoryValue(day, field, raw) {
     }
     rec.source = "manual";
     shopInventoryPersistDay(day, rec);
-    saveApp();
-    refreshShopInventoryUi(day);
+    const month = selectedMonth;
+    const dayKey = String(day);
+    const live = shopInventoryMonth(month)[dayKey];
+    wtPersistExplicitOps([{
+        path: "shopMetrics.inventoryResults." + month + "." + dayKey,
+        value: live ? (typeof wtCloneJson === "function" ? wtCloneJson(live) : live) : null
+    }], {
+        paint: function () { refreshShopInventoryUi(day); },
+        errorToast: "Инвентаризация не записана на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function setShopInventoryConducted(day, employeeId) {
@@ -22861,8 +23002,16 @@ function setShopInventoryConducted(day, employeeId) {
     const rec = shopInventoryEnsureDay(day);
     rec.conducted_by_employee_id = String(employeeId || "");
     shopInventoryPersistDay(day, rec);
-    saveApp();
-    refreshShopInventoryUi(day);
+    const month = selectedMonth;
+    const dayKey = String(day);
+    const live = shopInventoryMonth(month)[dayKey];
+    wtPersistExplicitOps([{
+        path: "shopMetrics.inventoryResults." + month + "." + dayKey,
+        value: live ? (typeof wtCloneJson === "function" ? wtCloneJson(live) : live) : null
+    }], {
+        paint: function () { refreshShopInventoryUi(day); },
+        errorToast: "Проводящий инвентаризацию не записан на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function shopInventoryMonthTotals(month) {
@@ -23340,7 +23489,17 @@ function setShopWriteoffLossesFact(raw) {
     rec.amount = parseMoney(raw, 0);
     rec.source = "manual";
     rec.updated_at = new Date().toISOString();
-    saveApp();
+    const month = selectedMonth;
+    wtPersistExplicitOps([{
+        path: "shopWriteoffLosses.months." + month,
+        value: typeof wtCloneJson === "function" ? wtCloneJson(rec) : rec
+    }], {
+        paint: function () {
+            try { renderShopWriteoffLossesPanel(); } catch (errW) {}
+            try { refreshShopRecountTotalsUi(); } catch (errR) {}
+        },
+        errorToast: "Факт списания не записан на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function shopWriteoffLossesCellHtml() {
@@ -23854,13 +24013,14 @@ function setShopMetricValue(categoryId, employeeId, day, field, raw) {
                 ]
             });
         }).then(function (ok) {
-            if (ok) {
+            if (wtSaveOutcomeOk(ok)) {
                 try { wtSoftClearDirty(path); wtSoftClearDirty(mirrorPath); } catch (err) {}
-            }
-            try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
-            if (!ok) {
+            } else if (ok === "timeout") {
+                toast("Ответ сервера не получен. Значение метрики на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            } else {
                 toast("Метрика не записана на сервер. Значение осталось черновиком на экране — не обновляйте страницу.", "error");
             }
+            try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
         }, function () {
             toast("Метрика не записана на сервер. Значение осталось черновиком на экране — не обновляйте страницу.", "error");
         });
@@ -25266,9 +25426,16 @@ function setShopMetricCheck(categoryId, employeeId, day, field, mark) {
         wtDomainWriterSave({
             ops: [{ path: markPath, value: markVal, expected_v: wtRecordVersion(markPath) }]
         }).then(function (ok) {
-            if (ok) {
+            if (wtSaveOutcomeOk(ok)) {
                 try { wtSoftClearDirty(markPath); } catch (err) {}
+            } else if (ok === "timeout") {
+                toast("Ответ сервера не получен. Отметка на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            } else {
+                toast("Отметка не записана на сервер. Данные на экране — повторите сохранение.", "error");
             }
+            try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
+        }, function () {
+            toast("Отметка не записана на сервер. Данные на экране — повторите сохранение.", "error");
             try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
         });
         return;
@@ -25371,15 +25538,36 @@ function setShopShelfValue(employeeId, day, checked) {
         store[employeeId][dayKey].metric_id = METRIC_SHELF_LABELS_ID;
         store[employeeId][dayKey].employee_id = employeeId;
     } else {
-        delete store[employeeId][dayKey][METRIC_SHELF_LABELS_FIELD];
-        const keys = Object.keys(store[employeeId][dayKey]).filter(function (k) {
-            return k !== "source" && k !== "metric_id" && k !== "employee_id";
-        });
-        if (!keys.length) delete store[employeeId][dayKey];
-        if (!Object.keys(store[employeeId]).length) delete store[employeeId];
+        metricMarkCleared(store[employeeId][dayKey], METRIC_SHELF_LABELS_FIELD);
+        metricEmpDayMapPrune(store, employeeId, dayKey);
     }
-    saveApp();
-    renderShopShelfMetric();
+    const path = wtShopCategoryLeafPath("pickers", selectedMonth, employeeId, day, METRIC_SHELF_LABELS_FIELD);
+    const opVal = checked ? 1 : null;
+    if (path && wtServerMode && typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true)) {
+        try { if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path); } catch (errM) {}
+        Promise.resolve(wtDomainWriterSave({
+            ops: [{ path: path, value: opVal, expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0 }]
+        })).then(function (ok) {
+            renderShopShelfMetric();
+            if (wtSaveOutcomeOk(ok)) {
+                try { if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(path); } catch (errC) {}
+                return;
+            }
+            if (ok === "timeout") {
+                toast("Ответ сервера не получен. Отметка полки на экране — не обновляйте страницу, проверьте сохранение.", "error");
+                return;
+            }
+            toast("Отметка полки не записана на сервер. Данные на экране — повторите сохранение.", "error");
+        }, function () {
+            renderShopShelfMetric();
+            toast("Отметка полки не записана на сервер. Данные на экране — повторите сохранение.", "error");
+        });
+        return;
+    }
+    wtAwaitSaveAppFeedback({
+        paint: function () { renderShopShelfMetric(); },
+        errorToast: "Отметка полки не записана на сервер. Данные на экране — повторите сохранение."
+    });
 }
 
 function shopShelfDayDerivedStatus(day, month) {
@@ -25585,8 +25773,18 @@ function deleteShopDayRole(day, employeeId) {
         return rec && rec.employee_id !== employeeId;
     });
     if (!store[dayKey].length) delete store[dayKey];
-    saveApp();
-    renderShopDayRoles();
+    const month = selectedMonth;
+    const live = store[dayKey];
+    wtPersistExplicitOps([{
+        path: "shopMetrics.dayRoles." + month + "." + dayKey,
+        value: (live && live.length)
+            ? (typeof wtCloneJson === "function" ? wtCloneJson(live) : live)
+            : null
+    }], {
+        paint: function () { renderShopDayRoles(); },
+        okToast: "Замещение удалено.",
+        errorToast: "Удаление замещения не записано на сервер. Список на экране — повторите действие."
+    });
 }
 
 function refreshShopDayRoleHint() {
@@ -26434,8 +26632,10 @@ function setRevisionGroupEmployee(groupId, empId) {
     if (!group) return;
     group.employee_id = String(empId || "");
     group.employeeId = group.employee_id;
-    saveApp();
-    renderShopRevision();
+    wtAwaitSaveAppFeedback({
+        paint: function () { renderShopRevision(); },
+        errorToast: "Ответственный группы ревизии не записан на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function revisionCellResponsibleId(folder, task) {
@@ -27073,17 +27273,21 @@ function addRevisionGroup() {
         employeeId: "",
         department_id: revisionActiveDept()
     });
-    saveApp();
     revisionPanel = "groups";
     revisionFocusGroupId = id;
-    renderShopRevision();
+    wtAwaitSaveAppFeedback({
+        paint: function () { renderShopRevision(); },
+        errorToast: "Группа ревизии не записана на сервер. Данные на экране — повторите сохранение."
+    });
 }
 
 function renameRevisionGroup(id, value) {
     const g = revisionFindGroup(id);
     if (!g) return;
     g.name = String(value || "").replace(/\s+/g, " ").trim();
-    saveApp();
+    wtAwaitSaveAppFeedback({
+        errorToast: "Название группы ревизии не записано на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function deleteRevisionGroup(id) {
@@ -27101,8 +27305,10 @@ function deleteRevisionGroup(id) {
     if (!g) return;
     if (hasHistory) g.archived = true;
     else root.groups = root.groups.filter(function (x) { return x.id !== id; });
-    saveApp();
-    renderShopRevision();
+    wtAwaitSaveAppFeedback({
+        paint: function () { renderShopRevision(); },
+        errorToast: "Удаление группы ревизии не записано на сервер. Список на экране — повторите действие."
+    });
 }
 
 function addRevisionFolder(groupId) {
@@ -27123,16 +27329,20 @@ function addRevisionFolder(groupId) {
         external_1c_id: "",
         department_id: revisionActiveDept()
     });
-    saveApp();
     revisionFocusFolderId = id;
-    renderRevisionGroupsPanel();
+    wtAwaitSaveAppFeedback({
+        paint: function () { renderRevisionGroupsPanel(); },
+        errorToast: "Подпапка ревизии не записана на сервер. Данные на экране — повторите сохранение."
+    });
 }
 
 function renameRevisionFolder(id, value) {
     const f = revisionFindFolder(id);
     if (!f) return;
     f.name = String(value || "").replace(/\s+/g, " ").trim();
-    saveApp();
+    wtAwaitSaveAppFeedback({
+        errorToast: "Название подпапки ревизии не записано на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function setRevisionFolderPlan(id, value) {
@@ -27140,7 +27350,9 @@ function setRevisionFolderPlan(id, value) {
     if (!f) return;
     const n = Math.round(Number(String(value).replace(",", ".")));
     f.planPerMonth = Number.isFinite(n) && n >= 0 ? n : 0;
-    saveApp();
+    wtAwaitSaveAppFeedback({
+        errorToast: "План подпапки ревизии не записан на сервер. Значение на экране — повторите сохранение."
+    });
 }
 
 function revisionFolderHasHistory(folderId) {
@@ -27161,8 +27373,10 @@ function deleteRevisionFolder(id) {
         : "Удалить подпапку?")) return;
     if (has) f.archived = true;
     else root.folders = root.folders.filter(function (x) { return x.id !== id; });
-    saveApp();
-    renderShopRevision();
+    wtAwaitSaveAppFeedback({
+        paint: function () { renderShopRevision(); },
+        errorToast: "Удаление подпапки ревизии не записано на сервер. Список на экране — повторите действие."
+    });
 }
 
 function closeRevisionModal() {
@@ -28092,9 +28306,11 @@ function fillMonth() {
             filled++;
         }
     });
-    saveApp();
-    refreshAll();
-    toast(filled ? "Заполнено пустых дней: " + filled : "Пустых дней не осталось.");
+    wtAwaitSaveAppFeedback({
+        paint: function () { refreshAll(); },
+        okToast: filled ? "Заполнено пустых дней: " + filled : "Пустых дней не осталось.",
+        errorToast: "Массовое заполнение табеля не записано на сервер. Отметки на экране — не обновляйте страницу, повторите действие."
+    });
 }
 
 
@@ -39729,12 +39945,16 @@ function deleteEmployee(employeeId) {
         if (appData.repSales[month]) delete appData.repSales[month][employeeId];
     });
 
-    saveApp();
-    renderFio();
-    renderEmployees();
-    renderSummaryStaff();
-    refreshAll();
-    toast("Сотрудник удалён.");
+    wtAwaitSaveAppFeedback({
+        paint: function () {
+            renderFio();
+            renderEmployees();
+            renderSummaryStaff();
+            refreshAll();
+        },
+        okToast: "Сотрудник удалён.",
+        errorToast: "Удаление сотрудника не записано на сервер. Список на экране — не обновляйте страницу, повторите действие."
+    });
 }
 
 function summaryDirectoryGroups() {
@@ -39931,10 +40151,14 @@ function moveEmployeeToDepartment(employeeId, deptCode, opts) {
     }
     // Перевод меняет подразделение/группу; индивидуальные назначения не восстанавливаем из group_all.
 
-    saveApp();
-    renderSummaryStaff();
-    refreshAll();
-    toast(employee.name + " переведён в «" + officialName(to) + "».");
+    wtAwaitSaveAppFeedback({
+        paint: function () {
+            renderSummaryStaff();
+            refreshAll();
+        },
+        okToast: employee.name + " переведён в «" + officialName(to) + "».",
+        errorToast: "Перевод сотрудника не записан на сервер. Карточка на экране — не обновляйте страницу, повторите действие."
+    });
 }
 
 
@@ -53539,7 +53763,6 @@ function crSaveExtraIdentify(id, given) {
             client_name: client,
             give_date: it.return_to_client_date
         });
-        toast("Отмечено: ✓ Отдан клиенту.");
     } else {
         it.extra_status = "identified";
         if (date) {
@@ -53551,11 +53774,10 @@ function crSaveExtraIdentify(id, given) {
             extra_status: "identified",
             client_name: client
         });
-        toast("Состояние: Определён клиент.");
     }
-    saveApp();
+    const okMsg = given ? "Отмечено: ✓ Отдан клиенту." : "Состояние: Определён клиент.";
     closeCrModal();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit(okMsg);
 }
 window.crRenderExtraJournal = crRenderExtraJournal;
 
@@ -53996,9 +54218,7 @@ function crToggleDriver(id, on) {
         it.charged_by_user_id = stamp.uid;
         crPushHistory(it, "charged_to_driver", "");
         crRefreshCompleted(it);
-        saveApp();
-        renderTerritoryReturns();
-        toast("Отмечено: пробито на водителя. Позиция осталась в «На водителя».");
+        crPersistAfterLocalEdit("Отмечено: пробито на водителя. Позиция осталась в «На водителя».");
         return;
     }
     it.charged_to_driver = false;
@@ -54006,9 +54226,7 @@ function crToggleDriver(id, on) {
     it.charged_by_user_id = "";
     crRefreshCompleted(it);
     crPushHistory(it, "uncharged_to_driver", "");
-    saveApp();
-    renderTerritoryReturns();
-    toast("Снято: пробито на водителя.");
+    crPersistAfterLocalEdit("Снято: пробито на водителя.");
 }
 
 function crCashierLabel(code) {
@@ -54045,8 +54263,7 @@ function crSetCashier(id, value) {
         });
     }
     crPushHistory(it, "cashier", crEmpName(empId) || "не указан");
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crTodayIso() {
@@ -55200,8 +55417,7 @@ function crSetPicker(id, value) {
         picker_from: prev,
         picker_to: next
     });
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crMoveToStage(it, nextStageId) {
@@ -55226,9 +55442,7 @@ function crForwardItem(returnId, nextStageId) {
         stage_from: from,
         stage_to: it.process_stage
     });
-    saveApp();
-    renderTerritoryReturns();
-    toast("Передано: " + (crStageName(it.process_stage) || it.process_stage));
+    crPersistAfterLocalEdit("Передано: " + (crStageName(it.process_stage) || it.process_stage));
 }
 
 function crApplyVideoResult(id, videoResultId) {
@@ -55238,8 +55452,7 @@ function crApplyVideoResult(id, videoResultId) {
     if (!videoResultId) {
         it.video_result_id = "";
         crPushHistory(it, "video_result", "");
-        saveApp();
-        renderTerritoryReturns();
+        crPersistAfterLocalEdit();
         return;
     }
     const vr = crVideoResultById(videoResultId);
@@ -55274,9 +55487,7 @@ function crApplyVideoResult(id, videoResultId) {
         next_stage: next
     });
     crLogStage(it, "video_result", { stage: from, result: vr.name, next_stage: next });
-    saveApp();
-    renderTerritoryReturns();
-    toast("Направлено: " + (crStageName(next) || next));
+    crPersistAfterLocalEdit("Направлено: " + (crStageName(next) || next));
 }
 
 function crAddAdjustment() {
@@ -55974,13 +56185,32 @@ function crSaveCreateBatch() {
 /** «Сохранено» — только после подтверждённой записи на сервер. */
 function crToastAfterServerSave(saving, okText) {
     Promise.resolve(saving).then(function (ok) {
-        if (ok === true) {
-            toast(okText);
+        if (wtSaveOutcomeOk(ok)) {
+            if (okText) toast(okText);
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Возврат на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        if (ok === "conflict_review") {
+            toast("Конфликт версий: данные на экране обновлены. Возврат на сервер не записан — повторите сохранение.", "error");
             return;
         }
         toast("Возврат не записан на сервер. Не обновляйте страницу — данные пока только на этом экране; повторите сохранение.", "error");
     }, function () {
         toast("Возврат не записан на сервер. Не обновляйте страницу — данные пока только на этом экране; повторите сохранение.", "error");
+    });
+}
+
+/** Рабочие действия возвратов: await saveApp, toast успеха только после ok === true. */
+function crPersistAfterLocalEdit(okToast) {
+    return wtAwaitSaveAppFeedback({
+        paint: function () { renderTerritoryReturns(); },
+        okToast: okToast || "",
+        errorToast: "Возврат не записан на сервер. Не обновляйте страницу — данные пока только на этом экране; повторите сохранение.",
+        timeoutToast: "Ответ сервера не получен. Возврат на экране — не обновляйте страницу, проверьте сохранение.",
+        conflictToast: "Конфликт версий: данные на экране обновлены. Возврат на сервер не записан — повторите сохранение."
     });
 }
 
@@ -56093,8 +56323,7 @@ function crApplyOutcome(id, outcomeId) {
     if (!outcomeId) {
         it.outcome_id = "";
         crPushHistory(it, "outcome", "");
-        saveApp();
-        renderTerritoryReturns();
+        crPersistAfterLocalEdit();
         return;
     }
     const o = crOutcomeById(outcomeId);
@@ -56126,9 +56355,7 @@ function crApplyOutcome(id, outcomeId) {
         next_stage: next
     });
     crLogStage(it, "outcome", { stage: from, result: o.name, next_stage: next });
-    saveApp();
-    renderTerritoryReturns();
-    toast("Направлено: " + (crStageName(next) || next));
+    crPersistAfterLocalEdit("Направлено: " + (crStageName(next) || next));
 }
 
 function crSetProcessStage(id, stage) {
@@ -56143,8 +56370,7 @@ function crSetProcessStage(id, stage) {
     crRefreshCompleted(it);
     crPushHistory(it, "stage", crStageName(prev) + " → " + crStageName(it.process_stage));
     crLogStage(it, "stage", { stage: prev, next_stage: it.process_stage });
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crSetRecount(id, value) {
@@ -56170,8 +56396,7 @@ function crSetRecount(id, value) {
     else if (value === "refuse") it.process_stage = "closed";
     crRefreshCompleted(it);
     crPushHistory(it, "recount_result", value || "pending");
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crSetReason(id, value) {
@@ -56190,8 +56415,7 @@ function crSetReason(id, value) {
             crLogStage(it, "stage", { stage: prev, next_stage: next });
         }
     }
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crSetAdjustment(id, value) {
@@ -56199,14 +56423,12 @@ function crSetAdjustment(id, value) {
     if (!it || !crHasFullEdit()) return;
     if (!value && crAdjIsLegacyReason(crAdjById(it.adjustment_id))) {
         crPushHistory(it, "adjustment", "");
-        saveApp();
-        renderTerritoryReturns();
+        crPersistAfterLocalEdit();
         return;
     }
     it.adjustment_id = value || "";
     crPushHistory(it, "adjustment", crAdjName(value));
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crStampComplete(it) {
@@ -56222,6 +56444,7 @@ function crToggleGive(id, on) {
     const it = crFind(id);
     if (!it || !crCanAct("give")) return;
     it.given_to_client = !!on;
+    let okMsg = "";
     if (on) {
         const stamp = crStampComplete(it);
         it.given_at = stamp.now;
@@ -56229,16 +56452,15 @@ function crToggleGive(id, on) {
         if (!it.return_to_client_date) it.return_to_client_date = crTodayIso();
         it.given_date = it.return_to_client_date;
         crPushHistory(it, "given_to_client", it.return_to_client_date);
-        toast("Отмечено: выполнено. Позиция осталась в «Отдать».");
+        okMsg = "Отмечено: выполнено. Позиция осталась в «Отдать».";
     } else {
         it.given_at = "";
         it.given_by_user_id = "";
         crRefreshCompleted(it);
         crPushHistory(it, "ungiven_to_client", "");
-        toast("Снято: выполнено.");
+        okMsg = "Снято: выполнено.";
     }
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit(okMsg);
 }
 
 function crSetGiveDate(id, value) {
@@ -56247,30 +56469,29 @@ function crSetGiveDate(id, value) {
     it.return_to_client_date = value || "";
     it.given_date = it.return_to_client_date;
     crPushHistory(it, "give_date", value || "");
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crToggleRebill(id, on) {
     const it = crFind(id);
     if (!it || !crCanAct("rebill")) return;
     it.rebilled = !!on;
+    let okMsg = "";
     if (on) {
         const stamp = crStampComplete(it);
         it.rebilled_at = stamp.now;
         it.rebilled_by_user_id = stamp.uid;
         if (!it.rebilled_date) it.rebilled_date = crTodayIso();
         crPushHistory(it, "rebilled", it.rebilled_date);
-        toast("Отмечено: выполнено. Позиция осталась в «Перебить».");
+        okMsg = "Отмечено: выполнено. Позиция осталась в «Перебить».";
     } else {
         it.rebilled_at = "";
         it.rebilled_by_user_id = "";
         crRefreshCompleted(it);
         crPushHistory(it, "unrebilled", "");
-        toast("Снято: выполнено.");
+        okMsg = "Снято: выполнено.";
     }
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit(okMsg);
 }
 
 function crSetRebillDate(id, value) {
@@ -56278,8 +56499,7 @@ function crSetRebillDate(id, value) {
     if (!it || !crCanAct("rebill")) return;
     it.rebilled_date = value || "";
     crPushHistory(it, "rebill_date", value || "");
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit();
 }
 
 function crMarkGive(id) {
@@ -56294,21 +56514,21 @@ function crToggleFoundClient(id, on) {
     const it = crFind(id);
     if (!it || !crCanAct("driver")) return;
     it.found_at_client = !!on;
+    let okMsg = "";
     if (on) {
         const stamp = crStampComplete(it);
         it.found_at_client_at = stamp.now;
         it.found_at_client_by_user_id = stamp.uid;
         crPushHistory(it, "found_at_client", "");
-        toast("Отмечено: товар нашли у клиента. Позиция осталась в «На водителя».");
+        okMsg = "Отмечено: товар нашли у клиента. Позиция осталась в «На водителя».";
     } else {
         it.found_at_client_at = "";
         it.found_at_client_by_user_id = "";
         crRefreshCompleted(it);
         crPushHistory(it, "unfound_at_client", "");
-        toast("Снято: нашли у клиента.");
+        okMsg = "Снято: нашли у клиента.";
     }
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit(okMsg);
 }
 
 function crMarkDriver(id) {
@@ -56322,8 +56542,7 @@ function crSoftDelete(id) {
     if (!confirm("Скрыть возврат из рабочих очередей? Запись сохранится в базе.")) return;
     it.is_deleted = true;
     crPushHistory(it, "hidden", "");
-    saveApp();
-    renderTerritoryReturns();
+    crPersistAfterLocalEdit("Возврат скрыт из очередей.");
 }
 
 /* ============================================================

@@ -9985,5 +9985,80 @@ class WtSaveOutcomeTruthinessTests(unittest.TestCase):
         self.assertGreater(toast_ok, then_pos)
 
 
+class WtCriticalSilentSaveFixTests(unittest.TestCase):
+    """Критические fire-and-forget save: await + wtSaveOutcomeOk / узкий DomainWriter."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def _fn(self, name, next_name=None):
+        src = self._src()
+        start = src.find("function " + name + "(")
+        self.assertGreater(start, 0, name)
+        if next_name:
+            end = src.find("function " + next_name + "(", start + 10)
+        else:
+            end = src.find("\nfunction ", start + 10)
+        self.assertGreater(end, start, name)
+        return src[start:end]
+
+    def test_helpers_await_and_explicit_ops(self):
+        src = self._src()
+        self.assertIn("function wtAwaitSaveAppFeedback(", src)
+        self.assertIn("function wtPersistExplicitOps(", src)
+        self.assertIn("function crPersistAfterLocalEdit(", src)
+        await_fn = src[src.find("function wtAwaitSaveAppFeedback("):src.find("function wtPersistExplicitOps(")]
+        self.assertIn("wtSaveOutcomeOk(ok)", await_fn)
+        self.assertIn('ok === "timeout"', await_fn)
+        self.assertIn('ok === "conflict_review"', await_fn)
+
+    def test_shop_inventory_and_responsible_use_explicit_ops(self):
+        inv = self._fn("setShopInventoryValue", "setShopInventoryConducted")
+        cond = self._fn("setShopInventoryConducted", "shopInventoryMonthTotals")
+        resp = self._fn("setShopRecountResponsible", "shopRecountSelectHtml")
+        wo = self._fn("setShopWriteoffLossesFact", "shopWriteoffLossesCellHtml")
+        for body in (inv, cond, resp, wo):
+            self.assertIn("wtPersistExplicitOps(", body)
+            self.assertNotRegex(body, r"saveApp\(\);\s*$")
+        self.assertIn("shopMetrics.inventoryResults.", inv)
+        self.assertIn("shopMetrics.recountResponsible.", resp)
+        self.assertIn("shopWriteoffLosses.months.", wo)
+
+    def test_delete_day_role_awaits_and_toasts_after(self):
+        body = self._fn("deleteShopDayRole", "refreshShopDayRoleHint")
+        self.assertIn("wtPersistExplicitOps(", body)
+        self.assertIn("shopMetrics.dayRoles.", body)
+        self.assertIn('okToast: "Замещение удалено."', body)
+        self.assertNotIn("saveApp();", body)
+
+    def test_cr_apply_outcome_no_false_success(self):
+        body = self._fn("crApplyOutcome", "crSetProcessStage")
+        self.assertIn("crPersistAfterLocalEdit(", body)
+        self.assertNotIn("saveApp();", body)
+        # Toast успеха только через okToast после ответа.
+        self.assertIn('crPersistAfterLocalEdit("Направлено:', body)
+        self.assertNotRegex(body, r"saveApp\(\);\s*\n\s*renderTerritoryReturns\(\);\s*\n\s*toast\(")
+
+    def test_hr_delete_move_await(self):
+        dele = self._fn("deleteEmployee", "summaryDirectoryGroups")
+        move = self._fn("moveEmployeeToDepartment", "updateStats")
+        self.assertIn("wtAwaitSaveAppFeedback(", dele)
+        self.assertIn("wtAwaitSaveAppFeedback(", move)
+        self.assertIn('okToast: "Сотрудник удалён."', dele)
+        self.assertNotIn("saveApp();", dele)
+        self.assertNotIn("saveApp();", move)
+
+    def test_fill_month_awaits_when_ops_off(self):
+        body = self._fn("fillMonth", None)
+        # Обрезать до следующей крупной секции зарплаты ТП.
+        src = self._src()
+        start = src.find("function fillMonth(")
+        end = src.find("ЗАРПЛАТА ТОРГОВЫХ ПРЕДСТАВИТЕЛЕЙ", start)
+        body = src[start:end]
+        self.assertIn("wtAwaitSaveAppFeedback(", body)
+        self.assertIn("wtOpsUiEnabled()", body)
+        self.assertNotRegex(body, r"saveApp\(\);\s*\n\s*refreshAll\(\);\s*\n\s*toast\(")
+
+
 if __name__ == "__main__":
     unittest.main()
