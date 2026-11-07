@@ -6932,6 +6932,188 @@ class WtOpsFoundationTests(unittest.TestCase):
         self.assertTrue(st.startswith("403"), st)
         self.assertEqual(data.get("error"), "forbidden")
 
+    def _add_metric_user(self, user_id, pin, permissions, departments=None):
+        self.store["payload"]["users"].append({
+            "user_id": user_id,
+            "display_name": user_id,
+            "pin": pin,
+            "role": "manager",
+            "is_active": True,
+            "departments": departments or ["shop"],
+            "permissions": permissions,
+        })
+        cookie, _ = self.login(user_id, pin)
+        return cookie
+
+    def test_ops_metrics_setup_cannot_write_facts(self):
+        """K1: metricsSetup без metricsInput — OPS facts запрещён (паритет с PUT)."""
+        self.store["payload"]["shopMetrics"]["workAccess"] = {
+            "2026-10": {"e_shop": ["m_keep"], "e_wh": ["m_wh"]},
+        }
+        cookie = self._add_metric_user("usr_setup_only", "4141", {"metricsSetup": "edit"})
+        before = json.loads(json.dumps(self.store["payload"]["shopMetrics"].get("facts")))
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.probe", "expected_v": 0, "value": 999}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+        self.assertEqual(self.store["payload"]["shopMetrics"].get("facts"), before)
+
+    def test_ops_metrics_input_can_write_own_dept_facts(self):
+        """metricsInput сохраняет разрешённые facts своего подразделения."""
+        cookie = self._add_metric_user("usr_input_only", "4242", {"metricsInput": "edit"})
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.probe_ok", "expected_v": 0, "value": 7}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["probe_ok"], 7)
+
+    def test_ops_work_access_foreign_emp_forbidden(self):
+        """H1: shop metricsSetup не пишет workAccess склада (e_wh) через OPS."""
+        self.store["payload"]["shopMetrics"]["workAccess"] = {
+            "2026-10": {"e_shop": ["m_keep"], "e_wh": ["m_wh"]},
+        }
+        cookie = self._add_metric_user("usr_setup_wa", "4343", {"metricsSetup": "edit"})
+        before = list(self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_wh"])
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopMetrics.workAccess.2026-10.e_wh",
+                    "expected_v": 0,
+                    "value": ["hacked"],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_wh"],
+            before,
+        )
+
+    def test_ops_work_access_own_emp_allowed_and_clear(self):
+        """metricsSetup пишет и снимает workAccess своего emp; чужой deptMetrics — 403."""
+        self.store["payload"]["shopMetrics"]["workAccess"] = {
+            "2026-10": {"e_shop": ["m_keep"], "e_wh": ["m_wh"]},
+        }
+        self.store["payload"]["deptMetrics"]["warehouse"] = {
+            "workAccess": {"2026-10": {"e_wh": ["m_wh"]}},
+        }
+        cookie = self._add_metric_user("usr_setup_own", "4445", {"metricsSetup": "edit"})
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopMetrics.workAccess.2026-10.e_shop",
+                    "expected_v": 0,
+                    "value": ["m_new"],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"],
+            ["m_new"],
+        )
+        v = int(
+            (self.store["payload"].get("_wt_records") or {})
+            .get("shopMetrics.workAccess.2026-10.e_shop", {})
+            .get("v")
+            or 0
+        )
+        st2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopMetrics.workAccess.2026-10.e_shop",
+                    "expected_v": v,
+                    "value": [],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_shop"],
+            [],
+        )
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_wh"],
+            ["m_wh"],
+        )
+        st3, data3, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "deptMetrics.warehouse.workAccess.2026-10.e_wh",
+                    "expected_v": 0,
+                    "value": [],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st3.startswith("403"), st3)
+        self.assertEqual(data3.get("error"), "forbidden")
+
+    def test_ops_work_access_whole_map_forbidden_for_staff(self):
+        """Целый shopMetrics.workAccess без empId — staff OPS запрещён."""
+        cookie = self._add_metric_user("usr_setup_map", "4545", {"metricsSetup": "edit"})
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopMetrics.workAccess",
+                    "expected_v": 0,
+                    "value": {"2026-10": {"e_shop": ["x"]}},
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("403"), st)
+        self.assertEqual(data.get("error"), "forbidden")
+
+    def test_ops_admin_still_writes_metric_facts_and_access(self):
+        """Админ сохраняет предусмотренные полномочия OPS."""
+        cookie, _ = self.login()
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": "shopMetrics.facts.admin_ok", "expected_v": 0, "value": 1}},
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        st2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "shopMetrics.workAccess.2026-10.e_wh",
+                    "expected_v": 0,
+                    "value": ["m_admin"],
+                }
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), st2)
+        self.assertEqual(
+            self.store["payload"]["shopMetrics"]["workAccess"]["2026-10"]["e_wh"],
+            ["m_admin"],
+        )
+
     def test_staff_cannot_op_metric_admin_meta(self):
         cookie, _ = self.login("usr_001", "1111")
         st, data, *_ = call(

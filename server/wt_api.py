@@ -3306,14 +3306,43 @@ def sync_record_versions_after_put(current: dict, stored: dict, user: dict | Non
 
 
 def _ops_metric_branch_allowed(user: dict, branch: str) -> bool:
-    """Права на конкретную ветку метрик, не на весь префикс shopMetrics/deptMetrics."""
+    """Права на конкретную ветку метрик, не на весь префикс shopMetrics/deptMetrics.
+
+    Паритет с PUT `_metric_root_forbidden` / `_apply_metric_root`:
+    setup → только workAccess/extraAccess; input → только METRIC_INPUT_KEYS.
+    """
     if branch in METRIC_ADMIN_META_KEYS:
         return False
     if branch in METRIC_SETUP_KEYS:
         return _can_edit_metric_setup(user)
     if branch in METRIC_INPUT_KEYS:
-        return _can_edit_metric_input(user) or _can_edit_metric_setup(user)
+        return _can_edit_metric_input(user)
     return False
+
+
+def _ops_metric_access_emp_allowed(
+    payload: dict | None, dept_code: str, branch: str, tail: list[str]
+) -> bool:
+    """Как PUT `_merge_access_map(allowed)`: leaf workAccess/extraAccess только для emp своего отдела.
+
+    Требует путь до empId (целиком месяц/карта — запрет для staff; admin уже early-return).
+    workAccess.<month>.<empId> | extraAccess.<empId>
+    """
+    if branch not in METRIC_SETUP_KEYS:
+        return True
+    emp_id = ""
+    if branch == "workAccess":
+        if len(tail) < 2:
+            return False
+        emp_id = str(tail[1] or "")
+    elif branch == "extraAccess":
+        if len(tail) < 1:
+            return False
+        emp_id = str(tail[0] or "")
+    if not emp_id:
+        return False
+    emp_dept = _employee_dept_map(payload if isinstance(payload, dict) else {})
+    return emp_dept.get(emp_id) == str(dept_code or "")
 
 
 # Поля продаж ТП (как в UI setRepSalesField) и проценты terms (как isRepPercentField).
@@ -3422,11 +3451,17 @@ def ops_path_allowed(user: dict | None, path: str, payload: dict | None = None) 
     if top == "shopMetrics":
         if "shop" not in codes or len(parts) < 2:
             return False
-        return _ops_metric_branch_allowed(user, parts[1])
+        branch = parts[1]
+        if not _ops_metric_branch_allowed(user, branch):
+            return False
+        return _ops_metric_access_emp_allowed(payload, "shop", branch, parts[2:])
     if top == "deptMetrics":
         if len(parts) < 3 or parts[1] not in codes:
             return False
-        return _ops_metric_branch_allowed(user, parts[2])
+        branch = parts[2]
+        if not _ops_metric_branch_allowed(user, branch):
+            return False
+        return _ops_metric_access_emp_allowed(payload, parts[1], branch, parts[3:])
     if top == "shopMetricCatalog":
         return _can_edit_metric_setup(user)
     if top == "shopPayroll":
