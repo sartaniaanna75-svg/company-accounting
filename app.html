@@ -9881,7 +9881,7 @@ function wtPersistAccessUser(userId, options) {
 
     if (!wtServerMode) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return !!ok; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
@@ -9920,7 +9920,7 @@ function wtPersistAccessUser(userId, options) {
             forbidForcePut: true
         })).then(
             function (ok) {
-                if (ok) {
+                if (wtSaveOutcomeOk(ok)) {
                     try {
                         ops.forEach(function (op) {
                             if (op && op.path && typeof wtSoftClearDirty === "function") {
@@ -9934,7 +9934,7 @@ function wtPersistAccessUser(userId, options) {
                         || "Права пользователя не записаны на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение.",
                         "error");
                 }
-                return !!ok;
+                return wtSaveOutcomeOk(ok);
             },
             function () {
                 if (!options.silentFail) {
@@ -10619,7 +10619,7 @@ function saveSalaryAdjFieldOp(employeeId, field) {
         if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path);
     } catch (errMark) {}
     return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: false })).then(
-        function (ok) { return !!ok; },
+        function (ok) { return wtSaveOutcomeOk(ok); },
         function () { return false; }
     );
 }
@@ -10672,7 +10672,7 @@ function saveSalaryFlagFieldOp(employeeId, field) {
         if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path);
     } catch (errMark) {}
     return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: false })).then(
-        function (ok) { return !!ok; },
+        function (ok) { return wtSaveOutcomeOk(ok); },
         function () { return false; }
     );
 }
@@ -11990,6 +11990,14 @@ function handleWtSaveConflict(data) {
         toast("Нет соединения с сервером. Черновик на экране сохранён.", "error");
         return false;
     });
+}
+
+/**
+ * Успех сохранения: только явный true от putServerStateOnce / DomainWriter / saveApp.
+ * "timeout", "conflict_review" и прочие truthy-не-true не считаются записью (H6).
+ */
+function wtSaveOutcomeOk(ok) {
+    return ok === true;
 }
 
 function putServerStateOnce(options) {
@@ -13476,8 +13484,12 @@ function saveApp(options) {
 /** Сохранение ввода метрик: дождаться ответа сервера и явно сообщить, если запись не прошла. */
 function saveMetricChange() {
     return Promise.resolve(saveApp()).then(function (ok) {
-        if (ok === false && wtServerMode) {
-            toast("Изменение метрики не записано на сервер. Не обновляйте страницу — данные пока только на этом экране.", "error");
+        if (!wtSaveOutcomeOk(ok) && wtServerMode) {
+            if (ok === "timeout") {
+                toast("Ответ сервера не получен. Изменение метрики на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            } else if (ok !== "conflict_review") {
+                toast("Изменение метрики не записано на сервер. Не обновляйте страницу — данные пока только на этом экране.", "error");
+            }
         }
         try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (err) {}
         return ok;
@@ -14410,10 +14422,11 @@ function saveTimesheetDayChange(employeeId, day) {
     if (!wtOpsUiEnabled(true)) {
         try { wtSoftProtectPendingLeaves(); } catch (err) {}
         return Promise.resolve(saveApp()).then(function (ok) {
-            if (ok && path) {
+            const saved = wtSaveOutcomeOk(ok);
+            if (saved && path) {
                 try { wtSoftClearDirty(path); } catch (err) {}
             }
-            return { status: ok ? "saved_put" : "error", via: "put" };
+            return { status: saved ? "saved_put" : "error", via: "put", outcome: ok };
         });
     }
     return wtOpsWithIncidentalBlock(function () {
@@ -14564,17 +14577,19 @@ function saveMetricLeafViaOp(path, value) {
 function wtSaveMetricValue(path, value) {
     if (!wtServerMode) {
         return Promise.resolve(saveApp()).then(function (ok) {
-            return { status: ok ? "saved_put" : "error", via: "put" };
+            const saved = wtSaveOutcomeOk(ok);
+            return { status: saved ? "saved_put" : "error", via: "put", outcome: ok };
         });
     }
     try { if (path) wtSoftMarkDirty(path); } catch (err) {}
     if (!wtOpsUiEnabled(true) || !path) {
         try { wtSoftProtectPendingLeaves(); } catch (err) {}
         return Promise.resolve(saveMetricChange()).then(function (ok) {
-            if (ok && path) {
+            const saved = wtSaveOutcomeOk(ok);
+            if (saved && path) {
                 try { wtSoftClearDirty(path); } catch (err) {}
             }
-            return { status: ok ? "saved_put" : "error", via: "put" };
+            return { status: saved ? "saved_put" : "error", via: "put", outcome: ok };
         });
     }
     return wtOpsWithIncidentalBlock(function () {
@@ -15726,7 +15741,13 @@ function commitEmployeeCard(employeeId, deptCode) {
             toast("Ответ сервера не получен. Галочки на экране сохранены — обновите данные с сервера или повторите «Сохранить», не делайте F5 сразу.", "error");
             return;
         }
-        if (!ok) {
+        if (ok === "conflict_review") {
+            paintEmployeeCard();
+            try { refreshMetricsUi(); } catch (err) { console.error(err); }
+            toast("Конфликт версий: данные на экране обновлены. Назначения на сервер не записаны — повторите «Сохранить».", "error");
+            return;
+        }
+        if (!wtSaveOutcomeOk(ok)) {
             restoreCommitDraft();
             paintEmployeeCard();
             toast("Не удалось сохранить сотрудника. Назначения метрик не записаны.", "error");
@@ -15868,13 +15889,13 @@ function wtSaveOutsourcingCardOps(employeeId, deptCode, options) {
 
     if (!wtServerMode) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return ok !== false; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
     if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return ok !== false; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
@@ -15882,7 +15903,7 @@ function wtSaveOutsourcingCardOps(employeeId, deptCode, options) {
         ops: ops,
         atomic: true,
         silentFail: !!options.silentFail
-    })).then(function (ok) { return ok === true; }, function () { return false; });
+    })).then(function (ok) { return wtSaveOutcomeOk(ok); }, function () { return false; });
 }
 
 function paintOutsourcingEmployeeUi() {
@@ -21985,13 +22006,13 @@ function wtSaveWorkspaceEmployeeIds(ws, options) {
     } catch (errMark) {}
     if (!wtServerMode) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return ok !== false; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
     if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return ok !== false; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
@@ -21999,7 +22020,7 @@ function wtSaveWorkspaceEmployeeIds(ws, options) {
         ops: [{ path: path, value: value }],
         atomic: false,
         silentFail: !!options.silentFail
-    })).then(function (ok) { return ok === true; }, function () { return false; });
+    })).then(function (ok) { return wtSaveOutcomeOk(ok); }, function () { return false; });
 }
 
 /** После отказа записи состава табеля — вернуть подтверждённый сервером список (не ложную галочку). */
@@ -22343,7 +22364,9 @@ function setShopEmployeeExtraMetric(employeeId, metricId, on) {
     savePromise.then(function (ok) {
         if (ok === "timeout") {
             toast("Ответ сервера не получен. Галочка на экране оставлена — повторите сохранение или сверьте данные с сервером.", "error");
-        } else if (!ok) {
+        } else if (ok === "conflict_review") {
+            toast("Конфликт версий: данные на экране обновлены. Назначение метрики на сервер не записано — повторите сохранение.", "error");
+        } else if (!wtSaveOutcomeOk(ok)) {
             if (accessSnap && store) {
                 store.workAccess = accessSnap.workAccess;
                 store.extraAccess = accessSnap.extraAccess;
@@ -25532,9 +25555,25 @@ function addShopDayRoleFromForm() {
         }
     };
     store[dayKey].push(rec);
-    saveApp();
-    renderShopDayRoles();
-    toast("Замещение сохранено.");
+    Promise.resolve(saveApp()).then(function (ok) {
+        renderShopDayRoles();
+        if (wtSaveOutcomeOk(ok)) {
+            toast("Замещение сохранено.");
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Замещение на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        if (ok === "conflict_review") {
+            toast("Конфликт версий: данные на экране обновлены. Замещение на сервер не записано — повторите сохранение.", "error");
+            return;
+        }
+        toast("Замещение не записано на сервер. Данные остались на экране — повторите сохранение.", "error");
+    }, function () {
+        renderShopDayRoles();
+        toast("Замещение не записано на сервер. Данные остались на экране — повторите сохранение.", "error");
+    });
 }
 
 function deleteShopDayRole(day, employeeId) {
@@ -27339,20 +27378,21 @@ function wtPersistRevisionTasks(entries, options) {
 
     function finish(ok) {
         clearInflight();
-        if (ok) afterOk();
+        const saved = wtSaveOutcomeOk(ok);
+        if (saved) afterOk();
         else afterFail();
-        return !!ok;
+        return saved;
     }
 
     if (!wtServerMode) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return finish(!!ok); },
+            function (ok) { return finish(ok); },
             function () { return finish(false); }
         );
     }
     if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
         return Promise.resolve(saveApp()).then(
-            function (ok) { return finish(!!ok); },
+            function (ok) { return finish(ok); },
             function () { return finish(false); }
         );
     }
@@ -27368,7 +27408,7 @@ function wtPersistRevisionTasks(entries, options) {
     });
     const atomic = options.atomic != null ? !!options.atomic : (ops.length > 1);
     return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: atomic })).then(
-        function (ok) { return finish(!!ok); },
+        function (ok) { return finish(ok); },
         function () { return finish(false); }
     );
 }
@@ -32159,20 +32199,20 @@ function wtPersistVacationPlanRecords(recs, options) {
 
     if (!wtServerMode) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return !!ok; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
     if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
         return Promise.resolve(saveApp()).then(
-            function (ok) { return !!ok; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
     const atomic = options.atomic != null ? !!options.atomic : (ops.length > 1);
     return Promise.resolve(wtDomainWriterSave({ ops: ops, atomic: atomic })).then(
         function (ok) {
-            if (ok) {
+            if (wtSaveOutcomeOk(ok)) {
                 paths.forEach(function (p) {
                     try { if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(p); } catch (errCd) {}
                 });
@@ -32181,7 +32221,7 @@ function wtPersistVacationPlanRecords(recs, options) {
                     || "График отпускных не записан на сервер. Данные остались на экране — не обновляйте страницу, повторите сохранение.",
                     "error");
             }
-            return !!ok;
+            return wtSaveOutcomeOk(ok);
         },
         function () {
             if (!options.silentFail) {
@@ -32219,13 +32259,13 @@ function wtPersistSalaryVacationPayLeaves(entries, options) {
     } catch (errMark) {}
     if (!wtServerMode) {
         return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
-            function (ok) { return !!ok; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
     if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
         return Promise.resolve(saveApp()).then(
-            function (ok) { return !!ok; },
+            function (ok) { return wtSaveOutcomeOk(ok); },
             function () { return false; }
         );
     }
@@ -32234,7 +32274,7 @@ function wtPersistSalaryVacationPayLeaves(entries, options) {
         atomic: ops.length > 1,
         silentFail: !!options.silentFail
     })).then(
-        function (ok) { return !!ok; },
+        function (ok) { return wtSaveOutcomeOk(ok); },
         function () { return false; }
     );
 }
@@ -32492,7 +32532,7 @@ function confirmVacationPlanForEmployee(employeeId) {
     const ym = plannedDateMonth(date);
     closeMgmtModal();
     Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function (ok) {
-        if (ok && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
+        if (wtSaveOutcomeOk(ok) && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
         renderSalaryVacationPlan();
     });
 }
@@ -32905,7 +32945,7 @@ function patchVacationPlanEmp(employeeId, field, value) {
     Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function (ok) {
         // Начисление только после успешной записи плана — иначе конфликт мог бы
         // начислить по отвергнутому локальному значению.
-        if (ok && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
+        if (wtSaveOutcomeOk(ok) && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
         renderSalaryVacationPlan();
     });
 }
@@ -32944,7 +32984,7 @@ function rescheduleVacationPlan(employeeId) {
     rec.department_id = rec.department_id || vacationPlanDeptId(employeeId);
     const ym = plannedDateMonth(rec.planned_date);
     Promise.resolve(wtPersistVacationPlanRecords([rec], { year: y })).then(function (ok) {
-        if (ok && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
+        if (wtSaveOutcomeOk(ok) && ym) applyPlannedVacationPayOnce(ym, { narrow: true });
         renderSalaryVacationPlan();
     });
 }
@@ -37072,7 +37112,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
             try { refreshMetricCatalogFormulaBox(); } catch (err) {}
             return;
         }
-        if (!ok) {
+        if (!wtSaveOutcomeOk(ok)) {
             restoreMetricCatalog();
             failCatalogForm("Изменения метрики не записаны.");
             return;
@@ -37092,7 +37132,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
                 expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("shopPayroll.metrics") : 0
             }]
         })).then(function (payOk) {
-            if (!payOk) {
+            if (!wtSaveOutcomeOk(payOk)) {
                 failCatalogForm("Справочник мог записаться, но связь метрики с расчётом не подтверждена. Повторите «Сохранить» без F5.");
                 toast("Метрика: связь с расчётом не записана. Повторите сохранение.", "error");
                 return;
@@ -38625,9 +38665,21 @@ function addCustomPosition(inputId) {
     });
     syncWorkspaceCustomPositions();
     if (input) input.value = "";
-    saveApp();
-    refreshPositionDependentUi();
-    toast("Должность «" + title + "» добавлена.");
+    Promise.resolve(saveApp()).then(function (ok) {
+        refreshPositionDependentUi();
+        if (wtSaveOutcomeOk(ok)) {
+            toast("Должность «" + title + "» добавлена.");
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Должность на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        toast("Должность не записана на сервер. Данные остались на экране — повторите сохранение.", "error");
+    }, function () {
+        refreshPositionDependentUi();
+        toast("Должность не записана на сервер. Данные остались на экране — повторите сохранение.", "error");
+    });
 }
 
 function openPositionRename(positionId) {
@@ -38688,9 +38740,21 @@ function renamePosition(positionId, nextName) {
         });
     });
     syncWorkspaceCustomPositions();
-    saveApp();
-    refreshPositionDependentUi();
-    toast("Должность переименована. Связи сохранены (было: «" + prev + "»).");
+    Promise.resolve(saveApp()).then(function (ok) {
+        refreshPositionDependentUi();
+        if (wtSaveOutcomeOk(ok)) {
+            toast("Должность переименована. Связи сохранены (было: «" + prev + "»).");
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Переименование на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        toast("Должность не записана на сервер. Данные остались на экране — повторите сохранение.", "error");
+    }, function () {
+        refreshPositionDependentUi();
+        toast("Должность не записана на сервер. Данные остались на экране — повторите сохранение.", "error");
+    });
 }
 
 function activatePosition(positionId) {
@@ -38707,10 +38771,22 @@ function deactivatePosition(positionId) {
     if (!item) return;
     item.active = false;
     syncWorkspaceCustomPositions();
-    saveApp();
     if (typeof closeMgmtModal === "function") closeMgmtModal();
-    refreshPositionDependentUi();
-    toast("Должность сделана неактивной. История сохранена.");
+    Promise.resolve(saveApp()).then(function (ok) {
+        refreshPositionDependentUi();
+        if (wtSaveOutcomeOk(ok)) {
+            toast("Должность сделана неактивной. История сохранена.");
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Статус должности на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        toast("Статус должности не записан на сервер. Данные остались на экране — повторите сохранение.", "error");
+    }, function () {
+        refreshPositionDependentUi();
+        toast("Статус должности не записан на сервер. Данные остались на экране — повторите сохранение.", "error");
+    });
 }
 
 function deletePosition(positionId) {
@@ -38792,10 +38868,22 @@ function reassignPositionEmployees(fromId) {
         e.position_id = to.position_id;
     });
     syncWorkspaceCustomPositions();
-    saveApp();
     if (typeof closeMgmtModal === "function") closeMgmtModal();
-    refreshPositionDependentUi();
-    toast("Сотрудники переназначены. История прежней должности сохранена.");
+    Promise.resolve(saveApp()).then(function (ok) {
+        refreshPositionDependentUi();
+        if (wtSaveOutcomeOk(ok)) {
+            toast("Сотрудники переназначены. История прежней должности сохранена.");
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Переназначение на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        toast("Переназначение не записано на сервер. Данные остались на экране — повторите сохранение.", "error");
+    }, function () {
+        refreshPositionDependentUi();
+        toast("Переназначение не записано на сервер. Данные остались на экране — повторите сохранение.", "error");
+    });
 }
 
 function removeCustomPosition(index) {
@@ -39911,10 +39999,21 @@ function saveWorkspaceSettings() {
         w.defaultHours = hours;
     }
 
-    saveApp();
     document.getElementById("workspaceNameSetting").value = officialName(w);
     renderDeptNow();
-    toast("Настройки сохранены.");
+    Promise.resolve(saveApp()).then(function (ok) {
+        if (wtSaveOutcomeOk(ok)) {
+            toast("Настройки сохранены.");
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Настройки на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        toast("Настройки не записаны на сервер. Данные остались на экране — повторите сохранение.", "error");
+    }, function () {
+        toast("Настройки не записаны на сервер. Данные остались на экране — повторите сохранение.", "error");
+    });
 }
 
 function renderSummaryUsers() {
@@ -40551,7 +40650,7 @@ function saveAccessUser(userId) {
         toast("Пользователь сохранён. Вход — по PIN, user_id не изменился.");
     }
     Promise.resolve(wtPersistAccessUser(prev.user_id, { syncLegacyPins: syncLegacy })).then(function (ok) {
-        if (ok) afterSaved();
+        if (wtSaveOutcomeOk(ok)) afterSaved();
     });
 }
 
@@ -55256,17 +55355,33 @@ function crAddVehicle() {
         is_active: true,
         sort_order: (store.vehicles.length + 1) * 10
     });
-    saveApp();
-    toast("Автомобиль добавлен.");
-    if (document.getElementById("crVehicle") && document.getElementById("crModalBack") && document.getElementById("crModalBack").classList.contains("show")) {
-        const sel = document.getElementById("crVehicle");
-        sel.innerHTML = crVehicleOptions(vehicle_id);
-        sel.value = vehicle_id;
-        if (el) el.value = "";
-        if (nameEl) nameEl.value = "";
-        return;
+    function paintVehicleAdded() {
+        if (document.getElementById("crVehicle") && document.getElementById("crModalBack") && document.getElementById("crModalBack").classList.contains("show")) {
+            const sel = document.getElementById("crVehicle");
+            sel.innerHTML = crVehicleOptions(vehicle_id);
+            sel.value = vehicle_id;
+            if (el) el.value = "";
+            if (nameEl) nameEl.value = "";
+            return true;
+        }
+        renderTerritoryReturns();
+        return false;
     }
-    renderTerritoryReturns();
+    Promise.resolve(saveApp()).then(function (ok) {
+        paintVehicleAdded();
+        if (wtSaveOutcomeOk(ok)) {
+            toast("Автомобиль добавлен.");
+            return;
+        }
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Автомобиль на экране — не обновляйте страницу, проверьте сохранение.", "error");
+            return;
+        }
+        toast("Автомобиль не записан на сервер. Данные остались на экране — повторите сохранение.", "error");
+    }, function () {
+        paintVehicleAdded();
+        toast("Автомобиль не записан на сервер. Данные остались на экране — повторите сохранение.", "error");
+    });
 }
 
 function crSetVehiclePlate(id, plate) {

@@ -5265,7 +5265,7 @@ class StaticPagesTests(unittest.TestCase):
         self.assertNotIn("Метрика сохранена", timeout_branch)
         self.assertNotIn("Чек-лист сохранён", timeout_branch)
         self.assertNotIn("restoreMetricCatalog", timeout_branch)
-        conflict_branch = cat_save.split('ok === "conflict_review"')[1].split("if (!ok)")[0]
+        conflict_branch = cat_save.split('ok === "conflict_review"')[1].split("if (!wtSaveOutcomeOk(ok))")[0]
         self.assertNotIn("restoreMetricCatalog", conflict_branch)
         self.assertNotIn("closeMetricCatalogModal", conflict_branch)
         self.assertNotIn("Метрика сохранена", conflict_branch)
@@ -5288,8 +5288,8 @@ class StaticPagesTests(unittest.TestCase):
         access = src[access_start:access_end]
         self.assertGreater(access_start, 0)
         self.assertGreater(access_end, access_start)
-        self.assertIn("done.then", access)
-        self.assertIn("if (ok) afterSaved()", access)
+        self.assertIn("wtPersistAccessUser(", access)
+        self.assertIn("if (wtSaveOutcomeOk(ok)) afterSaved()", access)
         self.assertIn("if (pin) prev.pin = pin", access)
 
     def test_commit_employee_card_waits_for_server_save(self):
@@ -5307,7 +5307,8 @@ class StaticPagesTests(unittest.TestCase):
         toast_ok = body.find('toast("Сотрудник сохранён.")')
         then_pos = body.find("Promise.resolve(saveApp())")
         self.assertGreater(toast_ok, then_pos)
-        self.assertIn("if (!ok)", body)
+        self.assertIn("if (!wtSaveOutcomeOk(ok))", body)
+        self.assertIn('ok === "conflict_review"', body)
         # Обычное сохранение карточки не восстанавливает group_all галочки.
         self.assertNotIn("assignGroupAllMetricsToEmployee(", body)
 
@@ -9906,6 +9907,82 @@ class WtSummaryPayrollListAlignTests(unittest.TestCase):
         self.assertIn("total: data.toHand", row)
         self.assertIn("sums.oklad += row.oklad;", render)
         self.assertIn("sums.total += row.total;", render)
+
+
+class WtSaveOutcomeTruthinessTests(unittest.TestCase):
+    """H5/H6: ложный успех сохранения — toast только при ok === true; без !!ok / ok !== false."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_wt_save_outcome_ok_helper(self):
+        src = self._src()
+        self.assertIn("function wtSaveOutcomeOk(ok)", src)
+        helper = src[src.find("function wtSaveOutcomeOk(ok)"):src.find("function putServerStateOnce(")]
+        self.assertIn("return ok === true;", helper)
+        self.assertNotIn("return !!ok;", helper)
+
+    def test_h5_day_role_awaits_save_before_toast(self):
+        src = self._src()
+        start = src.find("function addShopDayRoleFromForm(")
+        end = src.find("function deleteShopDayRole(", start)
+        body = src[start:end]
+        self.assertGreater(start, 0)
+        self.assertIn("Promise.resolve(saveApp())", body)
+        toast_ok = body.find('toast("Замещение сохранено.")')
+        then_pos = body.find("Promise.resolve(saveApp())")
+        self.assertGreater(toast_ok, then_pos)
+        self.assertIn("wtSaveOutcomeOk(ok)", body)
+        # Нет fire-and-forget saveApp(); сразу перед toast успеха.
+        self.assertNotRegex(body, r"saveApp\(\);\s*\n\s*renderShopDayRoles\(\);\s*\n\s*toast\(\"Замещение сохранено")
+
+    def test_h6_salary_adj_flag_strict_true(self):
+        src = self._src()
+        adj = src.split("function saveSalaryAdjFieldOp(", 1)[1].split("\nfunction ", 1)[0]
+        flag = src.split("function saveSalaryFlagFieldOp(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("return wtSaveOutcomeOk(ok);", adj)
+        self.assertIn("return wtSaveOutcomeOk(ok);", flag)
+        self.assertNotIn("return !!ok;", adj)
+        self.assertNotIn("return !!ok;", flag)
+
+    def test_h6_employee_ids_outsourcing_revision_vacation_strict(self):
+        src = self._src()
+        ids = src.split("function wtSaveWorkspaceEmployeeIds(", 1)[1].split("\nfunction ", 1)[0]
+        self.assertIn("return wtSaveOutcomeOk(ok);", ids)
+        self.assertNotIn("ok !== false", ids)
+        out = src.split("function wtSaveOutsourcingCardOps(", 1)[1].split(
+            "\nfunction paintOutsourcingEmployeeUi(", 1
+        )[0]
+        self.assertIn("wtSaveOutcomeOk(ok)", out)
+        self.assertNotIn("ok !== false", out)
+        rev = src.split("function wtPersistRevisionTasks(", 1)[1].split("\nfunction submitRevisionAssign(", 1)[0]
+        self.assertIn("wtSaveOutcomeOk(ok)", rev)
+        self.assertNotIn("finish(!!ok)", rev)
+        vac = src.split("function wtPersistVacationPlanRecords(", 1)[1].split(
+            "function wtPersistSalaryVacationPayLeaves(", 1
+        )[0]
+        self.assertIn("wtSaveOutcomeOk(ok)", vac)
+        self.assertNotIn("return !!ok;", vac)
+
+    def test_h6_timesheet_put_path_not_truthy_string(self):
+        src = self._src()
+        start = src.find("function saveTimesheetDayChange(")
+        end = src.find("\nfunction ", start + len("function saveTimesheetDayChange("))
+        fn = src[start:end]
+        self.assertIn("wtSaveOutcomeOk(ok)", fn)
+        self.assertNotIn("if (ok && path)", fn)
+        self.assertNotIn('status: ok ? "saved_put"', fn)
+
+    def test_h5_workspace_settings_awaits_save(self):
+        src = self._src()
+        start = src.find("function saveWorkspaceSettings(")
+        end = src.find("function renderSummaryUsers(", start)
+        body = src[start:end]
+        self.assertIn("Promise.resolve(saveApp())", body)
+        self.assertIn("wtSaveOutcomeOk(ok)", body)
+        toast_ok = body.find('toast("Настройки сохранены.")')
+        then_pos = body.find("Promise.resolve(saveApp())")
+        self.assertGreater(toast_ok, then_pos)
 
 
 if __name__ == "__main__":
