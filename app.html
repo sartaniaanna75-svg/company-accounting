@@ -7827,6 +7827,7 @@ function timesheetEmployeesForView() {
                 return;
             }
         }
+        if (!employeeVisibleInTimesheetMonth(e, selectedMonth)) return;
         seen[e.id] = true;
         list.push(e);
     }
@@ -8624,15 +8625,87 @@ function jobStatusSelect(employee, disabled, deptCode) {
     const fired = !isWorking(employee);
     const code = String(deptCode || (workspace() && workspace().code) || "");
     const deptArg = code ? (",'" + code + "'") : "";
-    return '<select onchange="updateEmployee(\'' + employee.id + '\',\'jobStatus\',this.value' + deptArg + ')"'
+    return '<select onchange="onEmployeeJobStatusChange(\'' + employee.id + '\',this.value' + deptArg + ')"'
         + (disabled ? " disabled" : "") + ">"
         + '<option value="working"' + (fired ? "" : " selected") + ">Работает</option>"
         + '<option value="fired"' + (fired ? " selected" : "") + ">Уволен</option>"
         + "</select>";
 }
 
+/** Поле «Дата увольнения» (календарь; хранение YYYY-MM-DD; показ ДД.ММ.ГГГГ). */
+function employeeFiredOnFieldHtml(employee, disabled, deptCode) {
+    if (!employee || !employee.id) return "";
+    const iso = employeeFiredOnIso(employee);
+    const code = String(deptCode || (workspace() && workspace().code) || "");
+    const deptArg = code ? (",'" + code + "'") : "";
+    const note = iso ? ('<div class="note">' + escapeHtml(formatFiredOnDisplay(iso)) + "</div>") : "";
+    return fieldBlock(
+        "Дата увольнения",
+        '<input type="date" class="emp-fired-on" value="' + escapeAttribute(iso) + '"'
+            + (disabled ? " disabled" : "")
+            + ' onchange="onEmployeeFiredOnChange(\'' + employee.id + '\',this.value' + deptArg + ')">'
+            + note,
+        "emp-field-fired-on"
+    );
+}
+
 function isWorking(employee) {
     return !employee || employee.jobStatus !== "fired";
+}
+
+/** Дата увольнения YYYY-MM-DD или "" (без автозаполнения из табеля/статуса). */
+function normalizeFiredOnIso(value) {
+    const raw = String(value == null ? "" : value).trim();
+    if (!raw) return "";
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return m[1] + "-" + m[2] + "-" + m[3];
+    const ru = raw.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (ru) {
+        const dd = ("0" + ru[1]).slice(-2);
+        const mm = ("0" + ru[2]).slice(-2);
+        return ru[3] + "-" + mm + "-" + dd;
+    }
+    return "";
+}
+
+function employeeFiredOnIso(employee) {
+    return normalizeFiredOnIso(employee && employee.fired_on);
+}
+
+/** Отображение даты увольнения ДД.ММ.ГГГГ. */
+function formatFiredOnDisplay(iso) {
+    const v = normalizeFiredOnIso(iso);
+    if (!v) return "";
+    return v.slice(8, 10) + "." + v.slice(5, 7) + "." + v.slice(0, 4);
+}
+
+/**
+ * Видимость в обычном списке табеля выбранного месяца.
+ * С fired_on: месяц увольнения и раньше — виден; следующие месяцы — скрыт.
+ * Без fired_on: прежнее поведение (уволенный остаётся в списке).
+ * Не влияет на includeInMonthPayroll / формулы.
+ */
+function employeeVisibleInTimesheetMonth(employee, monthYm) {
+    if (!employee || !employee.id) return false;
+    const fo = employeeFiredOnIso(employee);
+    if (!fo) return true;
+    const ym = String(monthYm || selectedMonth || "").slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(ym)) return true;
+    return ym <= fo.slice(0, 7);
+}
+
+/**
+ * Численность СПУ на дату (конец среды): fired_on <= asOf → не считать;
+ * fired_on > asOf → считать; без даты — только текущий jobStatus working.
+ * Не использует табель и «Участвует в СПУ».
+ */
+function employeeCountsInStaffDirectoryOnDate(employee, asOfIso) {
+    if (!employee || !employee.id || employee.id === SHOP_SELF_CHECKOUT_ID) return false;
+    const asOf = normalizeFiredOnIso(asOfIso) || String(asOfIso || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(asOf)) return isWorking(employee);
+    const fo = employeeFiredOnIso(employee);
+    if (fo) return fo > asOf;
+    return isWorking(employee);
 }
 
 /** Внешний специалист с фиксированной оплатой без табеля (не штатный расчёт от дней). */
@@ -10463,6 +10536,7 @@ function normalizeEmployee(e) {
     if (!e.department) e.department = "";
     e.taxiDaily = parseHours(e.taxiDaily, 0);
     if (e.jobStatus !== "fired") e.jobStatus = "working";
+    e.fired_on = normalizeFiredOnIso(e.fired_on);
     if (!e.terms || typeof e.terms !== "object") e.terms = {};
     e.outsourcing = e.outsourcing === true;
     if (e.outsourcing) {
@@ -10717,6 +10791,7 @@ function cloneEmployeeRecord(src) {
         rate: parseHours(src.rate, 0),
         taxiDaily: parseHours(src.taxiDaily, 0),
         jobStatus: src.jobStatus === "fired" ? "fired" : "working",
+        fired_on: normalizeFiredOnIso(src.fired_on),
         participates_in_spu_meetings: src.participates_in_spu_meetings === true,
         meeting_participant: src.participates_in_spu_meetings === true,
         outsourcing: src.outsourcing === true,
@@ -16019,6 +16094,221 @@ function paintOutsourcingEmployeeUi() {
     try { renderSummaryStaff(); } catch (errS) {}
     try { renderSalary(); } catch (errSal) {}
     try { refreshAll(); } catch (errR) {}
+}
+
+function paintEmployeeStatusUi() {
+    try { renderFio(); } catch (errF) {}
+    try { renderEmployees(); } catch (errE) {}
+    try { renderSummaryStaff(); } catch (errS) {}
+    try { if (typeof renderTimesheet === "function") renderTimesheet(); } catch (errT) {}
+    try { if (typeof refreshAll === "function") refreshAll(); } catch (errR) {}
+}
+
+/**
+ * Узкий OPS: jobStatus + fired_on одним atomic-набором (без частичного увольнения).
+ * Не трогает табель, зарплату, KPI и не использует широкий saveApp при OPS.
+ */
+function wtSaveJobStatusFiredOnOps(employeeId, deptCode, options) {
+    options = options || {};
+    const eid = String(employeeId || "");
+    const code = String(deptCode || (typeof employeeHomeDeptCode === "function" && employeeHomeDeptCode(eid)) || "").trim();
+    if (!eid || !code || code === "summary") return Promise.resolve(false);
+    let employee = null;
+    try {
+        if (deptCode || code) {
+            const resolved = resolveEmployeeCardForSave(code, eid);
+            employee = resolved && resolved.employee;
+        }
+    } catch (errR) { employee = null; }
+    if (!employee) {
+        try { employee = getEmployee(eid); } catch (errG) { employee = null; }
+    }
+    if (!employee) return Promise.resolve(false);
+
+    const base = "workspaces." + code + ".employees." + eid;
+    const status = employee.jobStatus === "fired" ? "fired" : "working";
+    const firedOn = status === "fired" ? employeeFiredOnIso(employee) : "";
+    employee.jobStatus = status;
+    employee.fired_on = firedOn;
+    const ops = [
+        {
+            path: base + ".jobStatus",
+            value: status,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(base + ".jobStatus") : 0
+        },
+        {
+            path: base + ".fired_on",
+            value: firedOn,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(base + ".fired_on") : 0
+        }
+    ];
+    try {
+        if (typeof wtSoftMarkDirty === "function") {
+            wtSoftMarkDirty(base + ".jobStatus");
+            wtSoftMarkDirty(base + ".fired_on");
+        }
+    } catch (errM) {}
+
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return wtSaveOutcomeOk(ok); },
+            function () { return false; }
+        );
+    }
+    if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(
+            function (ok) { return wtSaveOutcomeOk(ok); },
+            function () { return false; }
+        );
+    }
+    return Promise.resolve(wtDomainWriterSave({
+        ops: ops,
+        atomic: true,
+        silentFail: !!options.silentFail
+    })).then(function (ok) { return wtSaveOutcomeOk(ok); }, function () { return false; });
+}
+
+function closeEmployeeFireDateModal() {
+    const back = document.getElementById("employeeFireDateModalBack");
+    if (back) back.classList.remove("show");
+}
+
+function openEmployeeFireDateModal(employeeId, deptCode, presetIso) {
+    const e = deptCode
+        ? ((resolveEmployeeCardForSave(deptCode, employeeId) || {}).employee || getEmployee(employeeId))
+        : getEmployee(employeeId);
+    if (!e) return;
+    let back = document.getElementById("employeeFireDateModalBack");
+    let modal = document.getElementById("employeeFireDateModal");
+    if (!back) {
+        back = document.createElement("div");
+        back.id = "employeeFireDateModalBack";
+        back.className = "rev-modal-back";
+        back.onclick = function (ev) {
+            if (ev.target === back) closeEmployeeFireDateModal();
+        };
+        document.body.appendChild(back);
+    }
+    if (!modal) {
+        modal = document.createElement("div");
+        modal.id = "employeeFireDateModal";
+        modal.className = "rev-modal";
+        back.appendChild(modal);
+    }
+    const iso = normalizeFiredOnIso(presetIso) || employeeFiredOnIso(e) || todayIsoDate();
+    const code = String(deptCode || "");
+    modal.innerHTML = "<h3>Дата увольнения</h3>"
+        + '<div class="note">' + escapeHtml(e.name || employeeId) + "</div>"
+        + '<div class="form-group"><label>Дата увольнения *</label>'
+        + '<input type="date" id="empFireDateInput" value="' + escapeAttribute(iso) + '"></div>'
+        + '<div class="note">Формат отображения: ДД.ММ.ГГГГ. Дата не заполняется автоматически.</div>'
+        + '<div class="toolbar" style="margin-top:12px">'
+        + '<button type="button" class="btn btn-primary" onclick="confirmEmployeeFireDate(\''
+        + escapeAttribute(employeeId) + "','" + escapeAttribute(code) + "')\">Сохранить</button> "
+        + '<button type="button" class="btn btn-secondary" onclick="cancelEmployeeFireDate(\''
+        + escapeAttribute(employeeId) + "','" + escapeAttribute(code) + "')\">Отмена</button></div>";
+    back.classList.add("show");
+    const inp = document.getElementById("empFireDateInput");
+    if (inp && typeof inp.focus === "function") inp.focus();
+}
+
+function cancelEmployeeFireDate(employeeId, deptCode) {
+    closeEmployeeFireDateModal();
+    paintEmployeeStatusUi();
+}
+
+function confirmEmployeeFireDate(employeeId, deptCode) {
+    const inp = document.getElementById("empFireDateInput");
+    const iso = normalizeFiredOnIso(inp && inp.value);
+    if (!iso) {
+        toast("Укажите дату увольнения.", "error");
+        return;
+    }
+    applyEmployeeJobStatusAndFiredOn(employeeId, deptCode, "fired", iso);
+}
+
+function applyEmployeeJobStatusAndFiredOn(employeeId, deptCode, status, firedOnIso) {
+    const code = String(deptCode || "").trim();
+    let employee = null;
+    if (code) {
+        const resolved = resolveEmployeeCardForSave(code, employeeId);
+        if (resolved.error) {
+            toast(resolved.error, "error");
+            paintEmployeeStatusUi();
+            return;
+        }
+        employee = resolved.employee;
+    } else {
+        employee = getEmployee(employeeId);
+    }
+    if (!employee) {
+        toast("Сотрудник не найден.", "error");
+        return;
+    }
+    const prevStatus = employee.jobStatus === "fired" ? "fired" : "working";
+    const prevFired = employeeFiredOnIso(employee);
+    const nextStatus = status === "fired" ? "fired" : "working";
+    const nextFired = nextStatus === "fired" ? normalizeFiredOnIso(firedOnIso) : "";
+    if (nextStatus === "fired" && !nextFired) {
+        toast("Укажите дату увольнения.", "error");
+        openEmployeeFireDateModal(employeeId, code, "");
+        return;
+    }
+    employee.jobStatus = nextStatus;
+    employee.fired_on = nextFired;
+    closeEmployeeFireDateModal();
+    paintEmployeeStatusUi();
+    Promise.resolve(wtSaveJobStatusFiredOnOps(employeeId, code || employeeHomeDeptCode(employeeId), {})).then(function (ok) {
+        if (!ok) {
+            employee.jobStatus = prevStatus;
+            employee.fired_on = prevFired;
+            paintEmployeeStatusUi();
+            toast("Не удалось сохранить статус и дату увольнения.", "error");
+            return;
+        }
+        toast(nextStatus === "fired"
+            ? ("Уволен с " + formatFiredOnDisplay(nextFired))
+            : "Статус: работает");
+    }, function () {
+        employee.jobStatus = prevStatus;
+        employee.fired_on = prevFired;
+        paintEmployeeStatusUi();
+        toast("Не удалось сохранить статус и дату увольнения.", "error");
+    });
+}
+
+function onEmployeeJobStatusChange(employeeId, value, deptCode) {
+    if (shopUiQuiet) return;
+    if (isSummary() && !canEditStaff()) return;
+    if (value === "fired") {
+        openEmployeeFireDateModal(employeeId, deptCode || "", employeeFiredOnIso(getEmployee(employeeId)));
+        return;
+    }
+    applyEmployeeJobStatusAndFiredOn(employeeId, deptCode || "", "working", "");
+}
+
+function onEmployeeFiredOnChange(employeeId, value, deptCode) {
+    if (shopUiQuiet) return;
+    if (isSummary() && !canEditStaff()) return;
+    const employee = deptCode
+        ? ((resolveEmployeeCardForSave(deptCode, employeeId) || {}).employee || getEmployee(employeeId))
+        : getEmployee(employeeId);
+    if (!employee) return;
+    const iso = normalizeFiredOnIso(value);
+    if (employee.jobStatus === "fired") {
+        if (!iso) {
+            toast("Для уволенного укажите дату увольнения или верните статус «Работает».", "error");
+            paintEmployeeStatusUi();
+            return;
+        }
+        applyEmployeeJobStatusAndFiredOn(employeeId, deptCode || "", "fired", iso);
+        return;
+    }
+    // Работает: дату не ставим «молча» и не меняем статус из-за даты.
+    if (iso) {
+        toast("Дата увольнения нужна только при статусе «Уволен».", "error");
+        paintEmployeeStatusUi();
+    }
 }
 
 /**
@@ -38683,6 +38973,7 @@ function renderFio() {
             + fieldBlock("Начало", '<input type="time" value="' + (employee.start || "08:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'start\',this.value,\'' + deptCode + '\')">', "emp-field-time")
             + fieldBlock("Конец", '<input type="time" value="' + (employee.end || "17:00") + '" onchange="updateEmployee(\'' + employee.id + '\',\'end\',this.value,\'' + deptCode + '\')">', "emp-field-time")
             + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff(), deptCode), "emp-field-status")
+            + employeeFiredOnFieldHtml(employee, !canEditStaff(), deptCode)
             + employeeSpuMeetingsFieldHtml(employee, !canEditStaff(), deptCode)
             + employeeOutsourcingFieldsHtml(employee, !canEditStaff() || fired, deptCode)
             + (isOutsourcingEmployee(employee)
@@ -38757,6 +39048,7 @@ function renderEmployees() {
             + '<div class="note">' + escapeHtml(employee.position || "")
             + (outsrc ? " · аутсорсинг" : "") + "</div></div>"
             + fieldBlock("Статус", jobStatusSelect(employee, false))
+            + employeeFiredOnFieldHtml(employee, false)
             + "<div class=\"note\">" + escapeHtml(employee.start || "08:00") + "–" + escapeHtml(employee.end || "17:00") + "</div>"
             + (outsrc
                 ? '<div class="note">аутсорсинг — без табеля</div>'
@@ -39763,7 +40055,12 @@ function updateEmployee(employeeId, field, value, deptCode) {
         return;
     }
     if (field === "jobStatus") {
-        employee.jobStatus = value === "fired" ? "fired" : "working";
+        // Совместное сохранение со статусом — только через onEmployeeJobStatusChange / OPS.
+        onEmployeeJobStatusChange(employeeId, value === "fired" ? "fired" : "working", deptCode);
+        return;
+    } else if (field === "fired_on") {
+        onEmployeeFiredOnChange(employeeId, value, deptCode);
+        return;
     } else if (field === "participates_in_spu_meetings") {
         employee.participates_in_spu_meetings = value === true || value === "true";
         employee.meeting_participant = employee.participates_in_spu_meetings;
@@ -40466,6 +40763,7 @@ function renderSummaryStaff() {
                 + fieldBlock("Рабочий отдел", place, "emp-field-dept")
                 + (tabSel ? fieldBlock("Рабочая группа", tabSel, "emp-field-tab") : "")
                 + fieldBlock("Статус", statusSel, "emp-field-status")
+                + employeeFiredOnFieldHtml(employee, locked, deptCode)
                 + employeeSpuMeetingsFieldHtml(employee, locked, deptCode)
                 + shopExtraFunctionsHtml(employee)
                 + employeeOutsourcingFieldsHtml(employee, locked || fired, deptCode)
@@ -42824,7 +43122,7 @@ function spuIndicatorKind(it) {
     if (it.source_type === "manual") return "manual";
     if (it.source_type === "one_c_future" || it.source_future === "one_c") return "one_c";
     if (it.source_type === "calculated" || it.aggregation_type === "formula" || (Array.isArray(it.sources) && it.sources.length > 1)) return "calculated";
-    if (it.source_type === "worktime_metric" || it.source_type === "timesheet") return "worktime";
+    if (it.source_type === "worktime_metric" || it.source_type === "timesheet" || it.source_type === "staff_directory") return "worktime";
     return "automatic";
 }
 
@@ -42836,7 +43134,7 @@ function spuIndicatorUiKind(it) {
     if (k === "calculated") return "calculated";
     if (k === "one_c" || it.source_type === "one_c_future" || it.source_future === "one_c") return "one_c";
     if (k === "worktime" || k === "automatic") return "worktime";
-    if (it.source_type === "worktime_metric" || it.source_type === "timesheet" || it.source_type === "sales_plan" || it.source_type === "kpi") return "worktime";
+    if (it.source_type === "worktime_metric" || it.source_type === "timesheet" || it.source_type === "staff_directory" || it.source_type === "sales_plan" || it.source_type === "kpi") return "worktime";
     return "worktime";
 }
 
@@ -43245,6 +43543,9 @@ function mgmtReadSourceFact(src, parent, stack) {
     if (src.source_type === "timesheet") {
         const days = mgmtDaysInPeriod();
         return { value: mgmtTimesheetFact(src.source_department_id || (parent && parent.department_id), src.source_timesheet_agg, days), status: "auto" };
+    }
+    if (src.source_type === "staff_directory") {
+        return mgmtReadStaffDirectoryValue(parent, src.source_department_id || (parent && parent.department_id) || "");
     }
     if (src.source_type === "finance" || src.source_type === "spu_indicator" || src.source_type === "manual") {
         const oid = src.source_indicator_id;
@@ -44747,7 +45048,7 @@ function renderSpuIndSourcesBox() {
         html += '<div class="spu-src-row" data-source-id="' + escapeAttribute(s.source_id) + '" style="border:1px solid var(--border);border-radius:8px;padding:8px;margin:8px 0">'
             + "<div class=\"note\">Источник №" + (idx + 1) + "</div>"
             + '<div class="form-group"><label>Тип источника</label><select class="spu-src-type" onchange="spuIndOnTypeChange()">'
-            + [["worktime_metric", "Метрика Work Time"], ["timesheet", "Work Time / Табель"], ["finance", "Финансовый показатель"], ["spu_indicator", "Другой показатель СПУ"], ["manual", "Ручной ввод"], ["sales_plan", "План продаж"], ["one_c_future", "1С (позже)"], ["kpi", "KPI"]].map(function (p) {
+            + [["worktime_metric", "Метрика Work Time"], ["timesheet", "Work Time / Табель"], ["staff_directory", "Справочник сотрудников"], ["finance", "Финансовый показатель"], ["spu_indicator", "Другой показатель СПУ"], ["manual", "Ручной ввод"], ["sales_plan", "План продаж"], ["one_c_future", "1С (позже)"], ["kpi", "KPI"]].map(function (p) {
                 return '<option value="' + p[0] + '"' + (type === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
             }).join("")
             + "</select></div>";
@@ -44763,6 +45064,14 @@ function renderSpuIndSourcesBox() {
                 html += '<option value="' + p[0] + '"' + (s.source_timesheet_agg === p[0] ? " selected" : "") + ">" + escapeHtml(p[1]) + "</option>";
             });
             html += "</select></div>";
+        } else if (type === "staff_directory") {
+            html += '<div class="form-group"><label>Рабочие подразделения</label><select class="spu-src-dept"><option value="">Все</option>';
+            DEPT_DEFAULTS.forEach(function (d) {
+                html += '<option value="' + escapeAttribute(d.code) + '"' + (s.source_department_id === d.code ? " selected" : "") + ">"
+                    + escapeHtml(d.name) + "</option>";
+            });
+            html += "</select></div>";
+            html += '<div class="note">Численность на конец среды (чт–ср). Учитываются все действующие, включая аутсорсинг; без табеля и без фильтра «Участвует в СПУ». Один employee_id — один человек.</div>';
         } else if (type === "sales_plan") {
             html += '<div class="form-group"><label>План продаж</label><select class="spu-src-spview">'
                 + '<option value="all"' + (s.source_sales_plan_view === "all" ? " selected" : "") + ">Все подразделения</option>";
@@ -44878,6 +45187,7 @@ function saveSpuOrgIndicator() {
         sources = (spuIndFormSources || []).filter(function (s) {
             if (!s) return false;
             if (s.source_type === "timesheet") return !!s.source_timesheet_agg;
+            if (s.source_type === "staff_directory") return true;
             if (s.source_type === "sales_plan" || s.source_type === "kpi" || s.source_type === "one_c_future") return true;
             if (s.source_type === "finance" || s.source_type === "spu_indicator" || s.source_type === "manual") return !!s.source_indicator_id && s.source_indicator_id !== editId;
             const m = shopMetricCatalogById(s.source_metric_id);
@@ -45044,31 +45354,53 @@ function saveSpuOrgIndicator() {
     spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode);
     const m0 = shopMetricCatalogById(first.source_metric_id);
     if (m0 && !it.department_id) it.department_id = metricDepartmentId(m0) || it.department_id || "";
-    sources.forEach(function (s) {
-        const m = shopMetricCatalogById(s.source_metric_id);
-        if (!m) return;
-        if (!Array.isArray(m.result_routes)) m.result_routes = [];
-        const srcKind = s.source_result === "group_total" ? "group_total" : (s.source_result === "fact" ? "fact" : "department_total");
-        const routeDup = m.result_routes.some(function (r) {
-            return r && r.spu_indicator_id === it.indicator_id
-                && String(r.target_org_node_id || "") === String(target)
-                && String(r.source || "") === srcKind
-                && String(r.source_work_tab_id || "") === String(s.source_work_tab_id || "");
-        });
-        if (!routeDup) {
-            m.result_routes.push({
-                route_id: nextPrefixedId("rr", m.result_routes.map(function (r) { return r && r.route_id; })),
-                source: srcKind,
-                source_work_tab_id: s.source_work_tab_id || "",
-                target: "spu",
-                target_org_node_id: target,
-                spu_indicator_id: it.indicator_id
-            });
-        }
-        if (typeof applyMetricResultRoute === "function") applyMetricResultRoute(m);
+    const onlyStaffDirectory = sources.length > 0 && sources.every(function (s) {
+        return s && s.source_type === "staff_directory";
     });
+    if (!onlyStaffDirectory) {
+        sources.forEach(function (s) {
+            const m = shopMetricCatalogById(s.source_metric_id);
+            if (!m) return;
+            if (!Array.isArray(m.result_routes)) m.result_routes = [];
+            const srcKind = s.source_result === "group_total" ? "group_total" : (s.source_result === "fact" ? "fact" : "department_total");
+            const routeDup = m.result_routes.some(function (r) {
+                return r && r.spu_indicator_id === it.indicator_id
+                    && String(r.target_org_node_id || "") === String(target)
+                    && String(r.source || "") === srcKind
+                    && String(r.source_work_tab_id || "") === String(s.source_work_tab_id || "");
+            });
+            if (!routeDup) {
+                m.result_routes.push({
+                    route_id: nextPrefixedId("rr", m.result_routes.map(function (r) { return r && r.route_id; })),
+                    source: srcKind,
+                    source_work_tab_id: s.source_work_tab_id || "",
+                    target: "spu",
+                    target_org_node_id: target,
+                    spu_indicator_id: it.indicator_id
+                });
+            }
+            if (typeof applyMetricResultRoute === "function") applyMetricResultRoute(m);
+        });
+    }
     it.indicator_id = keepId;
     it.spu_indicator_id = keepId;
+    // Справочник сотрудников: узкий OPS indicator (+ план при необходимости), без широкого saveApp.
+    if (onlyStaffDirectory) {
+        wtPersistMgmtBranches({
+            plans: !!planVal,
+            indicators: true
+        }, {
+            planIndicatorIds: planVal ? [keepId] : null,
+            indicatorIds: [keepId],
+            paint: function () {
+                closeMgmtModal();
+                if (mgmtTab === "structure") spuStructureTab = "indicators";
+                renderManagement();
+            },
+            okToast: "Показатель сохранён."
+        });
+        return;
+    }
     saveApp();
     closeMgmtModal();
     if (mgmtTab === "structure") spuStructureTab = "indicators";
@@ -45681,6 +46013,9 @@ function spuSourceShortLabel(s) {
     if (!s) return "";
     if (s.source_type === "timesheet") {
         return "Табель · " + mgmtDeptName(s.source_department_id) + " · " + spuTimesheetAggLabel(s.source_timesheet_agg);
+    }
+    if (s.source_type === "staff_directory") {
+        return "Справочник сотрудников · " + (s.source_department_id ? mgmtDeptName(s.source_department_id) : "Все");
     }
     if (s.source_type === "finance" || s.source_type === "spu_indicator" || s.source_type === "manual") {
         const other = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === s.source_indicator_id; });
@@ -46848,6 +47183,7 @@ function mgmtFormatPct(pct) {
 function mgmtSourceLabel(type) {
     if (type === "worktime_metric") return "Метрики";
     if (type === "timesheet") return "Табель";
+    if (type === "staff_directory") return "Справочник сотрудников";
     if (type === "kpi") return "KPI";
     if (type === "sales_plan") return "План продаж";
     if (type === "manual") return "Ручной ввод";
@@ -46858,6 +47194,7 @@ function mgmtSourceLabel(type) {
 
 function mgmtFormatValue(it, value, status) {
     if (status === "one_c") return "Источник 1С не подключен";
+    if (status === "unfrozen") return "не зафиксировано";
     if (value == null || value === "") return "—";
     const n = Number(value);
     if (!Number.isFinite(n)) return "—";
@@ -46924,6 +47261,264 @@ function mgmtTimesheetFact(deptCode, agg, days) {
     if (agg === "weekend") return weekend;
     if (agg === "personal") return personal;
     return ya;
+}
+
+/**
+ * Численность из «Общее → Сотрудники» на дату asOfIso (обычно конец среды).
+ * Уникальный employee_id; аутсорсинг включён; табель и «Участвует в СПУ» не используются.
+ */
+function mgmtStaffDirectoryFact(deptCode, asOfIso) {
+    const codes = deptCode
+        ? [String(deptCode)]
+        : ((typeof DEPT_DEFAULTS !== "undefined" ? DEPT_DEFAULTS : []).map(function (d) { return d.code; }));
+    const seen = {};
+    let n = 0;
+    codes.forEach(function (code) {
+        const w = typeof findWorkspaceByCode === "function" ? findWorkspaceByCode(code) : null;
+        if (!w) return;
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            if (!employeeCountsInStaffDirectoryOnDate(e, asOfIso)) return;
+            seen[e.id] = true;
+            n += 1;
+        });
+    });
+    return n;
+}
+
+function mgmtStaffDirectoryAsOfIso() {
+    const period = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
+    if (period && period.end_date) return String(period.end_date).slice(0, 10);
+    const days = typeof mgmtDaysInPeriod === "function" ? mgmtDaysInPeriod() : [];
+    if (days.length) {
+        const last = days[days.length - 1];
+        if (last && last.iso) return String(last.iso).slice(0, 10);
+        if (last && last.month && last.day) {
+            const dd = ("0" + last.day).slice(-2);
+            return String(last.month) + "-" + dd;
+        }
+    }
+    return typeof todayIsoDate === "function" ? todayIsoDate() : "";
+}
+
+function mgmtStaffDirectoryPeriodIsClosed(asOfIso) {
+    const asOf = normalizeFiredOnIso(asOfIso) || String(asOfIso || "").slice(0, 10);
+    const today = typeof todayIsoDate === "function" ? todayIsoDate() : "";
+    return !!(asOf && today && asOf < today);
+}
+
+function mgmtManualFactAtPeriodKey(indicatorId, periodKey) {
+    if (!appData || !appData.management || !appData.management.manualFacts) return null;
+    const key = String(periodKey || "");
+    if (!key) return null;
+    const rec = appData.management.manualFacts[key] && appData.management.manualFacts[key][indicatorId];
+    if (rec && rec.value != null && rec.value !== "") return Number(rec.value);
+    return null;
+}
+
+/**
+ * Чтение численности справочника.
+ * Открытая неделя — живой расчёт (без записи в manualFacts).
+ * Закрытая — только сохранённый факт; иначе «не зафиксировано».
+ * Автозапись при чтении / F5 / смене недели запрещена.
+ */
+function mgmtReadStaffDirectoryValue(it, deptCode) {
+    const asOf = mgmtStaffDirectoryAsOfIso();
+    const iid = it && it.indicator_id;
+    const frozen = iid && typeof mgmtManualFact === "function" ? mgmtManualFact(iid) : null;
+    const closed = mgmtStaffDirectoryPeriodIsClosed(asOf);
+    if (closed && frozen != null && Number.isFinite(Number(frozen))) {
+        return { value: Number(frozen), status: "frozen" };
+    }
+    if (closed) {
+        return { value: null, status: "unfrozen" };
+    }
+    const live = mgmtStaffDirectoryFact(deptCode, asOf);
+    return { value: live, status: "auto" };
+}
+
+function spuIndicatorIsStaffDirectory(it) {
+    if (!it) return false;
+    if (it.source_type === "staff_directory") return true;
+    const sources = typeof spuNormalizeSources === "function" ? spuNormalizeSources(it) : (it.sources || []);
+    return !!(sources.length === 1 && sources[0] && sources[0].source_type === "staff_directory");
+}
+
+function spuStaffDirectoryDeptCode(it) {
+    if (!it) return "";
+    const sources = typeof spuNormalizeSources === "function" ? spuNormalizeSources(it) : (it.sources || []);
+    let i;
+    for (i = 0; i < sources.length; i++) {
+        if (sources[i] && sources[i].source_type === "staff_directory") {
+            return String(sources[i].source_department_id || it.department_id || "");
+        }
+    }
+    return String(it.department_id || "");
+}
+
+/** Права на фиксацию/исправление факта численности — те же, что у фактов СПУ. */
+function canEditStaffDirectoryFact() {
+    return typeof canEditMgmtIndicators === "function" && canEditMgmtIndicators();
+}
+
+/**
+ * Модалка фиксации или исправления численности недели (только после подтверждения → OPS).
+ * mode: "freeze" | "correct"
+ */
+function openStaffDirectoryFactModal(indicatorId, weekFromIso, mode) {
+    if (!canEditStaffDirectoryFact()) {
+        toast("Нет права изменять факты показателей СПУ.", "error");
+        return;
+    }
+    const it = ((appData.management && appData.management.indicators) || []).find(function (x) {
+        return x && x.indicator_id === indicatorId;
+    });
+    if (!it || !spuIndicatorIsStaffDirectory(it)) {
+        toast("Показатель не использует справочник сотрудников.", "error");
+        return;
+    }
+    const weekFrom = String(weekFromIso || "");
+    const pack = typeof mgmtRunInThuWeek === "function"
+        ? mgmtRunInThuWeek(weekFrom, function () {
+            const period = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
+            const dept = spuStaffDirectoryDeptCode(it);
+            const asOf = (period && period.end_date) || "";
+            const periodKey = (period && period.period_key) || (typeof mgmtPeriodKey === "function" ? mgmtPeriodKey() : "");
+            const proposed = mgmtStaffDirectoryFact(dept, asOf);
+            const existing = mgmtManualFactAtPeriodKey(it.indicator_id, periodKey);
+            const closed = mgmtStaffDirectoryPeriodIsClosed(asOf);
+            return {
+                period: period,
+                periodKey: periodKey,
+                asOf: asOf,
+                proposed: proposed,
+                existing: existing,
+                closed: closed,
+                dept: dept
+            };
+        })
+        : null;
+    if (!pack || !pack.periodKey) {
+        toast("Не удалось определить неделю СПУ.", "error");
+        return;
+    }
+    const isCorrect = mode === "correct" || (pack.existing != null && Number.isFinite(Number(pack.existing)));
+    if (isCorrect && (pack.existing == null || !Number.isFinite(Number(pack.existing)))) {
+        toast("Сначала зафиксируйте численность недели.", "error");
+        return;
+    }
+    const startRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(pack.period.start_date) : pack.period.start_date;
+    const endRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(pack.period.end_date) : pack.period.end_date;
+    const asOfRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(pack.asOf) : pack.asOf;
+    const initVal = isCorrect ? Number(pack.existing) : Number(pack.proposed);
+    const warn = pack.closed
+        ? '<div class="note" style="color:#8a5a00;margin-top:8px">Внимание: для закрытой недели расчёт по текущему справочнику может быть неточным (например, сотрудники, появившиеся позже). Проверьте число перед сохранением.</div>'
+        : '<div class="note" style="margin-top:8px">Неделя ещё открыта: после закрытия будет использоваться зафиксированный факт, а не live-расчёт.</div>';
+    const title = isCorrect ? "Исправить факт недели" : "Зафиксировать численность недели";
+    const oldBlock = isCorrect
+        ? ('<div class="form-group"><label>Текущий факт</label><div><strong>'
+            + escapeHtml(String(pack.existing)) + "</strong></div></div>")
+        : ('<div class="form-group"><label>Предлагаемая численность (справочник)</label><div>'
+            + escapeHtml(String(pack.proposed)) + "</div></div>");
+    let html = "<h3>" + escapeHtml(title) + "</h3>"
+        + '<div class="note">' + escapeHtml(it.name || indicatorId) + "</div>"
+        + '<div class="form-group"><label>Период (чт–ср)</label><div>'
+        + escapeHtml(String(startRu) + " – " + String(endRu)) + "</div></div>"
+        + '<div class="form-group"><label>Окончание недели (среда)</label><div>'
+        + escapeHtml(String(asOfRu)) + "</div></div>"
+        + oldBlock
+        + '<div class="form-group"><label>' + (isCorrect ? "Новое значение *" : "Численность к фиксации *") + "</label>"
+        + '<input type="number" id="staffDirFactValue" min="0" step="1" inputmode="numeric" value="'
+        + escapeAttribute(String(initVal)) + '"></div>'
+        + warn
+        + '<div class="toolbar" style="margin-top:12px">'
+        + '<button type="button" class="btn btn-primary" onclick="confirmStaffDirectoryFactModal()">'
+        + (isCorrect ? "Сохранить исправление" : "Подтвердить фиксацию") + "</button> "
+        + '<button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Отмена</button></div>';
+    window._staffDirFactDraft = {
+        indicatorId: indicatorId,
+        periodKey: pack.periodKey,
+        weekFrom: weekFrom,
+        mode: isCorrect ? "correct" : "freeze",
+        oldValue: pack.existing,
+        proposed: pack.proposed
+    };
+    openMgmtModal(html);
+    const inp = document.getElementById("staffDirFactValue");
+    if (inp && typeof inp.focus === "function") inp.focus();
+}
+
+function confirmStaffDirectoryFactModal() {
+    if (!canEditStaffDirectoryFact()) {
+        toast("Нет права изменять факты показателей СПУ.", "error");
+        return;
+    }
+    const draft = window._staffDirFactDraft;
+    if (!draft || !draft.indicatorId || !draft.periodKey) {
+        toast("Черновик фиксации потерян. Откройте действие снова.", "error");
+        return;
+    }
+    const inp = document.getElementById("staffDirFactValue");
+    const raw = String((inp && inp.value) != null ? inp.value : "").trim().replace(/\s/g, "").replace(",", ".");
+    if (!/^\d+$/.test(raw)) {
+        toast("Введите целое неотрицательное число.", "error");
+        return;
+    }
+    const nextVal = Number(raw);
+    if (!Number.isFinite(nextVal) || nextVal < 0 || String(nextVal) !== raw) {
+        toast("Введите целое неотрицательное число.", "error");
+        return;
+    }
+    if (draft.mode === "correct") {
+        const oldN = Number(draft.oldValue);
+        if (Number.isFinite(oldN) && oldN === nextVal) {
+            toast("Новое значение совпадает с текущим.", "error");
+            return;
+        }
+    }
+    const indicatorId = draft.indicatorId;
+    const periodKey = draft.periodKey;
+    const mode = draft.mode;
+    const oldValue = draft.oldValue;
+    window._staffDirFactDraft = null;
+    closeMgmtModal();
+    Promise.resolve(setMgmtManualFact(indicatorId, nextVal, {
+        periodKey: periodKey,
+        source: mode === "correct" ? "staff_directory_correct" : "staff_directory_freeze",
+        recordCorrection: mode === "correct",
+        previousValue: oldValue,
+        requireStaffFactPerm: true,
+        persist: true,
+        okToast: mode === "correct" ? "Факт недели исправлен." : "Численность недели зафиксирована.",
+        paint: function () {
+            try { renderManagement(); } catch (err) { console.error(err); }
+        }
+    })).then(function (ok) {
+        if (!wtSaveOutcomeOk(ok)) {
+            toast("Не удалось сохранить факт численности.", "error");
+        }
+    }, function () {
+        toast("Не удалось сохранить факт численности.", "error");
+    });
+}
+
+function staffDirectoryFactActionsHtml(it, weekFromIso, pack) {
+    if (!it || !spuIndicatorIsStaffDirectory(it) || !canEditStaffDirectoryFact()) return "";
+    const weekFrom = escapeAttribute(String(weekFromIso || ""));
+    const iid = escapeAttribute(String(it.indicator_id || ""));
+    const has = pack && pack.read && pack.read.status === "frozen"
+        && pack.fact != null && Number.isFinite(Number(pack.fact));
+    if (has) {
+        return '<div class="note"><button type="button" class="btn btn-secondary btn-small" onclick="event.stopPropagation();openStaffDirectoryFactModal(\''
+            + iid + "','" + weekFrom + "','correct')\">Исправить факт недели</button></div>";
+    }
+    const closedUnfrozen = pack && pack.read && pack.read.status === "unfrozen";
+    const openWeek = pack && pack.read && pack.read.status === "auto";
+    if (closedUnfrozen || openWeek) {
+        return '<div class="note"><button type="button" class="btn btn-secondary btn-small" onclick="event.stopPropagation();openStaffDirectoryFactModal(\''
+            + iid + "','" + weekFrom + "','freeze')\">Зафиксировать численность недели</button></div>";
+    }
+    return "";
 }
 
 function mgmtMetricFactDeptCodes(deptCode, metricId) {
@@ -47821,21 +48416,54 @@ function wtPersistMgmtBranches(flags, options) {
 
 function setMgmtManualFact(indicatorId, value, options) {
     options = options || {};
+    if (options.persist !== false && options.requireStaffFactPerm
+        && typeof canEditStaffDirectoryFact === "function" && !canEditStaffDirectoryFact()) {
+        toast("Нет права изменять факты показателей СПУ.", "error");
+        return Promise.resolve(false);
+    }
     ensureManagement();
-    const key = mgmtPeriodKey();
+    const key = options.periodKey || mgmtPeriodKey();
     if (!appData.management.manualFacts[key]) appData.management.manualFacts[key] = {};
     const raw = String(value == null ? "" : value).trim().replace(/\s/g, "").replace(",", ".");
     let cellRec = null;
     if (!raw) {
         delete appData.management.manualFacts[key][indicatorId];
     } else {
+        const prevCell = appData.management.manualFacts[key][indicatorId];
+        const corrections = (prevCell && Array.isArray(prevCell.corrections))
+            ? prevCell.corrections.slice()
+            : [];
+        let previousValue = options.previousValue;
+        if (previousValue == null && prevCell && prevCell.value != null && prevCell.value !== "") {
+            previousValue = prevCell.value;
+        }
+        if (options.recordCorrection && previousValue != null && String(previousValue) !== String(raw)) {
+            // История корректировок в ячейке manualFacts (без отдельной таблицы БД).
+            corrections.push({
+                from_value: String(previousValue),
+                to_value: String(raw),
+                at: new Date().toISOString(),
+                by_user_id: currentAuthUserId()
+            });
+        }
         cellRec = {
             indicator_id: indicatorId,
             period: key,
             value: String(raw),
             entered_by_user_id: currentAuthUserId(),
-            updated_at: new Date().toISOString()
+            updated_at: new Date().toISOString(),
+            source: options.source || (prevCell && prevCell.source) || ""
         };
+        if (!cellRec.source) delete cellRec.source;
+        if (options.recordCorrection && previousValue != null) {
+            cellRec.previous_value = String(previousValue);
+        } else if (prevCell && prevCell.previous_value != null) {
+            cellRec.previous_value = prevCell.previous_value;
+        }
+        if (corrections.length) cellRec.corrections = corrections;
+        else if (prevCell && Array.isArray(prevCell.corrections) && prevCell.corrections.length) {
+            cellRec.corrections = prevCell.corrections;
+        }
         appData.management.manualFacts[key][indicatorId] = cellRec;
     }
     const periodKey = key;
@@ -48442,6 +49070,7 @@ function mgmtReadIndicator(it, stack) {
     if (type === "manual") return { value: mgmtManualFact(it.indicator_id), status: "manual" };
     if (type === "METRIC") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days, it), status: "auto" };
     if (type === "timesheet") return { value: mgmtTimesheetFact(it.department_id, it.source_timesheet_agg, days), status: "auto" };
+    if (type === "staff_directory") return mgmtReadStaffDirectoryValue(it, it.department_id || "");
     if (type === "worktime_metric") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days, it), status: "auto" };
     if (type === "sales_plan") return { value: mgmtSalesPlanFact(it), status: "auto" };
     if (type === "aggregate_children") {
@@ -48516,6 +49145,10 @@ function mgmtSourcePath(it) {
         return path;
     }
     if (it.source_type === "timesheet") return "Табель → " + mgmtDeptName(it.department_id) + " → " + (it.source_timesheet_agg || "дни");
+    if (it.source_type === "staff_directory") {
+        return "Общее → Сотрудники → численность на конец среды"
+            + (it.department_id ? (" → " + mgmtDeptName(it.department_id)) : " → Все подразделения");
+    }
     if (it.source_type === "sales_plan") {
         if (it.source_sales_plan_view === "sales") return "Территория → Торговые представители → Общие продажи";
         if (it.source_sales_plan_view === "warehouse") return "Территория → Склад → Продажи (план продаж склада)";
@@ -50557,7 +51190,17 @@ function renderMgmtPlanFactHtml() {
             + '<td class="pf-left pf-sticky-1">' + escapeHtml(owner ? owner.name : (headEmp ? headEmp.name : "—")) + "</td>"
             + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad pf-ind-name" style="padding-left:' + pad + 'px">'
             + (canBreak ? '<button type="button" class="pf-toggle" onclick="toggleMgmtPfBreak(\'' + it.indicator_id + "')\">" + (brOpen ? "▼" : "▶") + "</button>" : "")
-            + escapeHtml(it.name) + "</span></td>"
+            + escapeHtml(it.name)
+            + (spuIndicatorIsStaffDirectory(it)
+                ? ('<div class="note">'
+                    + (a.read && a.read.status === "frozen" ? "Неделя 1: зафиксировано" : (a.read && a.read.status === "unfrozen" ? "Неделя 1: не зафиксировано" : "Неделя 1: авторасчёт"))
+                    + " · "
+                    + (b.read && b.read.status === "frozen" ? "Неделя 2: зафиксировано" : (b.read && b.read.status === "unfrozen" ? "Неделя 2: не зафиксировано" : "Неделя 2: авторасчёт"))
+                    + "</div>"
+                    + staffDirectoryFactActionsHtml(it, w1.from, a)
+                    + staffDirectoryFactActionsHtml(it, w2.from, b))
+                : "")
+            + "</span></td>"
             + mgmtPfNumCell(it, w1.from, "plan", a, editOk)
             + mgmtPfNumCell(it, w1.from, "fact", a, editOk)
             + '<td class="pf-pct ' + mgmtPctClass(it, a.pct) + '">' + escapeHtml(mgmtFormatPct(a.pct)) + "</td>"
@@ -52272,6 +52915,8 @@ function mgmtEmployeeOptionsForDept(deptCode, selected) {
 }
 
 function closeMgmtModal() {
+    // Отмена модалки численности — без сохранения черновика.
+    try { window._staffDirFactDraft = null; } catch (errD) {}
     const back = document.getElementById("mgmtModalBack");
     const box = document.getElementById("mgmtModal");
     if (box) box.className = "rev-modal";
