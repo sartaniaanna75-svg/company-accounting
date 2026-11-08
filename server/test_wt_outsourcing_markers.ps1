@@ -28,7 +28,9 @@ Ok ($app -match "isOutsourcingEmployee\(employee\)") "calculateEmployee branch /
 Ok ($app -match "isOutsourcingEmployee\(getEmployee\(toId\)\)") "timesheet pick blocks outsourcing"
 Ok ($app -match "isOutsourcingEmployee\(employee\)\) \{\s*\n\s*toast") "toggleAssign blocks outsourcing"
 Ok ($app -match "includeInMonthPayroll") "payroll filter hook present"
-Ok ($app -match "isOutsourcingEmployee\(e\) \|\| !includeInMonthPayroll\(e\)") "general sheet adds outsourcing cards"
+# Общая зарплата: union карточек отдела (как payrollEmployees), не только employeeIds / не только аутсорсинг.
+Ok ($app -match "(?s)function salaryEmployeeGroups\(\) \{.*?assignedIds\(w\)\.forEach.*?\(w\.employees \|\| \[\]\)\.forEach\(add\)") "general sheet unions workspace employees"
+Ok ($app -match "(?s)function salaryEmployeeGroups\(\) \{.*?includeInMonthPayroll\(e\)") "general sheet uses includeInMonthPayroll"
 Ok ($app -match "timesheetEmployeesForView[\s\S]{0,400}isOutsourcingEmployee\(e\)") "dept timesheet skips outsourcing"
 Ok ($app -notmatch "function includeInMonthPayroll\([^)]*\) \{\s*\r?\n\s*if \(isOutsourcingEmployee") "payroll no longer excludes outsourcing"
 Ok ($app -match "mgmtEmployeeParticipatesInSpu") "SPU uses existing meeting flag"

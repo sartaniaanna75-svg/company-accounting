@@ -16581,21 +16581,28 @@ function departmentMonthTotals(w, monthValue) {
     let late = 0;
     let accrued = 0;
     let pay = 0;
-    const ids = assignedIds(w).slice();
-    if (w.code === "drivers") {
-        (w.employees || []).forEach(function (e) {
-            if (isSalesRep(e) && ids.indexOf(e.id) === -1) ids.push(e.id);
-        });
+    const people = [];
+    const seen = {};
+    function add(e) {
+        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id]) return;
+        if (!includeInMonthPayroll(e)) return;
+        // ТП только в drivers (как salaryEmployeeGroups / uniqueAssignedEmployees).
+        if (isSalesRep(e) && w.code !== "drivers") return;
+        seen[e.id] = true;
+        people.push(e);
     }
-    ids.forEach(function (id) {
-        const data = calculateEmployee(id, monthValue, [w]);
+    // Как payrollEmployees / salaryEmployeeGroups: ids ∪ карточки отдела за выбранный месяц.
+    assignedIds(w).forEach(function (id) { add(findEmployeeIn(w, id)); });
+    (w.employees || []).forEach(add);
+    people.forEach(function (e) {
+        const data = calculateEmployee(e.id, monthValue, [w]);
         hours += data.hours;
         late += data.lateCount;
         accrued += data.accrued;
         pay += data.pay;
     });
     selectedMonth = keep;
-    return { count: ids.length, hours: hours, late: late, accrued: accrued, pay: pay };
+    return { count: people.length, hours: hours, late: late, accrued: accrued, pay: pay };
 }
 
 function uniqueAssignedEmployees() {
@@ -32279,23 +32286,19 @@ function salaryEmployeeGroups() {
     orderedDeptWorkspaces().forEach(function (w) {
         if (!salaryWorkspaceMatches(w)) return;
         const people = [];
-        assignedIds(w).forEach(function (id) {
-            const e = findEmployeeIn(w, id);
-            if (e && includeInMonthPayroll(e)) people.push(e);
-        });
-        // Аутсорсинг без employeeIds: в общую ведомость по своему отделу (те же salary.* данные).
-        (w.employees || []).forEach(function (e) {
-            if (!isOutsourcingEmployee(e) || !includeInMonthPayroll(e)) return;
-            if (people.some(function (p) { return p.id === e.id; })) return;
+        const seen = {};
+        function add(e) {
+            if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id]) return;
+            if (!includeInMonthPayroll(e)) return;
+            // ТП только в группе drivers (как uniqueAssignedEmployees / summary).
+            if (isSalesRep(e) && w.code !== "drivers") return;
+            seen[e.id] = true;
             people.push(e);
-        });
-        if (w.code === "drivers") {
-            (w.employees || []).forEach(function (e) {
-                if (!isSalesRep(e) || !includeInMonthPayroll(e)) return;
-                if (people.some(function (p) { return p.id === e.id; })) return;
-                people.push(e);
-            });
         }
+        assignedIds(w).forEach(function (id) { add(findEmployeeIn(w, id)); });
+        // Как payrollEmployees: карточка отдела входит в общую зарплату выбранного месяца
+        // даже без текущей галочки «В табель» (октябрь после снятия в ноябре).
+        (w.employees || []).forEach(add);
         if (summarySortMode === "name") people.sort(compareEmployeesByStatusThenName);
         if (people.length) groups.push({ dept: w, employees: people });
     });

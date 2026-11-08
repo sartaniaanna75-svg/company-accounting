@@ -26,15 +26,17 @@ function payrollEmployees(ws) {
 
 function salaryEmployeeGroups(ws) {
   const people = [];
-  (ws.employeeIds || []).forEach(function (id) {
-    const e = (ws.employees || []).find(function (x) { return x && x.id === id; });
-    if (e && includeInMonthPayroll(e)) people.push(e);
-  });
-  (ws.employees || []).forEach(function (e) {
-    if (!isOutsourcing(e) || !includeInMonthPayroll(e)) return;
-    if (people.some(function (p) { return p.id === e.id; })) return;
+  const seen = {};
+  function add(e) {
+    if (!e || !e.id || seen[e.id]) return;
+    if (!includeInMonthPayroll(e)) return;
+    seen[e.id] = true;
     people.push(e);
+  }
+  (ws.employeeIds || []).forEach(function (id) {
+    add((ws.employees || []).find(function (e) { return e && e.id === id; }));
   });
+  (ws.employees || []).forEach(add);
   return people;
 }
 

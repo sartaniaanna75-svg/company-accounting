@@ -9888,6 +9888,47 @@ class WtSummaryPayrollListAlignTests(unittest.TestCase):
         self.assertIn("(w.employees || []).forEach(add);", fn)
         self.assertIn("if (isSalesRep(e)) return;", fn)
 
+    def test_salary_employee_groups_unions_workspace_employees(self):
+        """Общая зарплата: карточка без employeeIds остаётся в месяце (октябрь после снятия галочки)."""
+        src = self._src()
+        fn = src[
+            src.find("function salaryEmployeeGroups(")
+            : src.find("function salaryVisibleEmployees(")
+        ]
+        self.assertIn("assignedIds(w).forEach", fn)
+        self.assertIn("(w.employees || []).forEach(add);", fn)
+        self.assertIn("includeInMonthPayroll(e)", fn)
+        self.assertIn("seen[e.id]", fn)
+        # Не ограничиваем добавление карточек только аутсорсингом.
+        self.assertNotIn("isOutsourcingEmployee(e) || !includeInMonthPayroll(e)", fn)
+        # Экспорт общей зарплаты идёт через тот же список.
+        export_fn = src[
+            src.find("function exportSalary(")
+            : src.find("function downloadCSV(")
+        ]
+        self.assertIn("salaryEmployeeGroups()", export_fn)
+
+    def test_department_month_totals_unions_workspace_employees(self):
+        """Анализ: строка отдела учитывает карточку без employeeIds (октябрь после снятия галочки)."""
+        src = self._src()
+        fn = src[
+            src.find("function departmentMonthTotals(")
+            : src.find("function uniqueAssignedEmployees(")
+        ]
+        self.assertIn("assignedIds(w).forEach", fn)
+        self.assertIn("(w.employees || []).forEach(add);", fn)
+        self.assertIn("includeInMonthPayroll(e)", fn)
+        self.assertIn("seen[e.id]", fn)
+        self.assertIn("count: people.length", fn)
+        self.assertNotIn("count: ids.length", fn)
+        # Сравнение месяцев в Анализе использует ту же функцию.
+        analysis = src[
+            src.find("function renderAnalysis(")
+            : src.find("function canEditShopMetricCatalog(")
+        ]
+        self.assertIn("departmentMonthTotals(w, selectedMonth)", analysis)
+        self.assertIn("departmentMonthTotals(w, m)", analysis)
+
     def test_warehouse_payroll_shows_taxi_under_oklad(self):
         src = self._src()
         row = src[
