@@ -5672,8 +5672,12 @@
                             </div>
                             <div class="form-group" id="employeeDupCheckBtnWrap" style="display:none;">
                                 <label for="employeeDupCheckBtn">&nbsp;</label>
-                                <button type="button" class="btn btn-secondary" id="employeeDupCheckBtn"
-                                    onclick="openEmployeeDupCheck()">Проверить дубли</button>
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                    <button type="button" class="btn btn-secondary" id="employeeDupCheckBtn"
+                                        onclick="openEmployeeDupCheck()">Проверить дубли</button>
+                                    <button type="button" class="btn btn-secondary" id="employeeDeleteBlockDiagBtn"
+                                        onclick="openEmployeeDeleteBlockDiag()">Диагностика удаления</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -20498,6 +20502,143 @@ function closeEmployeeDupCheck() {
     if (box) box.innerHTML = "";
 }
 
+/**
+ * READ ONLY: строки vacationPlans только для одного employee_id (без чужих ФИО).
+ * Не пишет в appData; работает по копии payload.
+ */
+function buildEmployeeVacationPlanDiagRows(payload, employeeId, year) {
+    const eid = String(employeeId || "").trim();
+    const y = String(year || "").trim();
+    const rows = [];
+    if (!eid || !y || !payload || typeof payload !== "object") return rows;
+    const list = payload.vacationPlans && payload.vacationPlans[y];
+    if (!Array.isArray(list)) return rows;
+    list.forEach(function (row) {
+        if (!row || String(row.employee_id || "").trim() !== eid) return;
+        rows.push({
+            employee_id: eid,
+            year: y,
+            planned_date: String(row.planned_date || ""),
+            planned_amount: row.planned_amount == null ? "" : row.planned_amount,
+            status: String(row.status || ""),
+            comment: String(row.comment || ""),
+            history_count: Array.isArray(row.history) ? row.history.length : 0,
+            meaningful: typeof wtVacationPlanRowMeaningful === "function"
+                ? !!wtVacationPlanRowMeaningful(row)
+                : null
+        });
+    });
+    return rows;
+}
+
+function findEmployeeNameInPayloadById(payload, employeeId) {
+    const eid = String(employeeId || "").trim();
+    if (!eid || !payload) return "";
+    let name = "";
+    ((payload.workspaces) || []).some(function (w) {
+        return ((w && w.employees) || []).some(function (e) {
+            if (e && String(e.id || "") === eid) {
+                name = String(e.name || "");
+                return true;
+            }
+            return false;
+        });
+    });
+    return name;
+}
+
+function renderEmployeeDeleteBlockDiagForm(box, presetId, presetYear) {
+    const eid = String(presetId || "").trim();
+    const y = String(presetYear || salaryUi.planYear || salaryMonthYear() || new Date().getFullYear());
+    box.innerHTML = '<h3 id="employeeDupCheckTitle">Диагностика блокировки удаления</h3>'
+        + '<div class="note">Только чтение. Поиск строго по employee_id. Данные не сохраняются, принудительное удаление недоступно.</div>'
+        + '<div class="form-group"><label for="empDeleteBlockDiagId">employee_id</label>'
+        + '<input id="empDeleteBlockDiagId" type="text" maxlength="64" value="' + escapeAttribute(eid) + '" placeholder="например T-O-000001"></div>'
+        + '<div class="form-group"><label for="empDeleteBlockDiagYear">Год графика отпускных</label>'
+        + '<input id="empDeleteBlockDiagYear" type="text" maxlength="4" value="' + escapeAttribute(y) + '"></div>'
+        + '<div class="rev-modal-actions">'
+        + '<button type="button" class="btn btn-primary" onclick="runEmployeeDeleteBlockDiag()">Показать</button> '
+        + '<button type="button" class="btn btn-secondary" onclick="closeEmployeeDupCheck()">Закрыть</button>'
+        + "</div>"
+        + '<div id="empDeleteBlockDiagResult" style="margin-top:12px;"></div>';
+}
+
+function renderEmployeeDeleteBlockDiagResult(host, pack, employeeId, year) {
+    if (!host) return;
+    const eid = String(employeeId || "").trim();
+    const y = String(year || "").trim();
+    const payload = pack && pack.payload;
+    const name = findEmployeeNameInPayloadById(payload, eid);
+    const rows = buildEmployeeVacationPlanDiagRows(payload, eid, y);
+    let html = '<div class="note">Источник: ' + escapeHtml((pack && pack.source) || "—")
+        + (pack && pack.version != null ? " · version " + escapeHtml(String(pack.version)) : "")
+        + "</div>";
+    html += "<p><strong>employee_id:</strong> " + escapeHtml(eid) + "</p>";
+    if (name) html += "<p><strong>ФИО по этому ID:</strong> " + escapeHtml(name) + "</p>";
+    else html += '<p class="note">Карточка с этим ID в payload не найдена (запись графика всё равно проверяется).</p>';
+    html += "<p><strong>Год графика:</strong> " + escapeHtml(y) + "</p>";
+    if (!rows.length) {
+        html += '<div class="emp-dup-msg">Строк vacationPlans[' + escapeHtml(y) + "] для этого employee_id нет.</div>";
+    } else {
+        html += '<table class="emp-dup-table"><thead><tr>'
+            + "<th>Плановая дата</th><th>Плановая сумма</th><th>Статус</th>"
+            + "<th>Комментарий</th><th>История (шт.)</th><th>Значимая для удаления</th>"
+            + "</tr></thead><tbody>";
+        rows.forEach(function (r) {
+            html += "<tr><td>" + escapeHtml(r.planned_date || "—") + "</td>"
+                + "<td>" + escapeHtml(r.planned_amount === "" || r.planned_amount == null ? "—" : String(r.planned_amount)) + "</td>"
+                + "<td>" + escapeHtml(r.status || "—") + "</td>"
+                + "<td>" + escapeHtml(r.comment || "—") + "</td>"
+                + "<td>" + escapeHtml(String(r.history_count)) + "</td>"
+                + "<td>" + (r.meaningful ? "да" : "нет") + "</td></tr>";
+        });
+        html += "</tbody></table>";
+        html += '<div class="note" style="margin-top:8px;">Критерии блокировки не менялись. Пустые заглушки не блокируют удаление.</div>';
+    }
+    host.innerHTML = html;
+}
+
+function openEmployeeDeleteBlockDiag(presetEmployeeId) {
+    if (typeof isAppAdmin !== "function" || !isAppAdmin()) {
+        toast("Диагностика удаления доступна только администратору.", "error");
+        return;
+    }
+    const back = document.getElementById("employeeDupCheckModalBack");
+    const box = document.getElementById("employeeDupCheckModal");
+    if (!back || !box) return;
+    renderEmployeeDeleteBlockDiagForm(box, presetEmployeeId || "", salaryUi.planYear || salaryMonthYear() || "");
+    back.classList.add("show");
+}
+
+function runEmployeeDeleteBlockDiag() {
+    if (typeof isAppAdmin !== "function" || !isAppAdmin()) {
+        toast("Диагностика удаления доступна только администратору.", "error");
+        return;
+    }
+    const idEl = document.getElementById("empDeleteBlockDiagId");
+    const yearEl = document.getElementById("empDeleteBlockDiagYear");
+    const host = document.getElementById("empDeleteBlockDiagResult");
+    const eid = String((idEl && idEl.value) || "").trim();
+    const y = String((yearEl && yearEl.value) || "").trim();
+    if (!eid) {
+        toast("Укажите employee_id", "error");
+        return;
+    }
+    if (!/^\d{4}$/.test(y)) {
+        toast("Укажите год графика (YYYY)", "error");
+        return;
+    }
+    if (host) host.innerHTML = '<div class="note">Загрузка актуальных данных…</div>';
+    loadPayloadForEmployeeDupCheck().then(function (pack) {
+        renderEmployeeDeleteBlockDiagResult(host, pack, eid, y);
+    }).catch(function (err) {
+        console.error(err);
+        if (host) {
+            host.innerHTML = '<div class="emp-dup-msg err">Не удалось получить данные. Состояние программы не изменялось.</div>';
+        }
+    });
+}
+
 function employeeDupCheckGroupHtml(title, groups) {
     if (!groups || !groups.length) {
         return '<div class="note" style="margin:0 0 12px;">' + escapeHtml(title) + ": нет</div>";
@@ -33299,7 +33440,8 @@ function findVacationPlanRecForMonth(employeeId, month) {
 function findVacationPlanRec(employeeId, year) {
     const y = String(year || salaryUi.planYear || salaryMonthYear());
     const emp = String(employeeId || "");
-    return vacationPlanYearList(y).find(function (x) { return x && String(x.employee_id) === emp; }) || null;
+    // Только чтение: не создавать vacationPlans[year] при просмотре графика.
+    return vacationPlanStoredYearList(y).find(function (x) { return x && String(x.employee_id) === emp; }) || null;
 }
 
 function ensureVacationPlanRec(employeeId) {
@@ -33708,7 +33850,8 @@ function renderSalary() {
     }
 
     function salaryRow(employee) {
-        ensureSalary(employee.id);
+        // Просмотр: без ensureSalary — иначе массовые пустые salary.* в DomainWriter.
+        // calculateEmployee уже читает через normalizeSalaryRecord(существующая|undefined).
         const data = calculateEmployee(employee.id);
         addSalarySums(sums, data);
         issuedRows.push(data);
