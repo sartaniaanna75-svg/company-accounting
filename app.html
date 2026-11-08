@@ -5681,6 +5681,17 @@
                             </div>
                         </div>
                     </div>
+                    <div class="metrics-tabs" id="summaryStaffArchiveTabs" style="margin:0 0 12px;">
+                        <button type="button" class="metrics-tab active" data-staff-list-mode="active"
+                            onclick="setSummaryStaffListMode('active')">Действующие</button>
+                        <button type="button" class="metrics-tab" data-staff-list-mode="archive"
+                            onclick="setSummaryStaffListMode('archive')">Архив</button>
+                        <button type="button" class="metrics-tab" data-staff-list-mode="all"
+                            onclick="setSummaryStaffListMode('all')">Все</button>
+                    </div>
+                    <div class="note" id="summaryStaffArchiveNote" style="margin:0 0 10px;">
+                        Действующие сотрудники. Уволенные — во вкладке «Архив» (те же карточки, без копий).
+                    </div>
                     <div id="summaryStaffList"></div>
                     <div class="toolbar" style="margin-top:14px;">
                         <button type="button" class="btn btn-primary" id="addSummaryEmployeeBtn" onclick="addSummaryEmployee()">+ Добавить сотрудника</button>
@@ -6493,6 +6504,8 @@ let currentSection = "timesheet";
 let summaryDeptFilter = "";
 let summaryWorkGroupFilter = "";
 let summaryStaffSearch = "";
+/** Вкладки справочника: active | archive | all. Только UI-фильтр, не хранилище. */
+let summaryStaffListMode = "active";
 let salaryUi = { inner: "sheet", vacYear: "", vacMonth: "", vacDept: "", vacEmployee: "", vacStatus: "", planYear: "", planView: "year", planMonth: "", planObject: "", planDept: "", planSearch: "", planNoDate: false, planPayFilter: "", objectFilter: "", deptFilter: "", collapsed: {}, planCollapsed: {} };
 let currentSummaryRole = null;
 let currentDeptRole = null;
@@ -9039,7 +9052,9 @@ function rememberServerUser(user) {
         departments: Array.isArray(user.departments) ? user.departments.slice() : [],
         permissions: user.permissions && typeof user.permissions === "object" ? Object.assign({}, user.permissions) : {},
         is_active: user.is_active !== false,
-        employee_id: String(user.employee_id || "")
+        employee_id: String(user.employee_id || ""),
+        // Только серверный флаг из /api/me|login (WT_OWNER_USER_ID). Клиент сам не назначает.
+        is_owner: user.is_owner === true
     };
     currentUserId = wtServerUser.user_id;
     try { wtBroadcastAuthIdentity(); } catch (errBc) {}
@@ -10074,6 +10089,11 @@ function canEditStaff() {
     return isTableAdmin() || userHasPerm("timesheet", "edit") || userHasPerm("settings", "edit");
 }
 
+/** Удаление карточек: только сессия владельца (server is_owner). Не все admin / canEditStaff. */
+function canOwnerDeleteEmployee() {
+    return !!(wtServerUser && wtServerUser.is_owner === true);
+}
+
 function isTableAdmin() {
     if (isAppAdmin()) return true;
     if (isSummary()) return false;
@@ -10210,6 +10230,47 @@ function changeSummaryWorkGroupFilter(value) {
 function changeSummaryStaffSearch(value) {
     summaryStaffSearch = String(value || "");
     if (isSummary() || isAdminEntry()) renderSummaryStaff();
+}
+
+function normalizeSummaryStaffListMode(mode) {
+    const m = String(mode || "").trim();
+    if (m === "archive" || m === "all") return m;
+    return "active";
+}
+
+/** Только фильтр отображения карточек; appData не меняет. */
+function setSummaryStaffListMode(mode) {
+    summaryStaffListMode = normalizeSummaryStaffListMode(mode);
+    if (isSummary() || isAdminEntry()) renderSummaryStaff();
+}
+
+function employeeMatchesSummaryStaffListMode(employee, mode) {
+    const m = normalizeSummaryStaffListMode(mode != null ? mode : summaryStaffListMode);
+    const fired = !!(employee && employee.jobStatus === "fired");
+    if (m === "archive") return fired;
+    if (m === "all") return true;
+    return !fired;
+}
+
+function syncSummaryStaffArchiveTabs() {
+    const mode = normalizeSummaryStaffListMode(summaryStaffListMode);
+    summaryStaffListMode = mode;
+    const host = document.getElementById("summaryStaffArchiveTabs");
+    if (host) {
+        host.querySelectorAll("[data-staff-list-mode]").forEach(function (btn) {
+            btn.classList.toggle("active", btn.getAttribute("data-staff-list-mode") === mode);
+        });
+    }
+    const note = document.getElementById("summaryStaffArchiveNote");
+    if (note) {
+        if (mode === "archive") {
+            note.textContent = "Архив уволенных. Те же карточки и employee_id; история табелей и зарплаты не удаляется. Восстановление — статус «Работает».";
+        } else if (mode === "all") {
+            note.textContent = "Полный справочник: действующие и уволенные.";
+        } else {
+            note.textContent = "Действующие сотрудники. Уволенные — во вкладке «Архив» (те же карточки, без копий).";
+        }
+    }
 }
 
 function syncSummaryStaffWorkGroupOptions() {
@@ -15977,13 +16038,20 @@ function commitEmployeeCard(employeeId, deptCode) {
 }
 
 function employeeCardActionsHtml(employee, deptCode) {
-    if (!canEditStaff()) return "";
+    const canEdit = canEditStaff();
+    const canDel = canOwnerDeleteEmployee();
+    if (!canEdit && !canDel) return "";
     const code = String(deptCode || (workspace() && workspace().code) || "");
     const deptArg = code ? (",'" + code + "'") : "";
     return '<div class="emp-actions">'
-        + '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\''
-        + employee.id + "'" + deptArg + ')">Сохранить</button>'
-        + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>'
+        + (canEdit
+            ? ('<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\''
+                + employee.id + "'" + deptArg + ')">Сохранить</button>')
+            : "")
+        + (canDel
+            ? ('<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\''
+                + employee.id + '\')">Удалить</button>')
+            : "")
         + "</div>";
 }
 
@@ -16313,6 +16381,20 @@ function onEmployeeJobStatusChange(employeeId, value, deptCode) {
     if (value === "fired") {
         openEmployeeFireDateModal(employeeId, deptCode || "", employeeFiredOnIso(getEmployee(employeeId)));
         return;
+    }
+    const emp = getEmployee(employeeId);
+    const wasFired = !!(emp && emp.jobStatus === "fired");
+    if (wasFired) {
+        const name = (emp && emp.name) ? emp.name : String(employeeId || "");
+        const ok = confirm(
+            'Вернуть «' + name + '» [' + String(employeeId || "") + '] в действующие?\n\n'
+            + "Исторические табели, зарплата, KPI и прочие данные за прошлые периоды сохраняются. "
+            + "Карточка снова появится во вкладке «Действующие»."
+        );
+        if (!ok) {
+            paintEmployeeStatusUi();
+            return;
+        }
     }
     applyEmployeeJobStatusAndFiredOn(employeeId, deptCode || "", "working", "");
 }
@@ -40780,7 +40862,10 @@ function wtEmployeeDeleteBlockedToast(employeeName, labels, employeeId) {
  * UI меняется только после успеха; при отказе — откат снимка.
  */
 function deleteEmployee(employeeId) {
-    if (isSummary() && !canEditStaff()) return;
+    if (!canOwnerDeleteEmployee()) {
+        toast("Удаление сотрудников доступно только владельцу программы.", "error");
+        return;
+    }
     const e = getEmployee(employeeId);
     if (!e) return;
     const eid = String(employeeId || "");
@@ -40789,7 +40874,13 @@ function deleteEmployee(employeeId) {
         wtEmployeeDeleteBlockedToast(e.name, labels, eid);
         return;
     }
-    if (!confirm('Удалить сотрудника "' + e.name + '"? Карточка без связанных данных будет удалена.')) return;
+    const confirmMsg = "Удалить ошибочную карточку?\n\n"
+        + "ФИО: " + String(e.name || "—") + "\n"
+        + "employee_id: " + eid + "\n"
+        + "Связанные данные: значимых связей не найдено.\n\n"
+        + "Удаляется только карточка без каскада табеля, зарплаты и KPI. "
+        + "При реальной истории удаление будет отклонено сервером.";
+    if (!confirm(confirmMsg)) return;
 
     const w = employeeHome(eid) || workspace();
     if (!w || w.type === "summary") return;
@@ -40914,10 +41005,12 @@ function deleteEmployee(employeeId) {
 function summaryDirectoryGroups() {
     const groups = [];
     const q = String(summaryStaffSearch || "").toLowerCase().replace(/\s+/g, " ").trim();
+    const listMode = normalizeSummaryStaffListMode(summaryStaffListMode);
     orderedDeptWorkspaces().forEach(function (w) {
         if (summaryDeptFilter && w.code !== summaryDeptFilter) return;
         const people = (w.employees || []).filter(function (employee) {
             if (!employee || !employee.id) return false;
+            if (!employeeMatchesSummaryStaffListMode(employee, listMode)) return false;
             if (summaryWorkGroupFilter) {
                 if (!employeeBelongsToWorkGroup(employee, w.code, summaryWorkGroupFilter)) return false;
             }
@@ -40952,15 +41045,21 @@ function renderSummaryStaff() {
 
     syncSummarySortControls();
     syncEmployeeDupCheckButton();
+    syncSummaryStaffArchiveTabs();
     const groups = summaryDirectoryGroups();
     const addBtn = document.getElementById("addSummaryEmployeeBtn");
-    if (addBtn) addBtn.style.display = canEditStaff() ? "" : "none";
+    const listMode = normalizeSummaryStaffListMode(summaryStaffListMode);
+    if (addBtn) addBtn.style.display = (canEditStaff() && listMode !== "archive") ? "" : "none";
     if (!groups.length) {
-        box.innerHTML = '<div class="empty-row">'
-            + (summaryDeptFilter || summaryWorkGroupFilter || summaryStaffSearch
-                ? "Нет сотрудников по выбранным фильтрам."
-                : "Сотрудников пока нет. Нажмите «+ Добавить сотрудника».")
-            + "</div>";
+        let emptyMsg = "Сотрудников пока нет. Нажмите «+ Добавить сотрудника».";
+        if (listMode === "archive") {
+            emptyMsg = summaryDeptFilter || summaryWorkGroupFilter || summaryStaffSearch
+                ? "В архиве нет сотрудников по выбранным фильтрам."
+                : "В архиве пока нет уволенных сотрудников.";
+        } else if (summaryDeptFilter || summaryWorkGroupFilter || summaryStaffSearch || listMode !== "active") {
+            emptyMsg = "Нет сотрудников по выбранным фильтрам.";
+        }
+        box.innerHTML = '<div class="empty-row">' + emptyMsg + "</div>";
         return;
     }
 
@@ -41017,8 +41116,10 @@ function renderSummaryStaff() {
                     : "")
                 + (locked
                     ? ""
-                    : '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + "'" + deptArg + ')">Сохранить</button>'
-                        + '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>')
+                    : '<button type="button" class="btn btn-primary btn-small" onclick="commitEmployeeCard(\'' + employee.id + "'" + deptArg + ')">Сохранить</button>')
+                + (canOwnerDeleteEmployee()
+                    ? '<button type="button" class="btn btn-danger btn-small" onclick="deleteEmployee(\'' + employee.id + '\')">Удалить</button>'
+                    : "")
                 + "</div>"
                 + "</div>";
         });

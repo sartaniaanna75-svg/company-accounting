@@ -345,6 +345,21 @@ def bootstrap_config_from_env() -> tuple[dict | None, str | None]:
     return {"display_name": name, "pin": pin, "user_id": user_id}, None
 
 
+def configured_owner_user_id() -> str:
+    """Явный user_id владельца из env. Пусто → удаление сотрудников запрещено всем."""
+    return _env("WT_OWNER_USER_ID").strip()
+
+
+def is_payload_owner(user: dict | None) -> bool:
+    """Владелец = точное совпадение session user_id с WT_OWNER_USER_ID. Не все admin."""
+    owner = configured_owner_user_id()
+    if not owner:
+        return False
+    if not user or user.get("is_active") is False:
+        return False
+    return str(user.get("user_id") or "").strip() == owner
+
+
 def public_user(user: dict | None) -> dict | None:
     if not user:
         return None
@@ -358,6 +373,15 @@ def public_user(user: dict | None) -> dict | None:
         "is_active": user.get("is_active") is not False,
         "employee_id": user.get("employee_id") or "",
     }
+
+
+def public_session_user(user: dict | None) -> dict | None:
+    """Ответ login/me: is_owner только для текущей сессии (серверный расчёт)."""
+    pub = public_user(user)
+    if not pub:
+        return None
+    pub["is_owner"] = is_payload_owner(user)
+    return pub
 
 
 def strip_secrets(value: Any) -> Any:
@@ -2381,6 +2405,19 @@ def employee_removals_denied(current: dict, incoming: dict) -> str | None:
     return None
 
 
+def employee_delete_owner_denied(user: dict | None, incoming: dict | None = None) -> str | None:
+    """
+    PUT: если в запросе есть удаление карточек — только WT_OWNER_USER_ID.
+    Без переменной или чужая сессия → employee_delete_forbidden.
+    """
+    items = collect_incoming_employee_removals(incoming if isinstance(incoming, dict) else {})
+    if not items:
+        return None
+    if not is_payload_owner(user):
+        return "employee_delete_forbidden"
+    return None
+
+
 def apply_employee_removals(payload: dict, removals: Any, allowed_depts: set[str] | None = None) -> None:
     """Удаляет карточки только по явному списку. Не трогает чужие отделы вне allowed_depts.
     Не чистит salary/timesheet/KPI — только employees/employeeIds.
@@ -4338,7 +4375,7 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
     if not ops_path_allowed(user, path, payload):
         return None, {"error": "forbidden", "message": "Недостаточно прав для этой записи."}
     your_value = op.get("value")
-    # Физическое удаление карточки через null — только без связанных исторических данных.
+    # Физическое удаление карточки через null — только владелец и без значимой истории.
     op_parts = path.split(".")
     if (
         len(op_parts) == 4
@@ -4346,6 +4383,12 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
         and op_parts[2] == "employees"
         and your_value is None
     ):
+        if not is_payload_owner(user):
+            return None, {
+                "error": "forbidden",
+                "message": "Удаление сотрудников доступно только владельцу программы.",
+                "path": path,
+            }
         rm_msg = employee_removal_block_message(payload, op_parts[3])
         if rm_msg:
             return None, {
@@ -5010,7 +5053,10 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     # Новые дубли ID блокируем; исторические (уже в current) — нет.
     if employee_id_put_denied(current, incoming):
         return None, "duplicate_employee_id"
-    # Физическое удаление карточки при связанных данных — отказ до merge.
+    # Удаление карточек: сначала владелец (env), затем значимая история.
+    denied_owner = employee_delete_owner_denied(user, incoming)
+    if denied_owner:
+        return None, denied_owner
     denied_rm = employee_removals_denied(current, incoming)
     if denied_rm:
         return None, denied_rm
@@ -5920,7 +5966,7 @@ def issue_login_session(user: dict, key: str):
     except Exception:
         return db_unavailable()
     extra = [("Set-Cookie", cookie_header(token, ttl))]
-    return json_bytes({"user": public_user(user)}, extra=extra)
+    return json_bytes({"user": public_session_user(user)}, extra=extra)
 
 
 def active_admin_users(payload: dict) -> list[dict]:
@@ -6113,7 +6159,7 @@ def handle_me(environ):
     user = current_user_from_state(environ, payload, user_id)
     if not user:
         return json_bytes({"error": "unauthorized"}, "401 Unauthorized")
-    return json_bytes({"user": public_user(user)})
+    return json_bytes({"user": public_session_user(user)})
 
 
 def handle_get_state(environ):
@@ -6222,6 +6268,14 @@ def handle_put_state(environ):
                 ),
             },
             "409 Conflict",
+        )
+    if denied == "employee_delete_forbidden":
+        return json_bytes(
+            {
+                "error": "employee_delete_forbidden",
+                "message": "Удаление сотрудников доступно только владельцу программы.",
+            },
+            "403 Forbidden",
         )
     if denied and denied.startswith("fr_conflict:"):
         list_key = denied.split(":", 1)[1]
