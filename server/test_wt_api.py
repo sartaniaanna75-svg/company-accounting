@@ -10570,6 +10570,29 @@ class WtSpuPlanFactNarrowOpsTests(unittest.TestCase):
         self.assertIn("{ persist: false }", apply)
         self.assertNotIn("saveApp();", apply)
 
+    def test_save_spu_org_indicator_no_saveapp_colon_paths(self):
+        """Work Time/calculated card: narrow OPS only (no DomainWriter week: leaves)."""
+        body = self._fn("saveSpuOrgIndicator", "spuIndicatorDependents")
+        self.assertNotIn("saveApp(", body)
+        self.assertNotIn("saveApp();", body)
+        self.assertIn("wtPersistMgmtBranches(", body)
+        self.assertIn("indicatorIds: [keepId]", body)
+        self.assertIn("planIndicatorIds: [keepId]", body)
+        self.assertIn("spuOrgIndicatorPersistPaint", body)
+        self.assertNotIn("management.plans.week:", body)
+        self.assertNotIn("wtDomainWriterSave(", body)
+        self.assertNotIn("wtCollectChangedLeaves(", body)
+        # Success toast only after confirmed persist (not before await).
+        toast_idx = body.find('toast("Показатель сохранён."')
+        self.assertGreater(toast_idx, 0)
+        persist_idx = body.find("wtPersistMgmtBranches(")
+        self.assertGreater(persist_idx, 0)
+        self.assertGreater(toast_idx, persist_idx)
+        self.assertIn("Карточка записана, но план не подтверждён сервером", body)
+        self.assertTrue(wt_api.WT_PATH_RE.match("management.plans"))
+        self.assertTrue(wt_api.WT_PATH_RE.match("management.indicators"))
+        self.assertIsNone(wt_api.WT_PATH_RE.match("management.plans.week:2026-11-06.mind_034"))
+
     def test_mgmt_key_perms_period_plans(self):
         self.assertEqual(wt_api.MGMT_KEY_PERMS.get("period_plans"), "managementIndicators")
         self.assertEqual(wt_api.MGMT_KEY_PERMS.get("mgmt_periods"), "managementIndicators")

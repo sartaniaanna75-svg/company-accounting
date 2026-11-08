@@ -45740,28 +45740,44 @@ function saveSpuOrgIndicator() {
     }
     it.indicator_id = keepId;
     it.spu_indicator_id = keepId;
-    // Справочник сотрудников: узкий OPS indicator (+ план при необходимости), без широкого saveApp.
-    if (onlyStaffDirectory) {
-        wtPersistMgmtBranches({
-            plans: !!planVal,
-            indicators: true
-        }, {
-            planIndicatorIds: planVal ? [keepId] : null,
-            indicatorIds: [keepId],
-            paint: function () {
-                closeMgmtModal();
-                if (mgmtTab === "structure") spuStructureTab = "indicators";
-                renderManagement();
-            },
-            okToast: "Показатель сохранён."
-        });
-        return;
+    // Work Time / Табель / метрики / calculated / staff_directory:
+    // узкий OPS: сначала management.indicators, затем management.plans (ветка целиком).
+    // Не saveApp/DomainWriter-collect: иначе collect спускается в ключи периода с «:»
+    // и сервер отклоняет путь (WT_PATH_RE). Успех только после подтверждения всех веток;
+    // модалку закрываем только при ok. Атомарности между двумя POST нет.
+
+    function spuOrgIndicatorPersistPaint() {
+        closeMgmtModal();
+        if (mgmtTab === "structure") spuStructureTab = "indicators";
+        renderManagement();
     }
-    saveApp();
-    closeMgmtModal();
-    if (mgmtTab === "structure") spuStructureTab = "indicators";
-    renderManagement();
-    toast("Показатель сохранён.", "success");
+    Promise.resolve(wtPersistMgmtBranches({ indicators: true }, {
+        indicatorIds: [keepId],
+        okToast: ""
+    })).then(function (okInd) {
+        if (!okInd) {
+            // Форма и appData не сбрасываем; ошибку уже показал wtSpuPersistRecordOp.
+            return false;
+        }
+        if (!planVal) {
+            toast("Показатель сохранён.", "success");
+            spuOrgIndicatorPersistPaint();
+            return true;
+        }
+        return Promise.resolve(wtPersistMgmtBranches({ plans: true }, {
+            planIndicatorIds: [keepId],
+            okToast: ""
+        })).then(function (okPlan) {
+            if (!okPlan) {
+                // Карточка на сервере могла сохраниться; план — нет. Общий успех не показываем.
+                toast("Карточка записана, но план не подтверждён сервером. Значение плана на экране — сохраните снова.", "error");
+                return false;
+            }
+            toast("Показатель сохранён.", "success");
+            spuOrgIndicatorPersistPaint();
+            return true;
+        });
+    });
 }
 
 function spuIndicatorDependents(indicatorId) {
