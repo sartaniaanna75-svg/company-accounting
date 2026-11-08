@@ -44527,10 +44527,10 @@ function saveSpuOrgIndicator() {
         if (covered == null) {
             if ((it.periodicity || "week") === "week" && typeof mgmtRunInThuWeek === "function") {
                 mgmtRunInThuWeek(weekIso, function () {
-                    setMgmtPlanValue(it.indicator_id, planVal, { origin: "indicator_spot" });
+                    setMgmtPlanValue(it.indicator_id, planVal, { origin: "indicator_spot" }, { persist: false });
                 });
             } else {
-                setMgmtPlanValue(it.indicator_id, planVal, { origin: "indicator_spot" });
+                setMgmtPlanValue(it.indicator_id, planVal, { origin: "indicator_spot" }, { persist: false });
             }
         }
     }
@@ -44556,14 +44556,28 @@ function saveSpuOrgIndicator() {
         it.formula_expr = [];
         it.plan_mode = "spu";
         const factVal = ((document.getElementById("spuIndFact") || {}).value || "");
-        if (document.getElementById("spuIndFact")) setMgmtManualFact(it.indicator_id, factVal);
+        if (document.getElementById("spuIndFact")) {
+            setMgmtManualFact(it.indicator_id, factVal, { persist: false });
+        }
         it.indicator_id = keepId;
         it.spu_indicator_id = keepId;
-        saveApp();
-        closeMgmtModal();
-        if (mgmtTab === "structure") spuStructureTab = "indicators";
-        renderManagement();
-        toast("Показатель сохранён.", "success");
+        // Карточка показателя: узкий OPS веток management (без полного collect appData).
+        // Маршруты shopMetricCatalog здесь не трогаем — только manual/one_c.
+        wtPersistMgmtBranches({
+            plans: !!planVal,
+            facts: !!document.getElementById("spuIndFact"),
+            indicators: true
+        }, {
+            planIndicatorIds: planVal ? [keepId] : null,
+            factIndicatorIds: document.getElementById("spuIndFact") ? [keepId] : null,
+            indicatorIds: [keepId],
+            paint: function () {
+                closeMgmtModal();
+                if (mgmtTab === "structure") spuStructureTab = "indicators";
+                renderManagement();
+            },
+            okToast: "Показатель сохранён."
+        });
         return;
     }
     const first = sources[0] || { source_type: "calculated" };
@@ -46732,35 +46746,717 @@ function mgmtPlanValue(indicatorId) {
     return mgmtPlanStoredValue(indicatorId);
 }
 
-function setMgmtManualFact(indicatorId, value) {
+/**
+ * СПУ variant C: запись ветки = база из wtLastLoadedPayload + только затронутые ячейки.
+ * Нельзя слать management.plans.<week:…> (в ключе «:», WT_PATH_RE).
+ * Нельзя слать весь локальный appData.management.plans (drift / чужие ячейки).
+ * Payload собирается в очереди wtOpsChain; POST через wtSpuPostStateOp (не wtSaveRecordOp).
+ * Черновики ячеек — wtSpuCellDrafts. Без правок DomainWriter/SoftSync/ACL/wtOpsChain.
+ */
+function wtSpuCloneJson(value) {
+    if (typeof wtCloneJson === "function") return wtCloneJson(value);
+    try { return JSON.parse(JSON.stringify(value)); } catch (err) { return value; }
+}
+
+function wtSpuBranchFromLastLoaded(path) {
+    let base;
+    try {
+        base = (typeof wtGetByPath === "function" && wtLastLoadedPayload)
+            ? wtGetByPath(wtLastLoadedPayload, path)
+            : undefined;
+    } catch (err) { base = undefined; }
+    if (path === "management.plans" || path === "management.manualFacts") {
+        return wtSpuCloneJson(base && typeof base === "object" && !Array.isArray(base) ? base : {});
+    }
+    if (path === "management.indicators" || path === "management.period_plans" || path === "management.mgmt_periods") {
+        return wtSpuCloneJson(Array.isArray(base) ? base : []);
+    }
+    return wtSpuCloneJson(base == null ? null : base);
+}
+
+/** Накладывает одну ячейку (или удаление) на объект ветки plans/manualFacts. */
+function wtSpuOverlayPeriodIndicator(branch, periodKey, indicatorId, recOrNull) {
+    const out = wtSpuCloneJson(branch && typeof branch === "object" && !Array.isArray(branch) ? branch : {});
+    const pk = String(periodKey || "");
+    const iid = String(indicatorId || "");
+    if (!pk || !iid) return out;
+    const bucket = (out[pk] && typeof out[pk] === "object" && !Array.isArray(out[pk]))
+        ? wtSpuCloneJson(out[pk])
+        : {};
+    if (recOrNull == null) delete bucket[iid];
+    else bucket[iid] = wtSpuCloneJson(recOrNull);
+    if (Object.keys(bucket).length) out[pk] = bucket;
+    else delete out[pk];
+    return out;
+}
+
+/** Для показателя: все периоды из live поверх базы (другие показатели базы не трогаем). */
+function wtSpuPlansOverlayFromLiveIndicator(basePlans, livePlans, indicatorId) {
+    const iid = String(indicatorId || "");
+    let out = wtSpuCloneJson(basePlans && typeof basePlans === "object" ? basePlans : {});
+    const live = livePlans && typeof livePlans === "object" ? livePlans : {};
+    const keys = {};
+    Object.keys(out).forEach(function (k) { keys[k] = 1; });
+    Object.keys(live).forEach(function (k) { keys[k] = 1; });
+    Object.keys(keys).forEach(function (pk) {
+        const liveBucket = live[pk];
+        const liveRec = liveBucket && typeof liveBucket === "object" ? liveBucket[iid] : undefined;
+        if (liveRec) out = wtSpuOverlayPeriodIndicator(out, pk, iid, liveRec);
+        else if (out[pk] && out[pk][iid] != null) out = wtSpuOverlayPeriodIndicator(out, pk, iid, null);
+    });
+    return out;
+}
+
+function wtSpuPlansOverlayFromLiveIndicators(indicatorIds) {
+    let out = wtSpuBranchFromLastLoaded("management.plans");
+    const live = (appData && appData.management && appData.management.plans) || {};
+    (indicatorIds || []).forEach(function (iid) {
+        out = wtSpuPlansOverlayFromLiveIndicator(out, live, iid);
+    });
+    return out;
+}
+
+function wtSpuFactsOverlayFromLiveIndicator(indicatorId) {
+    const iid = String(indicatorId || "");
+    let out = wtSpuBranchFromLastLoaded("management.manualFacts");
+    const live = (appData && appData.management && appData.management.manualFacts) || {};
+    const keys = {};
+    Object.keys(out).forEach(function (k) { keys[k] = 1; });
+    Object.keys(live).forEach(function (k) { keys[k] = 1; });
+    Object.keys(keys).forEach(function (pk) {
+        const liveBucket = live[pk];
+        const liveRec = liveBucket && typeof liveBucket === "object" ? liveBucket[iid] : undefined;
+        if (liveRec) out = wtSpuOverlayPeriodIndicator(out, pk, iid, liveRec);
+        else if (out[pk] && out[pk][iid] != null) out = wtSpuOverlayPeriodIndicator(out, pk, iid, null);
+    });
+    return out;
+}
+
+/** period_plans: база + upsert/удаление строк затронутых period_id+indicator_id. */
+function wtSpuPeriodPlansOverlayTouched(touchedPairs) {
+    const base = wtSpuBranchFromLastLoaded("management.period_plans");
+    const live = (appData && appData.management && Array.isArray(appData.management.period_plans))
+        ? appData.management.period_plans
+        : [];
+    const touch = {};
+    (touchedPairs || []).forEach(function (p) {
+        if (!p || !p.period_id || !p.indicator_id) return;
+        touch[String(p.period_id) + "\0" + String(p.indicator_id)] = true;
+    });
+    const out = [];
+    (Array.isArray(base) ? base : []).forEach(function (row) {
+        if (!row) return;
+        const k = String(row.period_id || "") + "\0" + String(row.indicator_id || "");
+        if (!touch[k]) {
+            out.push(wtSpuCloneJson(row));
+            return;
+        }
+        const liveRow = live.find(function (r) {
+            return r && String(r.period_id) === String(row.period_id)
+                && String(r.indicator_id) === String(row.indicator_id);
+        });
+        if (liveRow) out.push(wtSpuCloneJson(liveRow));
+        // иначе удалена в live — не копируем
+    });
+    live.forEach(function (row) {
+        if (!row) return;
+        const k = String(row.period_id || "") + "\0" + String(row.indicator_id || "");
+        if (!touch[k]) return;
+        const exists = out.some(function (r) {
+            return r && String(r.period_id) === String(row.period_id)
+                && String(r.indicator_id) === String(row.indicator_id);
+        });
+        if (!exists) out.push(wtSpuCloneJson(row));
+    });
+    return out;
+}
+
+/** Один показатель из live поверх массива базы (остальные строки сервера без изменений). */
+function wtSpuIndicatorsOverlayLiveRows(indicatorIds) {
+    const want = {};
+    (indicatorIds || []).forEach(function (id) {
+        if (id) want[String(id)] = true;
+    });
+    const base = wtSpuBranchFromLastLoaded("management.indicators");
+    const liveList = (appData && appData.management && appData.management.indicators) || [];
+    const liveById = {};
+    liveList.forEach(function (x) {
+        if (x && x.indicator_id != null) liveById[String(x.indicator_id)] = x;
+    });
+    const seen = {};
+    const out = [];
+    (Array.isArray(base) ? base : []).forEach(function (it) {
+        if (!it) return;
+        const id = String(it.indicator_id || "");
+        if (want[id]) {
+            seen[id] = true;
+            if (liveById[id]) out.push(wtSpuCloneJson(liveById[id]));
+            // удаление показателя этим путём не делаем
+            else out.push(wtSpuCloneJson(it));
+            return;
+        }
+        out.push(wtSpuCloneJson(it));
+    });
+    Object.keys(want).forEach(function (id) {
+        if (seen[id] || !liveById[id]) return;
+        out.push(wtSpuCloneJson(liveById[id]));
+    });
+    return out;
+}
+
+function wtSpuIndicatorsOverlayPlanMode(indicatorId) {
+    return wtSpuIndicatorsOverlayLiveRows([indicatorId]);
+}
+
+/** Черновики ячеек СПУ (plans/facts): не считаются сохранёнными, переживают подмену ветки после OPS. */
+let wtSpuCellDrafts = { plans: Object.create(null), facts: Object.create(null) };
+
+function wtSpuDraftCellKey(periodKey, indicatorId) {
+    return String(periodKey || "") + "\0" + String(indicatorId || "");
+}
+
+function wtSpuRememberCellDraft(kind, periodKey, indicatorId, recOrNull) {
+    const bag = kind === "facts" ? "facts" : "plans";
+    if (!wtSpuCellDrafts[bag]) wtSpuCellDrafts[bag] = Object.create(null);
+    wtSpuCellDrafts[bag][wtSpuDraftCellKey(periodKey, indicatorId)] = {
+        periodKey: String(periodKey || ""),
+        indicatorId: String(indicatorId || ""),
+        deleted: recOrNull == null,
+        rec: recOrNull == null ? null : wtSpuCloneJson(recOrNull)
+    };
+}
+
+function wtSpuClearCellDraft(kind, periodKey, indicatorId) {
+    const bag = kind === "facts" ? "facts" : "plans";
+    if (!wtSpuCellDrafts[bag]) return;
+    delete wtSpuCellDrafts[bag][wtSpuDraftCellKey(periodKey, indicatorId)];
+}
+
+function wtSpuClearCellDraftsForIndicators(kind, indicatorIds) {
+    const bag = kind === "facts" ? "facts" : "plans";
+    const want = {};
+    (indicatorIds || []).forEach(function (id) { if (id) want[String(id)] = true; });
+    if (!wtSpuCellDrafts[bag]) return;
+    Object.keys(wtSpuCellDrafts[bag]).forEach(function (k) {
+        const d = wtSpuCellDrafts[bag][k];
+        if (d && want[String(d.indicatorId)]) delete wtSpuCellDrafts[bag][k];
+    });
+}
+
+/** Накладывает незаписанные черновики на серверную ветку для отображения (не для отправки). */
+function wtSpuBranchWithLocalDrafts(path, serverBranch) {
+    const kind = path === "management.manualFacts" ? "facts" : (path === "management.plans" ? "plans" : "");
+    let out = wtSpuCloneJson(serverBranch && typeof serverBranch === "object" && !Array.isArray(serverBranch)
+        ? serverBranch
+        : (Array.isArray(serverBranch) ? serverBranch : {}));
+    if (!kind) return out;
+    const drafts = wtSpuCellDrafts[kind] || {};
+    Object.keys(drafts).forEach(function (k) {
+        const d = drafts[k];
+        if (!d) return;
+        out = wtSpuOverlayPeriodIndicator(out, d.periodKey, d.indicatorId, d.deleted ? null : d.rec);
+    });
+    return out;
+}
+
+function wtSpuCaptureFocusedSpuInput() {
+    try {
+        const el = document.activeElement;
+        if (!el || !el.tagName || String(el.tagName).toUpperCase() !== "INPUT") return null;
+        const cls = el.className || "";
+        if ((" " + cls + " ").indexOf(" pf-in ") === -1
+            && (" " + cls + " ").indexOf(" mgmt-manual ") === -1) return null;
+        return {
+            onchange: el.getAttribute("onchange") || "",
+            value: el.value,
+            selStart: el.selectionStart,
+            selEnd: el.selectionEnd
+        };
+    } catch (err) {
+        return null;
+    }
+}
+
+function wtSpuRestoreFocusedSpuInput(snap) {
+    if (!snap || !snap.onchange) return;
+    try {
+        const nodes = document.querySelectorAll("input.pf-in, input.mgmt-manual");
+        for (let i = 0; i < nodes.length; i++) {
+            if ((nodes[i].getAttribute("onchange") || "") !== snap.onchange) continue;
+            nodes[i].value = snap.value;
+            try {
+                nodes[i].focus();
+                if (typeof nodes[i].setSelectionRange === "function"
+                    && snap.selStart != null && snap.selEnd != null) {
+                    nodes[i].setSelectionRange(snap.selStart, snap.selEnd);
+                }
+            } catch (errF) {}
+            return;
+        }
+    } catch (err) {}
+}
+
+/**
+ * POST /api/state/op только для СПУ (без изменения wtSaveRecordOp).
+ * Не пишет в appData — это делает вызывающий после учёта черновиков.
+ */
+function wtSpuPostStateOp(path, value, expectedV, idempotencyKey) {
+    let safeValue = value;
+    try {
+        safeValue = value === undefined ? null : JSON.parse(JSON.stringify(value));
+    } catch (err) {
+        return Promise.resolve({
+            status: "error",
+            error: "bad_value",
+            message: "Не удалось подготовить значение СПУ для отправки."
+        });
+    }
+    let exp = Number(expectedV);
+    if (!Number.isFinite(exp) || exp < 0) exp = 0;
+    const idem = idempotencyKey || (typeof wtNewIdempotencyKey === "function"
+        ? wtNewIdempotencyKey()
+        : ("spu_" + Date.now()));
+    let bodyText;
+    try {
+        bodyText = JSON.stringify({
+            idempotency_key: idem,
+            op: { path: path, expected_v: exp, value: safeValue }
+        });
+    } catch (errS) {
+        return Promise.resolve({
+            status: "error",
+            error: "stringify",
+            message: "Не удалось сформировать запрос сохранения СПУ."
+        });
+    }
+    return wtOpsFetchWithTimeout("/api/state/op", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: bodyText
+    }).then(function (res) {
+        if (res.status === 401) {
+            try { handleWtSaveUnauthorized(); } catch (errU) {}
+            return { status: "error", error: "unauthorized", http: 401 };
+        }
+        if (res.status === 503) {
+            return { status: "disabled", reason: "server", http: 503 };
+        }
+        return res.text().then(function (raw) {
+            let body = null;
+            if (raw) {
+                try { body = JSON.parse(raw); } catch (errJ) {
+                    return {
+                        status: "error",
+                        error: "bad_json",
+                        http: res.status,
+                        message: "Сервер вернул неJSON (HTTP " + res.status + ")."
+                    };
+                }
+            }
+            if (res.status === 409 && body && body.error === "conflict") {
+                return {
+                    status: "conflict",
+                    path: body.path || path,
+                    server_v: body.server_v,
+                    server_value: body.server_value,
+                    your_value: body.your_value != null ? body.your_value : safeValue,
+                    your_expected_v: body.your_expected_v,
+                    message: body.message || "",
+                    http: 409
+                };
+            }
+            if (!res.ok) {
+                return {
+                    status: "error",
+                    error: (body && body.error) || ("http_" + res.status),
+                    message: (body && body.message) || ("Ошибка сохранения HTTP " + res.status),
+                    http: res.status,
+                    body: body
+                };
+            }
+            try {
+                if (body && body.version != null) {
+                    const opV = Number(body.version);
+                    if (Number.isFinite(opV)) {
+                        wtStateVersion = opV;
+                        if (opV > Number(wtSoftAppliedVersion || 0)) wtSoftAppliedVersion = opV;
+                    }
+                }
+            } catch (errV) {}
+            return {
+                status: "saved",
+                path: body && body.path || path,
+                record_v: body && body.record_v,
+                value: body && body.value,
+                version: body && body.version,
+                http: res.status
+            };
+        });
+    }, function (err) {
+        return {
+            status: "offline",
+            error: "network",
+            message: "Сеть: " + String((err && err.message) || err || "fetch failed")
+        };
+    });
+}
+
+function wtSpuApplySavedBranchLocal(path, serverValue, recordV) {
+    try {
+        if (wtLastLoadedPayload && path) {
+            wtSetByPath(wtLastLoadedPayload, path, serverValue == null ? null : wtSpuCloneJson(serverValue));
+            if (!wtLastLoadedPayload[WT_RECORDS_KEY]) wtLastLoadedPayload[WT_RECORDS_KEY] = {};
+            wtLastLoadedPayload[WT_RECORDS_KEY][path] = {
+                v: Number(recordV) || 0,
+                updated_at: new Date().toISOString()
+            };
+        }
+        if (typeof wtSetLocalRecordMeta === "function") wtSetLocalRecordMeta(path, recordV);
+        // UI: серверная ветка + оставшиеся локальные черновики (не как «сохранено»).
+        if (appData && path) {
+            const forUi = (path === "management.plans" || path === "management.manualFacts")
+                ? wtSpuBranchWithLocalDrafts(path, serverValue)
+                : wtSpuCloneJson(serverValue);
+            wtSetByPath(appData, path, forUi);
+        }
+    } catch (err) {}
+}
+
+/**
+ * Точечная запись ветки СПУ: payload собирается В очереди wtOpsChain (актуальный lastLoaded).
+ * Не вызывает wtSaveRecordOp (он замораживает value при постановке и затирает appData целиком).
+ * 409: без автозамены; timeout: без авто-повтора.
+ *
+ * @param {string} path
+ * @param {Function|*} buildFnOrValue — function(baseBranch)=>value или готовое value (legacy)
+ * @param {object} options
+ */
+function wtSpuPersistRecordOp(path, buildFnOrValue, options) {
+    options = options || {};
+    const cellLabel = options.conflictCellLabel || "вашу ячейку";
+
+    function paintDone(ok) {
+        const focusSnap = wtSpuCaptureFocusedSpuInput();
+        if (typeof options.paint === "function") {
+            try { options.paint(); } catch (errP) {}
+        }
+        wtSpuRestoreFocusedSpuInput(focusSnap);
+        return ok;
+    }
+
+    function resolveBuild(baseHint) {
+        if (typeof buildFnOrValue === "function") {
+            return buildFnOrValue(baseHint);
+        }
+        return buildFnOrValue;
+    }
+
+    function clearTouchedDrafts() {
+        const t = options.touchedDraft;
+        if (t && t.periodKey != null && t.indicatorId != null) {
+            wtSpuClearCellDraft(t.kind === "facts" ? "facts" : "plans", t.periodKey, t.indicatorId);
+        }
+        if (options.clearDraftIndicatorIds && options.clearDraftIndicatorIds.length) {
+            wtSpuClearCellDraftsForIndicators(
+                options.clearDraftKind === "facts" ? "facts" : "plans",
+                options.clearDraftIndicatorIds
+            );
+        }
+    }
+
+    function handleNonConflictResult(res) {
+        if (res && res.status === "saved") {
+            clearTouchedDrafts();
+            wtSpuApplySavedBranchLocal(path, res.value, res.record_v);
+            try { if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(path); } catch (errC) {}
+            if (options.okToast) toast(options.okToast);
+            return paintDone(true);
+        }
+        if (res && res.status === "conflict") {
+            toast("Конфликт повторился. Значение на экране. Обновите страницу и введите ячейку снова.", "error");
+            return paintDone(false);
+        }
+        if (res && (res.status === "offline" || res.error === "network")) {
+            toast(options.timeoutToast
+                || "Ответ сервера не получен. Данные СПУ на экране — не обновляйте страницу.", "error");
+            return paintDone(false);
+        }
+        if (res && res.status === "disabled") {
+            toast("Сохранение СПУ недоступно: точечная запись OPS выключена. Данные на экране.", "error");
+            return paintDone(false);
+        }
+        toast((res && res.message)
+            || options.errorToast
+            || "Изменения СПУ не записаны. Данные остались на экране.", "error");
+        return paintDone(false);
+    }
+
+    if (!wtServerMode) {
+        try {
+            const localVal = resolveBuild(wtSpuBranchFromLastLoaded(path));
+            clearTouchedDrafts();
+            if (appData && path) {
+                wtSetByPath(appData, path, wtSpuBranchWithLocalDrafts(path, localVal));
+            }
+            if (wtLastLoadedPayload && path) {
+                wtSetByPath(wtLastLoadedPayload, path, localVal == null ? null : wtSpuCloneJson(localVal));
+            }
+        } catch (errL) {}
+        if (options.okToast) toast(options.okToast);
+        return Promise.resolve(paintDone(true));
+    }
+    if (!(typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
+        toast("Сохранение СПУ недоступно: точечная запись OPS выключена. Данные остались на экране.", "error");
+        return Promise.resolve(paintDone(false));
+    }
+
+    // Участие в существующей очереди (без изменения реализации wtOpsChain / wtSaveRecordOp).
+    const job = Promise.resolve(typeof wtOpsChain !== "undefined" ? wtOpsChain : null).then(function () {
+        const base = wtSpuBranchFromLastLoaded(path);
+        let value;
+        try {
+            value = resolveBuild(base);
+        } catch (errB) {
+            return {
+                status: "error",
+                message: "Не удалось собрать данные СПУ для записи."
+            };
+        }
+        const expectedV = typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0;
+        return wtSpuPostStateOp(path, value, expectedV);
+    }).then(function (res) {
+        if (res && res.status === "conflict") {
+            toast("Конфликт версий СПУ: ветку изменил другой пользователь. "
+                + cellLabel + " остаётся на экране и на сервер НЕ записана.", "error");
+            const retry = window.confirm(
+                "Данные СПУ на сервере уже изменились.\n\n"
+                + "OK — взять серверную версию ветки и записать только " + cellLabel + " поверх неё.\n"
+                + "Отмена — ничего не записывать: ваш ввод остаётся на экране."
+            );
+            if (!retry) {
+                try { if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path); } catch (errD) {}
+                return paintDone(false);
+            }
+            let merged2;
+            try {
+                if (typeof options.rebuildOnServer === "function") {
+                    merged2 = options.rebuildOnServer(res.server_value);
+                } else {
+                    merged2 = resolveBuild(
+                        res.server_value && typeof res.server_value === "object" ? res.server_value : {}
+                    );
+                }
+            } catch (errR) {
+                toast("Не удалось объединить с сервером. Значение на экране сохранено.", "error");
+                return paintDone(false);
+            }
+            return wtSpuPostStateOp(path, merged2, res.server_v).then(handleNonConflictResult);
+        }
+        return handleNonConflictResult(res);
+    }, function (err) {
+        toast("Ошибка очереди сохранения СПУ. Данные на экране.", "error");
+        return paintDone(false);
+    });
+
+    if (typeof wtOpsChain !== "undefined") {
+        wtOpsChain = job.then(function () { return true; }, function () { return true; });
+    }
+    return job;
+}
+
+/** @deprecated для plans/facts без overlay — отказ. Оставлено для period_plans/indicators с явным value. */
+function wtPersistMgmtBranches(flags, options) {
+    flags = flags || {};
+    options = options || {};
+    if (!appData || !appData.management) return Promise.resolve(false);
+    if (flags.plans && !(options.planIndicatorIds && options.planIndicatorIds.length)) {
+        toast("СПУ: отказ сохранить всю локальную ветку планов. Используйте точечное сохранение ячейки.", "error");
+        return Promise.resolve(false);
+    }
+    if (flags.facts && !(options.factIndicatorIds && options.factIndicatorIds.length)) {
+        toast("СПУ: отказ сохранить всю локальную ветку фактов. Используйте точечное сохранение ячейки.", "error");
+        return Promise.resolve(false);
+    }
+    const chain = [];
+    if (flags.plans) {
+        const planIds = options.planIndicatorIds || [];
+        const buildPlans = function (base) {
+            let out = wtSpuCloneJson(base && typeof base === "object" && !Array.isArray(base) ? base : {});
+            const live = (appData && appData.management && appData.management.plans) || {};
+            planIds.forEach(function (iid) {
+                out = wtSpuPlansOverlayFromLiveIndicator(out, live, iid);
+            });
+            return out;
+        };
+        chain.push(function () {
+            return wtSpuPersistRecordOp("management.plans", buildPlans, {
+                conflictCellLabel: "изменения планов выбранных показателей",
+                clearDraftKind: "plans",
+                clearDraftIndicatorIds: planIds,
+                rebuildOnServer: function (serverVal) {
+                    return buildPlans(serverVal && typeof serverVal === "object" ? serverVal : {});
+                }
+            });
+        });
+    }
+    if (flags.facts) {
+        const iid = options.factIndicatorIds[0];
+        const buildFacts = function (base) {
+            return wtSpuPlansOverlayFromLiveIndicator(
+                base && typeof base === "object" ? base : {},
+                (appData && appData.management && appData.management.manualFacts) || {},
+                iid
+            );
+        };
+        chain.push(function () {
+            return wtSpuPersistRecordOp("management.manualFacts", buildFacts, {
+                conflictCellLabel: "изменённую ячейку факта",
+                clearDraftKind: "facts",
+                clearDraftIndicatorIds: [iid],
+                rebuildOnServer: function (serverVal) {
+                    return buildFacts(serverVal && typeof serverVal === "object" ? serverVal : {});
+                }
+            });
+        });
+    }
+    if (flags.periodPlans) {
+        const pairs = options.periodPlanPairs || [];
+        chain.push(function () {
+            return wtSpuPersistRecordOp("management.period_plans", function () {
+                return wtSpuPeriodPlansOverlayTouched(pairs);
+            }, {
+                conflictCellLabel: "план управленческого периода",
+                rebuildOnServer: function (serverVal) {
+                    const prev = wtLastLoadedPayload && wtLastLoadedPayload.management
+                        ? wtLastLoadedPayload.management.period_plans
+                        : null;
+                    try {
+                        if (wtLastLoadedPayload && wtLastLoadedPayload.management) {
+                            wtLastLoadedPayload.management.period_plans = Array.isArray(serverVal)
+                                ? wtSpuCloneJson(serverVal)
+                                : [];
+                        }
+                    } catch (errT) {}
+                    const rebuilt = wtSpuPeriodPlansOverlayTouched(pairs);
+                    try {
+                        if (wtLastLoadedPayload && wtLastLoadedPayload.management) {
+                            wtLastLoadedPayload.management.period_plans = prev;
+                        }
+                    } catch (errT2) {}
+                    return rebuilt;
+                }
+            });
+        });
+    }
+    if (flags.indicators) {
+        const indIds = options.indicatorIds && options.indicatorIds.length
+            ? options.indicatorIds
+            : (options.indicatorPlanModeId ? [options.indicatorPlanModeId] : []);
+        if (!indIds.length) {
+            toast("СПУ: отказ сохранить весь список показателей без списка id.", "error");
+            return Promise.resolve(false);
+        }
+        chain.push(function () {
+            return wtSpuPersistRecordOp("management.indicators", function () {
+                return wtSpuIndicatorsOverlayLiveRows(indIds);
+            }, {
+                conflictCellLabel: "карточку показателя",
+                rebuildOnServer: function (serverVal) {
+                    const prev = wtLastLoadedPayload && wtLastLoadedPayload.management
+                        ? wtLastLoadedPayload.management.indicators
+                        : null;
+                    try {
+                        if (wtLastLoadedPayload && wtLastLoadedPayload.management) {
+                            wtLastLoadedPayload.management.indicators = Array.isArray(serverVal)
+                                ? wtSpuCloneJson(serverVal)
+                                : [];
+                        }
+                    } catch (errI) {}
+                    const rebuilt = wtSpuIndicatorsOverlayLiveRows(indIds);
+                    try {
+                        if (wtLastLoadedPayload && wtLastLoadedPayload.management) {
+                            wtLastLoadedPayload.management.indicators = prev;
+                        }
+                    } catch (errI2) {}
+                    return rebuilt;
+                }
+            });
+        });
+    }
+    if (!chain.length) return Promise.resolve(true);
+    let p = Promise.resolve(true);
+    chain.forEach(function (step) {
+        p = p.then(function (ok) {
+            if (!ok) return false;
+            return step();
+        });
+    });
+    return p.then(function (ok) {
+        if (ok && options.okToast) toast(options.okToast);
+        if (typeof options.paint === "function") {
+            try { options.paint(); } catch (errP) {}
+        }
+        return ok;
+    });
+}
+
+function setMgmtManualFact(indicatorId, value, options) {
+    options = options || {};
     ensureManagement();
     const key = mgmtPeriodKey();
     if (!appData.management.manualFacts[key]) appData.management.manualFacts[key] = {};
     const raw = String(value == null ? "" : value).trim().replace(/\s/g, "").replace(",", ".");
+    let cellRec = null;
     if (!raw) {
         delete appData.management.manualFacts[key][indicatorId];
     } else {
-        appData.management.manualFacts[key][indicatorId] = {
+        cellRec = {
             indicator_id: indicatorId,
             period: key,
             value: String(raw),
             entered_by_user_id: currentAuthUserId(),
             updated_at: new Date().toISOString()
         };
+        appData.management.manualFacts[key][indicatorId] = cellRec;
     }
-    saveApp();
+    const periodKey = key;
+    const iid = indicatorId;
+    wtSpuRememberCellDraft("facts", periodKey, iid, cellRec);
+    if (options.persist === false) return;
+    const build = function (baseBranch) {
+        return wtSpuOverlayPeriodIndicator(
+            baseBranch && typeof baseBranch === "object" && !Array.isArray(baseBranch) ? baseBranch : {},
+            periodKey,
+            iid,
+            cellRec
+        );
+    };
+    return wtSpuPersistRecordOp("management.manualFacts", build, {
+        paint: options.paint,
+        // Зелёный toast только после status===saved (внутри wtSpuPersistRecordOp).
+        okToast: options.okToast != null ? options.okToast : "Сохранено",
+        errorToast: options.errorToast,
+        conflictCellLabel: "изменённую ячейку факта",
+        touchedDraft: { kind: "facts", periodKey: periodKey, indicatorId: iid },
+        rebuildOnServer: function (serverVal) {
+            return build(serverVal && typeof serverVal === "object" && !Array.isArray(serverVal) ? serverVal : {});
+        }
+    });
 }
 
-function setMgmtPlanValue(indicatorId, value, meta) {
+function setMgmtPlanValue(indicatorId, value, meta, options) {
+    options = options || {};
     ensureManagement();
     const period = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
     const key = (period && period.period_key) || mgmtPeriodKey();
     if (!appData.management.plans[key]) appData.management.plans[key] = {};
     const raw = String(value == null ? "" : value).trim().replace(/\s/g, "").replace(",", ".");
+    let cellRec = null;
     if (!raw) delete appData.management.plans[key][indicatorId];
     else {
         const n = Number(raw);
-        const rec = {
+        cellRec = {
             indicator_id: indicatorId,
             period: key,
             period_key: key,
@@ -46773,12 +47469,48 @@ function setMgmtPlanValue(indicatorId, value, meta) {
         };
         if (meta && typeof meta === "object") {
             Object.keys(meta).forEach(function (k) {
-                if (meta[k] !== undefined) rec[k] = meta[k];
+                if (meta[k] !== undefined) cellRec[k] = meta[k];
             });
         }
-        appData.management.plans[key][indicatorId] = rec;
+        appData.management.plans[key][indicatorId] = cellRec;
     }
-    saveApp();
+    const periodKey = key;
+    const iid = indicatorId;
+    wtSpuRememberCellDraft("plans", periodKey, iid, cellRec);
+    if (options.persist === false) return;
+    const build = function (baseBranch) {
+        return wtSpuOverlayPeriodIndicator(
+            baseBranch && typeof baseBranch === "object" && !Array.isArray(baseBranch) ? baseBranch : {},
+            periodKey,
+            iid,
+            cellRec
+        );
+    };
+    const paintOnce = options.paint;
+    const successToast = options.okToast != null ? options.okToast : "Сохранено";
+    return wtSpuPersistRecordOp("management.plans", build, {
+        paint: options.persistIndicators ? null : paintOnce,
+        // При persistIndicators toast один раз после обеих веток; иначе — после saved плана.
+        okToast: options.persistIndicators ? "" : successToast,
+        errorToast: options.errorToast,
+        conflictCellLabel: "изменённую ячейку плана",
+        touchedDraft: { kind: "plans", periodKey: periodKey, indicatorId: iid },
+        rebuildOnServer: function (serverVal) {
+            return build(serverVal && typeof serverVal === "object" && !Array.isArray(serverVal) ? serverVal : {});
+        }
+    }).then(function (ok) {
+        if (!ok || !options.persistIndicators) {
+            if (!ok && typeof paintOnce === "function") {
+                try { paintOnce(); } catch (errP) {}
+            }
+            return ok;
+        }
+        return wtPersistMgmtBranches({ indicators: true }, {
+            indicatorPlanModeId: iid,
+            paint: paintOnce,
+            okToast: successToast
+        });
+    });
 }
 /* ========== Управленческие периоды и Планы СПУ ========== */
 function spuIsoToRu(iso) {
@@ -46974,7 +47706,7 @@ function spuUpsertPeriodPlan(periodId, indicatorId, planValue, planType, distrib
     return row;
 }
 
-/** Раздать план управленческого периода на отчётные недели (чт→ср) в существующее storage plans. */
+/** Раздать план управленческого периода на отчётные недели (чт→ср) в существующее storage plans. Без сети — persist снаружи. */
 function spuApplyPeriodPlanToWeeks(periodId, indicatorId) {
     const period = spuFindMgmtPeriod(periodId);
     const row = spuFindPeriodPlan(periodId, indicatorId);
@@ -47000,7 +47732,7 @@ function spuApplyPeriodPlanToWeeks(periodId, indicatorId) {
                 plan_type: type,
                 distribution: row.distribution || "even",
                 period_plan_value: row.plan_value
-            });
+            }, { persist: false });
         });
     });
     return { weeks: weeks.length, values: values };
@@ -47011,10 +47743,19 @@ function spuApplyAllPeriodPlans(periodId) {
     const rows = (appData.management.period_plans || []).filter(function (r) {
         return r && r.period_id === periodId;
     });
+    const ids = [];
+    const pairs = [];
     rows.forEach(function (r) {
         spuApplyPeriodPlanToWeeks(periodId, r.indicator_id);
+        ids.push(r.indicator_id);
+        pairs.push({ period_id: periodId, indicator_id: r.indicator_id });
     });
-    saveApp();
+    wtPersistMgmtBranches({ plans: true, periodPlans: true }, {
+        planIndicatorIds: ids,
+        periodPlanPairs: pairs,
+        paint: function () { renderManagement(); },
+        okToast: rows.length ? ("Применено планов: " + rows.length) : ""
+    });
     return rows.length;
 }
 
@@ -47112,19 +47853,25 @@ function saveSpuPlansTabRow(indicatorId) {
     const typeEl = document.getElementById("spuPplanType_" + indicatorId);
     const planVal = valEl ? valEl.value : "";
     const planType = typeEl ? typeEl.value : "cumulative";
+    const pair = { period_id: periodId, indicator_id: indicatorId };
     if (String(planVal).trim() === "") {
         spuUpsertPeriodPlan(periodId, indicatorId, "", planType, "even");
-        saveApp();
-        renderManagement();
-        toast("План удалён для показателя в этом периоде.");
-        return;
+        return wtPersistMgmtBranches({ plans: true, periodPlans: true }, {
+            planIndicatorIds: [indicatorId],
+            periodPlanPairs: [pair],
+            paint: function () { renderManagement(); },
+            okToast: "План удалён для показателя в этом периоде."
+        });
     }
     spuUpsertPeriodPlan(periodId, indicatorId, planVal, planType, "even");
     const res = spuApplyPeriodPlanToWeeks(periodId, indicatorId);
-    saveApp();
-    renderManagement();
-    toast("План сохранён · " + res.weeks + " нед. · тип: "
-        + (planType === "target" ? "целевое" : "накопительный"));
+    return wtPersistMgmtBranches({ plans: true, periodPlans: true }, {
+        planIndicatorIds: [indicatorId],
+        periodPlanPairs: [pair],
+        paint: function () { renderManagement(); },
+        okToast: "План сохранён · " + res.weeks + " нед. · тип: "
+            + (planType === "target" ? "целевое" : "накопительный")
+    });
 }
 
 function saveSpuPlansTabAll() {
@@ -47132,6 +47879,8 @@ function saveSpuPlansTabAll() {
     const periodId = spuPlansUiPeriodId;
     if (!periodId) { toast("Выберите управленческий период", "error"); return; }
     const inds = spuPlansSelectableIndicators();
+    const ids = [];
+    const pairs = [];
     let n = 0;
     inds.forEach(function (it) {
         const valEl = document.getElementById("spuPplanVal_" + it.indicator_id);
@@ -47141,11 +47890,21 @@ function saveSpuPlansTabAll() {
         if (String(planVal).trim() === "") return;
         spuUpsertPeriodPlan(periodId, it.indicator_id, planVal, typeEl ? typeEl.value : "cumulative", "even");
         spuApplyPeriodPlanToWeeks(periodId, it.indicator_id);
+        ids.push(it.indicator_id);
+        pairs.push({ period_id: periodId, indicator_id: it.indicator_id });
         n += 1;
     });
-    saveApp();
-    renderManagement();
-    toast(n ? ("Сохранено планов: " + n) : "Нет заполненных планов");
+    if (!n) {
+        toast("Нет заполненных планов");
+        renderManagement();
+        return Promise.resolve(true);
+    }
+    return wtPersistMgmtBranches({ plans: true, periodPlans: true }, {
+        planIndicatorIds: ids,
+        periodPlanPairs: pairs,
+        paint: function () { renderManagement(); },
+        okToast: "Сохранено планов: " + n
+    });
 }
 
 function renderSpuPlansTabHtml() {
@@ -49270,17 +50029,26 @@ function mgmtPfNumCell(it, weekFrom, kind, pack, canEdit) {
 function setMgmtPfPlan(indicatorId, fromIso, value) {
     if (!canEditMgmtIndicators()) return;
     mgmtRunInThuWeek(fromIso, function () {
+        let persistIndicators = false;
         const it = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === indicatorId; });
-        if (it && String(value == null ? "" : value).trim()) it.plan_mode = "spu";
-        setMgmtPlanValue(indicatorId, value);
+        if (it && String(value == null ? "" : value).trim()) {
+            if (it.plan_mode !== "spu") persistIndicators = true;
+            it.plan_mode = "spu";
+        }
+        setMgmtPlanValue(indicatorId, value, null, {
+            persistIndicators: persistIndicators,
+            paint: function () { renderManagement(); }
+        });
     });
-    renderManagement();
 }
 
 function setMgmtPfFact(indicatorId, fromIso, value) {
     if (!canEditMgmtIndicators()) return;
-    mgmtRunInThuWeek(fromIso, function () { setMgmtManualFact(indicatorId, value); });
-    renderManagement();
+    mgmtRunInThuWeek(fromIso, function () {
+        setMgmtManualFact(indicatorId, value, {
+            paint: function () { renderManagement(); }
+        });
+    });
 }
 
 function mgmtSpuDeptOptionsHtml(selected, allowAll) {
@@ -49516,15 +50284,48 @@ function saveMgmtPlanFactCell(indicatorId, fromIso) {
     mgmtRunInThuWeek(fromIso, function () {
         const planEl = document.getElementById("pfCellPlan");
         const factEl = document.getElementById("pfCellFact");
+        let persistIndicators = false;
+        let didPlan = false;
+        let didFact = false;
         if (planEl && canEditMgmtIndicators()) {
-            const it = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === indicatorId; });
-            if (it && String(planEl.value || "").trim()) it.plan_mode = "spu";
-            setMgmtPlanValue(indicatorId, planEl.value);
+            const it = ((appData.management && appData.management.indicators) || []).find(function (x) {
+                return x && x.indicator_id === indicatorId;
+            });
+            if (it && String(planEl.value || "").trim()) {
+                if (it.plan_mode !== "spu") persistIndicators = true;
+                it.plan_mode = "spu";
+            }
+            setMgmtPlanValue(indicatorId, planEl.value, null, { persist: false });
+            didPlan = true;
         }
-        if (factEl && canEditMgmtIndicators()) setMgmtManualFact(indicatorId, factEl.value);
+        if (factEl && canEditMgmtIndicators()) {
+            setMgmtManualFact(indicatorId, factEl.value, { persist: false });
+            didFact = true;
+        }
+        closeMgmtModal();
+        const paint = function () { renderManagement(); };
+        if (!didPlan && !didFact) {
+            paint();
+            return;
+        }
+        const iid = indicatorId;
+        let chain = Promise.resolve(true);
+        if (didPlan) {
+            chain = setMgmtPlanValue(indicatorId, planEl.value, null, {
+                persistIndicators: persistIndicators
+            });
+        }
+        if (didFact) {
+            chain = Promise.resolve(chain).then(function (ok) {
+                if (didPlan && ok !== true) return false;
+                return setMgmtManualFact(indicatorId, factEl.value);
+            });
+        }
+        return Promise.resolve(chain).then(function (ok) {
+            paint();
+            return ok;
+        });
     });
-    closeMgmtModal();
-    renderManagement();
 }
 
 function mgmtIsFinanceIndicator(it) {
@@ -51597,8 +52398,12 @@ function saveMgmtIndicator(id) {
         it.sources = [];
         it.plan_mode = "spu";
         it.aggregation_type = it.aggregation_type || "none";
-        if (document.getElementById("miPlan")) setMgmtPlanValue(it.indicator_id, (document.getElementById("miPlan") || {}).value || "");
-        if (document.getElementById("miFact")) setMgmtManualFact(it.indicator_id, (document.getElementById("miFact") || {}).value || "");
+        if (document.getElementById("miPlan")) {
+            setMgmtPlanValue(it.indicator_id, (document.getElementById("miPlan") || {}).value || "", null, { persist: false });
+        }
+        if (document.getElementById("miFact")) {
+            setMgmtManualFact(it.indicator_id, (document.getElementById("miFact") || {}).value || "", { persist: false });
+        }
         hideSpuIndicatorFromWorkMetrics(it);
     } else if (it.source_type === "worktime_metric") {
         spuIndSyncDraftFromDom();
@@ -51636,7 +52441,7 @@ function saveMgmtIndicator(id) {
         });
         const planVal = ((document.getElementById("miPlan") || document.getElementById("spuIndPlan") || {}).value || "");
         if (planVal !== "") {
-            setMgmtPlanValue(it.indicator_id, planVal);
+            setMgmtPlanValue(it.indicator_id, planVal, null, { persist: false });
             it.plan_mode = "spu";
         }
     } else {

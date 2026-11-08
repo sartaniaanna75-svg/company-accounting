@@ -10060,5 +10060,749 @@ class WtCriticalSilentSaveFixTests(unittest.TestCase):
         self.assertNotRegex(body, r"saveApp\(\);\s*\n\s*refreshAll\(\);\s*\n\s*toast\(")
 
 
+class WtSpuPlanFactNarrowOpsTests(unittest.TestCase):
+    """План–факт СПУ: lazy overlay + wtSpuPostStateOp, черновики, без DomainWriter-collect."""
+
+    def _src(self):
+        here = Path(__file__).resolve()
+        candidates = [
+            here.parents[1].joinpath("app.html"),
+            here.parents[0].joinpath("app.html"),
+            Path(r"C:\Users\1\Desktop\Тест 2\company-accounting\app.html"),
+        ]
+        for path in candidates:
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
+        self.fail("app.html not found for SpuPlanFact tests; tried: "
+                  + ", ".join(str(p) for p in candidates))
+
+    def _fn(self, name, next_name=None):
+        src = self._src()
+        start = src.find("function " + name + "(")
+        self.assertGreater(start, 0, name)
+        if next_name:
+            end = src.find("function " + next_name + "(", start + 10)
+        else:
+            end = src.find("\nfunction ", start + 10)
+        self.assertGreater(end, start, name)
+        return src[start:end]
+
+    def test_overlay_helpers_and_cell_writers(self):
+        src = self._src()
+        self.assertIn("function wtSpuOverlayPeriodIndicator(", src)
+        self.assertIn("function wtSpuPersistRecordOp(", src)
+        self.assertIn("function wtSpuPostStateOp(", src)
+        self.assertIn("function wtSpuBranchFromLastLoaded(", src)
+        self.assertIn("wtSpuCellDrafts", src)
+        self.assertIn("function wtSpuRememberCellDraft(", src)
+        self.assertIn("function wtSpuBranchWithLocalDrafts(", src)
+        self.assertIn("function wtSpuCaptureFocusedSpuInput(", src)
+        persist = self._fn("wtSpuPersistRecordOp", "wtPersistMgmtBranches")
+        self.assertIn("wtSpuPostStateOp(", persist)
+        self.assertNotIn("wtSaveRecordOp(", persist)
+        self.assertIn("wtSpuBranchFromLastLoaded(path)", persist)
+        self.assertIn("typeof buildFnOrValue === \"function\"", persist)
+        self.assertIn('res.status === "conflict"', persist)
+        self.assertIn("window.confirm", persist)
+        self.assertIn("rebuildOnServer", persist)
+        self.assertIn("wtSpuApplySavedBranchLocal", persist)
+        self.assertIn("Ответ сервера не получен", persist)
+        self.assertNotIn("wtDomainWriterSave(", persist)
+        self.assertNotIn("wtPersistExplicitOps(", persist)
+        # Timeout/offline: без авто-повтора POST после offline.
+        offline_idx = persist.find('status === "offline"')
+        self.assertGreater(offline_idx, 0)
+        after_offline = persist[offline_idx:offline_idx + 450]
+        self.assertNotIn("wtSpuPostStateOp(", after_offline)
+
+        plan = self._fn("setMgmtPlanValue", "spuIsoToRu")
+        fact = self._fn("setMgmtManualFact", "setMgmtPlanValue")
+        for body in (plan, fact):
+            self.assertIn("wtSpuPersistRecordOp(", body)
+            self.assertIn("wtSpuOverlayPeriodIndicator(", body)
+            self.assertIn("wtSpuRememberCellDraft(", body)
+            self.assertIn("touchedDraft", body)
+            # buildFn передаётся в очередь, а не замороженный value.
+            self.assertRegex(body, r"wtSpuPersistRecordOp\(\s*\"management\.(plans|manualFacts)\"\s*,\s*build\s*,")
+            self.assertNotIn("saveApp();", body)
+
+        helper = self._fn("wtPersistMgmtBranches", "setMgmtManualFact")
+        self.assertIn("planIndicatorIds", helper)
+        self.assertIn("отказ сохранить всю локальную ветку", helper)
+        self.assertIn("buildPlans", helper)
+        self.assertIn("buildFacts", helper)
+
+    def test_planfact_ui_and_period_tab(self):
+        pf_plan = self._fn("setMgmtPfPlan", "setMgmtPfFact")
+        pf_fact = self._fn("setMgmtPfFact", "mgmtSpuDeptOptionsHtml")
+        row = self._fn("saveSpuPlansTabRow", "saveSpuPlansTabAll")
+        all_fn = self._fn("saveSpuPlansTabAll", "renderSpuPlansTabHtml")
+        apply = self._fn("spuApplyPeriodPlanToWeeks", "spuApplyAllPeriodPlans")
+        self.assertIn("setMgmtPlanValue(", pf_plan)
+        self.assertIn("persistIndicators", pf_plan)
+        self.assertNotIn("saveApp();", pf_plan)
+        self.assertIn("setMgmtManualFact(", pf_fact)
+        self.assertNotIn("saveApp();", pf_fact)
+        for body in (row, all_fn):
+            self.assertIn("planIndicatorIds", body)
+            self.assertIn("wtPersistMgmtBranches(", body)
+            self.assertNotIn("saveApp();", body)
+        self.assertIn("{ persist: false }", apply)
+        self.assertNotIn("saveApp();", apply)
+
+    def test_mgmt_key_perms_period_plans(self):
+        self.assertEqual(wt_api.MGMT_KEY_PERMS.get("period_plans"), "managementIndicators")
+        self.assertEqual(wt_api.MGMT_KEY_PERMS.get("mgmt_periods"), "managementIndicators")
+        spu_editor = {
+            "user_id": "usr_spu_ind",
+            "role": "staff",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {"managementIndicators": "edit", "management": "none"},
+        }
+        self.assertTrue(wt_api.ops_path_allowed(spu_editor, "management.plans"))
+        self.assertTrue(wt_api.ops_path_allowed(spu_editor, "management.manualFacts"))
+        self.assertTrue(wt_api.ops_path_allowed(spu_editor, "management.period_plans"))
+        self.assertFalse(wt_api.ops_path_allowed(spu_editor, "management.tasks"))
+
+
+class WtSpuPlanFactOverlayStateTests(unittest.TestCase):
+    """Фактическое состояние FakeConn: overlay одной ячейки, 409, удаление, drift не уходит."""
+
+    @staticmethod
+    def overlay_cell(base, period_key, indicator_id, rec_or_none):
+        """Зеркало wtSpuOverlayPeriodIndicator для проверки контракта записи."""
+        out = json.loads(json.dumps(base if isinstance(base, dict) else {}))
+        pk = str(period_key or "")
+        iid = str(indicator_id or "")
+        if not pk or not iid:
+            return out
+        bucket = dict(out.get(pk) or {}) if isinstance(out.get(pk), dict) else {}
+        if rec_or_none is None:
+            bucket.pop(iid, None)
+        else:
+            bucket[iid] = json.loads(json.dumps(rec_or_none))
+        if bucket:
+            out[pk] = bucket
+        else:
+            out.pop(pk, None)
+        return out
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["management"] = {
+            "indicators": [
+                {"indicator_id": "mind_a", "name": "A", "plan_mode": "spu", "is_active": True},
+                {"indicator_id": "mind_b", "name": "B", "plan_mode": "spu", "is_active": True},
+            ],
+            "plans": {
+                "week:2026-10-30": {
+                    "mind_a": {
+                        "indicator_id": "mind_a",
+                        "period": "week:2026-10-30",
+                        "value": "100",
+                        "plan_value": 100,
+                    }
+                }
+            },
+            "manualFacts": {},
+            "period_plans": [],
+            "tasks": [],
+            "meetings": [],
+            "events": [],
+        }
+        payload["users"] = list(payload.get("users") or [])
+        payload["users"].append({
+            "user_id": "usr_spu_pf",
+            "display_name": "СПУ редактор",
+            "pin": "8888",
+            "role": "staff",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {"managementIndicators": "edit", "management": "none"},
+        })
+        self.store = {
+            "payload": payload,
+            "version": 1,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login_spu(self):
+        status, data, _, cookies = call(
+            "POST", "/api/login", {"user_id": "usr_spu_pf", "pin": "8888"}
+        )
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def _op(self, cookie, path, expected_v, value, key="k"):
+        return call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": key,
+                "op": {"path": path, "expected_v": expected_v, "value": value},
+            },
+            cookie=cookie,
+        )
+
+    def test_overlay_one_cell_keeps_other_server_cells_and_drops_local_drift(self):
+        cookie, _ = self.login_spu()
+        base = self.store["payload"]["management"]["plans"]
+        # Локальный drift (не должен попасть на сервер), если слать только overlay.
+        drift_local = json.loads(json.dumps(base))
+        drift_local["week:2026-10-30"]["mind_drift"] = {
+            "indicator_id": "mind_drift",
+            "value": "999",
+            "plan_value": 999,
+        }
+        merged = self.overlay_cell(
+            base,
+            "week:2026-10-30",
+            "mind_b",
+            {"indicator_id": "mind_b", "period": "week:2026-10-30", "value": "55", "plan_value": 55},
+        )
+        self.assertNotIn("mind_drift", merged["week:2026-10-30"])
+        st, data, *_ = self._op(cookie, "management.plans", 0, merged, key="spu_cell1")
+        self.assertTrue(st.startswith("200"), (st, data))
+        plans = self.store["payload"]["management"]["plans"]
+        self.assertEqual(plans["week:2026-10-30"]["mind_a"]["plan_value"], 100)
+        self.assertEqual(plans["week:2026-10-30"]["mind_b"]["plan_value"], 55)
+        self.assertNotIn("mind_drift", plans["week:2026-10-30"])
+        # Магазин/зарплата не тронуты.
+        self.assertEqual(
+            self.store["payload"].get("shopMetrics"),
+            SAMPLE_APP.get("shopMetrics"),
+        )
+
+    def test_delete_cell_preserves_sibling(self):
+        cookie, _ = self.login_spu()
+        base = self.store["payload"]["management"]["plans"]
+        # Добавим mind_b, затем удалим mind_a overlay'ем.
+        with_b = self.overlay_cell(
+            base,
+            "week:2026-10-30",
+            "mind_b",
+            {"indicator_id": "mind_b", "value": "1", "plan_value": 1},
+        )
+        st1, d1, *_ = self._op(cookie, "management.plans", 0, with_b, key="spu_add_b")
+        self.assertTrue(st1.startswith("200"), (st1, d1))
+        v = int(d1.get("record_v") or 1)
+        cleared = self.overlay_cell(
+            self.store["payload"]["management"]["plans"],
+            "week:2026-10-30",
+            "mind_a",
+            None,
+        )
+        st2, d2, *_ = self._op(cookie, "management.plans", v, cleared, key="spu_del_a")
+        self.assertTrue(st2.startswith("200"), (st2, d2))
+        week = self.store["payload"]["management"]["plans"]["week:2026-10-30"]
+        self.assertNotIn("mind_a", week)
+        self.assertEqual(week["mind_b"]["plan_value"], 1)
+
+    def test_concurrent_409_then_overlay_retry_keeps_both_cells(self):
+        cookie, _ = self.login_spu()
+        base_v0 = json.loads(json.dumps(self.store["payload"]["management"]["plans"]))
+        # Пользователь B сохраняет mind_b.
+        b_payload = self.overlay_cell(
+            base_v0,
+            "week:2026-10-30",
+            "mind_b",
+            {"indicator_id": "mind_b", "value": "20", "plan_value": 20},
+        )
+        st_b, d_b, *_ = self._op(cookie, "management.plans", 0, b_payload, key="spu_b")
+        self.assertTrue(st_b.startswith("200"), (st_b, d_b))
+        server_v = int(d_b.get("record_v") or 1)
+        # Пользователь A со старым expected_v=0 пытается mind_a2 (как «новая» ячейка) —
+        # на базе устаревшего снимка без mind_b.
+        a_stale = self.overlay_cell(
+            base_v0,
+            "week:2026-10-30",
+            "mind_a",
+            {"indicator_id": "mind_a", "value": "111", "plan_value": 111},
+        )
+        st_a, d_a, *_ = self._op(cookie, "management.plans", 0, a_stale, key="spu_a_stale")
+        self.assertTrue(st_a.startswith("409") or (isinstance(d_a, dict) and d_a.get("error") == "conflict"), (st_a, d_a))
+        # Безопасный retry: overlay ячейки A на server_value.
+        server_plans = d_a.get("server_value") or self.store["payload"]["management"]["plans"]
+        a_retry = self.overlay_cell(
+            server_plans,
+            "week:2026-10-30",
+            "mind_a",
+            {"indicator_id": "mind_a", "value": "111", "plan_value": 111},
+        )
+        st_ok, d_ok, *_ = self._op(
+            cookie, "management.plans", int(d_a.get("server_v") or server_v), a_retry, key="spu_a_retry"
+        )
+        self.assertTrue(st_ok.startswith("200"), (st_ok, d_ok))
+        week = self.store["payload"]["management"]["plans"]["week:2026-10-30"]
+        self.assertEqual(week["mind_a"]["plan_value"], 111)
+        self.assertEqual(week["mind_b"]["plan_value"], 20)
+
+    def test_manual_fact_overlay_and_forbidden_without_perm(self):
+        cookie, _ = self.login_spu()
+        base = {}
+        facts = self.overlay_cell(
+            base,
+            "week:2026-10-30",
+            "mind_a",
+            {
+                "indicator_id": "mind_a",
+                "period": "week:2026-10-30",
+                "value": "7",
+                "entered_by_user_id": "usr_spu_pf",
+            },
+        )
+        st, data, *_ = self._op(cookie, "management.manualFacts", 0, facts, key="spu_fact")
+        self.assertTrue(st.startswith("200"), (st, data))
+        self.assertEqual(
+            self.store["payload"]["management"]["manualFacts"]["week:2026-10-30"]["mind_a"]["value"],
+            "7",
+        )
+        # Пользователь без managementIndicators — 403.
+        self.store["payload"]["users"].append({
+            "user_id": "usr_shop_only",
+            "display_name": "Магазин",
+            "pin": "1111",
+            "role": "staff",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"timesheet": "edit"},
+        })
+        st_l, _, _, cookies = call("POST", "/api/login", {"user_id": "usr_shop_only", "pin": "1111"})
+        self.assertTrue(st_l.startswith("200"), st_l)
+        shop_cookie = cookie_from(cookies)
+        st_f, d_f, *_ = self._op(shop_cookie, "management.plans", 0, {"x": {}}, key="spu_forbid")
+        self.assertTrue(
+            st_f.startswith("403") or (isinstance(d_f, dict) and d_f.get("error") == "forbidden"),
+            (st_f, d_f),
+        )
+
+
+class WtSpuClientQueueStateTests(unittest.TestCase):
+    """
+    Фактическое состояние сервера и UI-модели при ленивой очереди СПУ
+    (зеркало wtSpuPersistRecordOp: build в момент выполнения, черновики, 409).
+    FakeConn, без live БД / Node.
+    """
+
+    PK = "week:2026-10-30"
+    PATH = "management.plans"
+
+    @staticmethod
+    def overlay_cell(base, period_key, indicator_id, rec_or_none):
+        out = json.loads(json.dumps(base if isinstance(base, dict) else {}))
+        pk = str(period_key or "")
+        iid = str(indicator_id or "")
+        if not pk or not iid:
+            return out
+        bucket = dict(out.get(pk) or {}) if isinstance(out.get(pk), dict) else {}
+        if rec_or_none is None:
+            bucket.pop(iid, None)
+        else:
+            bucket[iid] = json.loads(json.dumps(rec_or_none))
+        if bucket:
+            out[pk] = bucket
+        else:
+            out.pop(pk, None)
+        return out
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["management"] = {
+            "indicators": [
+                {"indicator_id": "mind_a", "name": "A", "plan_mode": "spu", "is_active": True},
+                {"indicator_id": "mind_b", "name": "B", "plan_mode": "spu", "is_active": True},
+                {"indicator_id": "mind_c", "name": "C", "plan_mode": "spu", "is_active": True},
+            ],
+            "plans": {},
+            "manualFacts": {},
+            "period_plans": [],
+            "tasks": [],
+            "meetings": [],
+            "events": [],
+        }
+        payload["users"] = list(payload.get("users") or [])
+        payload["users"].append({
+            "user_id": "usr_spu_q",
+            "display_name": "СПУ очередь",
+            "pin": "7777",
+            "role": "staff",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {"managementIndicators": "edit", "management": "none"},
+        })
+        payload["users"].append({
+            "user_id": "usr_spu_q2",
+            "display_name": "СПУ второй",
+            "pin": "6666",
+            "role": "staff",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {"managementIndicators": "edit", "management": "none"},
+        })
+        self.store = {
+            "payload": payload,
+            "version": 1,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+        self.cookie = self._login("usr_spu_q", "7777")
+        self.last_loaded = json.loads(json.dumps(payload))
+        self.app_data = json.loads(json.dumps(payload))
+        self.drafts = {"plans": {}, "facts": {}}
+        self.record_v = {self.PATH: 0, "management.manualFacts": 0}
+        self.ops_log = []
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def _login(self, user_id, pin):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), (status, data))
+        return cookie_from(cookies)
+
+    def _op(self, cookie, path, expected_v, value, key):
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": key,
+                "op": {"path": path, "expected_v": expected_v, "value": value},
+            },
+            cookie=cookie,
+        )
+        self.ops_log.append({"path": path, "expected_v": expected_v, "status": st, "key": key})
+        return st, data
+
+    def _draft_key(self, period_key, iid):
+        return str(period_key) + "\0" + str(iid)
+
+    def _remember_draft(self, kind, period_key, iid, rec):
+        bag = "facts" if kind == "facts" else "plans"
+        self.drafts[bag][self._draft_key(period_key, iid)] = {
+            "periodKey": period_key,
+            "indicatorId": iid,
+            "deleted": rec is None,
+            "rec": None if rec is None else json.loads(json.dumps(rec)),
+        }
+
+    def _clear_draft(self, kind, period_key, iid):
+        bag = "facts" if kind == "facts" else "plans"
+        self.drafts[bag].pop(self._draft_key(period_key, iid), None)
+
+    def _branch_with_drafts(self, path, server_branch):
+        kind = "facts" if path.endswith("manualFacts") else "plans"
+        out = json.loads(json.dumps(server_branch if isinstance(server_branch, dict) else {}))
+        for d in (self.drafts.get(kind) or {}).values():
+            out = self.overlay_cell(
+                out, d["periodKey"], d["indicatorId"], None if d["deleted"] else d["rec"]
+            )
+        return out
+
+    def _apply_saved(self, path, server_value, record_v):
+        # lastLoaded = чистая серверная ветка; UI = сервер + оставшиеся черновики.
+        cur = self.last_loaded
+        for part in path.split("."):
+            if part == path.split(".")[-1]:
+                cur[part] = json.loads(json.dumps(server_value))
+            else:
+                cur = cur.setdefault(part, {})
+        self.record_v[path] = int(record_v or 0)
+        ui_root = self.app_data
+        for part in path.split(".")[:-1]:
+            ui_root = ui_root.setdefault(part, {})
+        ui_root[path.split(".")[-1]] = self._branch_with_drafts(path, server_value)
+
+    def _persist_plan_cell(self, iid, value, cookie=None, key=None, confirm_retry=True):
+        """Зеркало setMgmtPlanValue + wtSpuPersistRecordOp (lazy build в очереди)."""
+        cookie = cookie or self.cookie
+        pk = self.PK
+        rec = None
+        if value is not None and str(value).strip() != "":
+            n = float(value) if str(value).replace(".", "", 1).isdigit() else value
+            rec = {
+                "indicator_id": iid,
+                "period": pk,
+                "period_key": pk,
+                "value": str(value),
+                "plan_value": n if isinstance(n, (int, float)) else str(value),
+            }
+            self.app_data.setdefault("management", {}).setdefault("plans", {}).setdefault(pk, {})[iid] = rec
+        else:
+            bucket = self.app_data.get("management", {}).get("plans", {}).get(pk) or {}
+            bucket.pop(iid, None)
+            rec = None
+        self._remember_draft("plans", pk, iid, rec)
+
+        # Payload формируется непосредственно перед POST — из актуального lastLoaded.
+        base = json.loads(json.dumps(
+            (self.last_loaded.get("management") or {}).get("plans") or {}
+        ))
+        payload = self.overlay_cell(base, pk, iid, rec)
+        expected = int(self.record_v.get(self.PATH) or 0)
+        st, data = self._op(cookie, self.PATH, expected, payload, key or ("spu_" + iid + "_" + str(value)))
+        if st.startswith("200") and isinstance(data, dict) and data.get("error") != "conflict":
+            self._clear_draft("plans", pk, iid)
+            self._apply_saved(self.PATH, data.get("value"), data.get("record_v"))
+            return True, data
+        if (st.startswith("409") or (isinstance(data, dict) and data.get("error") == "conflict")):
+            if not confirm_retry:
+                # Отмена: ввод остаётся черновиком/на экране, lastLoaded не трогаем.
+                return False, data
+            server_val = data.get("server_value") or (self.store["payload"]["management"]["plans"])
+            server_v = int(data.get("server_v") or self.record_v.get(self.PATH) or 0)
+            retry_payload = self.overlay_cell(server_val, pk, iid, rec)
+            st2, data2 = self._op(
+                cookie, self.PATH, server_v, retry_payload, key=(key or "spu_retry") + "_r"
+            )
+            if st2.startswith("200"):
+                self._clear_draft("plans", pk, iid)
+                self._apply_saved(self.PATH, data2.get("value"), data2.get("record_v"))
+                return True, data2
+            return False, data2
+        return False, data
+
+    def _server_week(self):
+        return (self.store["payload"]["management"]["plans"].get(self.PK) or {})
+
+    def _ui_week(self):
+        return (self.app_data.get("management", {}).get("plans", {}).get(self.PK) or {})
+
+    def _loaded_week(self):
+        return (self.last_loaded.get("management", {}).get("plans", {}).get(self.PK) or {})
+
+    def test_01a_frozen_enqueue_loses_or_conflicts_a(self):
+        """Старый дефект: payload L0+A и L0+B заморожены при постановке в очередь."""
+        base0 = {}
+        frozen_a = self.overlay_cell(base0, self.PK, "mind_a", {
+            "indicator_id": "mind_a", "value": "10", "plan_value": 10,
+        })
+        frozen_b = self.overlay_cell(base0, self.PK, "mind_b", {
+            "indicator_id": "mind_b", "value": "20", "plan_value": 20,
+        })
+        st_a, d_a = self._op(self.cookie, self.PATH, 0, frozen_a, "frozen_a")
+        self.assertTrue(st_a.startswith("200"), (st_a, d_a))
+        st_b, d_b = self._op(self.cookie, self.PATH, 0, frozen_b, "frozen_b")
+        wiped = st_b.startswith("200") and "mind_a" not in self._server_week()
+        conflicted = st_b.startswith("409") or (
+            isinstance(d_b, dict) and d_b.get("error") == "conflict"
+        )
+        self.assertTrue(wiped or conflicted, (st_b, d_b, self._server_week()))
+
+    def test_01b_lazy_queue_keeps_both_on_server_and_ui(self):
+        """Исправление: B собирается из lastLoaded после A → на сервере A и B."""
+        ok_a, _ = self._persist_plan_cell("mind_a", "10", key="lazy_a")
+        ok_b, _ = self._persist_plan_cell("mind_b", "20", key="lazy_b")
+        self.assertTrue(ok_a)
+        self.assertTrue(ok_b)
+        week = self._server_week()
+        self.assertEqual(week["mind_a"]["plan_value"], 10)
+        self.assertEqual(week["mind_b"]["plan_value"], 20)
+        self.assertEqual(self._ui_week()["mind_a"]["plan_value"], 10)
+        self.assertEqual(self._ui_week()["mind_b"]["plan_value"], 20)
+        self.assertEqual(self._loaded_week()["mind_a"]["plan_value"], 10)
+        self.assertEqual(self._loaded_week()["mind_b"]["plan_value"], 20)
+        self.assertFalse(self.drafts["plans"])
+
+    def test_02_abc_sequential(self):
+        self.assertTrue(self._persist_plan_cell("mind_a", "1", key="abc_a")[0])
+        self.assertTrue(self._persist_plan_cell("mind_b", "2", key="abc_b")[0])
+        self.assertTrue(self._persist_plan_cell("mind_c", "3", key="abc_c")[0])
+        week = self._server_week()
+        self.assertEqual(week["mind_a"]["plan_value"], 1)
+        self.assertEqual(week["mind_b"]["plan_value"], 2)
+        self.assertEqual(week["mind_c"]["plan_value"], 3)
+
+    def test_03_same_cell_rapid_edits_last_wins(self):
+        self.assertTrue(self._persist_plan_cell("mind_a", "1", key="same1")[0])
+        self.assertTrue(self._persist_plan_cell("mind_a", "2", key="same2")[0])
+        self.assertTrue(self._persist_plan_cell("mind_a", "3", key="same3")[0])
+        self.assertEqual(self._server_week()["mind_a"]["plan_value"], 3)
+        self.assertEqual(self._ui_week()["mind_a"]["plan_value"], 3)
+        self.assertNotIn(self._draft_key(self.PK, "mind_a"), self.drafts["plans"])
+
+    def test_04_typing_b_while_a_saves_keeps_draft(self):
+        # A уходит на сервер; B только локальный черновик (persist:false).
+        self._remember_draft("plans", self.PK, "mind_b", {
+            "indicator_id": "mind_b", "value": "88", "plan_value": 88,
+        })
+        self.app_data["management"]["plans"].setdefault(self.PK, {})["mind_b"] = {
+            "indicator_id": "mind_b", "value": "88", "plan_value": 88,
+        }
+        ok, _ = self._persist_plan_cell("mind_a", "11", key="draft_a")
+        self.assertTrue(ok)
+        self.assertEqual(self._server_week()["mind_a"]["plan_value"], 11)
+        self.assertNotIn("mind_b", self._server_week())
+        self.assertNotIn("mind_b", self._loaded_week())
+        self.assertEqual(self._ui_week()["mind_b"]["plan_value"], 88)
+        self.assertIn(self._draft_key(self.PK, "mind_b"), self.drafts["plans"])
+
+    def test_05_save_a_with_unsaved_b_then_save_b(self):
+        self._remember_draft("plans", self.PK, "mind_b", {
+            "indicator_id": "mind_b", "value": "5", "plan_value": 5,
+        })
+        self.app_data["management"]["plans"].setdefault(self.PK, {})["mind_b"] = {
+            "indicator_id": "mind_b", "value": "5", "plan_value": 5,
+        }
+        self.assertTrue(self._persist_plan_cell("mind_a", "4", key="unsaved_a")[0])
+        self.assertEqual(self._ui_week()["mind_b"]["plan_value"], 5)
+        self.assertTrue(self._persist_plan_cell("mind_b", "5", key="unsaved_b")[0])
+        self.assertEqual(self._server_week()["mind_a"]["plan_value"], 4)
+        self.assertEqual(self._server_week()["mind_b"]["plan_value"], 5)
+        self.assertFalse(self.drafts["plans"])
+
+    def test_06_two_users_different_cells(self):
+        c2 = self._login("usr_spu_q2", "6666")
+        self.assertTrue(self._persist_plan_cell("mind_a", "10", key="u1_a")[0])
+        # Второй клиент: свой lastLoaded после SoftSync = сервер с A.
+        other_loaded = json.loads(json.dumps(self.store["payload"]))
+        other_v = int(
+            ((other_loaded.get("_wt_records") or {}).get(self.PATH) or {}).get("v")
+            or self.record_v[self.PATH]
+        )
+        base = (other_loaded.get("management") or {}).get("plans") or {}
+        payload_b = self.overlay_cell(base, self.PK, "mind_b", {
+            "indicator_id": "mind_b", "value": "20", "plan_value": 20,
+        })
+        st, data = self._op(c2, self.PATH, other_v, payload_b, "u2_b")
+        if st.startswith("409") or (isinstance(data, dict) and data.get("error") == "conflict"):
+            payload_b = self.overlay_cell(data.get("server_value") or base, self.PK, "mind_b", {
+                "indicator_id": "mind_b", "value": "20", "plan_value": 20,
+            })
+            st, data = self._op(c2, self.PATH, int(data.get("server_v") or other_v), payload_b, "u2_b_r")
+        self.assertTrue(st.startswith("200"), (st, data))
+        week = self._server_week()
+        self.assertEqual(week["mind_a"]["plan_value"], 10)
+        self.assertEqual(week["mind_b"]["plan_value"], 20)
+
+    def test_07_two_users_same_cell_409_retry(self):
+        c2 = self._login("usr_spu_q2", "6666")
+        self.assertTrue(self._persist_plan_cell("mind_a", "1", key="same_u1")[0])
+        # Второй пользователь со stale expected_v=0 и своим значением.
+        stale = self.overlay_cell({}, self.PK, "mind_a", {
+            "indicator_id": "mind_a", "value": "99", "plan_value": 99,
+        })
+        st, data = self._op(c2, self.PATH, 0, stale, "same_u2_stale")
+        self.assertTrue(
+            st.startswith("409") or (isinstance(data, dict) and data.get("error") == "conflict"),
+            (st, data),
+        )
+        retry = self.overlay_cell(data.get("server_value"), self.PK, "mind_a", {
+            "indicator_id": "mind_a", "value": "99", "plan_value": 99,
+        })
+        st2, data2 = self._op(c2, self.PATH, int(data.get("server_v") or 1), retry, "same_u2_ok")
+        self.assertTrue(st2.startswith("200"), (st2, data2))
+        self.assertEqual(self._server_week()["mind_a"]["plan_value"], 99)
+
+    def test_08_conflict_cancel_keeps_local_draft_not_success(self):
+        self.assertTrue(self._persist_plan_cell("mind_a", "1", key="cc_a")[0])
+        # Имитация чужой записи B на сервере.
+        server_now = self.overlay_cell(self.store["payload"]["management"]["plans"], self.PK, "mind_b", {
+            "indicator_id": "mind_b", "value": "7", "plan_value": 7,
+        })
+        st_b, d_b = self._op(self.cookie, self.PATH, self.record_v[self.PATH], server_now, "cc_foreign_b")
+        self.assertTrue(st_b.startswith("200"), (st_b, d_b))
+        # Локальный клиент ещё со старым record_v пытается сохранить C — 409, отмена.
+        self.record_v[self.PATH] = 0  # устаревшая версия у клиента
+        ok, data = self._persist_plan_cell("mind_c", "3", key="cc_c", confirm_retry=False)
+        self.assertFalse(ok)
+        self.assertIsInstance(data, dict)
+        self.assertEqual(data.get("error"), "conflict")
+        self.assertNotIn("mind_c", self._server_week())
+        self.assertIn(self._draft_key(self.PK, "mind_c"), self.drafts["plans"])
+        self.assertEqual(self._ui_week()["mind_c"]["plan_value"], 3)
+        # Подтверждение: повтор поверх server_value (не считаем отмену успехом).
+        ok2, _ = self._persist_plan_cell("mind_c", "3", key="cc_c2", confirm_retry=True)
+        self.assertTrue(ok2)
+        self.assertEqual(self._server_week()["mind_c"]["plan_value"], 3)
+        self.assertEqual(self._server_week()["mind_b"]["plan_value"], 7)
+        self.assertNotIn(self._draft_key(self.PK, "mind_c"), self.drafts["plans"])
+
+    def test_09_timeout_no_auto_retry_marker_and_state(self):
+        # Фактический timeout сети здесь не эмулируем (FakeConn синхронный);
+        # проверяем контракт маркеров + что один успешный op не порождает пакет.
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        start = src.find("function wtSpuPersistRecordOp(")
+        end = src.find("function wtPersistMgmtBranches(", start + 10)
+        body = src[start:end]
+        self.assertIn("Ответ сервера не получен", body)
+        # После offline/network нет второго вызова Post в том же обработчике.
+        idx = body.find('status === "offline"')
+        self.assertGreater(idx, 0)
+        self.assertNotIn("wtSpuPostStateOp(", body[idx:idx + 500])
+        before = len(self.ops_log)
+        self.assertTrue(self._persist_plan_cell("mind_a", "1", key="to_a")[0])
+        self.assertEqual(len(self.ops_log) - before, 1)
+
+    def test_10_clear_cell_preserves_sibling(self):
+        self.assertTrue(self._persist_plan_cell("mind_a", "1", key="clr_a")[0])
+        self.assertTrue(self._persist_plan_cell("mind_b", "2", key="clr_b")[0])
+        self.assertTrue(self._persist_plan_cell("mind_a", "", key="clr_a_empty")[0])
+        week = self._server_week()
+        self.assertNotIn("mind_a", week)
+        self.assertEqual(week["mind_b"]["plan_value"], 2)
+
+    def test_11_reopen_after_saves(self):
+        self.assertTrue(self._persist_plan_cell("mind_a", "10", key="re_a")[0])
+        self.assertTrue(self._persist_plan_cell("mind_b", "20", key="re_b")[0])
+        # F5: загрузка с сервера.
+        reopened = json.loads(json.dumps(self.store["payload"]))
+        week = (reopened.get("management") or {}).get("plans", {}).get(self.PK) or {}
+        self.assertEqual(week["mind_a"]["plan_value"], 10)
+        self.assertEqual(week["mind_b"]["plan_value"], 20)
+        self.assertEqual(
+            reopened.get("shopMetrics"),
+            SAMPLE_APP.get("shopMetrics"),
+        )
+
+    def test_12_no_457_wide_batch_only_single_op(self):
+        # Локальный «шум» в appData не уходит: шлём только overlay одной ячейки.
+        noise = self.app_data.setdefault("shopMetrics", {})
+        for i in range(457):
+            noise["noise_%d" % i] = {"v": i}
+        before_ops = len(self.ops_log)
+        before_shop = json.loads(json.dumps(self.store["payload"].get("shopMetrics")))
+        self.assertTrue(self._persist_plan_cell("mind_a", "42", key="no457")[0])
+        self.assertEqual(len(self.ops_log) - before_ops, 1)
+        self.assertEqual(self.ops_log[-1]["path"], self.PATH)
+        self.assertEqual(self.store["payload"].get("shopMetrics"), before_shop)
+        self.assertEqual(self._server_week()["mind_a"]["plan_value"], 42)
+        self.assertNotIn("mind_drift", self._server_week())
+
+
 if __name__ == "__main__":
     unittest.main()

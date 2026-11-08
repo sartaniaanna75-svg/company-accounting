@@ -480,6 +480,9 @@ MGMT_KEY_PERMS = {
     "plans": "managementIndicators",
     "manualFacts": "managementIndicators",
     "input_order": "managementIndicators",
+    # Планы управленческих периодов — та же зона, что plans/manualFacts (без новой роли).
+    "period_plans": "managementIndicators",
+    "mgmt_periods": "managementIndicators",
     "spuOrgNodes": "managementStructure",
     "spuDepartments": "managementStructure",
     "tasks": "managementTasks",
