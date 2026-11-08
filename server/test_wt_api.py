@@ -6167,6 +6167,298 @@ class EmployeeIdAllocationTests(unittest.TestCase):
         self.assertEqual(ids, ["emp_keep"])
         self.assertNotIn("employeeRemovals", merged)
 
+    def test_employee_removal_blocked_by_salary_and_timesheet(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [{"id": "E-KEEP", "name": "Ok"}, {"id": "E-HIST", "name": "Hist"}],
+                    "employeeIds": ["E-KEEP", "E-HIST"],
+                    "timesheet": {"2026-10": {"E-HIST": {"1": {"status": "Я", "hours": 8}}}},
+                }
+            ],
+            "salary": {"2026-10": {"E-HIST": {"issued": False, "bonus": 100}}},
+        }
+        self.assertIn("табель", wt_api.employee_linked_history_labels(current, "E-HIST"))
+        self.assertIn("зарплата", wt_api.employee_linked_history_labels(current, "E-HIST"))
+        self.assertEqual(
+            wt_api.employee_removals_denied(
+                current,
+                {"employeeRemovals": [{"department_id": "shop", "employee_id": "E-HIST"}]},
+            ),
+            "employee_has_history",
+        )
+        # Без связей — удаление разрешено на этапе проверки.
+        clean = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [{"id": "E-NEW", "name": "New"}],
+                    "employeeIds": ["E-NEW"],
+                    "timesheet": {},
+                }
+            ],
+            "salary": {},
+        }
+        self.assertEqual(wt_api.employee_linked_history_labels(clean, "E-NEW"), [])
+        self.assertIsNone(
+            wt_api.employee_removals_denied(
+                clean,
+                {"employeeRemovals": [{"department_id": "shop", "employee_id": "E-NEW"}]},
+            )
+        )
+
+    def test_ops_null_employee_blocked_with_history(self):
+        payload = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [{"id": "E1", "name": "A"}],
+                    "employeeIds": ["E1"],
+                }
+            ],
+            "salary": {"2026-10": {"E1": {"bonus": 1}}},
+            "_wt_records": {},
+        }
+        admin = {
+            "user_id": "user_admin",
+            "role": "admin",
+            "legacy_role": "admin",
+            "departments": ["shop"],
+            "permissions": {},
+        }
+        nxt, err = wt_api.apply_state_op(
+            payload,
+            {"path": "workspaces.shop.employees.E1", "expected_v": 0, "value": None},
+            admin,
+        )
+        self.assertIsNone(nxt)
+        self.assertIsNotNone(err)
+        self.assertEqual(err.get("error"), "employee_has_history")
+        self.assertIn("зарплата", str(err.get("message") or ""))
+        # Карточка на сервере не удалена.
+        ws = next(w for w in payload["workspaces"] if w["code"] == "shop")
+        self.assertEqual([e["id"] for e in ws["employees"]], ["E1"])
+
+    def test_prepare_put_denies_removal_with_history(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [{"id": "E1", "name": "A"}],
+                    "employeeIds": ["E1"],
+                }
+            ],
+            "salary": {"2026-10": {"E1": {}}},
+        }
+        incoming = {
+            "employeeRemovals": [{"department_id": "shop", "employee_id": "E1"}],
+        }
+        admin = {
+            "user_id": "user_admin",
+            "role": "admin",
+            "legacy_role": "admin",
+            "departments": ["shop"],
+            "permissions": {},
+        }
+        stored, denied = wt_api.prepare_put_payload(current, incoming, admin)
+        self.assertIsNone(stored)
+        self.assertEqual(denied, "employee_has_history")
+
+    def test_ops_null_employee_allowed_without_history(self):
+        payload = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [
+                        {"id": "E_KEEP", "name": "Keep"},
+                        {"id": "E_GONE", "name": "Gone"},
+                    ],
+                    "employeeIds": ["E_KEEP", "E_GONE"],
+                }
+            ],
+            "salary": {},
+            "_wt_records": {},
+        }
+        admin = {
+            "user_id": "user_admin",
+            "role": "admin",
+            "legacy_role": "admin",
+            "departments": ["shop"],
+            "permissions": {},
+        }
+        nxt, err = wt_api.apply_state_op(
+            payload,
+            {"path": "workspaces.shop.employees.E_GONE", "expected_v": 0, "value": None},
+            admin,
+        )
+        self.assertIsNone(err)
+        self.assertIsNotNone(nxt)
+        ws = next(w for w in nxt["workspaces"] if w["code"] == "shop")
+        self.assertEqual([e["id"] for e in ws["employees"]], ["E_KEEP"])
+        # История salary не трогалась (её и не было); другие карточки на месте.
+        self.assertEqual(nxt.get("salary"), {})
+
+    def test_employee_removal_blocked_by_kpi_assignment(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [{"id": "E_KPI", "name": "K"}],
+                    "employeeIds": ["E_KPI"],
+                }
+            ],
+            "shopPayroll": {
+                "assignments": [{"id": "a1", "employee_id": "E_KPI", "kpi_id": "k1"}],
+            },
+        }
+        labels = wt_api.employee_linked_history_labels(current, "E_KPI")
+        self.assertIn("KPI/премии", labels)
+        self.assertEqual(
+            wt_api.employee_removals_denied(
+                current,
+                {"employeeRemovals": [{"department_id": "shop", "employee_id": "E_KPI"}]},
+            ),
+            "employee_has_history",
+        )
+
+    def _empty_card(self, eid="E_LINK"):
+        return {
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [{"id": eid, "name": "Link"}, {"id": "E_OTHER", "name": "Other"}],
+                    "employeeIds": [eid, "E_OTHER"],
+                }
+            ]
+        }
+
+    def test_link_customer_returns_blocks_removal(self):
+        current = self._empty_card()
+        current["customerReturns"] = {
+            "items": [{"return_id": "r1", "driver_employee_id": "E_LINK"}]
+        }
+        self.assertIn("возвраты покупателей", wt_api.employee_linked_history_labels(current, "E_LINK"))
+        self.assertEqual(
+            wt_api.employee_removals_denied(
+                current, {"employeeRemovals": [{"department_id": "shop", "employee_id": "E_LINK"}]}
+            ),
+            "employee_has_history",
+        )
+        # Чужой id в том же разделе — не блок для E_OTHER.
+        self.assertEqual(wt_api.employee_linked_history_labels(current, "E_OTHER"), [])
+
+    def test_link_revision_blocks_removal(self):
+        current = self._empty_card()
+        current["shopRevision"] = {
+            "groups": [{"id": "g1", "employee_id": "E_LINK"}],
+            "tasks": {},
+        }
+        self.assertIn("ревизии", wt_api.employee_linked_history_labels(current, "E_LINK"))
+        current2 = self._empty_card("E_TASK")
+        current2["deptRevisions"] = {
+            "warehouse": {
+                "groups": [],
+                "tasks": {
+                    "2026-10": {
+                        "t1": {"id": "t1", "assignedEmployeeId": "E_TASK"}
+                    }
+                },
+            }
+        }
+        self.assertIn("ревизии", wt_api.employee_linked_history_labels(current2, "E_TASK"))
+
+    def test_link_management_blocks_removal(self):
+        current = self._empty_card()
+        current["management"] = {
+            "indicators": [{"indicator_id": "i1", "owner_employee_id": "E_LINK"}],
+            "meetings": [],
+            "tasks": [],
+        }
+        self.assertIn("СПУ/совещания", wt_api.employee_linked_history_labels(current, "E_LINK"))
+        current2 = self._empty_card("E_MEET")
+        current2["management"] = {
+            "indicators": [],
+            "meetingWeeks": {"2026-W40": {"participant_employee_ids": ["E_MEET"]}},
+        }
+        self.assertIn("СПУ/совещания", wt_api.employee_linked_history_labels(current2, "E_MEET"))
+
+    def test_link_org_structure_blocks_removal(self):
+        current = self._empty_card()
+        current["orgStructure"] = {
+            "nodes": [{"org_node_id": "n1", "manager_employee_id": "E_LINK", "deputy_employee_id": ""}],
+            "leadership": [],
+        }
+        self.assertIn("оргструктура", wt_api.employee_linked_history_labels(current, "E_LINK"))
+        current2 = self._empty_card("E_LEAD")
+        current2["orgStructure"] = {
+            "nodes": [],
+            "leadership": [{"id": "l1", "employee_id": "E_LEAD", "leadership_type": "manager"}],
+        }
+        self.assertIn("оргструктура", wt_api.employee_linked_history_labels(current2, "E_LEAD"))
+
+    def test_link_inventory_conducted_by_blocks_removal(self):
+        current = self._empty_card()
+        current["shopMetrics"] = {
+            "inventoryResults": {
+                "2026-10": {
+                    "1": {"conducted_by_employee_id": "E_LINK"}
+                }
+            }
+        }
+        labels = wt_api.employee_linked_history_labels(current, "E_LINK")
+        self.assertIn("KPI/метрики", labels)
+
+    def test_link_catalog_employee_ids_blocks_removal(self):
+        current = self._empty_card()
+        current["shopMetricCatalog"] = {
+            "items": [
+                {
+                    "id": "m1",
+                    "assignments": [
+                        {
+                            "department_id": "shop",
+                            "work_tab_id": "cashiers",
+                            "employee_ids": ["E_LINK"],
+                            "extra_employee_ids": [],
+                        }
+                    ],
+                }
+            ]
+        }
+        self.assertIn("назначения метрик", wt_api.employee_linked_history_labels(current, "E_LINK"))
+
+    def test_ops_and_removed_employee_ids_blocked_with_new_links(self):
+        current = self._empty_card()
+        current["customerReturns"] = {
+            "items": [{"return_id": "r1", "sales_author_employee_id": "E_LINK"}]
+        }
+        admin = {
+            "user_id": "user_admin",
+            "role": "admin",
+            "legacy_role": "admin",
+            "departments": ["shop"],
+            "permissions": {},
+        }
+        nxt, err = wt_api.apply_state_op(
+            current,
+            {"path": "workspaces.shop.employees.E_LINK", "expected_v": 0, "value": None},
+            admin,
+        )
+        self.assertIsNone(nxt)
+        self.assertEqual(err.get("error"), "employee_has_history")
+        stored, denied = wt_api.prepare_put_payload(
+            current,
+            {
+                "workspaces": [
+                    {"code": "shop", "removedEmployeeIds": ["E_LINK"]}
+                ]
+            },
+            admin,
+        )
+        self.assertIsNone(stored)
+        self.assertEqual(denied, "employee_has_history")
+
     def test_admin_merge_cross_dept_stale_put_keeps_both(self):
         current = {
             "workspaces": [
@@ -10083,11 +10375,27 @@ class WtCriticalSilentSaveFixTests(unittest.TestCase):
     def test_hr_delete_move_await(self):
         dele = self._fn("deleteEmployee", "summaryDirectoryGroups")
         move = self._fn("moveEmployeeToDepartment", "updateStats")
-        self.assertIn("wtAwaitSaveAppFeedback(", dele)
+        # Удаление: узкий OPS / slice PUT, без широкого saveApp и без каскада salary/timesheet.
+        self.assertIn("wtEmployeeLinkedHistoryLabels(", dele)
+        self.assertIn("wtDomainWriterSave(", dele)
+        self.assertIn("atomic: true", dele)
+        self.assertIn("restoreLocal()", dele)
+        self.assertIn('value: null', dele)
+        self.assertNotIn("delete appData.salary", dele)
+        self.assertNotIn("delete w.timesheet", dele)
+        self.assertNotIn("wtAwaitSaveAppFeedback(", dele)
+        self.assertNotRegex(dele, r"Object\.keys\(appData\.salary")
         self.assertIn("wtAwaitSaveAppFeedback(", move)
-        self.assertIn('okToast: "Сотрудник удалён."', dele)
-        self.assertNotIn("saveApp();", dele)
         self.assertNotIn("saveApp();", move)
+        src = self._src()
+        self.assertIn("function wtEmployeeLinkedHistoryLabels(", src)
+        self.assertIn("wtEmployeeDeleteBlockedToast(", src)
+        # Паритет новых источников связей (клиент).
+        self.assertIn("возвраты покупателей", src)
+        self.assertIn("conducted_by_employee_id", src[src.find("function wtEmployeeLinkedHistoryLabels("):src.find("function wtEmployeeDeleteBlockedToast(")])
+        self.assertIn("employee_ids", src[src.find("function wtEmployeeLinkedHistoryLabels("):src.find("function wtEmployeeDeleteBlockedToast(")])
+        self.assertIn("оргструктура", src)
+        self.assertIn("СПУ/совещания", src)
 
     def test_fill_month_awaits_when_ops_off(self):
         body = self._fn("fillMonth", None)

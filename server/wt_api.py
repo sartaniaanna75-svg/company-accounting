@@ -1847,8 +1847,430 @@ def _normalize_employee_removals(raw: Any) -> list[dict[str, str]]:
     return out
 
 
+def _timesheet_emp_has_activity(days: Any) -> bool:
+    """Есть ли в строке табеля сотрудника хотя бы одна осмысленная ячейка."""
+    if not isinstance(days, dict):
+        return bool(days)
+    for rec in days.values():
+        if not isinstance(rec, dict):
+            if rec not in (None, "", 0, False):
+                return True
+            continue
+        if str(rec.get("status") or "").strip():
+            return True
+        try:
+            if float(rec.get("hours") or 0):
+                return True
+        except (TypeError, ValueError):
+            pass
+        try:
+            if int(rec.get("lateMinutes") or 0):
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+# Известные поля ячеек метрик с прямой ссылкой на сотрудника (не универсальный обход).
+_METRIC_CELL_EMPLOYEE_FIELDS = (
+    "employee_id",
+    "conducted_by_employee_id",
+    "assigned_cashier_employee_id",
+    "actual_cashier_employee_id",
+    "replaced_employee_id",
+)
+
+
+def _cell_refs_employee(cell: Any, eid: str) -> bool:
+    if str(cell or "").strip() == eid:
+        return True
+    if not isinstance(cell, dict):
+        return False
+    for field in _METRIC_CELL_EMPLOYEE_FIELDS:
+        if str(cell.get(field) or "").strip() == eid:
+            return True
+    # История смены ответственного пересчёта: from_employee_id / to_employee_id.
+    for hist in cell.get("history") or []:
+        if not isinstance(hist, dict):
+            continue
+        if str(hist.get("from_employee_id") or "").strip() == eid:
+            return True
+        if str(hist.get("to_employee_id") or "").strip() == eid:
+            return True
+    return False
+
+
+def _metric_branch_links_employee(branch: Any, eid: str) -> list[str]:
+    """Метки связей сотрудника внутри shopMetrics / deptMetrics.<dept>."""
+    out: list[str] = []
+    if not isinstance(branch, dict) or not eid:
+        return out
+    wa = branch.get("workAccess")
+    if isinstance(wa, dict):
+        for mmap in wa.values():
+            if isinstance(mmap, dict) and eid in mmap:
+                out.append("назначения метрик")
+                break
+    ea = branch.get("extraAccess")
+    if isinstance(ea, dict) and eid in ea:
+        if "назначения метрик" not in out:
+            out.append("назначения метрик")
+    for key in METRIC_INPUT_KEYS:
+        store = branch.get(key)
+        if not isinstance(store, dict):
+            continue
+        hit = False
+        for sub in store.values():
+            if isinstance(sub, list):
+                for cell in sub:
+                    if _cell_refs_employee(cell, eid):
+                        hit = True
+                        break
+                if hit:
+                    break
+                continue
+            if isinstance(sub, dict) and eid in sub:
+                hit = True
+                break
+            if not isinstance(sub, dict):
+                continue
+            # inventoryResults / dayRoles: месяц → день → ячейка или список ролей.
+            if _cell_refs_employee(sub, eid):
+                hit = True
+                break
+            for cell in sub.values():
+                if isinstance(cell, list):
+                    for item in cell:
+                        if _cell_refs_employee(item, eid):
+                            hit = True
+                            break
+                    if hit:
+                        break
+                elif _cell_refs_employee(cell, eid):
+                    hit = True
+                    break
+            if hit:
+                break
+        if hit:
+            out.append("KPI/метрики")
+            break
+    return out
+
+
+def _sales_plan_root_links_employee(root: Any, eid: str) -> bool:
+    if not isinstance(root, dict) or not eid:
+        return False
+    months = root.get("months")
+    if not isinstance(months, dict):
+        return False
+    for rec in months.values():
+        if not isinstance(rec, dict):
+            continue
+        emap = rec.get("employees")
+        if isinstance(emap, dict) and eid in emap:
+            return True
+    return False
+
+
+def _customer_returns_links_employee(root: Any, eid: str) -> bool:
+    if not isinstance(root, dict) or not eid:
+        return False
+    fields = (
+        "sales_author_employee_id",
+        "driver_employee_id",
+        "cashier_employee_id",
+        "picker_employee_id",
+    )
+    for item in root.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        for field in fields:
+            if str(item.get(field) or "").strip() == eid:
+                return True
+    return False
+
+
+def _revision_root_links_employee(root: Any, eid: str) -> bool:
+    if not isinstance(root, dict) or not eid:
+        return False
+    for group in root.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        if str(group.get("employee_id") or group.get("employeeId") or "").strip() == eid:
+            return True
+    tasks = root.get("tasks")
+    if not isinstance(tasks, dict):
+        return False
+    task_fields = (
+        "employee_id",
+        "employeeId",
+        "assignedEmployeeId",
+        "completedEmployeeId",
+    )
+    for month_map in tasks.values():
+        if not isinstance(month_map, dict):
+            continue
+        for task in month_map.values():
+            if not isinstance(task, dict):
+                continue
+            for field in task_fields:
+                if str(task.get(field) or "").strip() == eid:
+                    return True
+    return False
+
+
+def _id_list_contains(raw: Any, eid: str) -> bool:
+    if not isinstance(raw, list):
+        return False
+    return any(str(x).strip() == eid for x in raw)
+
+
+def _management_links_employee(root: Any, eid: str) -> bool:
+    if not isinstance(root, dict) or not eid:
+        return False
+    for ind in root.get("indicators") or []:
+        if not isinstance(ind, dict):
+            continue
+        if str(ind.get("owner_employee_id") or "").strip() == eid:
+            return True
+        for hist in ind.get("owner_history") or []:
+            if isinstance(hist, dict) and str(hist.get("employee_id") or "").strip() == eid:
+                return True
+    for node in root.get("spuOrgNodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("responsible_employee_id") or "").strip() == eid:
+            return True
+        if str(node.get("manager_employee_id") or "").strip() == eid:
+            return True
+    heads = root.get("deptHeads")
+    if isinstance(heads, dict):
+        for val in heads.values():
+            if str(val or "").strip() == eid:
+                return True
+    for row in root.get("spuResponsibilities") or []:
+        if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
+            return True
+    for task in root.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        if str(task.get("responsible_employee_id") or "").strip() == eid:
+            return True
+        if str(task.get("created_by_employee_id") or "").strip() == eid:
+            return True
+    for meet in root.get("meetings") or []:
+        if not isinstance(meet, dict):
+            continue
+        if str(meet.get("owner_employee_id") or "").strip() == eid:
+            return True
+        if _id_list_contains(meet.get("participant_employee_ids"), eid):
+            return True
+    weeks = root.get("meetingWeeks")
+    if isinstance(weeks, dict):
+        for meta in weeks.values():
+            if isinstance(meta, dict) and _id_list_contains(meta.get("participant_employee_ids"), eid):
+                return True
+    return False
+
+
+def _org_structure_links_employee(root: Any, eid: str) -> bool:
+    if not isinstance(root, dict) or not eid:
+        return False
+    for node in root.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("manager_employee_id") or "").strip() == eid:
+            return True
+        if str(node.get("deputy_employee_id") or "").strip() == eid:
+            return True
+    for row in root.get("leadership") or []:
+        if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
+            return True
+    return False
+
+
+def employee_linked_history_labels(payload: dict, employee_id: str) -> list[str]:
+    """
+    Человекочитаемые метки связанных данных сотрудника.
+    Наличие ключа в salary/repSales/назначениях достаточно для блокировки удаления карточки.
+    """
+    eid = str(employee_id or "").strip()
+    if not eid or not isinstance(payload, dict):
+        return []
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    def add(label: str) -> None:
+        if label and label not in seen:
+            seen.add(label)
+            labels.append(label)
+
+    for ws in payload.get("workspaces") or []:
+        if not isinstance(ws, dict):
+            continue
+        ts = ws.get("timesheet")
+        if not isinstance(ts, dict):
+            continue
+        for mmap in ts.values():
+            if isinstance(mmap, dict) and eid in mmap and _timesheet_emp_has_activity(mmap.get(eid)):
+                add("табель")
+                break
+
+    salary = payload.get("salary")
+    if isinstance(salary, dict):
+        for bucket in salary.values():
+            if isinstance(bucket, dict) and eid in bucket:
+                add("зарплата")
+                break
+
+    rep = payload.get("repSales")
+    if isinstance(rep, dict):
+        for bucket in rep.values():
+            if isinstance(bucket, dict) and eid in bucket:
+                add("продажи ТП")
+                break
+
+    for label in _metric_branch_links_employee(payload.get("shopMetrics"), eid):
+        add(label)
+    dept_metrics = payload.get("deptMetrics")
+    if isinstance(dept_metrics, dict):
+        for branch in dept_metrics.values():
+            for label in _metric_branch_links_employee(branch, eid):
+                add(label)
+
+    cat = payload.get("shopMetricCatalog")
+    if isinstance(cat, dict):
+        for item in cat.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for row in item.get("assignments") or []:
+                if not isinstance(row, dict):
+                    continue
+                extras = row.get("extra_employee_ids") or []
+                ids = row.get("employee_ids") or []
+                if any(str(x).strip() == eid for x in extras) or any(str(x).strip() == eid for x in ids):
+                    add("назначения метрик")
+                    break
+            if "назначения метрик" in seen:
+                break
+
+    payroll = payload.get("shopPayroll")
+    if isinstance(payroll, dict):
+        for row in payroll.get("assignments") or []:
+            if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
+                add("KPI/премии")
+                break
+        for row in payroll.get("salaries") or []:
+            if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
+                add("KPI/премии")
+                break
+        manual = payroll.get("manual")
+        if isinstance(manual, dict):
+            if eid in manual:
+                add("KPI/премии")
+            else:
+                for month_map in manual.values():
+                    if isinstance(month_map, dict) and eid in month_map:
+                        add("KPI/премии")
+                        break
+
+    vp = payload.get("vacationPlans")
+    if isinstance(vp, dict):
+        for year_list in vp.values():
+            if not isinstance(year_list, list):
+                continue
+            for row in year_list:
+                if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
+                    add("график отпусков")
+                    break
+            if "график отпусков" in seen:
+                break
+
+    if _sales_plan_root_links_employee(payload.get("shopSalesPlan"), eid):
+        add("план продаж")
+    dept_plans = payload.get("deptSalesPlans")
+    if isinstance(dept_plans, dict):
+        for root in dept_plans.values():
+            if _sales_plan_root_links_employee(root, eid):
+                add("план продаж")
+                break
+
+    for user in payload.get("users") or []:
+        if isinstance(user, dict) and str(user.get("employee_id") or "").strip() == eid:
+            add("учётная запись")
+            break
+
+    if _customer_returns_links_employee(payload.get("customerReturns"), eid):
+        add("возвраты покупателей")
+
+    if _revision_root_links_employee(payload.get("shopRevision"), eid):
+        add("ревизии")
+    dept_revs = payload.get("deptRevisions")
+    if isinstance(dept_revs, dict):
+        for rev_root in dept_revs.values():
+            if _revision_root_links_employee(rev_root, eid):
+                add("ревизии")
+                break
+
+    if _management_links_employee(payload.get("management"), eid):
+        add("СПУ/совещания")
+
+    if _org_structure_links_employee(payload.get("orgStructure"), eid):
+        add("оргструктура")
+
+    return labels
+
+
+def employee_removal_block_message(payload: dict, employee_id: str) -> str | None:
+    labels = employee_linked_history_labels(payload, employee_id)
+    if not labels:
+        return None
+    return (
+        "Нельзя удалить сотрудника: есть связанные данные ("
+        + ", ".join(labels)
+        + "). Измените статус на «Уволен» и снимите галочку «В табель»."
+    )
+
+
+def collect_incoming_employee_removals(incoming: dict) -> list[dict[str, str]]:
+    """employeeRemovals + removedEmployeeIds внутри workspaces."""
+    items = list(_normalize_employee_removals((incoming or {}).get("employeeRemovals")))
+    seen = {(row["department_id"], row["employee_id"]) for row in items}
+    for ws in (incoming or {}).get("workspaces") or []:
+        if not isinstance(ws, dict):
+            continue
+        code = str(ws.get("code") or "").strip()
+        if not code or code == "summary":
+            continue
+        local_rm = ws.get("removedEmployeeIds")
+        if not isinstance(local_rm, list):
+            continue
+        for raw in local_rm:
+            eid = str(raw or "").strip()
+            if not eid:
+                continue
+            key = (code, eid)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append({"department_id": code, "employee_id": eid})
+    return items
+
+
+def employee_removals_denied(current: dict, incoming: dict) -> str | None:
+    """Блокировка PUT-удаления карточки при связанных данных на сервере."""
+    for item in collect_incoming_employee_removals(incoming if isinstance(incoming, dict) else {}):
+        msg = employee_removal_block_message(current if isinstance(current, dict) else {}, item["employee_id"])
+        if msg:
+            return "employee_has_history"
+    return None
+
+
 def apply_employee_removals(payload: dict, removals: Any, allowed_depts: set[str] | None = None) -> None:
-    """Удаляет карточки только по явному списку. Не трогает чужие отделы вне allowed_depts."""
+    """Удаляет карточки только по явному списку. Не трогает чужие отделы вне allowed_depts.
+    Не чистит salary/timesheet/KPI — только employees/employeeIds.
+    Связанные данные должны быть проверены через employee_removals_denied / OPS guard.
+    """
     if not isinstance(payload, dict):
         return
     for item in _normalize_employee_removals(removals):
@@ -3800,6 +4222,22 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
     if not ops_path_allowed(user, path, payload):
         return None, {"error": "forbidden", "message": "Недостаточно прав для этой записи."}
     your_value = op.get("value")
+    # Физическое удаление карточки через null — только без связанных исторических данных.
+    op_parts = path.split(".")
+    if (
+        len(op_parts) == 4
+        and op_parts[0] == "workspaces"
+        and op_parts[2] == "employees"
+        and your_value is None
+    ):
+        rm_msg = employee_removal_block_message(payload, op_parts[3])
+        if rm_msg:
+            return None, {
+                "error": "employee_has_history",
+                "message": rm_msg,
+                "path": path,
+                "reasons": employee_linked_history_labels(payload, op_parts[3]),
+            }
     if _ops_closed_salary_value_forbidden(payload, path, your_value, user):
         return None, {"error": "forbidden", "message": "Недостаточно прав для этой записи."}
     try:
@@ -4168,7 +4606,7 @@ def handle_post_state_op(environ):
             next_payload, op_err = apply_state_op(payload, op, user)
             if op_err is not None:
                 conn.rollback()
-                status = "409 Conflict" if op_err.get("error") == "conflict" else (
+                status = "409 Conflict" if op_err.get("error") in ("conflict", "employee_has_history") else (
                     "403 Forbidden" if op_err.get("error") == "forbidden" else "400 Bad Request"
                 )
                 return json_bytes(op_err, status)
@@ -4302,7 +4740,7 @@ def handle_post_state_op_batch(environ):
             next_payload, results, fatal = apply_state_ops_batch(payload, ops, user, atomic)
             if fatal is not None:
                 conn.rollback()
-                status = "409 Conflict" if fatal.get("error") == "conflict" else (
+                status = "409 Conflict" if fatal.get("error") in ("conflict", "employee_has_history") else (
                     "403 Forbidden" if fatal.get("error") == "forbidden" else "400 Bad Request"
                 )
                 fatal_out = dict(fatal)
@@ -4456,6 +4894,10 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     # Новые дубли ID блокируем; исторические (уже в current) — нет.
     if employee_id_put_denied(current, incoming):
         return None, "duplicate_employee_id"
+    # Физическое удаление карточки при связанных данных — отказ до merge.
+    denied_rm = employee_removals_denied(current, incoming)
+    if denied_rm:
+        return None, denied_rm
     if is_app_admin(user):
         if incoming_admin_pin_duplicate(current, incoming):
             return None, "duplicate_pin"
@@ -5653,6 +6095,17 @@ def handle_put_state(environ):
         return json_bytes(
             {"error": "duplicate employee id", "message": "Этот ID сотрудника уже используется."},
             "400 Bad Request",
+        )
+    if denied == "employee_has_history":
+        return json_bytes(
+            {
+                "error": "employee_has_history",
+                "message": (
+                    "Нельзя удалить сотрудника: есть связанные данные. "
+                    "Измените статус на «Уволен» и снимите галочку «В табель»."
+                ),
+            },
+            "409 Conflict",
         )
     if denied and denied.startswith("fr_conflict:"):
         list_key = denied.split(":", 1)[1]

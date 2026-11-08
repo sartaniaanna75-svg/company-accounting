@@ -39927,37 +39927,452 @@ function setEmployeeTermsField(employeeId, field, value, deptCode) {
     refreshAll();
 }
 
+/**
+ * Метки связанных данных сотрудника (паритет с server employee_linked_history_labels).
+ * Любая найденная связь — запрет физического удаления карточки.
+ */
+function wtEmployeeLinkedHistoryLabels(employeeId) {
+    const eid = String(employeeId || "").trim();
+    const labels = [];
+    const seen = {};
+    function add(label) {
+        if (!label || seen[label]) return;
+        seen[label] = true;
+        labels.push(label);
+    }
+    function timesheetHasActivity(days) {
+        if (!days || typeof days !== "object") return !!days;
+        return Object.keys(days).some(function (day) {
+            const rec = days[day];
+            if (!rec || typeof rec !== "object") return !!rec;
+            if (String(rec.status || "").trim()) return true;
+            if (Number(rec.hours || 0)) return true;
+            if (Number(rec.lateMinutes || 0)) return true;
+            return false;
+        });
+    }
+    function cellRefsEmployee(cell) {
+        if (String(cell || "") === eid) return true;
+        if (!cell || typeof cell !== "object") return false;
+        const fields = [
+            "employee_id",
+            "conducted_by_employee_id",
+            "assigned_cashier_employee_id",
+            "actual_cashier_employee_id",
+            "replaced_employee_id"
+        ];
+        if (fields.some(function (f) { return String(cell[f] || "") === eid; })) return true;
+        return ((cell.history) || []).some(function (h) {
+            return h && (String(h.from_employee_id || "") === eid
+                || String(h.to_employee_id || "") === eid);
+        });
+    }
+    function scanMetricBranch(branch) {
+        if (!branch || typeof branch !== "object") return;
+        const wa = branch.workAccess;
+        if (wa && typeof wa === "object") {
+            Object.keys(wa).some(function (month) {
+                const mmap = wa[month];
+                if (mmap && Object.prototype.hasOwnProperty.call(mmap, eid)) {
+                    add("назначения метрик");
+                    return true;
+                }
+                return false;
+            });
+        }
+        if (branch.extraAccess && Object.prototype.hasOwnProperty.call(branch.extraAccess, eid)) {
+            add("назначения метрик");
+        }
+        const inputKeys = ["facts", "channelValues", "store", "channels", "recountResponsible",
+            "inventoryResults", "dayRoles", "entries", "cashiers", "pickers", "managers"];
+        inputKeys.some(function (key) {
+            const store = branch[key];
+            if (!store || typeof store !== "object" || Array.isArray(store)) return false;
+            return Object.keys(store).some(function (mk) {
+                const sub = store[mk];
+                if (Array.isArray(sub)) {
+                    if (sub.some(function (cell) { return cellRefsEmployee(cell); })) {
+                        add("KPI/метрики");
+                        return true;
+                    }
+                    return false;
+                }
+                if (!sub || typeof sub !== "object") return false;
+                if (Object.prototype.hasOwnProperty.call(sub, eid)) {
+                    add("KPI/метрики");
+                    return true;
+                }
+                if (cellRefsEmployee(sub)) {
+                    add("KPI/метрики");
+                    return true;
+                }
+                return Object.keys(sub).some(function (dk) {
+                    const cell = sub[dk];
+                    if (Array.isArray(cell)) {
+                        if (cell.some(function (item) { return cellRefsEmployee(item); })) {
+                            add("KPI/метрики");
+                            return true;
+                        }
+                        return false;
+                    }
+                    if (cellRefsEmployee(cell)) {
+                        add("KPI/метрики");
+                        return true;
+                    }
+                    return false;
+                });
+            });
+        });
+    }
+    function salesPlanLinks(root) {
+        const months = root && root.months;
+        if (!months || typeof months !== "object") return false;
+        return Object.keys(months).some(function (m) {
+            const emap = months[m] && months[m].employees;
+            return !!(emap && Object.prototype.hasOwnProperty.call(emap, eid));
+        });
+    }
+    function revisionLinks(root) {
+        if (!root || typeof root !== "object") return false;
+        if (((root.groups) || []).some(function (g) {
+            return g && (String(g.employee_id || "") === eid || String(g.employeeId || "") === eid);
+        })) return true;
+        const tasks = root.tasks;
+        if (!tasks || typeof tasks !== "object") return false;
+        const fields = ["employee_id", "employeeId", "assignedEmployeeId", "completedEmployeeId"];
+        return Object.keys(tasks).some(function (month) {
+            const mmap = tasks[month];
+            if (!mmap || typeof mmap !== "object") return false;
+            return Object.keys(mmap).some(function (tid) {
+                const t = mmap[tid];
+                if (!t || typeof t !== "object") return false;
+                return fields.some(function (f) { return String(t[f] || "") === eid; });
+            });
+        });
+    }
+    function managementLinks(root) {
+        if (!root || typeof root !== "object") return false;
+        if (((root.indicators) || []).some(function (it) {
+            if (!it) return false;
+            if (String(it.owner_employee_id || "") === eid) return true;
+            return ((it.owner_history) || []).some(function (h) {
+                return h && String(h.employee_id || "") === eid;
+            });
+        })) return true;
+        if (((root.spuOrgNodes) || []).some(function (n) {
+            return n && (String(n.responsible_employee_id || "") === eid
+                || String(n.manager_employee_id || "") === eid);
+        })) return true;
+        const heads = root.deptHeads;
+        if (heads && typeof heads === "object") {
+            if (Object.keys(heads).some(function (k) { return String(heads[k] || "") === eid; })) return true;
+        }
+        if (((root.spuResponsibilities) || []).some(function (r) {
+            return r && String(r.employee_id || "") === eid;
+        })) return true;
+        if (((root.tasks) || []).some(function (t) {
+            return t && (String(t.responsible_employee_id || "") === eid
+                || String(t.created_by_employee_id || "") === eid);
+        })) return true;
+        if (((root.meetings) || []).some(function (m) {
+            if (!m) return false;
+            if (String(m.owner_employee_id || "") === eid) return true;
+            return ((m.participant_employee_ids) || []).some(function (id) { return String(id) === eid; });
+        })) return true;
+        const weeks = root.meetingWeeks;
+        if (weeks && typeof weeks === "object") {
+            if (Object.keys(weeks).some(function (k) {
+                const meta = weeks[k];
+                return meta && ((meta.participant_employee_ids) || []).some(function (id) {
+                    return String(id) === eid;
+                });
+            })) return true;
+        }
+        return false;
+    }
+    function orgStructureLinks(root) {
+        if (!root || typeof root !== "object") return false;
+        if (((root.nodes) || []).some(function (n) {
+            return n && (String(n.manager_employee_id || "") === eid
+                || String(n.deputy_employee_id || "") === eid);
+        })) return true;
+        return ((root.leadership) || []).some(function (r) {
+            return r && String(r.employee_id || "") === eid;
+        });
+    }
+    if (!eid || !appData) return labels;
+    deptWorkspaces().forEach(function (w) {
+        const ts = w && w.timesheet;
+        if (!ts || typeof ts !== "object") return;
+        Object.keys(ts).some(function (month) {
+            const mmap = ts[month];
+            if (mmap && Object.prototype.hasOwnProperty.call(mmap, eid) && timesheetHasActivity(mmap[eid])) {
+                add("табель");
+                return true;
+            }
+            return false;
+        });
+    });
+    Object.keys(appData.salary || {}).some(function (month) {
+        const bucket = appData.salary[month];
+        if (bucket && Object.prototype.hasOwnProperty.call(bucket, eid)) {
+            add("зарплата");
+            return true;
+        }
+        return false;
+    });
+    Object.keys(appData.repSales || {}).some(function (month) {
+        const bucket = appData.repSales[month];
+        if (bucket && Object.prototype.hasOwnProperty.call(bucket, eid)) {
+            add("продажи ТП");
+            return true;
+        }
+        return false;
+    });
+    scanMetricBranch(appData.shopMetrics);
+    Object.keys(appData.deptMetrics || {}).forEach(function (code) {
+        scanMetricBranch(appData.deptMetrics[code]);
+    });
+    const catItems = (appData.shopMetricCatalog && appData.shopMetricCatalog.items) || [];
+    catItems.some(function (item) {
+        return ((item && item.assignments) || []).some(function (row) {
+            const extras = (row && row.extra_employee_ids) || [];
+            const ids = (row && row.employee_ids) || [];
+            if (extras.some(function (x) { return String(x) === eid; })
+                || ids.some(function (x) { return String(x) === eid; })) {
+                add("назначения метрик");
+                return true;
+            }
+            return false;
+        });
+    });
+    const payroll = appData.shopPayroll;
+    if (payroll && typeof payroll === "object") {
+        ((payroll.assignments) || []).some(function (row) {
+            if (row && String(row.employee_id || "") === eid) {
+                add("KPI/премии");
+                return true;
+            }
+            return false;
+        });
+        ((payroll.salaries) || []).some(function (row) {
+            if (row && String(row.employee_id || "") === eid) {
+                add("KPI/премии");
+                return true;
+            }
+            return false;
+        });
+        if (payroll.manual && typeof payroll.manual === "object") {
+            if (Object.prototype.hasOwnProperty.call(payroll.manual, eid)) {
+                add("KPI/премии");
+            } else {
+                Object.keys(payroll.manual).some(function (month) {
+                    const mmap = payroll.manual[month];
+                    if (mmap && Object.prototype.hasOwnProperty.call(mmap, eid)) {
+                        add("KPI/премии");
+                        return true;
+                    }
+                    return false;
+                });
+            }
+        }
+    }
+    Object.keys(appData.vacationPlans || {}).some(function (year) {
+        const list = appData.vacationPlans[year];
+        if (!Array.isArray(list)) return false;
+        return list.some(function (row) {
+            if (row && String(row.employee_id || "") === eid) {
+                add("график отпусков");
+                return true;
+            }
+            return false;
+        });
+    });
+    if (salesPlanLinks(appData.shopSalesPlan)) add("план продаж");
+    Object.keys(appData.deptSalesPlans || {}).some(function (code) {
+        if (salesPlanLinks(appData.deptSalesPlans[code])) {
+            add("план продаж");
+            return true;
+        }
+        return false;
+    });
+    ((appData.users) || []).some(function (u) {
+        if (u && String(u.employee_id || "") === eid) {
+            add("учётная запись");
+            return true;
+        }
+        return false;
+    });
+    const cr = appData.customerReturns;
+    if (cr && Array.isArray(cr.items)) {
+        const crFields = [
+            "sales_author_employee_id",
+            "driver_employee_id",
+            "cashier_employee_id",
+            "picker_employee_id"
+        ];
+        if (cr.items.some(function (it) {
+            if (!it) return false;
+            return crFields.some(function (f) { return String(it[f] || "") === eid; });
+        })) add("возвраты покупателей");
+    }
+    if (revisionLinks(appData.shopRevision)) add("ревизии");
+    Object.keys(appData.deptRevisions || {}).some(function (code) {
+        if (revisionLinks(appData.deptRevisions[code])) {
+            add("ревизии");
+            return true;
+        }
+        return false;
+    });
+    if (managementLinks(appData.management)) add("СПУ/совещания");
+    if (orgStructureLinks(appData.orgStructure)) add("оргструктура");
+    return labels;
+}
+
+function wtEmployeeDeleteBlockedToast(employeeName, labels) {
+    const name = String(employeeName || "сотрудник");
+    const why = (labels && labels.length) ? labels.join(", ") : "связанные данные";
+    toast(
+        "Нельзя удалить «" + name + "»: есть " + why
+            + ". Измените статус на «Уволен» и снимите галочку «В табель».",
+        "error"
+    );
+}
+
+/**
+ * Точечное удаление карточки без каскада salary/timesheet/KPI и без широкого collect.
+ * UI меняется только после успеха; при отказе — откат снимка.
+ */
 function deleteEmployee(employeeId) {
     if (isSummary() && !canEditStaff()) return;
     const e = getEmployee(employeeId);
     if (!e) return;
-    if (!confirm('Удалить сотрудника "' + e.name + '"?')) return;
+    const eid = String(employeeId || "");
+    const labels = wtEmployeeLinkedHistoryLabels(eid);
+    if (labels.length) {
+        wtEmployeeDeleteBlockedToast(e.name, labels);
+        return;
+    }
+    if (!confirm('Удалить сотрудника "' + e.name + '"? Карточка без связанных данных будет удалена.')) return;
 
-    const w = employeeHome(employeeId) || workspace();
+    const w = employeeHome(eid) || workspace();
     if (!w || w.type === "summary") return;
-    queueEmployeeRemoval(w.code, employeeId);
-    w.employees = (w.employees || []).filter(function (x) { return x.id !== employeeId; });
-    w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== employeeId; });
-    Object.keys(w.timesheet || {}).forEach(function (month) {
-        if (w.timesheet[month]) delete w.timesheet[month][employeeId];
-    });
-    Object.keys(appData.salary || {}).forEach(function (month) {
-        if (appData.salary[month]) delete appData.salary[month][employeeId];
-    });
-    Object.keys(appData.repSales || {}).forEach(function (month) {
-        if (appData.repSales[month]) delete appData.repSales[month][employeeId];
-    });
+    const deptCode = String(w.code || "");
+    const snapEmployees = typeof wtCloneJson === "function"
+        ? wtCloneJson(w.employees || [])
+        : (w.employees || []).slice();
+    const snapIds = Array.isArray(w.employeeIds) ? w.employeeIds.slice() : [];
 
-    wtAwaitSaveAppFeedback({
-        paint: function () {
-            renderFio();
-            renderEmployees();
-            renderSummaryStaff();
-            refreshAll();
-        },
-        okToast: "Сотрудник удалён.",
-        errorToast: "Удаление сотрудника не записано на сервер. Список на экране — не обновляйте страницу, повторите действие."
-    });
+    function restoreLocal() {
+        w.employees = snapEmployees;
+        w.employeeIds = snapIds;
+        try {
+            if (appData && Array.isArray(appData.employeeRemovals)) {
+                appData.employeeRemovals = appData.employeeRemovals.filter(function (row) {
+                    if (!row) return false;
+                    return !(String(row.department_id || row.dept || "") === deptCode
+                        && String(row.employee_id || row.id || "") === eid);
+                });
+            }
+        } catch (errRm) {}
+    }
+
+    function paintStaff() {
+        try { renderFio(); } catch (err1) {}
+        try { renderEmployees(); } catch (err2) {}
+        try { renderSummaryStaff(); } catch (err3) {}
+        try { refreshAll(); } catch (err4) {}
+    }
+
+    // Локально только карточка и состав табеля — без salary/timesheet/KPI.
+    w.employees = (w.employees || []).filter(function (x) { return x && x.id !== eid; });
+    w.employeeIds = (w.employeeIds || []).filter(function (id) { return id !== eid; });
+
+    const empPath = typeof wtEmployeeCardRecordPath === "function"
+        ? wtEmployeeCardRecordPath(deptCode, eid)
+        : ("workspaces." + deptCode + ".employees." + eid);
+    const idsPath = typeof wtWorkspaceEmployeeIdsPath === "function"
+        ? wtWorkspaceEmployeeIdsPath(deptCode)
+        : ("workspaces." + deptCode + ".employeeIds");
+    const ops = [
+        { path: empPath, value: null },
+        { path: idsPath, value: Array.isArray(w.employeeIds) ? w.employeeIds.slice() : [] }
+    ];
+
+    function afterFail(ok) {
+        restoreLocal();
+        paintStaff();
+        if (ok === "timeout") {
+            toast("Ответ сервера не получен. Список восстановлен — повторите удаление.", "error");
+            return false;
+        }
+        if (ok === "conflict_review") {
+            toast("Конфликт версий. Список восстановлен — повторите удаление.", "error");
+            return false;
+        }
+        toast("Удаление сотрудника не записано на сервер. Список восстановлен — можно повторить.", "error");
+        return false;
+    }
+
+    if (!wtServerMode) {
+        return Promise.resolve(typeof saveApp === "function" ? saveApp() : true).then(function (ok) {
+            if (wtSaveOutcomeOk(ok)) {
+                paintStaff();
+                toast("Сотрудник удалён.");
+                return true;
+            }
+            return afterFail(ok);
+        }, function () { return afterFail(false); });
+    }
+
+    if (typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true)
+        && typeof wtDomainWriterSave === "function") {
+        return Promise.resolve(wtDomainWriterSave({
+            ops: ops,
+            atomic: true,
+            silentFail: true
+        })).then(function (ok) {
+            if (wtSaveOutcomeOk(ok)) {
+                paintStaff();
+                toast("Сотрудник удалён.");
+                return true;
+            }
+            return afterFail(ok);
+        }, function () { return afterFail(false); });
+    }
+
+    // OPS выкл.: узкий PUT только employeeRemovals (без широкого collect и без каскада истории).
+    try { queueEmployeeRemoval(deptCode, eid); } catch (errQ) {}
+    return Promise.resolve(saveAppWithPayloadSlice(function () {
+        return {
+            employeeRemovals: (appData && Array.isArray(appData.employeeRemovals))
+                ? wtCloneJson(appData.employeeRemovals)
+                : [{ department_id: deptCode, employee_id: eid }]
+        };
+    })).then(function (ok) {
+        if (wtSaveOutcomeOk(ok)) {
+            try { clearQueuedEmployeeRemovals(); } catch (errC) {}
+            // Slice PUT обновляет в baseline только ключи среза (employeeRemovals),
+            // не workspaces — иначе SoftSync вернёт удалённую карточку из lastLoaded.
+            try {
+                if (wtLastLoadedPayload && Array.isArray(wtLastLoadedPayload.workspaces)) {
+                    for (let i = 0; i < wtLastLoadedPayload.workspaces.length; i++) {
+                        const bw = wtLastLoadedPayload.workspaces[i];
+                        if (!bw || String(bw.code || "") !== deptCode) continue;
+                        bw.employees = typeof wtCloneJson === "function"
+                            ? wtCloneJson(w.employees || [])
+                            : (w.employees || []).slice();
+                        bw.employeeIds = Array.isArray(w.employeeIds) ? w.employeeIds.slice() : [];
+                        break;
+                    }
+                }
+            } catch (errBase) {}
+            paintStaff();
+            toast("Сотрудник удалён.");
+            return true;
+        }
+        return afterFail(ok);
+    }, function () { return afterFail(false); });
 }
 
 function summaryDirectoryGroups() {
