@@ -474,6 +474,20 @@
         .spu-set-card-actions { display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
         .spu-set-block { margin:14px 0; padding:10px; border:1px dashed #dbe3ef; border-radius:10px; background:#f8fafc; }
         .spu-set-block-head { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px; }
+        .spu-set-search { margin:0 0 12px; max-width:420px; }
+        .spu-set-search label { display:block; font-size:13px; margin:0 0 4px; color:var(--text); }
+        .spu-set-search-wrap { position:relative; display:block; }
+        .spu-set-search-wrap input {
+            width:100%; box-sizing:border-box; padding:8px 34px 8px 10px;
+            border:1px solid var(--border); border-radius:8px; font-size:14px;
+        }
+        .spu-set-search-wrap input::-webkit-search-cancel-button { -webkit-appearance:none; appearance:none; display:none; }
+        .spu-set-search-clear {
+            position:absolute; right:6px; top:50%; transform:translateY(-50%);
+            width:26px; height:26px; border:0; border-radius:6px; background:transparent;
+            color:#64748b; font-size:18px; line-height:1; cursor:pointer; padding:0;
+        }
+        .spu-set-search-clear:hover { background:#eef2f7; color:#0f172a; }
         .mi-add-origin { display: grid; gap: 8px; margin: 8px 0 12px; }
         .mi-add-origin label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
         .mi-add-origin span { line-height: 1.35; }
@@ -42120,6 +42134,8 @@ let mgmtDashWeek = "";
 let mgmtPanelSetupSection = "all";
 let mgmtSettingsHub = "";
 let mgmtSettingsLayerTab = "key";
+/** UI-only поиск в «Настройка показателей»; не пишется в payload / saveApp. */
+let mgmtSettingsIndicatorQ = "";
 let spuPlansUiPeriodId = "";
 let spuStructureTab = "indicators";
 let spuSourcesInnerTab = "metrics";
@@ -49337,9 +49353,23 @@ function renderSpuPlansTabHtml() {
         }).join(" · ") + "</div>";
     }
     html += "</div>";
-    const inds = spuPlansSelectableIndicators();
+    const searchQ = typeof mgmtSettingsIndicatorSearchQuery === "function"
+        ? mgmtSettingsIndicatorSearchQuery()
+        : "";
+    let inds = spuPlansSelectableIndicators();
+    if (searchQ) {
+        inds = inds.filter(function (it) {
+            return typeof mgmtSettingsIndicatorMatchesSearch === "function"
+                ? mgmtSettingsIndicatorMatchesSearch(it, searchQ)
+                : true;
+        });
+    }
     if (!inds.length) {
-        html += '<div class="empty-row">Нет ключевых показателей и итоговых данных для планов. Назначьте тип во вкладках выше.</div></div>';
+        if (searchQ) {
+            html += '<div class="empty-row">По вашему запросу показатели не найдены</div></div>';
+        } else {
+            html += '<div class="empty-row">Нет ключевых показателей и итоговых данных для планов. Назначьте тип во вкладках выше.</div></div>';
+        }
         return html;
     }
     inds.forEach(function (it) {
@@ -52944,6 +52974,55 @@ function setMgmtSettingsLayerTab(id) {
     renderManagement();
 }
 
+function mgmtSettingsIndicatorSearchQuery() {
+    return String(mgmtSettingsIndicatorQ || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function mgmtSettingsIndicatorMatchesSearch(it, q) {
+    const needle = q == null ? mgmtSettingsIndicatorSearchQuery() : String(q || "").toLowerCase();
+    if (!needle) return true;
+    const name = String((it && it.name) || "").toLowerCase();
+    return name.indexOf(needle) !== -1;
+}
+
+function setMgmtSettingsIndicatorSearch(value) {
+    mgmtSettingsIndicatorQ = String(value == null ? "" : value);
+    renderManagement();
+    const el = document.getElementById("mgmtSettingsIndSearch");
+    if (!el) return;
+    try {
+        el.focus();
+        const n = String(el.value || "").length;
+        if (typeof el.setSelectionRange === "function") el.setSelectionRange(n, n);
+    } catch (err) {}
+}
+
+function clearMgmtSettingsIndicatorSearch() {
+    mgmtSettingsIndicatorQ = "";
+    renderManagement();
+    const el = document.getElementById("mgmtSettingsIndSearch");
+    if (el) {
+        try { el.focus(); } catch (err) {}
+    }
+}
+
+function mgmtSettingsSearchBarHtml() {
+    const raw = String(mgmtSettingsIndicatorQ || "");
+    const showClear = !!raw;
+    return '<div class="form-group spu-set-search">'
+        + '<label for="mgmtSettingsIndSearch">Поиск показателя</label>'
+        + '<div class="spu-set-search-wrap">'
+        + '<input id="mgmtSettingsIndSearch" type="search" maxlength="120"'
+        + ' placeholder="Введите название показателя..."'
+        + ' value="' + escapeAttribute(raw) + '"'
+        + ' oninput="setMgmtSettingsIndicatorSearch(this.value)"'
+        + ' autocomplete="off">'
+        + '<button type="button" class="spu-set-search-clear" title="Очистить"'
+        + ' aria-label="Очистить поиск" onclick="clearMgmtSettingsIndicatorSearch()"'
+        + (showClear ? "" : ' style="display:none"') + ">×</button>"
+        + "</div></div>";
+}
+
 function spuSettingsSourceShort(it) {
     if (!it) return "—";
     const kind = spuIndicatorUiKind(it);
@@ -53115,13 +53194,17 @@ function renderMgmtSettingsHtml() {
     try { spuEnsureKeyBlocks(); } catch (err2) { console.error(err2); }
     if (!mgmtSettingsLayerTab) mgmtSettingsLayerTab = "key";
     const tab = mgmtSettingsLayerTab;
+    const searchQ = mgmtSettingsIndicatorSearchQuery();
     const all = spuManagedIndicators(false).slice().sort(function (a, b) {
         return Number(a.sort_order || 0) - Number(b.sort_order || 0)
             || String(a.name || "").localeCompare(String(b.name || ""), "ru");
     });
-    const filtered = all.filter(function (it) {
+    const inTab = all.filter(function (it) {
         return spuSettingsBucket(it) === tab;
     });
+    const filtered = searchQ
+        ? inTab.filter(function (it) { return mgmtSettingsIndicatorMatchesSearch(it, searchQ); })
+        : inTab;
     const startDay = mgmtSpuWeekStartDay();
     const endDay = (startDay + 6) % 7;
     let html = '<div class="spu-report-week-box" style="margin:0 0 14px;padding:12px 14px;border:1px solid #dbe3ef;border-radius:8px;background:#f8fafc">'
@@ -53146,6 +53229,7 @@ function renderMgmtSettingsHtml() {
             try { count = " · " + spuMgmtPeriodsList(true).length + " пер."; }
             catch (errP) { count = ""; }
         } else {
+            // Tab badge counts use full bucket totals (search filter does not change badges).
             count = " (" + all.filter(function (it) { return spuSettingsBucket(it) === h.id; }).length + ")";
         }
         html += '<button type="button" class="metrics-tab' + (tab === h.id ? " active" : "") + '"'
@@ -53153,6 +53237,7 @@ function renderMgmtSettingsHtml() {
             + escapeHtml(h.label) + count + "</button>";
     });
     html += "</div>";
+    html += mgmtSettingsSearchBarHtml();
     html += '<div class="toolbar" style="flex-wrap:wrap;gap:8px">';
     if (tab === "totals") {
         html += '<button type="button" class="btn btn-primary" onclick="openSpuTotalsForm()">+ Добавить итоговые данные</button>';
@@ -53176,12 +53261,17 @@ function renderMgmtSettingsHtml() {
         }
     }
 
+    if (searchQ && !filtered.length) {
+        html += '<div class="empty-row">По вашему запросу показатели не найдены</div>';
+        return html;
+    }
+
     if (tab === "key") {
         const blocks = spuKeyBlocksList(true);
         const used = {};
         blocks.forEach(function (b) {
             const items = filtered.filter(function (it) { return it.key_block_id === b.block_id; });
-            if (!items.length && b.is_active === false) return;
+            if (!items.length && (searchQ || b.is_active === false)) return;
             html += '<div class="spu-set-block">';
             html += '<div class="spu-set-block-head"><b>' + escapeHtml(b.name) + "</b>"
                 + (b.is_active === false ? ' <span class="mgmt-src">(неактивен)</span>' : "")
