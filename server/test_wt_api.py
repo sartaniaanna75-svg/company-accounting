@@ -6249,7 +6249,8 @@ class EmployeeIdAllocationTests(unittest.TestCase):
                     "employeeIds": ["E1"],
                 }
             ],
-            "salary": {"2026-10": {"E1": {}}},
+            # Пустой {} больше не блок; значимое начисление — блок.
+            "salary": {"2026-10": {"E1": {"bonus": 50}}},
         }
         incoming = {
             "employeeRemovals": [{"department_id": "shop", "employee_id": "E1"}],
@@ -6264,6 +6265,76 @@ class EmployeeIdAllocationTests(unittest.TestCase):
         stored, denied = wt_api.prepare_put_payload(current, incoming, admin)
         self.assertIsNone(stored)
         self.assertEqual(denied, "employee_has_history")
+
+    def test_empty_stubs_do_not_block_employee_removal(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "office",
+                    "employees": [
+                        {"id": "E_DUP_A", "name": "Сартания Анна"},
+                        {"id": "E_DUP_B", "name": "Сартания Анна"},
+                    ],
+                    "employeeIds": ["E_DUP_A"],
+                }
+            ],
+            "salary": {"2026-10": {"E_DUP_A": {}}},
+            "shopMetrics": {
+                "workAccess": {"2026-11": {"E_DUP_A": []}},
+                "extraAccess": {"E_DUP_A": []},
+            },
+            "vacationPlans": {
+                "2026": [
+                    {
+                        "vacation_plan_id": "v1",
+                        "employee_id": "E_DUP_A",
+                        "planned_date": "",
+                        "planned_amount": "",
+                        "status": "planned",
+                        "history": [],
+                    }
+                ]
+            },
+        }
+        self.assertEqual(wt_api.employee_linked_history_labels(current, "E_DUP_A"), [])
+        self.assertEqual(wt_api.employee_linked_history_labels(current, "E_DUP_B"), [])
+        self.assertIsNone(
+            wt_api.employee_removals_denied(
+                current,
+                {"employeeRemovals": [{"department_id": "office", "employee_id": "E_DUP_A"}]},
+            )
+        )
+
+    def test_meaningful_links_still_block_employee_removal(self):
+        current = {
+            "workspaces": [
+                {
+                    "code": "office",
+                    "employees": [{"id": "E_REAL", "name": "X"}],
+                    "employeeIds": ["E_REAL"],
+                    "timesheet": {"2026-10": {"E_REAL": {"1": {"status": "Я", "hours": 8}}}},
+                }
+            ],
+            "salary": {"2026-10": {"E_REAL": {"bonus": 10}}},
+            "shopMetrics": {"workAccess": {"2026-11": {"E_REAL": ["metric_a"]}}},
+            "vacationPlans": {
+                "2026": [
+                    {
+                        "vacation_plan_id": "v2",
+                        "employee_id": "E_REAL",
+                        "planned_date": "2026-07-01",
+                        "planned_amount": 1000,
+                        "status": "planned",
+                        "history": [],
+                    }
+                ]
+            },
+        }
+        labels = wt_api.employee_linked_history_labels(current, "E_REAL")
+        self.assertTrue(any(x.startswith("табель") for x in labels))
+        self.assertTrue(any(x.startswith("зарплата") for x in labels))
+        self.assertTrue(any(x.startswith("назначения метрик") for x in labels))
+        self.assertTrue(any(x.startswith("график отпусков") for x in labels))
 
     def test_ops_null_employee_allowed_without_history(self):
         payload = {

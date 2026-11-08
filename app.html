@@ -15863,11 +15863,39 @@ function commitEmployeeCard(employeeId, deptCode) {
             employee.meeting_participant = employee.participates_in_spu_meetings;
         }
         // Материализуем workAccess только текущего сотрудника — не весь пул отдела.
+        // Пустой [] без baseline не создаём (иначе ложные «назначения» и лишний OPS).
         if (canEditFioWorkMetrics()) {
             try {
+                const waPath0 = typeof wtEmployeeCardWorkAccessPath === "function"
+                    ? wtEmployeeCardWorkAccessPath(cardDept, selectedMonth, employeeId)
+                    : "";
+                let hadWa = false;
+                try {
+                    hadWa = !!(waPath0 && wtLastLoadedPayload
+                        && wtGetByPath(wtLastLoadedPayload, waPath0) != null);
+                } catch (errHad) { hadWa = false; }
                 shopMaterializeWorkAccessEmployee(selectedMonth, cardDept, employeeId);
+                const rootWa = metricsStoreForDept(cardDept);
+                const mmap = rootWa && rootWa.workAccess && rootWa.workAccess[selectedMonth];
+                if (mmap && Object.prototype.hasOwnProperty.call(mmap, employeeId)
+                    && Array.isArray(mmap[employeeId]) && !mmap[employeeId].length && !hadWa) {
+                    delete mmap[employeeId];
+                }
                 if (!(typeof isGenericMetricsDept === "function" && isGenericMetricsDept(cardDept))) {
+                    const exPath0 = typeof wtEmployeeCardExtraAccessPath === "function"
+                        ? wtEmployeeCardExtraAccessPath(employeeId)
+                        : "";
+                    let hadEx = false;
+                    try {
+                        hadEx = !!(exPath0 && wtLastLoadedPayload
+                            && wtGetByPath(wtLastLoadedPayload, exPath0) != null);
+                    } catch (errEx) { hadEx = false; }
                     syncShopExtraAccessFromWork(employeeId, selectedMonth);
+                    const rootEx = ensureShopMetrics();
+                    if (rootEx.extraAccess && Array.isArray(rootEx.extraAccess[employeeId])
+                        && !rootEx.extraAccess[employeeId].length && !hadEx) {
+                        delete rootEx.extraAccess[employeeId];
+                    }
                 }
             } catch (err) { console.error(err); }
         }
@@ -15880,10 +15908,8 @@ function commitEmployeeCard(employeeId, deptCode) {
             ? JSON.parse(JSON.stringify(appData.shopMetricCatalog))
             : null;
         empSnap = JSON.parse(JSON.stringify(employee));
-        if (canEditFioWorkMetrics()) {
-            // Не вызываем assignGroupAllMetricsToEmployee: каталог общий, галочки индивидуальные.
-            try { syncEmployeeMetricAssignmentsToCatalog(employeeId, cardDept); } catch (err) { console.error(err); }
-        }
+        // Каталог метрик при сохранении карточки не синхронизируем и не шлём целиком:
+        // индивидуальные назначения живут в workAccess/extraAccess (узкий OPS).
     } catch (err) {
         console.error(err);
         clearCommitBusy();
@@ -22449,8 +22475,8 @@ function wtRestoreWorkspaceEmployeeIdsFromBaseline(ws) {
 }
 
 /**
- * Узкие OPS для «Сохранить» карточки: сотрудник + его workAccess/extraAccess
- * и shopMetricCatalog.items только если sync реально изменил справочник.
+ * Узкие OPS для «Сохранить» карточки: только эта карточка + её workAccess/extraAccess.
+ * shopMetricCatalog.items сюда не включаем (раздувает diff / >200 листьев).
  */
 function wtBuildEmployeeCardSaveOps(employeeId, cardDept) {
     const ops = [];
@@ -22497,26 +22523,20 @@ function wtBuildEmployeeCardSaveOps(employeeId, cardDept) {
                 waVal = Array.isArray(map[employeeId]) ? map[employeeId] : [];
             }
         } catch (errW) { waVal = null; }
+        // Пишем workAccess только если ключ уже есть (в т.ч. после materialize) и значение изменилось.
         if (waPath && waVal != null) pushIfChanged(waPath, waVal);
 
         if (!(typeof isGenericMetricsDept === "function" && isGenericMetricsDept(cardDept))) {
             const exPath = wtEmployeeCardExtraAccessPath(employeeId);
-            let exVal = [];
+            let exVal = null;
             try {
                 const root = ensureShopMetrics();
                 if (root.extraAccess && Object.prototype.hasOwnProperty.call(root.extraAccess, employeeId)) {
                     exVal = Array.isArray(root.extraAccess[employeeId]) ? root.extraAccess[employeeId] : [];
                 }
-            } catch (errX) { exVal = []; }
-            if (exPath) pushIfChanged(exPath, exVal);
+            } catch (errX) { exVal = null; }
+            if (exPath && exVal != null) pushIfChanged(exPath, exVal);
         }
-
-        // Справочник — один leaf items, только если sync изменил его относительно baseline.
-        try {
-            const cat = ensureShopMetricCatalog();
-            const items = (cat && cat.items) || [];
-            pushIfChanged("shopMetricCatalog.items", items);
-        } catch (errC) {}
     }
     return ops;
 }
@@ -40224,9 +40244,70 @@ function setEmployeeTermsField(employeeId, field, value, deptCode) {
     refreshAll();
 }
 
+/** Значимая запись зарплаты (паритет server _salary_record_meaningful). Пустой {} — заглушка. */
+function wtSalaryRecordMeaningful(rec) {
+    if (rec == null) return false;
+    if (!rec || typeof rec !== "object") return !!rec;
+    const moneyKeys = ["fines", "bonus", "advance", "products", "taxiDaily", "vacationPay", "taxes", "reflect1c", "expenseZp"];
+    if (moneyKeys.some(function (k) { return Number(rec[k] || 0) !== 0; })) return true;
+    if (rec.issued === true) return true;
+    if (rec.vacationPaidEarlier === true) return true;
+    if (rec.skipFine != null && rec.skipFine !== "") return true;
+    if (String(rec.updated_at || "").trim()) return true;
+    if (String(rec.external_1c_id || "").trim()) return true;
+    if (rec.sources && typeof rec.sources === "object" && Object.keys(rec.sources).length) return true;
+    const known = {};
+    moneyKeys.concat(["issued", "vacationPaidEarlier", "skipFine", "updated_at", "external_1c_id", "sources"]).forEach(function (k) {
+        known[k] = true;
+    });
+    return Object.keys(rec).some(function (k) {
+        if (known[k]) return false;
+        const v = rec[k];
+        if (v == null || v === "" || v === 0 || v === false) return false;
+        if (Array.isArray(v) && !v.length) return false;
+        if (typeof v === "object" && !Object.keys(v).length) return false;
+        return true;
+    });
+}
+
+function wtVacationPlanRowMeaningful(row) {
+    if (!row || typeof row !== "object") return false;
+    if (String(row.planned_date || "").trim()) return true;
+    if (row.planned_amount != null && row.planned_amount !== "") {
+        const n = Number(row.planned_amount);
+        if (!Number.isFinite(n) || n !== 0) return true;
+    }
+    const st = String(row.status || "").trim().toLowerCase();
+    if (st && st !== "planned") return true;
+    if (String(row.comment || "").trim()) return true;
+    return Array.isArray(row.history) && row.history.length > 0;
+}
+
+function wtAccessListMeaningful(val) {
+    if (val == null) return false;
+    if (Array.isArray(val)) return val.some(function (x) { return String(x || "").trim(); });
+    if (typeof val === "object") return Object.keys(val).length > 0;
+    return !!val;
+}
+
+function wtMetricEmpPayloadMeaningful(val) {
+    if (val == null || val === "" || val === false) return false;
+    if (Array.isArray(val)) return val.length > 0;
+    if (typeof val !== "object") return true;
+    const keys = Object.keys(val);
+    if (!keys.length) return false;
+    return keys.some(function (k) {
+        const cell = val[k];
+        if (cell == null || cell === "" || cell === 0 || cell === false) return false;
+        if (Array.isArray(cell) && !cell.length) return false;
+        if (cell && typeof cell === "object" && !Array.isArray(cell) && !Object.keys(cell).length) return false;
+        return true;
+    });
+}
+
 /**
  * Метки связанных данных сотрудника (паритет с server employee_linked_history_labels).
- * Любая найденная связь — запрет физического удаления карточки.
+ * Только значимые связи по employee_id; пустые заглушки не блокируют.
  */
 function wtEmployeeLinkedHistoryLabels(employeeId) {
     const eid = String(employeeId || "").trim();
@@ -40270,15 +40351,17 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
         if (wa && typeof wa === "object") {
             Object.keys(wa).some(function (month) {
                 const mmap = wa[month];
-                if (mmap && Object.prototype.hasOwnProperty.call(mmap, eid)) {
-                    add("назначения метрик");
+                if (mmap && Object.prototype.hasOwnProperty.call(mmap, eid)
+                    && wtAccessListMeaningful(mmap[eid])) {
+                    add("назначения метрик (workAccess " + month + ")");
                     return true;
                 }
                 return false;
             });
         }
-        if (branch.extraAccess && Object.prototype.hasOwnProperty.call(branch.extraAccess, eid)) {
-            add("назначения метрик");
+        if (branch.extraAccess && Object.prototype.hasOwnProperty.call(branch.extraAccess, eid)
+            && wtAccessListMeaningful(branch.extraAccess[eid])) {
+            add("назначения метрик (extraAccess)");
         }
         const inputKeys = ["facts", "channelValues", "store", "channels", "recountResponsible",
             "inventoryResults", "dayRoles", "entries", "cashiers", "pickers", "managers"];
@@ -40289,31 +40372,32 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
                 const sub = store[mk];
                 if (Array.isArray(sub)) {
                     if (sub.some(function (cell) { return cellRefsEmployee(cell); })) {
-                        add("KPI/метрики");
+                        add("KPI/метрики (" + key + ")");
                         return true;
                     }
                     return false;
                 }
                 if (!sub || typeof sub !== "object") return false;
-                if (Object.prototype.hasOwnProperty.call(sub, eid)) {
-                    add("KPI/метрики");
+                if (Object.prototype.hasOwnProperty.call(sub, eid)
+                    && wtMetricEmpPayloadMeaningful(sub[eid])) {
+                    add("KPI/метрики (" + key + "/" + mk + ")");
                     return true;
                 }
                 if (cellRefsEmployee(sub)) {
-                    add("KPI/метрики");
+                    add("KPI/метрики (" + key + ")");
                     return true;
                 }
                 return Object.keys(sub).some(function (dk) {
                     const cell = sub[dk];
                     if (Array.isArray(cell)) {
                         if (cell.some(function (item) { return cellRefsEmployee(item); })) {
-                            add("KPI/метрики");
+                            add("KPI/метрики (" + key + ")");
                             return true;
                         }
                         return false;
                     }
                     if (cellRefsEmployee(cell)) {
-                        add("KPI/метрики");
+                        add("KPI/метрики (" + key + ")");
                         return true;
                     }
                     return false;
@@ -40404,7 +40488,7 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
         Object.keys(ts).some(function (month) {
             const mmap = ts[month];
             if (mmap && Object.prototype.hasOwnProperty.call(mmap, eid) && timesheetHasActivity(mmap[eid])) {
-                add("табель");
+                add("табель (" + (w.code || "") + "/" + month + ")");
                 return true;
             }
             return false;
@@ -40412,19 +40496,22 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
     });
     Object.keys(appData.salary || {}).some(function (month) {
         const bucket = appData.salary[month];
-        if (bucket && Object.prototype.hasOwnProperty.call(bucket, eid)) {
-            add("зарплата");
+        if (bucket && Object.prototype.hasOwnProperty.call(bucket, eid)
+            && wtSalaryRecordMeaningful(bucket[eid])) {
+            add("зарплата (" + month + ")");
             return true;
         }
         return false;
     });
     Object.keys(appData.repSales || {}).some(function (month) {
         const bucket = appData.repSales[month];
-        if (bucket && Object.prototype.hasOwnProperty.call(bucket, eid)) {
-            add("продажи ТП");
-            return true;
+        if (!bucket || !Object.prototype.hasOwnProperty.call(bucket, eid)) return false;
+        const cell = bucket[eid];
+        if (cell == null || cell === "" || (typeof cell === "object" && !Array.isArray(cell) && !Object.keys(cell).length)) {
+            return false;
         }
-        return false;
+        add("продажи ТП (" + month + ")");
+        return true;
     });
     scanMetricBranch(appData.shopMetrics);
     Object.keys(appData.deptMetrics || {}).forEach(function (code) {
@@ -40437,7 +40524,7 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
             const ids = (row && row.employee_ids) || [];
             if (extras.some(function (x) { return String(x) === eid; })
                 || ids.some(function (x) { return String(x) === eid; })) {
-                add("назначения метрик");
+                add("назначения метрик (каталог " + (item.id || item.name || "") + ")");
                 return true;
             }
             return false;
@@ -40447,27 +40534,32 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
     if (payroll && typeof payroll === "object") {
         ((payroll.assignments) || []).some(function (row) {
             if (row && String(row.employee_id || "") === eid) {
-                add("KPI/премии");
+                add("KPI/премии (назначение)");
                 return true;
             }
             return false;
         });
         ((payroll.salaries) || []).some(function (row) {
             if (row && String(row.employee_id || "") === eid) {
-                add("KPI/премии");
+                add("KPI/премии (оклад)");
                 return true;
             }
             return false;
         });
         if (payroll.manual && typeof payroll.manual === "object") {
-            if (Object.prototype.hasOwnProperty.call(payroll.manual, eid)) {
-                add("KPI/премии");
+            if (Object.prototype.hasOwnProperty.call(payroll.manual, eid)
+                && wtSalaryRecordMeaningful(payroll.manual[eid])) {
+                add("KPI/премии (ручные)");
             } else {
                 Object.keys(payroll.manual).some(function (month) {
                     const mmap = payroll.manual[month];
                     if (mmap && Object.prototype.hasOwnProperty.call(mmap, eid)) {
-                        add("KPI/премии");
-                        return true;
+                        const cell = mmap[eid];
+                        if (wtSalaryRecordMeaningful(cell)
+                            || (cell != null && cell !== "" && !(cell && typeof cell === "object" && !Object.keys(cell).length))) {
+                            add("KPI/премии (ручные " + month + ")");
+                            return true;
+                        }
                     }
                     return false;
                 });
@@ -40478,8 +40570,8 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
         const list = appData.vacationPlans[year];
         if (!Array.isArray(list)) return false;
         return list.some(function (row) {
-            if (row && String(row.employee_id || "") === eid) {
-                add("график отпусков");
+            if (row && String(row.employee_id || "") === eid && wtVacationPlanRowMeaningful(row)) {
+                add("график отпусков (" + year + ")");
                 return true;
             }
             return false;
@@ -40526,12 +40618,16 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
     return labels;
 }
 
-function wtEmployeeDeleteBlockedToast(employeeName, labels) {
+function wtEmployeeDeleteBlockedToast(employeeName, labels, employeeId) {
     const name = String(employeeName || "сотрудник");
-    const why = (labels && labels.length) ? labels.join(", ") : "связанные данные";
+    const eid = String(employeeId || "").trim();
+    const why = (labels && labels.length) ? labels.join("; ") : "связанные данные";
     toast(
-        "Нельзя удалить «" + name + "»: есть " + why
-            + ". Измените статус на «Уволен» и снимите галочку «В табель».",
+        "Нельзя удалить «" + name + "»"
+            + (eid ? " [" + eid + "]" : "")
+            + ": " + why
+            + ". Проверка только по employee_id. Пустые технические заглушки не учитываются."
+            + " При реальной истории смените статус на «Уволен» и снимите «В табель».",
         "error"
     );
 }
@@ -40547,7 +40643,7 @@ function deleteEmployee(employeeId) {
     const eid = String(employeeId || "");
     const labels = wtEmployeeLinkedHistoryLabels(eid);
     if (labels.length) {
-        wtEmployeeDeleteBlockedToast(e.name, labels);
+        wtEmployeeDeleteBlockedToast(e.name, labels, eid);
         return;
     }
     if (!confirm('Удалить сотрудника "' + e.name + '"? Карточка без связанных данных будет удалена.')) return;

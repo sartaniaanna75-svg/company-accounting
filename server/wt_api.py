@@ -1871,6 +1871,104 @@ def _timesheet_emp_has_activity(days: Any) -> bool:
     return False
 
 
+def _salary_record_meaningful(rec: Any) -> bool:
+    """True только при значимых полях; пустой {} / нули / флаги false — техническая заглушка."""
+    if rec is None:
+        return False
+    if not isinstance(rec, dict):
+        return bool(rec)
+    money_keys = (
+        "fines", "bonus", "advance", "products", "taxiDaily",
+        "vacationPay", "taxes", "reflect1c", "expenseZp",
+    )
+    for key in money_keys:
+        try:
+            if float(rec.get(key) or 0):
+                return True
+        except (TypeError, ValueError):
+            if rec.get(key) not in (None, ""):
+                return True
+    if rec.get("issued") is True:
+        return True
+    if rec.get("vacationPaidEarlier") is True:
+        return True
+    if rec.get("skipFine") not in (None, ""):
+        return True
+    if str(rec.get("updated_at") or "").strip():
+        return True
+    if str(rec.get("external_1c_id") or "").strip():
+        return True
+    sources = rec.get("sources")
+    if isinstance(sources, dict) and sources:
+        return True
+    known = set(money_keys) | {
+        "issued", "vacationPaidEarlier", "skipFine", "updated_at",
+        "external_1c_id", "sources",
+    }
+    for key, val in rec.items():
+        if key in known:
+            continue
+        if val in (None, "", 0, False, [], {}):
+            continue
+        # Неизвестное поле с данными — безопаснее блокировать.
+        return True
+    return False
+
+
+def _vacation_plan_row_meaningful(row: Any) -> bool:
+    """Пустая строка плана (без даты/суммы/истории) — заглушка; иначе блокировка."""
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("planned_date") or "").strip():
+        return True
+    amt = row.get("planned_amount")
+    if amt not in (None, ""):
+        try:
+            if float(amt) != 0:
+                return True
+        except (TypeError, ValueError):
+            return True
+    status = str(row.get("status") or "").strip().lower()
+    if status and status not in ("planned", ""):
+        return True
+    if str(row.get("comment") or "").strip():
+        return True
+    hist = row.get("history")
+    if isinstance(hist, list) and len(hist) > 0:
+        return True
+    return False
+
+
+def _access_list_meaningful(val: Any) -> bool:
+    """workAccess/extraAccess: [] не блок; непустой список или неожиданная форма — блок."""
+    if val is None:
+        return False
+    if isinstance(val, list):
+        return any(str(x or "").strip() for x in val)
+    if isinstance(val, dict):
+        return bool(val)
+    return bool(val)
+
+
+def _metric_emp_payload_meaningful(val: Any) -> bool:
+    """Факты метрик по сотруднику: пустой {} не блок; иначе при сомнении — блок."""
+    if val is None or val == "" or val is False:
+        return False
+    if isinstance(val, list):
+        return len(val) > 0
+    if not isinstance(val, dict):
+        return True
+    if not val:
+        return False
+    for cell in val.values():
+        if cell in (None, "", 0, False, [], {}):
+            continue
+        if isinstance(cell, dict) and not cell:
+            continue
+        return True
+    return False
+
+
 # Известные поля ячеек метрик с прямой ссылкой на сотрудника (не универсальный обход).
 _METRIC_CELL_EMPLOYEE_FIELDS = (
     "employee_id",
@@ -1908,11 +2006,11 @@ def _metric_branch_links_employee(branch: Any, eid: str) -> list[str]:
     wa = branch.get("workAccess")
     if isinstance(wa, dict):
         for mmap in wa.values():
-            if isinstance(mmap, dict) and eid in mmap:
+            if isinstance(mmap, dict) and eid in mmap and _access_list_meaningful(mmap.get(eid)):
                 out.append("назначения метрик")
                 break
     ea = branch.get("extraAccess")
-    if isinstance(ea, dict) and eid in ea:
+    if isinstance(ea, dict) and eid in ea and _access_list_meaningful(ea.get(eid)):
         if "назначения метрик" not in out:
             out.append("назначения метрик")
     for key in METRIC_INPUT_KEYS:
@@ -1929,7 +2027,7 @@ def _metric_branch_links_employee(branch: Any, eid: str) -> list[str]:
                 if hit:
                     break
                 continue
-            if isinstance(sub, dict) and eid in sub:
+            if isinstance(sub, dict) and eid in sub and _metric_emp_payload_meaningful(sub.get(eid)):
                 hit = True
                 break
             if not isinstance(sub, dict):
@@ -2091,8 +2189,9 @@ def _org_structure_links_employee(root: Any, eid: str) -> bool:
 
 def employee_linked_history_labels(payload: dict, employee_id: str) -> list[str]:
     """
-    Человекочитаемые метки связанных данных сотрудника.
-    Наличие ключа в salary/repSales/назначениях достаточно для блокировки удаления карточки.
+    Человекочитаемые метки связанных данных сотрудника (по employee_id).
+    Пустые технические заглушки (workAccess [], пустой salary {}, пустой vacation) не блокируют.
+    При сомнении в значимости — блокировка сохраняется.
     """
     eid = str(employee_id or "").strip()
     if not eid or not isinstance(payload, dict):
@@ -2108,27 +2207,34 @@ def employee_linked_history_labels(payload: dict, employee_id: str) -> list[str]
     for ws in payload.get("workspaces") or []:
         if not isinstance(ws, dict):
             continue
+        code = str(ws.get("code") or "")
         ts = ws.get("timesheet")
         if not isinstance(ts, dict):
             continue
-        for mmap in ts.values():
+        for month, mmap in ts.items():
             if isinstance(mmap, dict) and eid in mmap and _timesheet_emp_has_activity(mmap.get(eid)):
-                add("табель")
+                add("табель" + (f" ({code}/{month})" if code or month else ""))
                 break
 
     salary = payload.get("salary")
     if isinstance(salary, dict):
-        for bucket in salary.values():
-            if isinstance(bucket, dict) and eid in bucket:
-                add("зарплата")
+        for month, bucket in salary.items():
+            if isinstance(bucket, dict) and eid in bucket and _salary_record_meaningful(bucket.get(eid)):
+                add(f"зарплата ({month})")
                 break
 
     rep = payload.get("repSales")
     if isinstance(rep, dict):
-        for bucket in rep.values():
-            if isinstance(bucket, dict) and eid in bucket:
-                add("продажи ТП")
+        for month, bucket in rep.items():
+            if isinstance(bucket, dict) and eid in bucket and _salary_record_meaningful(bucket.get(eid)):
+                # для ТП достаточно наличия непустой записи продаж
+                add(f"продажи ТП ({month})")
                 break
+            if isinstance(bucket, dict) and eid in bucket:
+                cell = bucket.get(eid)
+                if cell not in (None, {}, []):
+                    add(f"продажи ТП ({month})")
+                    break
 
     for label in _metric_branch_links_employee(payload.get("shopMetrics"), eid):
         add(label)
@@ -2143,47 +2249,56 @@ def employee_linked_history_labels(payload: dict, employee_id: str) -> list[str]
         for item in cat.get("items") or []:
             if not isinstance(item, dict):
                 continue
+            mid = str(item.get("id") or item.get("name") or "")
             for row in item.get("assignments") or []:
                 if not isinstance(row, dict):
                     continue
                 extras = row.get("extra_employee_ids") or []
                 ids = row.get("employee_ids") or []
                 if any(str(x).strip() == eid for x in extras) or any(str(x).strip() == eid for x in ids):
-                    add("назначения метрик")
+                    add("назначения метрик" + (f" (каталог {mid})" if mid else ""))
                     break
-            if "назначения метрик" in seen:
+            if any(x.startswith("назначения метрик") for x in seen):
                 break
 
     payroll = payload.get("shopPayroll")
     if isinstance(payroll, dict):
         for row in payroll.get("assignments") or []:
             if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
-                add("KPI/премии")
+                add("KPI/премии (назначение)")
                 break
         for row in payroll.get("salaries") or []:
             if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
-                add("KPI/премии")
+                add("KPI/премии (оклад)")
                 break
         manual = payroll.get("manual")
         if isinstance(manual, dict):
-            if eid in manual:
-                add("KPI/премии")
+            if eid in manual and _salary_record_meaningful(manual.get(eid)):
+                add("KPI/премии (ручные)")
             else:
-                for month_map in manual.values():
+                for month, month_map in manual.items():
                     if isinstance(month_map, dict) and eid in month_map:
-                        add("KPI/премии")
-                        break
+                        cell = month_map.get(eid)
+                        if _salary_record_meaningful(cell) or (
+                            cell not in (None, {}, []) and not isinstance(cell, dict)
+                        ):
+                            add(f"KPI/премии (ручные {month})")
+                            break
 
     vp = payload.get("vacationPlans")
     if isinstance(vp, dict):
-        for year_list in vp.values():
+        for year, year_list in vp.items():
             if not isinstance(year_list, list):
                 continue
             for row in year_list:
-                if isinstance(row, dict) and str(row.get("employee_id") or "").strip() == eid:
-                    add("график отпусков")
+                if (
+                    isinstance(row, dict)
+                    and str(row.get("employee_id") or "").strip() == eid
+                    and _vacation_plan_row_meaningful(row)
+                ):
+                    add(f"график отпусков ({year})")
                     break
-            if "график отпусков" in seen:
+            if any(x.startswith("график отпусков") for x in seen):
                 break
 
     if _sales_plan_root_links_employee(payload.get("shopSalesPlan"), eid):
