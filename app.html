@@ -43894,6 +43894,16 @@ function mgmtSourceAsIndicator(src, parent) {
     };
 }
 
+/**
+ * Код отдела для staff_directory: явное "" = «Все» (все DEPT_DEFAULTS).
+ * Нельзя писать `source_department_id || parent.department_id` — пустая строка falsy
+ * и «Все» ошибочно сужается до department_id карточки.
+ */
+function spuResolveStaffDirectoryDeptCode(sourceDeptId, fallbackDeptId) {
+    if (sourceDeptId != null) return String(sourceDeptId);
+    return String(fallbackDeptId == null ? "" : fallbackDeptId);
+}
+
 function mgmtReadSourceFact(src, parent, stack) {
     if (!src) return { value: null, status: "missing" };
     if (src.source_type === "timesheet") {
@@ -43901,7 +43911,11 @@ function mgmtReadSourceFact(src, parent, stack) {
         return { value: mgmtTimesheetFact(src.source_department_id || (parent && parent.department_id), src.source_timesheet_agg, days), status: "auto" };
     }
     if (src.source_type === "staff_directory") {
-        return mgmtReadStaffDirectoryValue(parent, src.source_department_id || (parent && parent.department_id) || "");
+        const dept = spuResolveStaffDirectoryDeptCode(
+            src.source_department_id,
+            parent && parent.department_id
+        );
+        return mgmtReadStaffDirectoryValue(parent, dept);
     }
     if (src.source_type === "finance" || src.source_type === "spu_indicator" || src.source_type === "manual") {
         const oid = src.source_indicator_id;
@@ -43962,6 +43976,11 @@ function mgmtReadFromSources(it, stack) {
         return { value: value, status: value == null ? "missing" : "auto" };
     }
     const use = (cfg.aggregation_type === "none" || cfg.calc_mode === "one") ? sources.slice(0, 1) : sources;
+    // Один источник «Справочник сотрудников»: сохранить status frozen|unfrozen|auto
+    // (не затирать в "auto"/"missing" через агрегацию чисел).
+    if (use.length === 1 && use[0] && use[0].source_type === "staff_directory") {
+        return mgmtReadSourceFact(use[0], it, stack);
+    }
     const facts = use.map(function (s) {
         const read = mgmtReadSourceFact(s, it, stack);
         return read && read.value != null && read.value !== "" && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
@@ -47722,7 +47741,7 @@ function spuStaffDirectoryDeptCode(it) {
     let i;
     for (i = 0; i < sources.length; i++) {
         if (sources[i] && sources[i].source_type === "staff_directory") {
-            return String(sources[i].source_department_id || it.department_id || "");
+            return spuResolveStaffDirectoryDeptCode(sources[i].source_department_id, it.department_id);
         }
     }
     return String(it.department_id || "");
