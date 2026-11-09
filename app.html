@@ -6498,6 +6498,8 @@ const OFFICE_KPI_SCOPE_MARK = "office_active";
 /** План продаж Володарского: норма дней для премии участников (с SHOP_SALES_PLAN_DAYS_FROM). */
 const SHOP_SALES_PLAN_DAYS_NORM = 22;
 const SHOP_SALES_PLAN_DAYS_FROM = "2026-10";
+/** «Общее → Зарплата»: округление 4 итоговых колонок до рублей (с этого месяца включительно). Не для ведомостей отделов. */
+const SUMMARY_SALARY_ROUND_FROM = "2026-10";
 const SALES_REP_POSITION = "Торговый представитель";
 const REP_BAG_PAY = 5;
 const DEPT_POSITIONS = {
@@ -8414,6 +8416,43 @@ function moneyFlex(value) {
     const n = Number(value || 0);
     if (Math.abs(n - Math.round(n)) < 0.001) return money(n);
     return money2(n);
+}
+
+function summarySalaryRoundRub(value) {
+    return Math.round(Number(value || 0));
+}
+
+function summarySalaryAppliesRound(month) {
+    const m = String(month || selectedMonth || "");
+    return !!(m && m >= SUMMARY_SALARY_ROUND_FROM);
+}
+
+/**
+ * Только UI «Общее → Зарплата»: после calculateEmployee округлить 4 итога.
+ * Не мутирует исходный объект и не вызывается из ведомостей отделов / ТП / CSV.
+ */
+function applySummarySalaryTotalsRounding(data, month) {
+    if (!data || !summarySalaryAppliesRound(month)) return data;
+    const products = Number(data.products || 0);
+    const advance = Number(data.advance || 0);
+    const vacationPay = Number(data.vacationPay || 0);
+    const rawAccrued = data.accruedTotal != null
+        ? Number(data.accruedTotal)
+        : (Number(data.pay || 0) + products + advance);
+    const accruedTotal = summarySalaryRoundRub(rawAccrued);
+    const payEff = accruedTotal - products - advance;
+    const toHand = summarySalaryRoundRub(payEff - (data.vacationPaidEarlier ? vacationPay : 0));
+    const reflect1c = summarySalaryRoundRub(accruedTotal - advance);
+    const expenseZp = summarySalaryRoundRub(
+        accruedTotal - advance - (data.vacationPaidEarlier ? vacationPay : 0)
+    );
+    const out = {};
+    Object.keys(data).forEach(function (k) { out[k] = data[k]; });
+    out.accruedTotal = accruedTotal;
+    out.toHand = toHand;
+    out.reflect1c = reflect1c;
+    out.expenseZp = expenseZp;
+    return out;
 }
 
 function parseRepPercent(value, fallback) {
@@ -33976,7 +34015,8 @@ function renderSalary() {
     function salaryRow(employee) {
         // Просмотр: без ensureSalary — иначе массовые пустые salary.* в DomainWriter.
         // calculateEmployee уже читает через normalizeSalaryRecord(существующая|undefined).
-        const data = calculateEmployee(employee.id);
+        // Округление 4 итогов — только здесь (Общее → Зарплата), с SUMMARY_SALARY_ROUND_FROM.
+        const data = applySummarySalaryTotalsRounding(calculateEmployee(employee.id), selectedMonth);
         addSalarySums(sums, data);
         issuedRows.push(data);
         n += 1;
