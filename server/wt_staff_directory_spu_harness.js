@@ -1,6 +1,6 @@
 /**
  * Численность СПУ из справочника: уникальный id, аутсорсинг, fired_on на конец среды,
- * без фильтра «Участвует в СПУ». «Все» не подменяется parent.department_id.
+ * без фильтра «Участвует в СПУ». «Все»/territory не подменяется parent.department_id.
  */
 "use strict";
 
@@ -50,11 +50,46 @@ const DEPT_DEFAULTS = [
   { code: "warehouse" },
   { code: "drivers" }
 ];
+const TERRITORY_DEPT_CODES = ["office", "warehouse", "drivers"];
+
+function spuStaffDirectoryDeptCodes(scopeOrDept) {
+  const raw = scopeOrDept == null ? "" : String(scopeOrDept);
+  if (!raw) return DEPT_DEFAULTS.map(function (d) { return d.code; });
+  if (raw === "territory") return TERRITORY_DEPT_CODES.slice();
+  return [raw];
+}
+
+function spuStaffDirectoryScopeLabel(scopeOrDept) {
+  const raw = scopeOrDept == null ? "" : String(scopeOrDept);
+  if (!raw) return "Вся компания";
+  if (raw === "territory") return "Территория";
+  return raw;
+}
+
+function isAssignableDeptCode(code) {
+  return DEPT_DEFAULTS.some(function (d) { return d && d.code === code; });
+}
+
+/** Mirror app.html: only real WT codes go to indicator.department_id. */
+function spuStaffDirectoryMirrorDeptId(scopeOrDept) {
+  const raw = scopeOrDept == null ? "" : String(scopeOrDept);
+  if (!raw) return "";
+  if (isAssignableDeptCode(raw)) return raw;
+  return "";
+}
+
+function saveStaffDirectoryDeptMirror(first, it) {
+  const srcDeptRaw = first.source_department_id == null ? "" : String(first.source_department_id);
+  if (first.source_type === "staff_directory" || it.source_type === "staff_directory") {
+    it.department_id = spuStaffDirectoryMirrorDeptId(srcDeptRaw);
+  } else {
+    it.department_id = srcDeptRaw || it.department_id || "";
+  }
+  return it.department_id;
+}
 
 function mgmtStaffDirectoryFact(workspaces, deptCode, asOfIso) {
-  const codes = deptCode
-    ? [String(deptCode)]
-    : DEPT_DEFAULTS.map(function (d) { return d.code; });
+  const codes = spuStaffDirectoryDeptCodes(deptCode);
   const seen = {};
   let n = 0;
   codes.forEach(function (code) {
@@ -94,10 +129,47 @@ function mgmtReadFromSourcesStaffDirectory(it, readFn) {
   return { value: null, status: "missing" };
 }
 
+function spuSafeDiv(a, b) {
+  const x = Number(a);
+  const y = Number(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || y === 0) return null;
+  const out = x / y;
+  if (!Number.isFinite(out)) return null;
+  return out;
+}
+
 assert(spuResolveStaffDirectoryDeptCode("", "office") === "", "empty All wins over parent dept");
 assert(spuResolveStaffDirectoryDeptCode("shop", "office") === "shop", "explicit dept");
+assert(spuResolveStaffDirectoryDeptCode("territory", "office") === "territory", "territory scope kept");
 assert(spuResolveStaffDirectoryDeptCode(null, "office") === "office", "missing falls back");
 assert(spuResolveStaffDirectoryDeptCode(undefined, "warehouse") === "warehouse", "undefined falls back");
+
+assert(spuStaffDirectoryDeptCodes("").join(",") === "shop,office,warehouse,drivers", "company codes");
+assert(spuStaffDirectoryDeptCodes("territory").join(",") === "office,warehouse,drivers", "territory codes");
+assert(spuStaffDirectoryDeptCodes("shop").join(",") === "shop", "shop only");
+assert(spuStaffDirectoryScopeLabel("") === "Вся компания", "label company");
+assert(spuStaffDirectoryScopeLabel("territory") === "Территория", "label territory");
+
+assert(spuStaffDirectoryMirrorDeptId("territory") === "", "mirror drops territory");
+assert(spuStaffDirectoryMirrorDeptId("") === "", "mirror drops company-wide");
+assert(spuStaffDirectoryMirrorDeptId("shop") === "shop", "mirror keeps shop");
+assert(spuStaffDirectoryMirrorDeptId("office") === "office", "mirror keeps office");
+assert(saveStaffDirectoryDeptMirror(
+  { source_type: "staff_directory", source_department_id: "territory" },
+  { source_type: "staff_directory", department_id: "office" }
+) === "", "save territory clears department_id");
+assert(saveStaffDirectoryDeptMirror(
+  { source_type: "staff_directory", source_department_id: "" },
+  { source_type: "staff_directory", department_id: "warehouse" }
+) === "", "save All clears stale department_id");
+assert(saveStaffDirectoryDeptMirror(
+  { source_type: "staff_directory", source_department_id: "shop" },
+  { source_type: "staff_directory", department_id: "" }
+) === "shop", "save shop mirrors department_id");
+assert(saveStaffDirectoryDeptMirror(
+  { source_type: "timesheet", source_department_id: "" },
+  { source_type: "timesheet", department_id: "office" }
+) === "office", "non-staff keeps old || behavior");
 
 const card = {
   indicator_id: "mind_034",
@@ -109,6 +181,10 @@ assert(spuStaffDirectoryDeptCode({
   department_id: "office",
   sources: [{ source_type: "staff_directory", source_department_id: "warehouse" }]
 }) === "warehouse", "single dept selected");
+assert(spuStaffDirectoryDeptCode({
+  department_id: "office",
+  sources: [{ source_type: "staff_directory", source_department_id: "territory" }]
+}) === "territory", "territory selected");
 
 const wed = "2026-10-14";
 const workspaces = {
@@ -150,6 +226,17 @@ const nOffice = mgmtStaffDirectoryFact(workspaces, "office", wed);
 assert(nOffice === 9, "office-only would be 9 (bug symptom) got " + nOffice);
 assert(nAll !== nOffice, "All must differ from single office");
 
+const nTerritory = mgmtStaffDirectoryFact(workspaces, "territory", wed);
+// office a,f..m (9) + warehouse n + drivers o; a not in shop for territory → 11
+assert(nTerritory === 11, "territory without shop got " + nTerritory);
+assert(nTerritory !== nAll, "territory must exclude shop-only people");
+const nShop = mgmtStaffDirectoryFact(workspaces, "shop", wed);
+// a,b,d (working/outsource/fired after) = 3
+assert(nShop === 3, "shop only got " + nShop);
+assert(nShop + nTerritory !== nAll, "shop+territory raw sum can overlap on id a");
+// Unique company = union: shop-only b,d + territory 11 = 13 (a in both)
+assert(nAll === 13, "company unique still 13");
+
 assert(employeeCountsInStaffDirectoryOnDate(workspaces.shop.employees[1], wed), "outsourcing counted");
 assert(!employeeCountsInStaffDirectoryOnDate(workspaces.shop.employees[2], wed), "fired on wednesday excluded");
 assert(employeeCountsInStaffDirectoryOnDate(workspaces.shop.employees[3], wed), "fired after wednesday included");
@@ -162,13 +249,24 @@ const openRead = mgmtReadStaffDirectoryValue({
 // asOf 11.11: d (fired_on 15.10) уже не входит → 12
 assert(openRead.status === "auto" && openRead.value === 12, "open week live all got " + openRead.value);
 
+const openTerritory = mgmtReadStaffDirectoryValue({
+  workspaces: workspaces, deptCode: "territory", asOf: "2026-11-11", today: "2026-11-08", frozen: null
+});
+assert(openTerritory.status === "auto" && openTerritory.value === 11, "open territory got " + openTerritory.value);
+
+const openShop = mgmtReadStaffDirectoryValue({
+  workspaces: workspaces, deptCode: "shop", asOf: "2026-11-11", today: "2026-11-08", frozen: null
+});
+// a,b (d fired before 11.11) = 2
+assert(openShop.status === "auto" && openShop.value === 2, "open shop got " + openShop.value);
+
 const closedFrozen = mgmtReadStaffDirectoryValue({
-  workspaces: workspaces, deptCode: "", asOf: "2026-11-04", today: "2026-11-08", frozen: 9
+  workspaces: workspaces, deptCode: "territory", asOf: "2026-11-04", today: "2026-11-08", frozen: 9
 });
 assert(closedFrozen.status === "frozen" && closedFrozen.value === 9, "closed uses freeze snapshot");
 
 const closedUnfrozen = mgmtReadStaffDirectoryValue({
-  workspaces: workspaces, deptCode: "", asOf: "2026-11-04", today: "2026-11-08", frozen: null
+  workspaces: workspaces, deptCode: "territory", asOf: "2026-11-04", today: "2026-11-08", frozen: null
 });
 assert(closedUnfrozen.status === "unfrozen" && closedUnfrozen.value == null, "closed without snapshot");
 
@@ -188,5 +286,23 @@ const preservedLive = mgmtReadFromSourcesStaffDirectory(card, function (src, par
   });
 });
 assert(preservedLive.status === "auto" && preservedLive.value === 12, "fromSources live All got " + preservedLive.value);
+
+const territoryCard = {
+  indicator_id: "mind_terr_hc",
+  department_id: "territory",
+  sources: [{ source_type: "staff_directory", source_department_id: "territory" }]
+};
+const territoryLive = mgmtReadFromSourcesStaffDirectory(territoryCard, function (src, parent) {
+  const dept = spuResolveStaffDirectoryDeptCode(src.source_department_id, parent.department_id);
+  assert(dept === "territory", "fromSources territory dept");
+  return mgmtReadStaffDirectoryValue({
+    workspaces: workspaces, deptCode: dept, asOf: "2026-11-11", today: "2026-11-08", frozen: null
+  });
+});
+assert(territoryLive.status === "auto" && territoryLive.value === 11, "fromSources territory live");
+
+assert(spuSafeDiv(100, 0) == null, "div zero protected");
+assert(spuSafeDiv(110, nTerritory) === 10, "revenue / territory headcount");
+assert(spuSafeDiv(30, nShop) === 10, "revenue / shop headcount");
 
 console.log("OK wt_staff_directory_spu_harness");

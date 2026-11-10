@@ -35,5 +35,7 @@ Ok ($app -match "function employeeCountsInStaffDirectoryOnDate") "asOf filter ke
 Ok ($app -match "function mgmtReadStaffDirectoryValue") "read wrapper kept"
 Ok ($app -match 'status: "frozen"') "frozen status literal"
 Ok ($app -match 'status: "unfrozen"') "unfrozen status literal"
+Ok ($app -match "function spuStaffDirectoryDeptCodes") "scope codes helper"
+Ok ($app -match 'raw === "territory"') "territory scope sentinel"
 
 Write-Host "OK test_wt_staff_directory_dept_all_markers"

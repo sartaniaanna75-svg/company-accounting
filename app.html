@@ -37344,6 +37344,7 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '</select><div class="note">Выберите, как программа должна рассчитывать итог за неделю или месяц.</div></div>'
         + '<div class="form-group"><label>Активен</label><label class="check"><input id="mcActive" type="checkbox"'
         + (it.active === false ? "" : " checked") + "> Да</label></div>"
+        + metricCatalogSpuParticipationFieldsHtml(it)
         + '<div class="form-group full" id="mcDayTotalBox">'
         + '<label class="check"><input id="mcShowDayTotal" type="checkbox"'
         + (it.show_day_total === true ? " checked" : "") + "> Показывать итого за день</label>"
@@ -37839,6 +37840,12 @@ function saveMetricCatalogForm(id, dupIgnore) {
         item.work_tab_ids = metricWorkTabIds(item).filter(function (t) { return allowTabs.indexOf(t) !== -1; });
         if (!item.work_tab_ids.length) item.work_tab_ids = allowTabs.slice();
         normalizeMetricCatalogItemTabs(item);
+    }
+    // use_in_spu — после normalize (он приводит отсутствие флага к false). Не setMetricUseInSpu: без разрыва связей.
+    const spuFlag = metricCatalogApplyUseInSpuFromForm(item);
+    if (!spuFlag.ok) {
+        formErr(spuFlag.message || "Нельзя отключить участие в СПУ.");
+        return;
     }
     item.structure_type = structure;
     item.period_agg = periodAgg;
@@ -43965,13 +43972,55 @@ function mgmtSourceAsIndicator(src, parent) {
 }
 
 /**
- * Код отдела для staff_directory: явное "" = «Все» (все DEPT_DEFAULTS).
+ * Код области/отдела для staff_directory.
+ * Явное "" = «Вся компания» (все DEPT_DEFAULTS).
+ * «territory» = Территория (TERRITORY_DEPT_CODES, без shop).
  * Нельзя писать `source_department_id || parent.department_id` — пустая строка falsy
- * и «Все» ошибочно сужается до department_id карточки.
+ * и «Вся компания» ошибочно сужается до department_id карточки.
  */
 function spuResolveStaffDirectoryDeptCode(sourceDeptId, fallbackDeptId) {
     if (sourceDeptId != null) return String(sourceDeptId);
     return String(fallbackDeptId == null ? "" : fallbackDeptId);
+}
+
+/**
+ * Список кодов workspace для подсчёта численности staff_directory.
+ * "" → вся компания; "territory" → office+warehouse+drivers; иначе один код WT.
+ */
+function spuStaffDirectoryDeptCodes(scopeOrDept) {
+    const raw = scopeOrDept == null ? "" : String(scopeOrDept);
+    if (!raw) {
+        return ((typeof DEPT_DEFAULTS !== "undefined" ? DEPT_DEFAULTS : []).map(function (d) {
+            return d && d.code;
+        }).filter(Boolean));
+    }
+    if (raw === "territory") {
+        return (typeof TERRITORY_DEPT_CODES !== "undefined"
+            ? TERRITORY_DEPT_CODES.slice()
+            : ["office", "warehouse", "drivers"]);
+    }
+    return [raw];
+}
+
+/** Подпись области численности staff_directory в UI/лейблах. */
+function spuStaffDirectoryScopeLabel(scopeOrDept) {
+    const raw = scopeOrDept == null ? "" : String(scopeOrDept);
+    if (!raw) return "Вся компания";
+    if (raw === "territory") return "Территория";
+    if (typeof mgmtDeptName === "function") return mgmtDeptName(raw);
+    return raw;
+}
+
+/**
+ * Зеркало области staff_directory в indicator.department_id:
+ * только реальные коды WT (DEPT_DEFAULTS). "" и "territory" остаются
+ * только в sources[].source_department_id — не загрязняют department_id.
+ */
+function spuStaffDirectoryMirrorDeptId(scopeOrDept) {
+    const raw = scopeOrDept == null ? "" : String(scopeOrDept);
+    if (!raw) return "";
+    if (typeof isAssignableDeptCode === "function" && isAssignableDeptCode(raw)) return raw;
+    return "";
 }
 
 function mgmtReadSourceFact(src, parent, stack) {
@@ -44102,6 +44151,61 @@ function spuTerritoryWorkMetrics() {
 
 function metricUseInSpu(item) {
     return !!(item && item.use_in_spu === true);
+}
+
+/** Блок «Участвует в СПУ» в карточке метрики WT — то же поле use_in_spu, без дублей. */
+function metricCatalogSpuLinkedCount(itemOrId) {
+    const id = itemOrId && itemOrId.id ? itemOrId.id : itemOrId;
+    if (!id || typeof spuIndicatorsLinkedToMetric !== "function") return 0;
+    return spuIndicatorsLinkedToMetric(id).length;
+}
+
+function metricCatalogSpuParticipationFieldsHtml(item) {
+    const linkedN = metricCatalogSpuLinkedCount(item);
+    const on = metricUseInSpu(item);
+    // Отключение через карточку запрещено, если уже есть связи (не вызываем setMetricUseInSpu(false)).
+    const lockOff = linkedN > 0 && on;
+    let notes = "";
+    if (on) {
+        notes += '<div class="note" style="margin:4px 0 0">Метрику можно выбирать как источник показателей СПУ.</div>';
+    } else {
+        notes += '<div class="note" style="margin:4px 0 0">Чтобы использовать метрику как новый источник СПУ, включите участие.</div>';
+    }
+    if (linkedN > 0) {
+        notes += '<div class="note" style="margin:4px 0 0">Подключена к ' + linkedN
+            + (linkedN === 1 ? " показателю СПУ" : " показателям СПУ") + ".</div>";
+        if (lockOff) {
+            notes += '<div class="note" style="margin:4px 0 0;color:#b45309">Метрика подключена к '
+                + linkedN + " показателям СПУ. Отключение через карточку запрещено — может нарушить их работу.</div>";
+        } else if (!on) {
+            notes += '<div class="note" style="margin:4px 0 0">Связи сохранены. Включите участие, чтобы метрику снова можно было выбирать как новый источник.</div>';
+        }
+    }
+    return '<div class="form-group full" id="mcUseInSpuBox">'
+        + '<label class="check"><input id="mcUseInSpu" type="checkbox"'
+        + (on ? " checked" : "")
+        + (lockOff ? " disabled" : "")
+        + '> Участвует в СПУ</label>'
+        + notes
+        + "</div>";
+}
+
+/** Применить галочку карточки к item.use_in_spu без вызова setMetricUseInSpu (без разрыва связей). */
+function metricCatalogApplyUseInSpuFromForm(item) {
+    if (!item) return { ok: true };
+    const el = document.getElementById("mcUseInSpu");
+    if (!el) return { ok: true };
+    const linkedN = metricCatalogSpuLinkedCount(item);
+    const want = !!el.checked;
+    if (linkedN > 0 && metricUseInSpu(item) && !want) {
+        return {
+            ok: false,
+            message: "Метрика подключена к " + linkedN
+                + " показателям СПУ. Отключение может нарушить их работу. Снимите участие в разделе «СПУ → Источники» только осознанно."
+        };
+    }
+    item.use_in_spu = want;
+    return { ok: true };
 }
 
 function spuWorkMetricsCatalog() {
@@ -44308,15 +44412,24 @@ function spuIndSrcMetricPickerHtml(s, allMetrics) {
     html += '<div class="form-group"><label>Метрика Work Time</label><select class="spu-src-metric" onchange="spuIndOnMetricChange()">'
         + '<option value="">Выберите метрику Work Time (не копируется в СПУ)</option>';
     if (!filtered.length) {
-        html += '<option value="" disabled>Нет метрик по фильтру</option>';
+        if (!(allMetrics || []).length) {
+            html += '<option value="" disabled>Нет метрик с отметкой «Участвует в СПУ»</option>';
+        } else {
+            html += '<option value="" disabled>Нет метрик по выбранным фильтрам</option>';
+        }
     }
     filtered.forEach(function (m) {
         html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
             + escapeHtml(m.name) + "</option>";
     });
-    html += "</select>"
-        + '<div class="note" style="margin:4px 0 0">Показано ' + filtered.length + " из " + (allMetrics || []).length
-        + ". Фильтр только для выбора источника — metric_id и данные метрики не меняются.</div></div>";
+    html += "</select>";
+    if (!(allMetrics || []).length) {
+        html += '<div class="note" style="margin:4px 0 0">Нет метрик с отметкой «Участвует в СПУ». Откройте справочник метрик WorkTime и включите участие у нужной метрики.</div>';
+    } else {
+        html += '<div class="note" style="margin:4px 0 0">Показано ' + filtered.length + " из " + (allMetrics || []).length
+            + ". Фильтр только для выбора источника — metric_id и данные метрики не меняются.</div>";
+    }
+    html += "</div>";
     return html;
 }
 
@@ -45547,13 +45660,16 @@ function renderSpuIndSourcesBox() {
             });
             html += "</select></div>";
         } else if (type === "staff_directory") {
-            html += '<div class="form-group"><label>Рабочие подразделения</label><select class="spu-src-dept"><option value="">Все</option>';
+            const scopeSel = (s.source_department_id == null ? "" : String(s.source_department_id));
+            html += '<div class="form-group"><label>Область подсчёта</label><select class="spu-src-dept">'
+                + '<option value=""' + (scopeSel === "" ? " selected" : "") + ">Вся компания</option>"
+                + '<option value="territory"' + (scopeSel === "territory" ? " selected" : "") + ">Территория</option>";
             DEPT_DEFAULTS.forEach(function (d) {
-                html += '<option value="' + escapeAttribute(d.code) + '"' + (s.source_department_id === d.code ? " selected" : "") + ">"
+                html += '<option value="' + escapeAttribute(d.code) + '"' + (scopeSel === d.code ? " selected" : "") + ">"
                     + escapeHtml(d.name) + "</option>";
             });
             html += "</select></div>";
-            html += '<div class="note">Численность на конец среды (чт–ср). Учитываются все действующие, включая аутсорсинг; без табеля и без фильтра «Участвует в СПУ». Один employee_id — один человек.</div>';
+            html += '<div class="note">Численность на конец среды (чт–ср). «Территория» = офис + склад + логистика, без магазина. Учитываются действующие, включая аутсорсинг; без табеля и без фильтра «Участвует в СПУ». Один employee_id — один человек.</div>';
         } else if (type === "sales_plan") {
             html += '<div class="form-group"><label>План продаж</label><select class="spu-src-spview">'
                 + '<option value="all"' + (s.source_sales_plan_view === "all" ? " selected" : "") + ">Все подразделения</option>";
@@ -45803,7 +45919,17 @@ function saveSpuOrgIndicator() {
     it.source_timesheet_agg = first.source_timesheet_agg || "";
     it.source_sales_plan_view = first.source_sales_plan_view || it.source_sales_plan_view || "";
     it.source_sales_plan_field = first.source_sales_plan_field || it.source_sales_plan_field || "";
-    it.department_id = first.source_department_id || it.department_id || "";
+    {
+        const srcDeptRaw = first.source_department_id == null ? "" : String(first.source_department_id);
+        if (first.source_type === "staff_directory" || it.source_type === "staff_directory") {
+            // territory / «вся компания» — только в sources; department_id = WT-код или "".
+            it.department_id = typeof spuStaffDirectoryMirrorDeptId === "function"
+                ? spuStaffDirectoryMirrorDeptId(srcDeptRaw)
+                : "";
+        } else {
+            it.department_id = srcDeptRaw || it.department_id || "";
+        }
+    }
     it.sources = sources.map(function (s, i) { return spuNewSourceRow(Object.assign({}, s, { source_id: s.source_id || ("ssrc_" + i) })); });
     it.aggregation_type = calc === "formula" ? "formula" : calc;
     it.calc_mode = calc;
@@ -46541,7 +46667,7 @@ function spuSourceShortLabel(s) {
         return "Табель · " + mgmtDeptName(s.source_department_id) + " · " + spuTimesheetAggLabel(s.source_timesheet_agg);
     }
     if (s.source_type === "staff_directory") {
-        return "Справочник сотрудников · " + (s.source_department_id ? mgmtDeptName(s.source_department_id) : "Все");
+        return "Справочник сотрудников · " + spuStaffDirectoryScopeLabel(s.source_department_id);
     }
     if (s.source_type === "finance" || s.source_type === "spu_indicator" || s.source_type === "manual") {
         const other = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === s.source_indicator_id; });
@@ -47792,11 +47918,14 @@ function mgmtTimesheetFact(deptCode, agg, days) {
 /**
  * Численность из «Общее → Сотрудники» на дату asOfIso (обычно конец среды).
  * Уникальный employee_id; аутсорсинг включён; табель и «Участвует в СПУ» не используются.
+ * deptCode: "" | "territory" | код WT-подразделения.
  */
 function mgmtStaffDirectoryFact(deptCode, asOfIso) {
-    const codes = deptCode
-        ? [String(deptCode)]
-        : ((typeof DEPT_DEFAULTS !== "undefined" ? DEPT_DEFAULTS : []).map(function (d) { return d.code; }));
+    const codes = typeof spuStaffDirectoryDeptCodes === "function"
+        ? spuStaffDirectoryDeptCodes(deptCode)
+        : (deptCode
+            ? [String(deptCode)]
+            : ((typeof DEPT_DEFAULTS !== "undefined" ? DEPT_DEFAULTS : []).map(function (d) { return d.code; })));
     const seen = {};
     let n = 0;
     codes.forEach(function (code) {
@@ -49686,8 +49815,10 @@ function mgmtSourcePath(it) {
     }
     if (it.source_type === "timesheet") return "Табель → " + mgmtDeptName(it.department_id) + " → " + (it.source_timesheet_agg || "дни");
     if (it.source_type === "staff_directory") {
-        return "Общее → Сотрудники → численность на конец среды"
-            + (it.department_id ? (" → " + mgmtDeptName(it.department_id)) : " → Все подразделения");
+        return "Общее → Сотрудники → численность на конец среды → "
+            + spuStaffDirectoryScopeLabel(typeof spuStaffDirectoryDeptCode === "function"
+                ? spuStaffDirectoryDeptCode(it)
+                : (it.department_id || ""));
     }
     if (it.source_type === "sales_plan") {
         if (it.source_sales_plan_view === "sales") return "Территория → Торговые представители → Общие продажи";
@@ -49709,7 +49840,7 @@ function openMgmtSource(indicatorId) {
     toast(mgmtSourcePath(it), "success");
     const user = currentAuthUser();
     const dept = it.department_id;
-    if (!dept || it.source_type === "manual" || it.source_type === "calculated" || it.source_type === "one_c_future") return;
+    if (!dept || it.source_type === "manual" || it.source_type === "calculated" || it.source_type === "one_c_future" || it.source_type === "staff_directory") return;
     if (!isAppAdmin() && (!user || !userCanAccessDept(user, dept))) return;
     try {
         if (typeof switchUserWorkspace === "function") switchUserWorkspace(dept);

@@ -33,6 +33,7 @@ Ok ($body -notmatch "wtCollectChangedLeaves") "no full collect in saver"
 
 Ok ($body -match "kind === .manual.") "manual branch kept"
 Ok ($body -match "onlyStaffDirectory") "staff_directory detection kept"
+Ok ($body -match "spuStaffDirectoryMirrorDeptId") "staff_directory dept mirror on save"
 
 $apiPath = Join-Path $PSScriptRoot "wt_api.py"
 $api = Get-Content -Raw -Encoding UTF8 $apiPath
