@@ -44609,6 +44609,43 @@ function spuOrgMoveSibling(nodeId, dir) {
     renderManagement();
 }
 
+/**
+ * ↑↓ показателя внутри одного узла Структуры СПУ.
+ * Меняет только indicator.sort_order (глобальный); input_order Ввода не трогает.
+ * Persist: узкий OPS management.indicators по двум id (как saveSpuOrgIndicator).
+ */
+function spuOrgMoveIndicatorSibling(nodeId, indicatorId, dir) {
+    if (!canEditSpuStructure() && !canEditMgmtIndicators()) return;
+    const nid = String(nodeId || "");
+    const iid = String(indicatorId || "");
+    if (!nid || !iid) return;
+    const list = spuOrgIndicatorsForNode(nid);
+    const idx = list.findIndex(function (it) { return it && it.indicator_id === iid; });
+    const j = idx + (Number(dir) < 0 ? -1 : 1);
+    if (idx < 0 || j < 0 || j >= list.length) return;
+    const a = list[idx];
+    const b = list[j];
+    if (!a || !b) return;
+    const ao = Number(a.sort_order || 0);
+    const bo = Number(b.sort_order || 0);
+    if (ao === bo) {
+        a.sort_order = Number(dir) < 0 ? bo - 1 : bo + 1;
+    } else {
+        a.sort_order = bo;
+        b.sort_order = ao;
+    }
+    Promise.resolve(wtPersistMgmtBranches({ indicators: true }, {
+        indicatorIds: [a.indicator_id, b.indicator_id],
+        okToast: "",
+        paint: function () { renderManagement(); }
+    })).then(function (ok) {
+        if (ok) return;
+        a.sort_order = ao;
+        b.sort_order = bo;
+        renderManagement();
+    });
+}
+
 function saveSpuOrgNodeFromForm(orgNodeId) {
     if (!canEditSpuStructure()) return;
     const nameEl = document.getElementById("spuOrgName");
@@ -46196,17 +46233,45 @@ function spuOrgRoutedValueHtml(nodeId) {
     return html;
 }
 
+/** Назначенные показатели узла для дерева Структуры (не фильтр show_in_planfact). */
+function spuOrgTreeIndicatorsHtml(nodeId, canReorder) {
+    const inds = spuOrgIndicatorsForNode(nodeId);
+    if (!inds.length) return "";
+    let html = '<div class="spu-tree-metrics">';
+    inds.forEach(function (it) {
+        if (!it) return;
+        const src = typeof mgmtSourcePath === "function" ? mgmtSourcePath(it) : "";
+        html += '<div class="spu-tree-ind" style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;justify-content:space-between">'
+            + "<div><span>" + escapeHtml(it.name || it.indicator_id) + "</span>"
+            + (src ? '<div class="note" style="margin:0;font-size:11px">' + escapeHtml(src) + "</div>" : "")
+            + "</div>";
+        if (canReorder) {
+            html += '<span class="spu-tree-ind-actions">'
+                + '<button type="button" class="btn btn-secondary btn-small" title="Выше" onclick="spuOrgMoveIndicatorSibling(\''
+                + escapeAttribute(nodeId) + "','" + escapeAttribute(it.indicator_id) + "',-1)\">↑</button>"
+                + '<button type="button" class="btn btn-secondary btn-small" title="Ниже" onclick="spuOrgMoveIndicatorSibling(\''
+                + escapeAttribute(nodeId) + "','" + escapeAttribute(it.indicator_id) + "',1)\">↓</button>"
+                + "</span>";
+        }
+        html += "</div>";
+    });
+    html += "</div>";
+    return html;
+}
+
 function renderSpuOrgTreeHtml(mode) {
     const canEdit = mode === "edit" && canEditSpuStructure();
     function row(node) {
         const owner = spuOrgEmployeeName(node.responsible_employee_id);
-        const metrics = spuOrgRoutedValueHtml(node.org_node_id);
+        const canInd = typeof canEditMgmtIndicators === "function" && canEditMgmtIndicators();
+        const canReorderInd = canEdit || canInd;
+        // Полный список назначенных показателей (как ПФ/карточка узла), не только result_routes.
+        const indHtml = spuOrgTreeIndicatorsHtml(node.org_node_id, canReorderInd);
         let html = '<div class="spu-tree-node' + (node.is_active === false ? " spu-tree-off" : "") + '">'
             + '<div class="spu-tree-head"><span class="spu-tree-name">' + escapeHtml(node.name)
             + (node.is_active === false ? " · неактивен" : "") + "</span>"
             + '<span class="spu-tree-owner">Ответственный: ' + escapeHtml(owner || "—") + "</span></div>";
-        if (metrics) html += '<div class="spu-tree-metrics">' + metrics + "</div>";
-        const canInd = typeof canEditMgmtIndicators === "function" && canEditMgmtIndicators();
+        if (indHtml) html += indHtml;
         if (canEdit || canInd) {
             html += '<div class="spu-tree-actions">';
             if (canEdit) {
