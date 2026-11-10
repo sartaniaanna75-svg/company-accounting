@@ -43777,6 +43777,70 @@ function spuSafeDiv(a, b) {
     return out;
 }
 
+function spuFormulaTokIsLp(tok) {
+    return !!(tok && (tok.t === "lp" || tok.v === "("));
+}
+
+function spuFormulaTokIsRp(tok) {
+    return !!(tok && (tok.t === "rp" || tok.v === ")"));
+}
+
+/** Хвост формулы: × 100 или * 100. */
+function spuFormulaHasTrailingTimes100(tokens) {
+    if (!tokens || tokens.length < 2) return false;
+    const last = tokens[tokens.length - 1];
+    const prev = tokens[tokens.length - 2];
+    if (!last || last.t !== "num" || Number(last.v) !== 100) return false;
+    if (!prev || prev.t !== "op") return false;
+    return prev.v === "*" || prev.v === "×";
+}
+
+function spuFormulaHasAddSub(tokens) {
+    return (tokens || []).some(function (t) {
+        return t && t.t === "op" && (t.v === "+" || t.v === "-");
+    });
+}
+
+/**
+ * Форма `( … ) × 100`, где скобки охватывают всю левую часть перед ×100.
+ * Нужно для %(1 − A/B); иначе приоритет даёт 1 − (A/B)×100.
+ */
+function spuFormulaIsOuterParenTimes100(tokens) {
+    if (!tokens || tokens.length < 4) return false;
+    if (!spuFormulaTokIsLp(tokens[0])) return false;
+    if (!spuFormulaHasTrailingTimes100(tokens)) return false;
+    const beforeMul = tokens[tokens.length - 3];
+    if (!spuFormulaTokIsRp(beforeMul)) return false;
+    let depth = 0;
+    let i;
+    for (i = 0; i < tokens.length - 2; i++) {
+        if (spuFormulaTokIsLp(tokens[i])) depth += 1;
+        else if (spuFormulaTokIsRp(tokens[i])) depth -= 1;
+        if (depth < 0) return false;
+    }
+    return depth === 0;
+}
+
+/**
+ * UX-подсказки для unit=percent (без смены арифметики и mgmtFormatValue).
+ * value уже в процентных пунктах; доля −0.05 покажется как −0,1%.
+ */
+function spuFormulaPercentUxHints(tokens, unit, result) {
+    const hints = [];
+    if (String(unit || "") !== "percent") return hints;
+    const n = Number(result);
+    if (Number.isFinite(n) && Math.abs(n) > 0 && Math.abs(n) < 1) {
+        hints.push("Тип «Процент» не умножает результат на 100 при выводе: значение −0,056 показывается как −0,1%. "
+            + "Для процентных пунктов добавьте × 100 и внешние скобки: ( 1 − A ÷ B ) × 100.");
+    }
+    if (spuFormulaHasAddSub(tokens) && spuFormulaHasTrailingTimes100(tokens)
+        && !spuFormulaIsOuterParenTimes100(tokens)) {
+        hints.push("Из‑за приоритета операций выражение вида 1 − A ÷ B × 100 считается как 1 − (A÷B)×100. "
+            + "Нужный шаблон: ( 1 − A ÷ B ) × 100.");
+    }
+    return hints;
+}
+
 function spuEvalFormula(it, tokens, stack, asPlan) {
     const values = [];
     const ops = [];
@@ -43870,6 +43934,80 @@ function spuWouldCycle(indicatorId, nextCfg) {
         return false;
     }
     return walk(indicatorId, []);
+}
+
+/**
+ * Совместимость фактических окон в формуле (включая вложенные calculated).
+ * Сравнивает start/end дат на опорную неделю UI, не названия календарей.
+ */
+function spuCollectFormulaIndicatorIds(tokens, out, seen, depth) {
+    const list = out || [];
+    const vis = seen || {};
+    const d = depth || 0;
+    if (d > 12) return list;
+    (tokens || []).forEach(function (tok) {
+        if (!tok || tok.t !== "ind" || !tok.id) return;
+        if (vis[tok.id]) return;
+        vis[tok.id] = true;
+        list.push(tok.id);
+        const other = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === tok.id;
+        });
+        if (!other) return;
+        const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(other) : null;
+        const nested = (cfg && cfg.formula_expr && cfg.formula_expr.length)
+            ? cfg.formula_expr
+            : (other.formula_expr || []);
+        if (nested && nested.length) spuCollectFormulaIndicatorIds(nested, list, vis, d + 1);
+        if (other.calc_left_id && !vis[other.calc_left_id]) {
+            spuCollectFormulaIndicatorIds([{ t: "ind", id: other.calc_left_id }], list, vis, d + 1);
+        }
+        if (other.calc_right_id && !vis[other.calc_right_id]) {
+            spuCollectFormulaIndicatorIds([{ t: "ind", id: other.calc_right_id }], list, vis, d + 1);
+        }
+    });
+    return list;
+}
+
+function spuFormulaFactPeriodConflict(it, tokens, anchorIso) {
+    const ids = spuCollectFormulaIndicatorIds(tokens || (it && it.formula_expr) || [], [], {}, 0);
+    if (it && it.indicator_id && ids.indexOf(it.indicator_id) === -1) ids.unshift(it.indicator_id);
+    if (ids.length < 2) return { ok: true };
+    const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : null;
+    const anchor = anchorIso || (r && r.from) || mgmtAnchorIso || "";
+    const rows = [];
+    ids.forEach(function (id) {
+        const ind = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === id;
+        });
+        if (!ind) return;
+        if (String(ind.periodicity || "week") !== "week") return;
+        const win = typeof mgmtIndicatorFactWindow === "function"
+            ? mgmtIndicatorFactWindow(ind, anchor)
+            : null;
+        if (!win) return;
+        rows.push({
+            id: id,
+            name: ind.name || id,
+            start: win.start_date,
+            end: win.end_date,
+            label: win.label,
+            rangeRu: win.rangeRu
+        });
+    });
+    if (rows.length < 2) return { ok: true };
+    const key0 = rows[0].start + "|" + rows[0].end;
+    const bad = rows.filter(function (row) { return (row.start + "|" + row.end) !== key0; });
+    if (!bad.length) return { ok: true };
+    const lines = rows.map(function (row) {
+        return "«" + row.name + "»: " + row.label + " (" + row.rangeRu + ")";
+    });
+    return {
+        ok: false,
+        message: "Конфликт фактических периодов в формуле. Все показатели одной формулы должны использовать один интервал.\n"
+            + lines.join("\n"),
+        rows: rows
+    };
 }
 
 function mgmtAggregateNumbers(values, type) {
@@ -43967,6 +44105,10 @@ function mgmtSourceAsIndicator(src, parent) {
         source_indicator_id: src.source_indicator_id || "",
         source_kpi_mode: src.source_kpi_mode || "",
         aggregation_type: "none",
+        periodicity: (parent && parent.periodicity) || "week",
+        reporting_week_start_day: (parent && parent.reporting_week_start_day != null)
+            ? parent.reporting_week_start_day
+            : null,
         _skipSources: true
     };
 }
@@ -44026,7 +44168,9 @@ function spuStaffDirectoryMirrorDeptId(scopeOrDept) {
 function mgmtReadSourceFact(src, parent, stack) {
     if (!src) return { value: null, status: "missing" };
     if (src.source_type === "timesheet") {
-        const days = mgmtDaysInPeriod();
+        const days = typeof mgmtFactDaysForIndicator === "function"
+            ? mgmtFactDaysForIndicator(parent)
+            : mgmtDaysInPeriod();
         return { value: mgmtTimesheetFact(src.source_department_id || (parent && parent.department_id), src.source_timesheet_agg, days), status: "auto" };
     }
     if (src.source_type === "staff_directory") {
@@ -44091,6 +44235,12 @@ function mgmtReadFromSources(it, stack) {
     const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: spuNormalizeSources(it), aggregation_type: it.aggregation_type || "sum", formula_expr: it.formula_expr, calc_mode: it.aggregation_type };
     const sources = cfg.sources || [];
     if ((cfg.calc_mode === "formula" || cfg.aggregation_type === "formula") && (cfg.formula_expr || []).length) {
+        if (typeof spuFormulaFactPeriodConflict === "function") {
+            const conflict = spuFormulaFactPeriodConflict(it, cfg.formula_expr);
+            if (conflict && conflict.ok === false) {
+                return { value: null, status: "error", message: conflict.message || "Конфликт периодов формулы" };
+            }
+        }
         const value = spuEvalFormula(it, cfg.formula_expr, stack, false);
         return { value: value, status: value == null ? "missing" : "auto" };
     }
@@ -45038,16 +45188,22 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         }).join("") + "</select></div>"
         + '<div class="form-group"><label id="spuIndOwnerLab">' + escapeHtml(spuOwnerRoleLabel(kind)) + '</label><select id="spuIndOwner">'
         + mgmtEmployeeOptions(ownerId) + "</select></div>"
-        + '<div class="form-group"><label>Тип результата</label><select id="spuIndUnit">'
+        + '<div class="form-group"><label>Тип результата</label><select id="spuIndUnit" onchange="onSpuIndUnitChange()">'
         + [["number", "Число"], ["count", "Количество"], ["money", "Деньги"], ["percent", "Процент"], ["days", "Дни"], ["hours", "Часы"]].map(function (p) {
             const cur = (it && it.unit) || ((presetMetric && presetMetric.fill_type === "money") ? "money" : "number");
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
-        }).join("") + "</select></div>"
-        + '<div class="form-group"><label>Периодичность</label><select id="spuIndPeriodicity">'
+        }).join("") + "</select>"
+        + '<div class="note" id="spuIndUnitPercentNote" style="margin:4px 0 0;'
+        + (((it && it.unit) === "percent") ? "" : "display:none") + '">'
+        + "Процент: в формуле сразу задавайте процентные пункты, например ( 1 − A ÷ B ) × 100. "
+        + "Тип результата сам на 100 не умножает.</div>"
+        + "</div>"
+        + '<div class="form-group"><label>Периодичность</label><select id="spuIndPeriodicity" onchange="onSpuIndPeriodicityChange()">'
         + [["day", "День"], ["week", "Неделя"], ["month", "Месяц"]].map(function (p) {
             const cur = (it && it.periodicity) || "week";
             return '<option value="' + p[0] + '"' + (cur === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
         }).join("") + "</select></div>"
+        + spuIndWeekStartFieldsHtml(it)
         + '<div class="form-group"><label>Основной цвет</label>'
         + '<div class="note" style="margin:0 0 4px">Только отображение на панели. Не влияет на значение, план, факт и формулы.</div>'
         + mgmtDisplayColorSwatchesHtml(it ? mgmtIndicatorDisplayColor(it) : MGMT_DISPLAY_COLORS[0], "spuIndDisplayColor")
@@ -45322,10 +45478,15 @@ function renderSpuIndFormulaBox() {
     if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
     const selfId = ((document.getElementById("spuIndId") || {}).value || "");
     const inds = spuFormulaOperandIndicators(selfId);
+    const unitNow = ((document.getElementById("spuIndUnit") || {}).value || "number");
     let html = '<div class="spu-fx-box"><h4>Формула</h4>'
         + '<div class="note">Составьте формулу из Показателей СПУ, операций, чисел и скобок. '
         + "Внутри хранятся spu_indicator_id — переименование источника формулу не ломает. "
         + "Период берётся из текущего отчётного периода СПУ.</div>";
+    if (unitNow === "percent") {
+        html += '<div class="note" style="color:#8a5a00">Тип «Процент»: значение уже в пунктах (5,7 = 5,7%). '
+            + "Шаблон отклонения: ( 1 − A ÷ B ) × 100. Без внешних скобок 1 − A ÷ B × 100 даст неверный результат.</div>";
+    }
     html += '<div class="spu-fx-row">';
     if (!spuIndFormFormula.length) {
         html += '<span class="note">Формула пуста. Нажмите «+ Добавить элемент».</span>';
@@ -45475,16 +45636,43 @@ function spuIndFormulaCheck() {
         const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
         if (r && r.from && r.to) periodNote = "Период: " + r.from + " — " + r.to + ". ";
     } catch (err) {}
+    if (typeof spuFormulaFactPeriodConflict === "function") {
+        const perChk = ((document.getElementById("spuIndPeriodicity") || {}).value || "week");
+        const wsChk = Number(((document.getElementById("spuIndWeekStart") || {}).value || 4));
+        draft.periodicity = perChk;
+        draft.reporting_week_start_day = (perChk === "week" && wsChk === 3) ? 3 : 4;
+        const periodConflict = spuFormulaFactPeriodConflict(draft, tokens);
+        if (periodConflict && periodConflict.ok === false) {
+            box.style.display = "";
+            box.innerHTML = periodNote
+                + '<span style="color:#b45309">'
+                + String(periodConflict.message || "").split("\n").map(function (line) {
+                    return escapeHtml(line);
+                }).join("<br>")
+                + "</span>";
+            return;
+        }
+    }
     const expl = spuEvalFormulaExplain(draft, tokens, []);
     let resultHtml = "<b>Нет данных</b>";
     if (!expl.missing && expl.result != null && Number.isFinite(Number(expl.result))) {
         resultHtml = "<b>" + escapeHtml(mgmtFormatValue(draft, expl.result, "auto")) + "</b>";
     }
+    const percentHints = typeof spuFormulaPercentUxHints === "function"
+        ? spuFormulaPercentUxHints(tokens, unit, expl.result)
+        : [];
+    let hintsHtml = "";
+    if (percentHints.length) {
+        hintsHtml = '<div class="note" style="color:#8a5a00;margin-top:8px">'
+            + percentHints.map(function (h) { return escapeHtml(h); }).join("<br><br>")
+            + "</div>";
+    }
     box.style.display = "";
     box.innerHTML = periodNote
         + "Проверка (без сохранения фактов):<br>"
         + escapeHtml(expl.expression || "—")
-        + " = " + resultHtml;
+        + " = " + resultHtml
+        + hintsHtml;
 }
 
 function spuIndExtraNodesCheckboxesHtml(it, primaryPreset) {
@@ -45551,6 +45739,54 @@ function onSpuIndCalcChange() {
     const el = document.getElementById("spuIndAgg");
     spuIndFormCalc = el ? el.value : "sum";
     renderSpuIndFormulaBox();
+}
+
+function onSpuIndUnitChange() {
+    const unit = ((document.getElementById("spuIndUnit") || {}).value || "number");
+    const note = document.getElementById("spuIndUnitPercentNote");
+    if (note) note.style.display = unit === "percent" ? "" : "none";
+    if (typeof renderSpuIndFormulaBox === "function") renderSpuIndFormulaBox();
+}
+
+function spuIndWeekStartFieldsHtml(it) {
+    const per = (it && it.periodicity) || "week";
+    const curRaw = (it && it.reporting_week_start_day != null && it.reporting_week_start_day !== "")
+        ? Number(it.reporting_week_start_day)
+        : 4;
+    const cur = curRaw === 3 ? 3 : 4;
+    const win = typeof mgmtIndicatorFactWindow === "function"
+        ? mgmtIndicatorFactWindow({ periodicity: "week", reporting_week_start_day: cur })
+        : null;
+    const note = win
+        ? ("Фактический интервал относительно текущей отчётной недели UI: <b>"
+            + escapeHtml(win.rangeRu) + "</b> (" + escapeHtml(win.label) + "). "
+            + "Колонки план–факта и планы остаются на глобальном календаре четверг–среда.")
+        : "Сдвиг влияет только на расчёт факта Work Time / табеля. Планы не меняются.";
+    return '<div class="form-group" id="spuIndWeekStartWrap" style="' + (per === "week" ? "" : "display:none") + '">'
+        + '<label>Начало отчётной недели</label>'
+        + '<select id="spuIndWeekStart" onchange="onSpuIndWeekStartChange()">'
+        + '<option value="4"' + (cur === 4 ? " selected" : "") + ">Четверг–среда</option>"
+        + '<option value="3"' + (cur === 3 ? " selected" : "") + ">Среда–вторник</option>"
+        + "</select>"
+        + '<div class="note" id="spuIndWeekStartNote" style="margin:4px 0 0">' + note + "</div>"
+        + "</div>";
+}
+
+function onSpuIndPeriodicityChange() {
+    const per = ((document.getElementById("spuIndPeriodicity") || {}).value || "week");
+    const wrap = document.getElementById("spuIndWeekStartWrap");
+    if (wrap) wrap.style.display = per === "week" ? "" : "none";
+}
+
+function onSpuIndWeekStartChange() {
+    const note = document.getElementById("spuIndWeekStartNote");
+    if (!note || typeof mgmtIndicatorFactWindow !== "function") return;
+    const v = Number(((document.getElementById("spuIndWeekStart") || {}).value || 4));
+    const day = v === 3 ? 3 : 4;
+    const win = mgmtIndicatorFactWindow({ periodicity: "week", reporting_week_start_day: day });
+    note.innerHTML = "Фактический интервал относительно текущей отчётной недели UI: <b>"
+        + escapeHtml(win.rangeRu) + "</b> (" + escapeHtml(win.label) + "). "
+        + "Колонки план–факта и планы остаются на глобальном календаре четверг–среда.";
 }
 
 function spuIndSyncDraftFromDom() {
@@ -45781,6 +46017,21 @@ function saveSpuOrgIndicator() {
             toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
+        if (typeof spuFormulaFactPeriodConflict === "function") {
+            const perSave = ((document.getElementById("spuIndPeriodicity") || {}).value || "week");
+            const wsSave = Number(((document.getElementById("spuIndWeekStart") || {}).value || 4));
+            const draftSelf = {
+                indicator_id: editId || "mind_preview",
+                name: name,
+                periodicity: perSave,
+                reporting_week_start_day: (perSave === "week" && wsSave === 3) ? 3 : 4
+            };
+            const periodConflict = spuFormulaFactPeriodConflict(draftSelf, tokens);
+            if (periodConflict && periodConflict.ok === false) {
+                toast(periodConflict.message || "Конфликт периодов в формуле.", "error");
+                return;
+            }
+        }
     } else if (kind === "worktime") {
         sources = (spuIndFormSources || []).filter(function (s) {
             if (!s) return false;
@@ -45820,6 +46071,13 @@ function saveSpuOrgIndicator() {
     it.show_breakdown = !!(document.getElementById("spuIndBreak") && document.getElementById("spuIndBreak").checked);
     it.sort_order = Number((document.getElementById("spuIndOrder") || {}).value || 10);
     it.periodicity = ((document.getElementById("spuIndPeriodicity") || {}).value || it.periodicity || "week");
+    if (it.periodicity === "week") {
+        const ws = Number(((document.getElementById("spuIndWeekStart") || {}).value || 4));
+        it.reporting_week_start_day = (ws === 3) ? 3 : 4;
+    } else if (it.reporting_week_start_day != null) {
+        // День/месяц: поле скрыто; сброс индивидуального сдвига факта.
+        it.reporting_week_start_day = 4;
+    }
     const stVal = ((document.getElementById("spuIndActive") || {}).value || "1");
     it.user_status_set = true;
     if (stVal === "archive") {
@@ -47413,10 +47671,19 @@ function setMgmtSpuWeekStartDay(day) {
  * Возвращает: period_type, start_date, end_date, period_key (+ from/to/key для совместимости).
  */
 function mgmtSpuReportingWeek(iso) {
+    return mgmtSpuReportingWeekWithStartDay(mgmtSpuWeekStartDay(), iso);
+}
+
+/**
+ * Неделя с явным днём старта (0–6). Не меняет global reporting_week_start_day.
+ * period_key справочный для факта; планы продолжают использовать глобальный ключ.
+ */
+function mgmtSpuReportingWeekWithStartDay(startDay, iso) {
     const src = iso || mgmtIsoFromDate(new Date());
     const d = mgmtParseIso(src);
-    const startDay = mgmtSpuWeekStartDay();
-    const offset = (d.getDay() - startDay + 7) % 7;
+    const sd = Number(startDay);
+    const start = (Number.isFinite(sd) && sd >= 0 && sd <= 6) ? sd : 4;
+    const offset = (d.getDay() - start + 7) % 7;
     const from = new Date(d.getFullYear(), d.getMonth(), d.getDate() - offset);
     const to = new Date(from.getFullYear(), from.getMonth(), from.getDate() + 6);
     const fromIso = mgmtIsoFromDate(from);
@@ -47428,7 +47695,77 @@ function mgmtSpuReportingWeek(iso) {
         period_key: "week:" + fromIso,
         from: fromIso,
         to: toIso,
-        key: "thu:" + fromIso
+        key: "thu:" + fromIso,
+        week_start_day: start
+    };
+}
+
+/** День старта факта показателя: 3 = ср–вт; иначе inherit global (обычно 4). Только periodicity=week. */
+function mgmtSpuWeekStartDayFor(it) {
+    const per = String((it && it.periodicity) || "week");
+    if (per !== "week") return mgmtSpuWeekStartDay();
+    if (it && it.reporting_week_start_day != null && it.reporting_week_start_day !== "") {
+        const n = Number(it.reporting_week_start_day);
+        if (n === 3) return 3;
+        if (n === 4) return 4;
+    }
+    return mgmtSpuWeekStartDay();
+}
+
+function mgmtSpuReportingWeekFor(it, iso) {
+    return mgmtSpuReportingWeekWithStartDay(mgmtSpuWeekStartDayFor(it), iso);
+}
+
+function mgmtSpuWeekStartLabel(day) {
+    return Number(day) === 3 ? "Среда–вторник" : "Четверг–среда";
+}
+
+/** Список дней {iso,month,day} от startIso до endIso включительно. */
+function mgmtDaysBetweenIso(startIso, endIso) {
+    const out = [];
+    const cur = mgmtParseIso(startIso);
+    const end = mgmtParseIso(endIso);
+    if (!cur || !end) return out;
+    while (cur <= end) {
+        const month = cur.getFullYear() + "-" + mgmtPad(cur.getMonth() + 1);
+        out.push({ iso: mgmtIsoFromDate(cur), month: month, day: cur.getDate() });
+        cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+}
+
+/**
+ * Дни для расчёта ФАКТА показателя.
+ * Планы и period_key не меняются. При ср–вт и режиме недели UI —
+ * 7 дней ср–вт, snap от якоря колонки (чт): 05.11–11.11 → 04.11–10.11.
+ */
+function mgmtFactDaysForIndicator(it) {
+    if (typeof mgmtPeriodKind !== "undefined" && mgmtPeriodKind && mgmtPeriodKind !== "week") {
+        return mgmtDaysInPeriod();
+    }
+    const startDay = mgmtSpuWeekStartDayFor(it);
+    const globalDay = mgmtSpuWeekStartDay();
+    if (startDay === globalDay) return mgmtDaysInPeriod();
+    const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : null;
+    const anchor = (r && r.from) || mgmtAnchorIso
+        || (typeof mgmtIsoFromDate === "function" ? mgmtIsoFromDate(new Date()) : "");
+    const w = mgmtSpuReportingWeekWithStartDay(startDay, anchor);
+    return mgmtDaysBetweenIso(w.start_date, w.end_date);
+}
+
+function mgmtIndicatorFactWindow(it, anchorIso) {
+    const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : null;
+    const anchor = anchorIso || (r && r.from) || mgmtAnchorIso || "";
+    const day = mgmtSpuWeekStartDayFor(it);
+    const w = mgmtSpuReportingWeekWithStartDay(day, anchor);
+    return {
+        start_date: w.start_date,
+        end_date: w.end_date,
+        week_start_day: day,
+        label: mgmtSpuWeekStartLabel(day),
+        rangeRu: (typeof mgmtFmtRu === "function"
+            ? (mgmtFmtRu(w.start_date) + "–" + mgmtFmtRu(w.end_date))
+            : (w.start_date + "–" + w.end_date))
     };
 }
 
@@ -47847,6 +48184,7 @@ function mgmtSourceLabel(type) {
 function mgmtFormatValue(it, value, status) {
     if (status === "one_c") return "Источник 1С не подключен";
     if (status === "unfrozen") return "не зафиксировано";
+    if (status === "error") return "ошибка периода";
     if (value == null || value === "") return "—";
     const n = Number(value);
     if (!Number.isFinite(n)) return "—";
@@ -49729,7 +50067,7 @@ function mgmtReadIndicator(it, stack) {
         const migrated = spuNormalizeSources(it);
         if (it.source_type !== "manual" && migrated.length > 1) return mgmtReadFromSources(it, stack);
     }
-    const days = mgmtDaysInPeriod();
+    const days = typeof mgmtFactDaysForIndicator === "function" ? mgmtFactDaysForIndicator(it) : mgmtDaysInPeriod();
     const type = it.source_type;
     if (type === "one_c_future") {
         const mf = mgmtManualFact(it.indicator_id);
@@ -49741,7 +50079,17 @@ function mgmtReadIndicator(it, stack) {
     if (type === "timesheet") return { value: mgmtTimesheetFact(it.department_id, it.source_timesheet_agg, days), status: "auto" };
     if (type === "staff_directory") return mgmtReadStaffDirectoryValue(it, it.department_id || "");
     if (type === "worktime_metric") return { value: mgmtMetricFact(it.department_id, it.source_metric_id, it.source_submetric_id, days, it), status: "auto" };
-    if (type === "sales_plan") return { value: mgmtSalesPlanFact(it), status: "auto" };
+    if (type === "sales_plan") {
+        if (typeof mgmtSpuWeekStartDayFor === "function" && mgmtSpuWeekStartDayFor(it) === 3
+            && typeof mgmtPeriodKind !== "undefined" && mgmtPeriodKind === "week") {
+            return {
+                value: null,
+                status: "error",
+                message: "Источник «План продаж» месячный и не даёт корректный факт за среду–вторник. Выберите другой источник или календарь четверг–среда."
+            };
+        }
+        return { value: mgmtSalesPlanFact(it), status: "auto" };
+    }
     if (type === "aggregate_children") {
         const nodeId = mgmtIndicatorTargetNodeId(it) || String(it.indicator_id || "").replace(/^agg:/, "");
         let sum = 0;
@@ -49771,6 +50119,15 @@ function mgmtReadIndicator(it, stack) {
     if (type === "calculated") {
         const seen = stack || [];
         if (seen.indexOf(it.indicator_id) !== -1) return { value: null, status: "error" };
+        if (typeof spuFormulaFactPeriodConflict === "function" && it.calc_left_id && it.calc_right_id) {
+            const legacyConflict = spuFormulaFactPeriodConflict(it, [
+                { t: "ind", id: it.calc_left_id },
+                { t: "ind", id: it.calc_right_id }
+            ]);
+            if (legacyConflict && legacyConflict.ok === false) {
+                return { value: null, status: "error", message: legacyConflict.message };
+            }
+        }
         const left = mgmtIndicators().find(function (x) { return x.indicator_id === it.calc_left_id; });
         const right = mgmtIndicators().find(function (x) { return x.indicator_id === it.calc_right_id; });
         const next = seen.concat([it.indicator_id]);
@@ -51922,10 +52279,19 @@ function renderMgmtPlanFactHtml() {
         const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: [] };
         const canBreak = it.show_breakdown !== false && cfg.sources && cfg.sources.length > 1 && it.source_type !== "aggregate_children";
         const brOpen = !!(canBreak && spuPfBreakOpen[it.indicator_id]);
+        let factTip = "";
+        if (typeof mgmtSpuWeekStartDayFor === "function" && mgmtSpuWeekStartDayFor(it) === 3
+            && typeof mgmtIndicatorFactWindow === "function") {
+            const fw1 = mgmtIndicatorFactWindow(it, w1.from);
+            const fw2 = mgmtIndicatorFactWindow(it, w2.from);
+            factTip = "Факт (среда–вторник): " + fw1.rangeRu + " / " + fw2.rangeRu
+                + ". Колонки и планы — глобальный четверг–среда.";
+        }
         html += '<tr class="pf-ind-row">'
             + '<td class="pf-left pf-sticky-0">' + n + "</td>"
             + '<td class="pf-left pf-sticky-1">' + escapeHtml(owner ? owner.name : (headEmp ? headEmp.name : "—")) + "</td>"
-            + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad pf-ind-name" style="padding-left:' + pad + 'px">'
+            + '<td class="pf-left pf-sticky-2 wrap"><span class="pf-name-pad pf-ind-name" style="padding-left:' + pad + 'px"'
+            + (factTip ? (' title="' + escapeAttribute(factTip) + '"') : "") + ">"
             + (canBreak ? '<button type="button" class="pf-toggle" onclick="toggleMgmtPfBreak(\'' + it.indicator_id + "')\">" + (brOpen ? "▼" : "▶") + "</button>" : "")
             + escapeHtml(it.name)
             + "</span></td>"
