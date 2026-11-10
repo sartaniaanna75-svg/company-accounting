@@ -53640,15 +53640,30 @@ function setSpuIndicatorKeyBlock(id, blockId) {
     renderManagement();
 }
 
+/**
+ * Расчётный показатель «настроен», если есть formula_expr с заполненными ind.
+ * Нельзя писать `(cfg.formula_expr || it.formula_expr)` — пустой [] truthy и глушит fallback.
+ */
+function spuIndicatorFormulaNeedsSetup(it) {
+    const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : null;
+    let fx = (cfg && Array.isArray(cfg.formula_expr) && cfg.formula_expr.length) ? cfg.formula_expr : null;
+    if (!fx) fx = (it && Array.isArray(it.formula_expr)) ? it.formula_expr : [];
+    if (!fx.length) return true;
+    return fx.some(function (t) { return t && t.t === "ind" && !t.id; });
+}
+
 function spuIndicatorNeedsSetup(it) {
     if (!it || it.is_deleted) return false;
     ensureSpuIndicatorSources(it);
     const layer = spuIndicatorLayer(it);
     if (!layer) return true;
     const kind = spuIndicatorUiKind(it);
+    const isCalc = kind === "calculated" || it.aggregation_type === "formula" || it.calc_mode === "formula";
     if (layer === "totals") {
         if (kind === "manual" || kind === "one_c") return false;
-        if (kind === "calculated") return true;
+        // Расчётные в «Итоговых» допустимы при валидной формуле (как у key).
+        // Раньше здесь был жёсткий return true → mind_* всегда «Нужна настройка».
+        if (isCalc) return spuIndicatorFormulaNeedsSetup(it);
         const cfg = spuActiveConfig(it);
         const sources = (cfg && cfg.sources) || spuNormalizeSources(it) || [];
         if (!sources.length && it.source_type === "timesheet" && it.source_timesheet_agg) return false;
@@ -53664,11 +53679,7 @@ function spuIndicatorNeedsSetup(it) {
         });
     }
     if (layer === "key") {
-        if (kind === "calculated" || it.aggregation_type === "formula" || it.calc_mode === "formula") {
-            const fx = (spuActiveConfig(it).formula_expr || it.formula_expr || []);
-            if (!fx.length) return true;
-            return fx.some(function (t) { return t && t.t === "ind" && !t.id; });
-        }
+        if (isCalc) return spuIndicatorFormulaNeedsSetup(it);
         const cfg = spuActiveConfig(it);
         const sources = (cfg && cfg.sources) || [];
         if (kind === "manual" || kind === "one_c") return false;
