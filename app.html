@@ -9442,6 +9442,52 @@ function userAccessDeptCodes(user) {
     return out;
 }
 
+/**
+ * Коды подразделений для записи метрик: как server user_dept_codes —
+ * alias territory → office|warehouse|drivers. Не расширяет права карточки.
+ */
+function userMetricWriteDeptCodes(user) {
+    const raw = typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(user) : [];
+    const out = [];
+    const terr = (typeof TERRITORY_DEPT_CODES !== "undefined" && TERRITORY_DEPT_CODES)
+        ? TERRITORY_DEPT_CODES
+        : ["office", "warehouse", "drivers"];
+    raw.forEach(function (code) {
+        const c = String(code || "").trim();
+        if (!c) return;
+        if (c === "territory") {
+            terr.forEach(function (t) {
+                if (out.indexOf(t) === -1) out.push(t);
+            });
+            return;
+        }
+        if (out.indexOf(c) === -1) out.push(c);
+    });
+    return out;
+}
+
+/** Метрику/назначения можно писать только в своих подразделениях (admin — всегда). */
+function metricCatalogItemWriteAllowed(item) {
+    if (typeof isAppAdmin === "function" && isAppAdmin()) return true;
+    if (!item) return false;
+    const codes = userMetricWriteDeptCodes(
+        typeof currentAuthUser === "function" ? currentAuthUser() : null
+    );
+    if (!codes.length) return false;
+    const dept = typeof metricDepartmentId === "function"
+        ? String(metricDepartmentId(item) || "").trim()
+        : String((item && item.department_id) || "").trim();
+    if (dept && codes.indexOf(dept) === -1) return false;
+    const rows = (item && item.assignments) || [];
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row) continue;
+        const ad = String(row.department_id || "").trim();
+        if (ad && codes.indexOf(ad) === -1) return false;
+    }
+    return true;
+}
+
 function userCanOpenManagementAccess(user) {
     if (!user || user.is_active === false) return false;
     if (user.role === "admin" || user.legacy_role === "admin") return true;
@@ -12032,12 +12078,16 @@ function newEmployeeClientRequestId() {
  * Срез для сохранения справочника метрик: без financeRec/табелей/всего appData.
  * Ключи только по правам (как buildStaffPutPayload) — иначе пустой shopPayroll/shopMetrics
  * у сотрудника без salary/shop даёт серверный 403 «Недостаточно прав».
+ * Форма сохранения использует metricCatalogPutSliceForItem (одна метрика).
  */
 function metricCatalogPutSlice() {
     const out = {};
     const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
-    const codes = typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(u) : [];
-    const metricSetup = userHasPerm("metricsSetup", "edit");
+    const codes = typeof userMetricWriteDeptCodes === "function"
+        ? userMetricWriteDeptCodes(u)
+        : (typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(u) : []);
+    const metricSetup = userHasPerm("metricsSetup", "edit")
+        || (typeof isAppAdmin === "function" && isAppAdmin());
     if (metricSetup && appData && appData.shopMetricCatalog) {
         out.shopMetricCatalog = appData.shopMetricCatalog;
     }
@@ -12068,6 +12118,134 @@ function metricCatalogPutSlice() {
         out[WT_RECORDS_KEY] = appData[WT_RECORDS_KEY];
     }
     return out;
+}
+
+/**
+ * Узкий срез одной метрики + access только нужных подразделений.
+ * Сервер _apply_metric_catalog мержит по id — полный каталог не нужен.
+ */
+function metricCatalogPutSliceForItem(itemId) {
+    const out = {};
+    const u = typeof currentAuthUser === "function" ? currentAuthUser() : null;
+    const codes = typeof userMetricWriteDeptCodes === "function"
+        ? userMetricWriteDeptCodes(u)
+        : (typeof userAccessDeptCodes === "function" ? userAccessDeptCodes(u) : []);
+    const metricSetup = userHasPerm("metricsSetup", "edit")
+        || (typeof isAppAdmin === "function" && isAppAdmin());
+    const wantId = String(itemId || "").trim();
+    if (!metricSetup || !wantId || !appData || !appData.shopMetricCatalog) return out;
+    let item = null;
+    try {
+        const items = (appData.shopMetricCatalog.items || []);
+        for (let i = 0; i < items.length; i++) {
+            if (items[i] && String(items[i].id) === wantId) {
+                item = items[i];
+                break;
+            }
+        }
+    } catch (errFind) { item = null; }
+    if (!item) return out;
+    out.shopMetricCatalog = {
+        items: [typeof wtCloneJson === "function" ? wtCloneJson(item) : JSON.parse(JSON.stringify(item))]
+    };
+    const needDepts = {};
+    const home = typeof metricDepartmentId === "function"
+        ? String(metricDepartmentId(item) || "").trim()
+        : String(item.department_id || "").trim();
+    if (home) needDepts[home] = true;
+    (item.assignments || []).forEach(function (row) {
+        const ad = row && String(row.department_id || "").trim();
+        if (ad) needDepts[ad] = true;
+    });
+    const allowedNeed = Object.keys(needDepts).filter(function (code) {
+        return typeof isAppAdmin === "function" && isAppAdmin()
+            ? true
+            : codes.indexOf(code) !== -1;
+    });
+    if (allowedNeed.indexOf("shop") !== -1 && appData.shopMetrics) {
+        const metricSlice = typeof staffMetricSlice === "function"
+            ? staffMetricSlice(appData.shopMetrics, false, true)
+            : null;
+        if (metricSlice) out.shopMetrics = metricSlice;
+    }
+    if (appData.deptMetrics && typeof TERRITORY_DEPT_CODES !== "undefined") {
+        const territory = {};
+        TERRITORY_DEPT_CODES.forEach(function (code) {
+            if (allowedNeed.indexOf(code) === -1 || !appData.deptMetrics[code]) return;
+            const branch = typeof staffMetricSlice === "function"
+                ? staffMetricSlice(appData.deptMetrics[code], false, true)
+                : null;
+            if (branch) territory[code] = branch;
+        });
+        if (Object.keys(territory).length) out.deptMetrics = territory;
+    }
+    if (appData[WT_RECORDS_KEY] && typeof appData[WT_RECORDS_KEY] === "object") {
+        out[WT_RECORDS_KEY] = appData[WT_RECORDS_KEY];
+    }
+    return out;
+}
+
+/**
+ * GET /api/state: подтвердить, что целевая метрика реально на сервере.
+ * Не пишет в appData. Без server mode — локальная сверка.
+ */
+function confirmMetricCatalogItemSaved(itemId, expected) {
+    const wantId = String(itemId || "").trim();
+    function matchRow(row) {
+        if (!row || String(row.id) !== wantId) return false;
+        if (!expected) return true;
+        if (String(row.name || "") !== String(expected.name || "")) return false;
+        const expDept = typeof metricDepartmentId === "function"
+            ? String(metricDepartmentId(expected) || "")
+            : String(expected.department_id || "");
+        const gotDept = typeof metricDepartmentId === "function"
+            ? String(metricDepartmentId(row) || "")
+            : String(row.department_id || "");
+        if (expDept && gotDept && expDept !== gotDept) return false;
+        const expAsg = expected.assignments || [];
+        if (!expAsg.length) return true;
+        const gotAsg = row.assignments || [];
+        for (let i = 0; i < expAsg.length; i++) {
+            const er = expAsg[i];
+            if (!er) continue;
+            const ed = String(er.department_id || "").trim();
+            const found = gotAsg.some(function (gr) {
+                if (!gr) return false;
+                if (String(gr.department_id || "").trim() !== ed) return false;
+                if (er.assignment_id && gr.assignment_id
+                    && String(er.assignment_id) !== String(gr.assignment_id)) {
+                    return false;
+                }
+                const wantIds = (er.employee_ids || []).map(String).slice().sort().join(",");
+                const gotIds = (gr.employee_ids || []).map(String).slice().sort().join(",");
+                if (er.assign_mode === "specific" && wantIds && wantIds !== gotIds) return false;
+                return true;
+            });
+            if (!found) return false;
+        }
+        return true;
+    }
+    if (!(typeof wtServerMode !== "undefined" && wtServerMode)) {
+        try {
+            const local = (appData && appData.shopMetricCatalog && appData.shopMetricCatalog.items) || [];
+            for (let i = 0; i < local.length; i++) {
+                if (matchRow(local[i])) return Promise.resolve(true);
+            }
+        } catch (errL) {}
+        return Promise.resolve(false);
+    }
+    return fetch("/api/state", { credentials: "same-origin", method: "GET" }).then(function (res) {
+        if (!res.ok) return false;
+        return res.json().then(function (state) {
+            const items = state && state.payload && state.payload.shopMetricCatalog
+                && state.payload.shopMetricCatalog.items;
+            if (!Array.isArray(items)) return false;
+            for (let i = 0; i < items.length; i++) {
+                if (matchRow(items[i])) return true;
+            }
+            return false;
+        }, function () { return false; });
+    }, function () { return false; });
 }
 
 /** sliceOrFn — объект или функция(), чтобы после 409 merge не ушёл устаревший снимок. */
@@ -37718,8 +37896,41 @@ function saveMetricCatalogForm(id, dupIgnore) {
         }
     }
     const catalogSnap = JSON.parse(JSON.stringify(ensureShopMetricCatalog()));
+    const accessSnap = {
+        shopWork: null,
+        shopExtra: null,
+        dept: {}
+    };
+    try {
+        if (appData && appData.shopMetrics) {
+            accessSnap.shopWork = JSON.parse(JSON.stringify(appData.shopMetrics.workAccess || {}));
+            accessSnap.shopExtra = JSON.parse(JSON.stringify(appData.shopMetrics.extraAccess || {}));
+        }
+        if (appData && appData.deptMetrics) {
+            Object.keys(appData.deptMetrics).forEach(function (code) {
+                const branch = appData.deptMetrics[code];
+                if (!branch || typeof branch !== "object") return;
+                accessSnap.dept[code] = {
+                    workAccess: JSON.parse(JSON.stringify(branch.workAccess || {})),
+                    extraAccess: JSON.parse(JSON.stringify(branch.extraAccess || {}))
+                };
+            });
+        }
+    } catch (errSnap) {}
     function restoreMetricCatalog() {
         appData.shopMetricCatalog = catalogSnap;
+        try {
+            if (appData && appData.shopMetrics) {
+                if (accessSnap.shopWork) appData.shopMetrics.workAccess = accessSnap.shopWork;
+                if (accessSnap.shopExtra) appData.shopMetrics.extraAccess = accessSnap.shopExtra;
+            }
+            Object.keys(accessSnap.dept || {}).forEach(function (code) {
+                if (!appData.deptMetrics || !appData.deptMetrics[code]) return;
+                const snap = accessSnap.dept[code];
+                if (snap.workAccess) appData.deptMetrics[code].workAccess = snap.workAccess;
+                if (snap.extraAccess) appData.deptMetrics[code].extraAccess = snap.extraAccess;
+            });
+        } catch (errRest) {}
     }
     const assignModeEarly = assignmentRows
         ? (assignmentRows.some(function (row) { return row.assign_mode === "specific"; }) ? "specific" : "group_all")
@@ -37905,11 +38116,24 @@ function saveMetricCatalogForm(id, dupIgnore) {
     if (assignmentRows) applyMetricCatalogAssignments(item);
     else if (item.assign_mode === "specific") applyMetricCatalogSpecificAssignment(item, personIdsEarly);
     else applyMetricCatalogGroupAssignment(item);
+    if (typeof metricCatalogItemWriteAllowed === "function" && !metricCatalogItemWriteAllowed(item)) {
+        restoreMetricCatalog();
+        formErr("Нельзя сохранить метрику или назначения вне ваших подразделений.");
+        return;
+    }
     const needPayrollMetrics = metricDepartmentId(item) === "shop";
     if (needPayrollMetrics) syncPayrollMetricFromCatalog(item);
     const savedKind = item.kind;
+    const savedItemId = String(item.id || "");
+    const expectedConfirm = {
+        id: savedItemId,
+        name: item.name,
+        department_id: item.department_id,
+        territory_category: item.territory_category || "",
+        assignments: JSON.parse(JSON.stringify(item.assignments || []))
+    };
     const back = metricFormReturnSection;
-    /* Каталог + workAccess/extraAccess (без facts). shopPayroll.metrics — узким OPS после PUT. */
+    /* Одна метрика + workAccess/extraAccess (без facts). shopPayroll.metrics — узким OPS после PUT. */
     saveMetricCatalogForm.busy = true;
     function finishCatalogOk() {
         saveMetricCatalogForm.busy = false;
@@ -37931,10 +38155,48 @@ function saveMetricCatalogForm(id, dupIgnore) {
             box.style.display = "";
             box.textContent = msg || "Изменения метрики не записаны.";
         }
+        toast(msg || "Изменения метрики не записаны.", "error");
         try { renderMetricCatalog(); } catch (err) {}
         try { refreshMetricsUi(); } catch (err) {}
     }
-    Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice)).then(function (ok) {
+    function afterCatalogPutOk() {
+        return Promise.resolve(confirmMetricCatalogItemSaved(savedItemId, expectedConfirm)).then(function (confirmed) {
+            if (!confirmed) {
+                restoreMetricCatalog();
+                failCatalogForm("Сервер не подтвердил сохранение метрики. Изменения не записаны — проверьте подразделения и повторите.");
+                return;
+            }
+            if (!(needPayrollMetrics && wtServerMode && wtOpsUiEnabled(true))) {
+                finishCatalogOk();
+                return;
+            }
+            let metricsVal = [];
+            try {
+                metricsVal = (ensureShopPayroll().metrics || []).slice();
+            } catch (errM) { metricsVal = []; }
+            return Promise.resolve(wtDomainWriterSave({
+                ops: [{
+                    path: "shopPayroll.metrics",
+                    value: metricsVal,
+                    expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("shopPayroll.metrics") : 0
+                }]
+            })).then(function (payOk) {
+                if (!wtSaveOutcomeOk(payOk)) {
+                    failCatalogForm("Справочник мог записаться, но связь метрики с расчётом не подтверждена. Повторите «Сохранить» без F5.");
+                    return;
+                }
+                finishCatalogOk();
+            }, function () {
+                failCatalogForm("Справочник мог записаться, но связь метрики с расчётом не подтверждена. Повторите «Сохранить» без F5.");
+            });
+        }, function () {
+            restoreMetricCatalog();
+            failCatalogForm("Не удалось подтвердить сохранение метрики с сервера.");
+        });
+    }
+    Promise.resolve(saveAppWithPayloadSlice(function () {
+        return metricCatalogPutSliceForItem(savedItemId);
+    })).then(function (ok) {
         if (ok === "timeout") {
             saveMetricCatalogForm.busy = false;
             const box = document.getElementById("mcFormError");
@@ -37960,31 +38222,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
             failCatalogForm("Изменения метрики не записаны.");
             return;
         }
-        if (!(needPayrollMetrics && wtServerMode && wtOpsUiEnabled(true))) {
-            finishCatalogOk();
-            return;
-        }
-        let metricsVal = [];
-        try {
-            metricsVal = (ensureShopPayroll().metrics || []).slice();
-        } catch (errM) { metricsVal = []; }
-        return Promise.resolve(wtDomainWriterSave({
-            ops: [{
-                path: "shopPayroll.metrics",
-                value: metricsVal,
-                expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("shopPayroll.metrics") : 0
-            }]
-        })).then(function (payOk) {
-            if (!wtSaveOutcomeOk(payOk)) {
-                failCatalogForm("Справочник мог записаться, но связь метрики с расчётом не подтверждена. Повторите «Сохранить» без F5.");
-                toast("Метрика: связь с расчётом не записана. Повторите сохранение.", "error");
-                return;
-            }
-            finishCatalogOk();
-        }, function () {
-            failCatalogForm("Справочник мог записаться, но связь метрики с расчётом не подтверждена. Повторите «Сохранить» без F5.");
-            toast("Метрика: связь с расчётом не записана. Повторите сохранение.", "error");
-        });
+        return afterCatalogPutOk();
     }).catch(function () {
         restoreMetricCatalog();
         failCatalogForm("Изменения метрики не записаны.");

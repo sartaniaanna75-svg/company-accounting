@@ -1344,8 +1344,14 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("if (!metricUseInSpu(item)) return;", src[
             src.find("function applyMetricResultRoute(") : src.find("function metricRouteSourceOptions(")
         ])
-        # Сохранение каталога: timeout и 409 conflict_review без ложного успеха.
-        cat_save = src[src.find("Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice))"):]
+        # Сохранение каталога: узкий срез одной метрики; timeout/409 без ложного успеха.
+        self.assertIn("function metricCatalogPutSliceForItem(", src)
+        self.assertIn("function confirmMetricCatalogItemSaved(", src)
+        self.assertIn("function metricCatalogItemWriteAllowed(", src)
+        self.assertIn("function userMetricWriteDeptCodes(", src)
+        cat_save = src[src.find("function afterCatalogPutOk("):src.find("function getDeptMetricStored(")]
+        self.assertIn("metricCatalogPutSliceForItem(savedItemId)", cat_save)
+        self.assertIn("confirmMetricCatalogItemSaved", cat_save)
         self.assertIn('ok === "timeout"', cat_save)
         self.assertIn('ok === "conflict_review"', cat_save)
         self.assertIn("function metricCatalogPutSlice(", src)
@@ -2103,6 +2109,7 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(items["m_shop"]["assignments"][0]["employee_ids"], [])
 
     def test_other_department_metric_assignments_stay(self):
+        """Узкий PUT своей метрики не трогает чужой warehouse item/access/facts."""
         self._seed_metric_access()
         cookie = self._add_shop_manager()
         status, *_ = call(
@@ -2120,17 +2127,6 @@ class StoreApiTests(unittest.TestCase):
                             "department_id": "shop",
                             "assign_mode": "specific",
                             "employee_ids": ["e_shop", "e_wh"],
-                        }],
-                    },
-                    {
-                        "id": "m_wh",
-                        "name": "Чужое имя",
-                        "department_id": "warehouse",
-                        "assignments": [{
-                            "assignment_id": "a_wh",
-                            "department_id": "warehouse",
-                            "assign_mode": "specific",
-                            "employee_ids": [],
                         }],
                     },
                 ]}},
@@ -2772,7 +2768,7 @@ class StoreApiTests(unittest.TestCase):
         self.assertNotIn("forged.path", meta)
 
     def test_staff_cannot_change_foreign_dept_metrics_via_catalog_put(self):
-        """Сотрудник drivers не меняет назначения магазина через полный каталог в PUT."""
+        """Сотрудник drivers: явная правка чужой shop-метрики → 403 (не silent 200)."""
         self._seed_metric_access()
         self.add_user({
             "user_id": "usr_drv_only",
@@ -2812,13 +2808,181 @@ class StoreApiTests(unittest.TestCase):
             },
             cookie=cookie,
         )
-        self.assertTrue(status.startswith("200"), status)
+        self.assertTrue(status.startswith("403"), status)
         after = next(
             row for row in self.store["payload"]["shopMetricCatalog"]["items"]
             if row.get("id") == "m_shop"
         )
         self.assertEqual(after.get("name"), before_shop.get("name"))
         self.assertEqual(after.get("assignments"), before_shop.get("assignments"))
+
+    def test_staff_metric_catalog_single_item_create_in_scope(self):
+        """Руководитель metricsSetup: создание одной метрики своего отдела через узкий items[]."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager(
+            "usr_shop_cat_create",
+            {"metricsSetup": "edit", "metricsInput": "edit"},
+        )
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_new_shop",
+                        "name": "Новая shop",
+                        "department_id": "shop",
+                        "assignments": [{
+                            "assignment_id": "a_new_shop",
+                            "department_id": "shop",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_shop"],
+                        }],
+                    }]},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_new_shop", by_id)
+        self.assertEqual(by_id["m_new_shop"]["name"], "Новая shop")
+        self.assertEqual(by_id["m_new_shop"]["assignments"][0]["employee_ids"], ["e_shop"])
+        self.assertIn("m_wh", by_id)
+
+    def test_staff_metric_catalog_create_out_of_scope_forbidden(self):
+        """Создание метрики чужого отдела → 403."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager(
+            "usr_shop_cat_oos",
+            {"metricsSetup": "edit"},
+        )
+        before_ids = {row["id"] for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_hack_wh",
+                        "name": "Чужой склад",
+                        "department_id": "warehouse",
+                        "assignments": [{
+                            "assignment_id": "a_hack_wh",
+                            "department_id": "warehouse",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_wh"],
+                        }],
+                    }]},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        after_ids = {row["id"] for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(after_ids, before_ids)
+
+    def test_staff_metric_catalog_unchanged_foreign_item_still_ok(self):
+        """Полный каталог с неизменённым чужим item не даёт 403."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager(
+            "usr_shop_cat_full",
+            {"metricsSetup": "edit"},
+        )
+        items = json.loads(json.dumps(self.store["payload"]["shopMetricCatalog"]["items"]))
+        for row in items:
+            if row.get("id") == "m_shop":
+                row["name"] = "Показатель магазина (правка)"
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetricCatalog": {"items": items}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_shop"]["name"], "Показатель магазина (правка)")
+        self.assertEqual(by_id["m_wh"]["name"], "Показатель склада")
+
+    def test_admin_metric_catalog_edit_any_dept(self):
+        """Админ может создать/править метрику любого подразделения."""
+        self._seed_metric_access()
+        cookie, _ = self.login()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [
+                        {
+                            "id": "m_shop",
+                            "name": "Показатель магазина",
+                            "department_id": "shop",
+                            "assignments": [{
+                                "assignment_id": "a_shop",
+                                "department_id": "shop",
+                                "assign_mode": "specific",
+                                "employee_ids": ["e_shop"],
+                            }],
+                        },
+                        {
+                            "id": "m_wh",
+                            "name": "Склад обновлён админом",
+                            "department_id": "warehouse",
+                            "assignments": [{
+                                "assignment_id": "a_wh",
+                                "department_id": "warehouse",
+                                "assign_mode": "specific",
+                                "employee_ids": ["e_wh"],
+                            }],
+                        },
+                        {
+                            "id": "m_admin_drv",
+                            "name": "Логистика админ",
+                            "department_id": "drivers",
+                            "assignments": [],
+                        },
+                    ]},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_wh"]["name"], "Склад обновлён админом")
+        self.assertIn("m_admin_drv", by_id)
+
+    def test_admin_metric_catalog_single_item_put_keeps_siblings(self):
+        """Админ: узкий PUT одной метрики не затирает остальные items справочника."""
+        self._seed_metric_access()
+        cookie, _ = self.login()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_admin_only",
+                        "name": "Только одна",
+                        "department_id": "office",
+                        "assignments": [],
+                    }]},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_shop", by_id)
+        self.assertIn("m_wh", by_id)
+        self.assertEqual(by_id["m_admin_only"]["name"], "Только одна")
 
     def test_merge_metric_assignments_territory_updates_position_and_work_tab(self):
         """Территория: при том же assignment_id сохраняются position_id и work_tab_id."""
@@ -5240,26 +5404,36 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("wtStateVersion = Number(state.version)", save)
         self.assertIn("window.confirm", save)
         self.assertIn("function metricCatalogPutSlice(", save)
+        self.assertIn("function metricCatalogPutSliceForItem(", save)
+        self.assertIn("function confirmMetricCatalogItemSaved(", save)
         self.assertIn("function saveAppWithPayloadSlice(", save)
         self.assertIn("wtSaveMark", save)
         self.assertIn("useSlicePut", save)
         self.assertIn("record_updates", save)
         self.assertIn("wtSaveTimingEnabled", src)
-        slice_fn = src[src.find("function metricCatalogPutSlice("):src.find("function saveAppWithPayloadSlice(")]
+        slice_fn = src[src.find("function metricCatalogPutSlice("):src.find("function metricCatalogPutSliceForItem(")]
         self.assertIn('userHasPerm("metricsSetup", "edit")', slice_fn)
-        self.assertIn("userAccessDeptCodes", slice_fn)
+        self.assertIn("userMetricWriteDeptCodes", slice_fn)
         self.assertIn("staffMetricSlice", slice_fn)
         self.assertIn("staffMetricSlice(appData.shopMetrics, false, true)", slice_fn)
         self.assertNotIn("out.shopPayroll", slice_fn)
-        # Передаём функцию-сборщик, не готовый объект — иначе после 409 уходит устаревший срез.
-        self.assertIn("saveAppWithPayloadSlice(metricCatalogPutSlice)", src)
-        self.assertNotIn("saveAppWithPayloadSlice(metricCatalogPutSlice())", src)
+        for_item = src[src.find("function metricCatalogPutSliceForItem("):src.find("function confirmMetricCatalogItemSaved(")]
+        self.assertIn("items: [", for_item)
+        self.assertIn("staffMetricSlice", for_item)
+        self.assertNotIn("out.shopPayroll", for_item)
+        # Форма: функция-сборщик узкого среза + подтверждение GET.
+        self.assertIn("metricCatalogPutSliceForItem(savedItemId)", src)
+        self.assertIn("confirmMetricCatalogItemSaved(savedItemId, expectedConfirm)", src)
+        self.assertIn("metricCatalogItemWriteAllowed(item)", src)
         self.assertIn("saveMetricCatalogForm.busy", src)
-        cat_save = src[src.find("Promise.resolve(saveAppWithPayloadSlice(metricCatalogPutSlice))"):]
-        cat_save = cat_save[: cat_save.find("function getDeptMetricStored(")]
+        cat_save = src[src.find("function afterCatalogPutOk("):src.find("function getDeptMetricStored(")]
         self.assertIn('ok === "timeout"', cat_save)
         self.assertIn("Нет подтверждения сохранения", cat_save)
+        self.assertIn("afterCatalogPutOk", cat_save)
+        self.assertIn("confirmMetricCatalogItemSaved", cat_save)
+        self.assertIn("metricCatalogPutSliceForItem(savedItemId)", cat_save)
         self.assertIn('"shopPayroll.metrics"', cat_save)
+        # Успешный toast только из finishCatalogOk после confirm — не в timeout/conflict.
         timeout_branch = cat_save.split('ok === "timeout"')[1].split('ok === "conflict_review"')[0]
         self.assertNotIn("closeMetricCatalogModal", timeout_branch)
         self.assertNotIn("Метрика сохранена", timeout_branch)
@@ -5269,6 +5443,9 @@ class StaticPagesTests(unittest.TestCase):
         self.assertNotIn("restoreMetricCatalog", conflict_branch)
         self.assertNotIn("closeMetricCatalogModal", conflict_branch)
         self.assertNotIn("Метрика сохранена", conflict_branch)
+        # Ложный успех при 200 без фактической записи: confirm → restore + ошибка.
+        self.assertIn("Сервер не подтвердил сохранение метрики", cat_save)
+        self.assertIn("restoreMetricCatalog()", cat_save)
         conflict = src[src.find("function handleWtSaveConflict("):src.find("function putServerStateOnce(")]
         self.assertIn("sliceMode", conflict)
         self.assertIn("автозапись среза после конфликта отключена", conflict)

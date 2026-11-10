@@ -1234,9 +1234,14 @@ def _catalog_forbidden(current: Any, incoming: Any, user: dict) -> bool:
         if not isinstance(item, dict) or item.get("id") in (None, ""):
             continue
         existing = by_id.get(str(item.get("id")))
-        if not _user_can_touch_metric_item(item, codes):
-            if existing is None or not _user_can_touch_metric_item(existing, codes):
-                continue
+        can_incoming = _user_can_touch_metric_item(item, codes)
+        can_existing = existing is not None and _user_can_touch_metric_item(existing, codes)
+        if not can_incoming and not can_existing:
+            # Явная попытка создать/изменить недоступную метрику → 403 (не silent skip).
+            # Неизменённый чужой item в полном каталоге (_same) не запрещаем.
+            if existing is None or not _same(existing, item):
+                return True
+            continue
         if _closed_field_violations(existing, item, False):
             return True
     return False
@@ -2614,6 +2619,11 @@ def _merge_admin_payload(current: dict, incoming: dict) -> dict:
                 else:
                     current_users.append(_clone(item))
             stored["users"] = current_users
+        elif key == "shopMetricCatalog":
+            # Узкий PUT одной метрики не должен затирать весь справочник (merge по id).
+            if _empty_wipe(val, stored.get(key)):
+                continue
+            stored[key] = _overlay_open(stored.get(key), val, False)
         elif key in ("shopMetrics", "deptMetrics"):
             # Не затираем целиком: иначе устаревший снимок админа стирает свежий ввод сотрудника.
             # workAccess/extraAccess мержим отдельно — иначе overlay по спискам назначений мог
