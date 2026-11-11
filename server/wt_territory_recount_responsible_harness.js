@@ -159,4 +159,65 @@ assert(candPeople.indexOf("e_off") !== -1, "current pool member");
 assert(candPeople.indexOf("e_wh") !== -1, "history retention after pool shrink");
 assert(candPeople.indexOf("e_shop") === -1, "shop never in candidates");
 
+function invResult(postingFilled, posting, writeoffFilled, writeoff) {
+  if (!postingFilled && !writeoffFilled) return null;
+  return Math.abs(Number(posting || 0)) - Math.abs(Number(writeoff || 0));
+}
+
+function invResultText(r) {
+  if (r == null) return "—";
+  if (r > 0) return "+" + r;
+  if (r < 0) return "−" + Math.abs(r);
+  return "0";
+}
+
+assert(invResult(false, 0, false, 0) === null, "both empty → no result");
+assert(invResultText(invResult(false, 0, false, 0)) === "—", "empty shows dash");
+assert(invResult(true, 0, false, 0) === 0, "filled zero posting counts");
+assert(invResult(true, 100, true, 40) === 60, "positive result");
+assert(invResult(true, 10, true, 50) === -40, "negative result");
+assert(invResultText(invResult(true, 10, true, 50)) === "−40", "negative text");
+
+const invLeaf = {
+  posting: 0,
+  writeoff: 0,
+  posting_filled: false,
+  writeoff_filled: false,
+  history: []
+};
+function applyInv(leaf, field, raw, actor) {
+  const text = String(raw == null ? "" : raw).trim();
+  const n = text === "" ? 0 : Number(text);
+  const prevFilled = field === "writeoff" ? leaf.writeoff_filled : leaf.posting_filled;
+  const prevVal = field === "writeoff" ? leaf.writeoff : leaf.posting;
+  if (field === "writeoff") {
+    leaf.writeoff = text === "" ? 0 : n;
+    leaf.writeoff_filled = text !== "";
+  } else {
+    leaf.posting = text === "" ? 0 : n;
+    leaf.posting_filled = text !== "";
+  }
+  const nextFilled = field === "writeoff" ? leaf.writeoff_filled : leaf.posting_filled;
+  const nextVal = field === "writeoff" ? leaf.writeoff : leaf.posting;
+  if (prevFilled !== nextFilled || prevVal !== nextVal) {
+    leaf.history.push({
+      field: field,
+      from_value: prevFilled ? prevVal : null,
+      to_value: nextFilled ? nextVal : null,
+      changed_by_user_id: actor
+    });
+  }
+  leaf.result = invResult(leaf.posting_filled, leaf.posting, leaf.writeoff_filled, leaf.writeoff);
+  return leaf;
+}
+
+applyInv(invLeaf, "posting", "100", "u1");
+applyInv(invLeaf, "writeoff", "40", "u1");
+assert(invLeaf.result === 60, "persist day result");
+assert(invLeaf.history.length >= 2, "history on inventory edits");
+applyInv(invLeaf, "posting", "", "u1");
+applyInv(invLeaf, "writeoff", "", "u1");
+assert(invLeaf.result === null, "clear both → empty result");
+assert(invLeaf.history.length >= 4, "history retained after clear");
+
 console.log("wt_territory_recount_responsible_harness: OK");

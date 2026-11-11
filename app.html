@@ -21261,6 +21261,9 @@ function ensureDeptMetrics(deptCode) {
         if (!root.recountResponsible || typeof root.recountResponsible !== "object") {
             root.recountResponsible = {};
         }
+        if (!root.inventoryResults || typeof root.inventoryResults !== "object") {
+            root.inventoryResults = {};
+        }
     }
     if (wtBusy.deptMetrics[deptCode]) return root;
     wtBusy.deptMetrics[deptCode] = true;
@@ -38826,11 +38829,201 @@ function deptRecountSelectHtml(deptCode, day) {
     return html;
 }
 
+function deptInventoryMonth(deptCode, month) {
+    const root = ensureDeptMetrics(deptCode || "warehouse");
+    if (!root.inventoryResults || typeof root.inventoryResults !== "object") root.inventoryResults = {};
+    const key = month || selectedMonth;
+    if (!root.inventoryResults[key] || typeof root.inventoryResults[key] !== "object") {
+        root.inventoryResults[key] = {};
+    }
+    return root.inventoryResults[key];
+}
+
+function getDeptInventoryDay(deptCode, day, month) {
+    const rec = deptInventoryMonth(deptCode, month)[String(day)];
+    if (!rec || typeof rec !== "object") {
+        return {
+            posting: 0,
+            writeoff: 0,
+            result: 0,
+            posting_filled: false,
+            writeoff_filled: false,
+            conducted_by_employee_id: "",
+            source: ""
+        };
+    }
+    const posting = Math.abs(Number(rec.posting || 0));
+    const writeoff = Math.abs(Number(rec.writeoff || 0));
+    return {
+        posting: posting,
+        writeoff: writeoff,
+        result: posting - writeoff,
+        posting_filled: rec.posting_filled === true,
+        writeoff_filled: rec.writeoff_filled === true,
+        conducted_by_employee_id: rec.conducted_by_employee_id || "",
+        source: rec.source || "manual",
+        updated_at: rec.updated_at || "",
+        updated_by_user_id: rec.updated_by_user_id || ""
+    };
+}
+
+function deptInventoryAmountFilled(deptCode, day, field, month) {
+    const rec = deptInventoryMonth(deptCode, month)[String(day)];
+    if (!rec || typeof rec !== "object") return false;
+    const flag = field === "writeoff" ? rec.writeoff_filled : rec.posting_filled;
+    if (flag === true) return true;
+    // Legacy без флага: ненулевое значение считаем заполненным; чистый 0 без флага — не подтверждён.
+    const n = field === "writeoff"
+        ? Math.abs(Number(rec.writeoff || 0))
+        : Math.abs(Number(rec.posting || 0));
+    return n > 0;
+}
+
+function deptInventoryDayHasValues(deptCode, day, month) {
+    return deptInventoryAmountFilled(deptCode, day, "posting", month)
+        || deptInventoryAmountFilled(deptCode, day, "writeoff", month);
+}
+
+function deptInventoryEnsureDay(deptCode, day) {
+    const store = deptInventoryMonth(deptCode);
+    const dayKey = String(day);
+    if (!store[dayKey] || typeof store[dayKey] !== "object") {
+        store[dayKey] = {
+            source: "manual",
+            posting: 0,
+            writeoff: 0,
+            posting_filled: false,
+            writeoff_filled: false,
+            conducted_by_employee_id: "",
+            history: []
+        };
+    }
+    const rec = store[dayKey];
+    if (!rec.source) rec.source = "manual";
+    if (!Array.isArray(rec.history)) rec.history = [];
+    return rec;
+}
+
+function deptInventoryPersistDay(deptCode, day, rec) {
+    rec.posting = Math.abs(Number(rec.posting || 0));
+    rec.writeoff = Math.abs(Number(rec.writeoff || 0));
+    if (rec.posting_filled === true || rec.writeoff_filled === true) {
+        rec.result = rec.posting - rec.writeoff;
+    } else {
+        rec.result = null;
+    }
+    rec.updated_at = new Date().toISOString();
+    rec.updated_by_user_id = shopMetricsActorUserId();
+    stampAuthOnRecord(rec);
+    const empty = rec.posting_filled !== true && rec.writeoff_filled !== true
+        && !rec.conducted_by_employee_id
+        && !(Array.isArray(rec.history) && rec.history.length);
+    if (empty) delete deptInventoryMonth(deptCode)[String(day)];
+}
+
+function deptInventoryResultHtml(deptCode, day) {
+    const has = deptInventoryDayHasValues(deptCode, day);
+    const rec = getDeptInventoryDay(deptCode, day);
+    const n = Number(rec.result || 0);
+    return '<span class="metrics-inv-result ' + shopInventoryResultClass(has ? n : 0)
+        + '" id="dinv-result-' + escapeAttribute(deptCode) + "-" + day
+        + '" title="Оприходование − списание">'
+        + (has ? formatShopSignedMoney(n, false) : "—") + "</span>";
+}
+
+function deptInventoryMoneyInputHtml(deptCode, day, field, sign) {
+    const filled = deptInventoryAmountFilled(deptCode, day, field);
+    const rec = getDeptInventoryDay(deptCode, day);
+    const val = field === "writeoff" ? rec.writeoff : rec.posting;
+    const display = filled ? String(val) : "";
+    const canEdit = canSaveDeptRecountResponsible(deptCode);
+    return '<div class="metrics-signed-cell ' + (sign === "-" ? "is-minus" : "is-plus") + '"><span>'
+        + (sign === "-" ? "−" : "+") + "</span>"
+        + '<input class="metrics-input no-spin" id="dinv-' + field + "-" + escapeAttribute(deptCode) + "-" + day
+        + '" type="number" min="0" step="1" inputmode="decimal" value="' + escapeAttribute(display)
+        + '" autocomplete="off" placeholder=""'
+        + (canEdit ? "" : " disabled")
+        + ' onfocus="this.select()" onkeydown="onShopMetricNav(event)"'
+        + " onchange=\"setDeptInventoryValue('" + escapeAttribute(deptCode) + "'," + day
+        + ",'" + field + "',this.value)\"></div>";
+}
+
+function setDeptInventoryValue(deptCode, day, field, raw) {
+    if (shopUiQuiet) return;
+    if (deptCode !== "warehouse") return;
+    if (!canSaveDeptRecountResponsible(deptCode)) {
+        toast("Нет права сохранять инвентаризацию склада. Нужны право заполнения метрик (metricsInput) и доступ к подразделению «Склад».", "error");
+        try { refreshDeptWorkUi(); } catch (errDeny) {}
+        return;
+    }
+    const rec = deptInventoryEnsureDay(deptCode, day);
+    const text = String(raw == null ? "" : raw).trim();
+    const n = parseShopMetricNumber(raw);
+    const isWriteoff = field === "writeoff";
+    const prevVal = isWriteoff ? Number(rec.writeoff || 0) : Number(rec.posting || 0);
+    const prevFilled = isWriteoff ? rec.writeoff_filled === true : rec.posting_filled === true;
+    if (isWriteoff) {
+        rec.writeoff = text === "" ? 0 : n;
+        rec.writeoff_filled = text !== "";
+    } else {
+        rec.posting = text === "" ? 0 : n;
+        rec.posting_filled = text !== "";
+    }
+    const nextVal = isWriteoff ? Number(rec.writeoff || 0) : Number(rec.posting || 0);
+    const nextFilled = isWriteoff ? rec.writeoff_filled === true : rec.posting_filled === true;
+    if (prevFilled !== nextFilled || prevVal !== nextVal) {
+        if (!Array.isArray(rec.history)) rec.history = [];
+        rec.history.push({
+            field: isWriteoff ? "writeoff" : "posting",
+            from_value: prevFilled ? prevVal : null,
+            to_value: nextFilled ? nextVal : null,
+            changed_at: new Date().toISOString(),
+            changed_by_user_id: shopMetricsActorUserId()
+        });
+    }
+    const respId = getDeptRecountResponsibleId(deptCode, day);
+    if (respId && !rec.conducted_by_employee_id) rec.conducted_by_employee_id = respId;
+    rec.source = "manual";
+    deptInventoryPersistDay(deptCode, day, rec);
+    const month = selectedMonth;
+    const dayKey = String(day);
+    const live = deptInventoryMonth(deptCode, month)[dayKey];
+    wtPersistExplicitOps([{
+        path: "deptMetrics.warehouse.inventoryResults." + month + "." + dayKey,
+        value: live ? (typeof wtCloneJson === "function" ? wtCloneJson(live) : live) : null
+    }], {
+        paint: function () { refreshDeptWorkUi(); },
+        okToast: "Инвентаризация сохранена.",
+        errorToast: "Инвентаризация не записана на сервер. Значение на экране — повторите сохранение."
+    });
+}
+
+function deptInventoryMonthTotals(deptCode, month) {
+    const m = month || selectedMonth;
+    const days = daysInMonthValue(m);
+    let posting = 0;
+    let writeoff = 0;
+    let result = 0;
+    let any = false;
+    for (let d = 1; d <= days; d++) {
+        if (!deptInventoryDayHasValues(deptCode, d, m)) continue;
+        any = true;
+        const rec = getDeptInventoryDay(deptCode, d, m);
+        posting += Number(rec.posting || 0);
+        writeoff += Number(rec.writeoff || 0);
+        result += Number(rec.result || 0);
+    }
+    return { posting: posting, writeoff: writeoff, result: result, any: any };
+}
+
 function deptManagerRecountServiceFields(deptCode, tabId) {
     if (deptCode !== "warehouse" || tabId !== "managers") return [];
     return [
         { key: "_recountTotal", label: "Итого пересчитано", type: "computed", service: "recountTotal" },
-        { key: "_recountResponsible", label: "Ответственный за пересчёт", type: "select", service: "recountResponsible" }
+        { key: "_recountResponsible", label: "Ответственный за пересчёт", type: "select", service: "recountResponsible" },
+        { key: "_invPosting", label: "Оприходование", type: "money", service: "invPosting" },
+        { key: "_invWriteoff", label: "Списание", type: "money", service: "invWriteoff" },
+        { key: "_invResult", label: "Итог инвентаризации", type: "computed", service: "invResult" }
     ];
 }
 
@@ -39629,7 +39822,9 @@ function fillDeptWorkTable(dept, tab, ids, options) {
         let colHtml = '<colgroup><col class="metrics-col-date">';
         fields.forEach(function (field, fi) {
             if (field.service) {
-                colHtml += '<col class="metrics-col-emp metrics-col-g-' + (fi % 4) + '">';
+                const svcWide = field.service === "invPosting" || field.service === "invWriteoff";
+                colHtml += '<col class="metrics-col-emp metrics-col-g-' + (fi % 4)
+                    + (svcWide ? " metrics-col-money" : "") + '">';
                 return;
             }
             const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
@@ -39728,9 +39923,13 @@ function fillDeptWorkTable(dept, tab, ids, options) {
         let headHtml = '<tr class="metrics-head-metrics"><th class="metrics-date-col" rowspan="' + dateSpan + '">Дата</th>';
         groups.forEach(function (group) {
             if (group.kind === "service") {
-                const svcCls = group.field.service === "recountResponsible"
-                    ? "metrics-recount-resp"
-                    : "metrics-recount-total";
+                let svcCls = "metrics-recount-total";
+                if (group.field.service === "recountResponsible") svcCls = "metrics-recount-resp";
+                else if (group.field.service === "invPosting" || group.field.service === "invWriteoff") {
+                    svcCls = "metrics-money-col";
+                } else if (group.field.service === "invResult") {
+                    svcCls = "metrics-recount-total";
+                }
                 headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(group.fi)
                     + (group.fi ? " metrics-group-start" : "") + " " + svcCls + '" rowspan="' + dateSpan + '" title="'
                     + escapeHtml(group.field.label) + '">' + escapeHtml(group.field.label) + "</th>";
@@ -39810,6 +40009,21 @@ function fillDeptWorkTable(dept, tab, ids, options) {
                     + deptRecountSelectHtml(dept, day) + "</td>";
                 return;
             }
+            if (field.service === "invPosting") {
+                html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start">' + deptInventoryMoneyInputHtml(dept, day, "posting", "+") + "</td>";
+                return;
+            }
+            if (field.service === "invWriteoff") {
+                html += '<td class="metrics-emp-col metrics-money-col ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start">' + deptInventoryMoneyInputHtml(dept, day, "writeoff", "-") + "</td>";
+                return;
+            }
+            if (field.service === "invResult") {
+                html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start">' + deptInventoryResultHtml(dept, day) + "</td>";
+                return;
+            }
             const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
             const people = peopleOf(field.metricId);
             people.forEach(function (employee, ei) {
@@ -39860,6 +40074,22 @@ function fillDeptWorkTable(dept, tab, ids, options) {
         if (field.service === "recountResponsible") {
             html += '<td class="metrics-emp-col metrics-recount-resp ' + shopMetricGroupClass(fi)
                 + ' metrics-group-start">—</td>';
+            return;
+        }
+        if (field.service === "invPosting" || field.service === "invWriteoff" || field.service === "invResult") {
+            const tot = deptInventoryMonthTotals(dept);
+            let cell;
+            if (!tot.any) cell = "—";
+            else if (field.service === "invPosting") {
+                cell = tot.posting ? ("+" + Math.round(tot.posting).toLocaleString("ru-RU")) : "0";
+            } else if (field.service === "invWriteoff") {
+                cell = tot.writeoff ? ("−" + Math.round(tot.writeoff).toLocaleString("ru-RU")) : "0";
+            } else {
+                cell = formatShopSignedMoney(tot.result, false);
+            }
+            html += '<td class="metrics-emp-col ' + (field.service === "invResult" ? "metrics-recount-total" : "metrics-money-col")
+                + " " + shopMetricGroupClass(fi) + ' metrics-group-start" id="mtot-' + escapeAttribute(field.key)
+                + '-dept">' + cell + "</td>";
             return;
         }
         const people = peopleOf(field.metricId);

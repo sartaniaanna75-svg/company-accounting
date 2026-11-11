@@ -7639,6 +7639,57 @@ class WtOpsFoundationTests(unittest.TestCase):
             before,
         )
 
+    def test_ops_warehouse_inventory_results_allowed_for_wh_input(self):
+        """metricsInput склада пишет deptMetrics.warehouse.inventoryResults; shop не пишет."""
+        self.store["payload"].setdefault("deptMetrics", {}).setdefault("warehouse", {})
+        cookie_wh, _ = self.login("usr_wh", "2222")
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "deptMetrics.warehouse.inventoryResults.2026-11.7",
+                    "expected_v": 0,
+                    "value": {
+                        "posting": 100,
+                        "writeoff": 40,
+                        "result": 60,
+                        "posting_filled": True,
+                        "writeoff_filled": True,
+                        "history": [],
+                    },
+                }
+            },
+            cookie=cookie_wh,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        day = self.store["payload"]["deptMetrics"]["warehouse"]["inventoryResults"]["2026-11"]["7"]
+        self.assertEqual(day["posting"], 100)
+        self.assertEqual(day["writeoff"], 40)
+        self.assertEqual(day["result"], 60)
+        cookie_shop, _ = self.login("usr_001", "1111")
+        before = json.loads(json.dumps(
+            self.store["payload"]["deptMetrics"]["warehouse"].get("inventoryResults")
+        ))
+        st2, data2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "deptMetrics.warehouse.inventoryResults.2026-11.8",
+                    "expected_v": 0,
+                    "value": {"posting": 1, "writeoff": 0, "result": 1, "posting_filled": True},
+                }
+            },
+            cookie=cookie_shop,
+        )
+        self.assertTrue(st2.startswith("403"), st2)
+        self.assertEqual(data2.get("error"), "forbidden")
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"].get("inventoryResults"),
+            before,
+        )
+
     def test_ops_work_access_foreign_emp_forbidden(self):
         """H1: shop metricsSetup не пишет workAccess склада (e_wh) через OPS."""
         self.store["payload"]["shopMetrics"]["workAccess"] = {
@@ -10730,7 +10781,7 @@ class WtCriticalSilentSaveFixTests(unittest.TestCase):
         self.assertIn("shopWriteoffLosses.months.", wo)
 
     def test_territory_warehouse_recount_responsible_markers(self):
-        """Территория: select + Итого в warehouse managers; без inventory; изоляция shop."""
+        """Территория: select + Итого + inventory в warehouse managers; изоляция shop."""
         src = self._src()
         self.assertIn('METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID = "metric_wh_recount_responsible"', src)
         self.assertIn("WAREHOUSE_RECOUNT_POSITIONS_NAME", src)
@@ -10739,6 +10790,8 @@ class WtCriticalSilentSaveFixTests(unittest.TestCase):
         self.assertIn("function deptRecountSelectHtml(", src)
         self.assertIn("function deptWarehouseRecountPositionsMetricId(", src)
         self.assertIn("function deptRecountTotalState(", src)
+        self.assertIn("function setDeptInventoryValue(", src)
+        self.assertIn("function deptInventoryResultHtml(", src)
         self.assertIn("function deptManagerRecountServiceFields(", src)
         self.assertIn("function deptRecountResponsibleCandidates(", src)
         seed = self._fn("seedTerritoryRecountResponsibleMetric", "inferTerritoryMetricCategory")
@@ -10757,21 +10810,32 @@ class WtCriticalSilentSaveFixTests(unittest.TestCase):
         self.assertIn("Нет права сохранять ответственного за пересчёт склада", set_fn)
         self.assertNotIn("shopMetrics.", set_fn)
         self.assertNotIn("inventoryResults", set_fn)
+        inv = self._fn("setDeptInventoryValue", "deptInventoryMonthTotals")
+        self.assertIn("wtPersistExplicitOps(", inv)
+        self.assertIn("deptMetrics.warehouse.inventoryResults.", inv)
+        self.assertIn('okToast: "Инвентаризация сохранена."', inv)
+        self.assertIn("posting_filled", inv)
+        self.assertIn("writeoff_filled", inv)
+        self.assertIn("history", inv)
+        self.assertNotIn("shopMetrics.", inv)
         pool = self._fn("deptRecountResponsiblePoolIds", "deptRecountResponsibleCandidates")
         self.assertIn('home === "shop"', pool)
         self.assertIn('d !== "office" && d !== "warehouse"', pool)
         svc = self._fn("deptManagerRecountServiceFields", "deptMetricFields")
         self.assertIn('service: "recountTotal"', svc)
         self.assertIn('service: "recountResponsible"', svc)
-        self.assertNotIn("invPosting", svc)
-        self.assertNotIn("invWriteoff", svc)
-        self.assertNotIn("invResult", svc)
+        self.assertIn('service: "invPosting"', svc)
+        self.assertIn('service: "invWriteoff"', svc)
+        self.assertIn('service: "invResult"', svc)
         fields = self._fn("deptMetricFields", "deptCatalogDaySum")
         self.assertIn("deptManagerRecountServiceFields(", fields)
         # Регресс магазина: shop-путь не тронут.
         shop_resp = self._fn("setShopRecountResponsible", "shopRecountSelectHtml")
         self.assertIn("shopMetrics.recountResponsible.", shop_resp)
         self.assertNotIn("deptMetrics.warehouse.recountResponsible", shop_resp)
+        shop_inv = self._fn("setShopInventoryValue", "setShopInventoryConducted")
+        self.assertIn("shopMetrics.inventoryResults.", shop_inv)
+        self.assertNotIn("deptMetrics.warehouse.inventoryResults", shop_inv)
 
     def test_delete_day_role_awaits_and_toasts_after(self):
         body = self._fn("deleteShopDayRole", "refreshShopDayRoleHint")
