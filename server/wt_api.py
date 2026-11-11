@@ -1218,6 +1218,38 @@ def _apply_metric_catalog(current: Any, incoming: Any, user: dict, emp_dept: dic
     return base
 
 
+def _metric_catalog_applied_ids(before: Any, after: Any, incoming: Any) -> list[str]:
+    """
+    ID показателей из incoming.shopMetricCatalog.items, которые после PUT
+    реально есть на сервере с тем же name (подтверждение без полного payload).
+    Идемпотентный повтор после timeout: item уже в before/after — всё равно в списке.
+    """
+    if not isinstance(incoming, dict):
+        return []
+    inc_cat = incoming.get("shopMetricCatalog")
+    if not isinstance(inc_cat, dict):
+        return []
+    after_cat = after.get("shopMetricCatalog") if isinstance(after, dict) else {}
+    after_items = after_cat.get("items") if isinstance(after_cat, dict) else []
+    after_by_id = {
+        str(row.get("id")): row
+        for row in (after_items or [])
+        if isinstance(row, dict) and row.get("id") not in (None, "")
+    }
+    applied: list[str] = []
+    for item in inc_cat.get("items") or []:
+        if not isinstance(item, dict) or item.get("id") in (None, ""):
+            continue
+        iid = str(item.get("id"))
+        got = after_by_id.get(iid)
+        if not isinstance(got, dict):
+            continue
+        if str(got.get("name") or "") != str(item.get("name") or ""):
+            continue
+        applied.append(iid)
+    return applied
+
+
 def _catalog_forbidden(current: Any, incoming: Any, user: dict) -> bool:
     if not isinstance(incoming, dict):
         return True
@@ -6334,13 +6366,18 @@ def handle_put_state(environ):
             if row:
                 conn.commit()
                 version, updated_at, updated_by_row = row[0], row[1], row[2]
+                catalog_applied_ids = _metric_catalog_applied_ids(
+                    current_payload, stored, payload if isinstance(payload, dict) else {}
+                )
                 # Полный payload не отдаём; record_updates — чтобы клиент не слал устаревший expected.
+                # catalog_applied_ids — узкое подтверждение сохранения метрик без GET всего state.
                 return json_bytes({
                     "ok": True,
                     "version": int(version or 0),
                     "updated_at": updated_at.isoformat() if hasattr(updated_at, "isoformat") else (updated_at or ""),
                     "updated_by": updated_by_row or "",
                     "record_updates": record_updates,
+                    "catalog_applied_ids": catalog_applied_ids,
                 })
             latest = fetch_state(cur)
             conn.rollback()

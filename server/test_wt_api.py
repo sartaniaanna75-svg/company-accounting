@@ -1344,14 +1344,23 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("if (!metricUseInSpu(item)) return;", src[
             src.find("function applyMetricResultRoute(") : src.find("function metricRouteSourceOptions(")
         ])
-        # Сохранение каталога: узкий срез одной метрики; timeout/409 без ложного успеха.
+        # Сохранение каталога: catalog-only срез; timeout/409 без ложного успеха.
         self.assertIn("function metricCatalogPutSliceForItem(", src)
         self.assertIn("function confirmMetricCatalogItemSaved(", src)
         self.assertIn("function metricCatalogItemWriteAllowed(", src)
         self.assertIn("function userMetricWriteDeptCodes(", src)
+        self.assertIn("function metricCatalogAccessPutSlice(", src)
+        self.assertIn("function wtBuildMetricCatalogAccessOps(", src)
+        self.assertIn("catalog_applied_ids", src)
+        for_item = src[src.find("function metricCatalogPutSliceForItem("):src.find("function confirmMetricCatalogItemSaved(")]
+        self.assertIn("items: [", for_item)
+        self.assertNotIn("staffMetricSlice", for_item)
+        self.assertNotIn("out.shopMetrics", for_item)
+        self.assertNotIn("out.deptMetrics", for_item)
         cat_save = src[src.find("function afterCatalogPutOk("):src.find("function getDeptMetricStored(")]
         self.assertIn("metricCatalogPutSliceForItem(savedItemId)", cat_save)
         self.assertIn("confirmMetricCatalogItemSaved", cat_save)
+        self.assertIn("persistCatalogAccessFollowUp", cat_save)
         self.assertIn('ok === "timeout"', cat_save)
         self.assertIn('ok === "conflict_review"', cat_save)
         self.assertIn("function metricCatalogPutSlice(", src)
@@ -2823,7 +2832,7 @@ class StoreApiTests(unittest.TestCase):
             "usr_shop_cat_create",
             {"metricsSetup": "edit", "metricsInput": "edit"},
         )
-        status, *_ = call(
+        status, data, *_ = call(
             "PUT",
             "/api/state",
             {
@@ -2845,11 +2854,67 @@ class StoreApiTests(unittest.TestCase):
             cookie=cookie,
         )
         self.assertTrue(status.startswith("200"), status)
+        self.assertIn("m_new_shop", data.get("catalog_applied_ids") or [])
         by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
         self.assertIn("m_new_shop", by_id)
         self.assertEqual(by_id["m_new_shop"]["name"], "Новая shop")
         self.assertEqual(by_id["m_new_shop"]["assignments"][0]["employee_ids"], ["e_shop"])
         self.assertIn("m_wh", by_id)
+
+    def test_staff_metric_catalog_retry_idempotent_applied_ids(self):
+        """Повторный PUT той же метрики после timeout: catalog_applied_ids содержит id (без дубля)."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager(
+            "usr_shop_cat_retry",
+            {"metricsSetup": "edit"},
+        )
+        body = {
+            "shopMetricCatalog": {"items": [{
+                "id": "m_retry",
+                "name": "Повтор",
+                "department_id": "shop",
+                "assignments": [],
+            }]},
+        }
+        status1, data1, *_ = call(
+            "PUT", "/api/state",
+            {"version": int(self.store["version"]), "payload": body},
+            cookie=cookie,
+        )
+        self.assertTrue(status1.startswith("200"), status1)
+        self.assertIn("m_retry", data1.get("catalog_applied_ids") or [])
+        status2, data2, *_ = call(
+            "PUT", "/api/state",
+            {"version": int(self.store["version"]), "payload": body},
+            cookie=cookie,
+        )
+        self.assertTrue(status2.startswith("200"), status2)
+        self.assertIn("m_retry", data2.get("catalog_applied_ids") or [])
+        ids = [row["id"] for row in self.store["payload"]["shopMetricCatalog"]["items"] if row.get("id") == "m_retry"]
+        self.assertEqual(len(ids), 1)
+
+    def test_staff_metric_catalog_out_of_scope_no_applied_ids(self):
+        """Чужой dept → 403 и без catalog_applied_ids."""
+        self._seed_metric_access()
+        cookie = self._add_shop_manager("usr_shop_cat_oos2", {"metricsSetup": "edit"})
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_wh_hack",
+                        "name": "Склад хак",
+                        "department_id": "warehouse",
+                        "assignments": [],
+                    }]},
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("403"), status)
+        self.assertNotIn("catalog_applied_ids", data or {})
 
     def test_staff_metric_catalog_create_out_of_scope_forbidden(self):
         """Создание метрики чужого отдела → 403."""
@@ -5419,20 +5484,34 @@ class StaticPagesTests(unittest.TestCase):
         self.assertNotIn("out.shopPayroll", slice_fn)
         for_item = src[src.find("function metricCatalogPutSliceForItem("):src.find("function confirmMetricCatalogItemSaved(")]
         self.assertIn("items: [", for_item)
-        self.assertIn("staffMetricSlice", for_item)
+        self.assertNotIn("staffMetricSlice", for_item)
+        self.assertNotIn("out.shopMetrics", for_item)
+        self.assertNotIn("out.deptMetrics", for_item)
         self.assertNotIn("out.shopPayroll", for_item)
-        # Форма: функция-сборщик узкого среза + подтверждение GET.
+        # Форма: catalog-only PUT + confirm по catalog_applied_ids (без полного GET).
         self.assertIn("metricCatalogPutSliceForItem(savedItemId)", src)
         self.assertIn("confirmMetricCatalogItemSaved(savedItemId, expectedConfirm)", src)
         self.assertIn("metricCatalogItemWriteAllowed(item)", src)
+        self.assertIn("catalog_applied_ids", src)
+        self.assertIn("persistCatalogAccessFollowUp", src)
+        self.assertIn("partialCatalogOk", src)
         self.assertIn("saveMetricCatalogForm.busy", src)
+        confirm_fn = src[src.find("function confirmMetricCatalogItemSaved("):src.find("function metricCatalogAccessEmployeeIds(")]
+        self.assertIn("wtLastPutResult", confirm_fn)
+        self.assertNotIn('fetch("/api/state"', confirm_fn)
+        cat_block = src[src.find("function persistCatalogAccessFollowUp("):src.find("function getDeptMetricStored(")]
+        self.assertIn("persistCatalogAccessFollowUp", cat_block)
+        self.assertIn("persistCatalogPayrollFollowUp", cat_block)
+        self.assertIn('"shopPayroll.metrics"', cat_block)
+        self.assertIn("metricCatalogAccessPutSlice", cat_block)
         cat_save = src[src.find("function afterCatalogPutOk("):src.find("function getDeptMetricStored(")]
         self.assertIn('ok === "timeout"', cat_save)
         self.assertIn("Нет подтверждения сохранения", cat_save)
         self.assertIn("afterCatalogPutOk", cat_save)
         self.assertIn("confirmMetricCatalogItemSaved", cat_save)
         self.assertIn("metricCatalogPutSliceForItem(savedItemId)", cat_save)
-        self.assertIn('"shopPayroll.metrics"', cat_save)
+        self.assertIn("persistCatalogAccessFollowUp", cat_save)
+        self.assertIn("60000", save)
         # Успешный toast только из finishCatalogOk после confirm — не в timeout/conflict.
         timeout_branch = cat_save.split('ok === "timeout"')[1].split('ok === "conflict_review"')[0]
         self.assertNotIn("closeMetricCatalogModal", timeout_branch)
@@ -5446,6 +5525,7 @@ class StaticPagesTests(unittest.TestCase):
         # Ложный успех при 200 без фактической записи: confirm → restore + ошибка.
         self.assertIn("Сервер не подтвердил сохранение метрики", cat_save)
         self.assertIn("restoreMetricCatalog()", cat_save)
+        self.assertIn("назначения сотрудников не записаны", cat_save)
         conflict = src[src.find("function handleWtSaveConflict("):src.find("function putServerStateOnce(")]
         self.assertIn("sliceMode", conflict)
         self.assertIn("автозапись среза после конфликта отключена", conflict)
