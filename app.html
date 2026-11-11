@@ -6692,6 +6692,10 @@ let shopUiQuiet = 0;
 const METRIC_SHELF_LABELS_ID = "metric_shelf_labels_ok";
 const METRIC_WRITEOFF_LOSSES_ID = "metric_writeoff_losses";
 const METRIC_RETURNS_COUNT_ID = "metric_returns_count";
+/** Пул «Ответственный за пересчёт» Территории (office|warehouse). Не колонка ввода — только назначения. */
+const METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID = "metric_wh_recount_responsible";
+/** Точное имя метрики позиций пересчёта товароразборщиков (без эвристик по подстроке). */
+const WAREHOUSE_RECOUNT_POSITIONS_NAME = "Количество позиций в пересчёте";
 const WRITEOFF_METRIC_NAME = "Потери/списания по инвентаризации";
 const WRITEOFF_KPI_NAME = "Лимит потерь/списаний";
 const METRIC_SHELF_LABELS_FIELD = "shelfLabels";
@@ -19686,6 +19690,7 @@ function ensureShopMetricCatalog() {
         try { normalizeMetricCatalogItemTabs(it); } catch (err) { console.error(err); }
     });
     try { seedReturnsCountMetric(); } catch (err) { console.error(err); }
+    try { seedTerritoryRecountResponsibleMetric(); } catch (err) { console.error(err); }
     try { migrateTerritoryMetricCategories(); } catch (err) { console.error(err); }
     shopCatalogReady = true;
     return appData.shopMetricCatalog;
@@ -19747,6 +19752,67 @@ function seedReturnsCountMetric() {
     }
     normalizeMetricCatalogItemTabs(found);
     if (!found.territory_category) found.territory_category = "sales_opt";
+    return found;
+}
+
+/** Метрика-пул ответственных за пересчёт склада: назначения office|warehouse, без колонок ввода. */
+function seedTerritoryRecountResponsibleMetric() {
+    const list = (appData.shopMetricCatalog && appData.shopMetricCatalog.items) || [];
+    const nameKey = "ответственный за пересчёт";
+    let found = list.find(function (it) { return it && it.id === METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID; });
+    if (!found) {
+        found = list.find(function (it) {
+            if (!it || metricDepartmentId(it) === "shop") return false;
+            return String(it.name || "").replace(/\s+/g, " ").trim().toLowerCase() === nameKey
+                && !metricItemHasObjectSide(it, "shop");
+        });
+    }
+    if (!found) {
+        found = {
+            id: METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID,
+            key: "recountResponsiblePool",
+            name: "Ответственный за пересчёт",
+            department_id: "warehouse",
+            territory_category: "warehouse",
+            section_id: "managers",
+            metric_tab_id: "managers",
+            work_tab_ids: ["managers"],
+            fill_type: "number",
+            sort_order: 15,
+            active: true,
+            assignable: true,
+            builtin: true,
+            core_column: false,
+            show_column: false,
+            show_in_work_metrics: false,
+            recount_source_metric_id: "",
+            position_titles: [],
+            formula: null,
+            submetrics: [],
+            structure_type: "plain",
+            assignments: []
+        };
+        list.push(found);
+    } else {
+        if (!found.id) found.id = METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID;
+        if (!found.key) found.key = "recountResponsiblePool";
+        if (!found.name) found.name = "Ответственный за пересчёт";
+        if (found.department_id === "shop") found.department_id = "warehouse";
+        if (!found.department_id) found.department_id = "warehouse";
+        if (!found.territory_category) found.territory_category = "warehouse";
+        if (!found.fill_type) found.fill_type = "number";
+        if (found.assignable == null) found.assignable = true;
+        found.show_column = false;
+        found.show_in_work_metrics = false;
+        if (found.recount_source_metric_id == null) found.recount_source_metric_id = "";
+        if (found.active == null) found.active = true;
+        if (!Array.isArray(found.work_tab_ids) || !found.work_tab_ids.length) {
+            found.work_tab_ids = ["managers"];
+        }
+        if (!found.section_id) found.section_id = "managers";
+        if (!found.metric_tab_id) found.metric_tab_id = "managers";
+    }
+    normalizeMetricCatalogItemTabs(found);
     return found;
 }
 
@@ -21191,6 +21257,11 @@ function ensureDeptMetrics(deptCode) {
     if (!root.facts || typeof root.facts !== "object") root.facts = {};
     if (!root.workAccess || typeof root.workAccess !== "object") root.workAccess = {};
     if (!root.entries || typeof root.entries !== "object") root.entries = {};
+    if (deptCode === "warehouse") {
+        if (!root.recountResponsible || typeof root.recountResponsible !== "object") {
+            root.recountResponsible = {};
+        }
+    }
     if (wtBusy.deptMetrics[deptCode]) return root;
     wtBusy.deptMetrics[deptCode] = true;
     try {
@@ -37581,6 +37652,24 @@ function openMetricCatalogForm(id, dupIgnore) {
         + '</select><div class="note">Выберите, как программа должна рассчитывать итог за неделю или месяц.</div></div>'
         + '<div class="form-group"><label>Активен</label><label class="check"><input id="mcActive" type="checkbox"'
         + (it.active === false ? "" : " checked") + "> Да</label></div>"
+        + (canonicalMetricId(it.id) === METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID
+            ? (function () {
+                const curSrc = canonicalMetricId(it.recount_source_metric_id) || "";
+                const opts = deptWarehouseRecountPositionsCandidates();
+                let block = '<div class="form-group full"><label>Источник «Итого пересчитано»</label>'
+                    + '<select id="mcRecountSourceMetric">'
+                    + '<option value="">— не задан (поиск по точному названию «'
+                    + escapeHtml(WAREHOUSE_RECOUNT_POSITIONS_NAME) + '») —</option>';
+                opts.forEach(function (m) {
+                    block += '<option value="' + escapeAttribute(m.id) + '"'
+                        + (m.id === curSrc ? " selected" : "") + ">"
+                        + escapeHtml(m.name || m.id) + " (" + escapeHtml(m.id) + ")</option>";
+                });
+                block += '</select><div class="note">Только метрики Территории на вкладке Товароразборщики склада. '
+                    + "Не создаёт новую метрику. Без источника колонка «Итого» показывает «—», а не 0.</div></div>";
+                return block;
+            })()
+            : "")
         + metricCatalogSpuParticipationFieldsHtml(it)
         + '<div class="form-group full" id="mcDayTotalBox">'
         + '<label class="check"><input id="mcShowDayTotal" type="checkbox"'
@@ -38150,6 +38239,17 @@ function saveMetricCatalogForm(id, dupIgnore) {
         item.show_day_total = false;
         if (shopWriteoffNameLooksLikeLimitTitle(item.name)) item.name = WRITEOFF_METRIC_NAME;
     }
+    if (canonicalMetricId(item.id) === METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID) {
+        item.show_column = false;
+        item.show_in_work_metrics = false;
+        const srcEl = document.getElementById("mcRecountSourceMetric");
+        const srcId = srcEl ? canonicalMetricId(srcEl.value) : "";
+        if (srcId && !deptWarehouseRecountSourceIsValid(srcId)) {
+            formErr("Источник «Итого пересчитано» должен быть метрикой Территории на вкладке Товароразборщики склада.");
+            return;
+        }
+        item.recount_source_metric_id = srcId || "";
+    }
     item.assign_mode = assignModeEarly;
     if (assignmentRows) item.assignments = assignmentRows;
     if (metricRollupEnabled(item)) {
@@ -38466,6 +38566,274 @@ function workMetricPeopleForTab(deptCode, metricId, workTabId) {
     return list;
 }
 
+function canSaveDeptRecountResponsible(deptCode) {
+    if (deptCode !== "warehouse") return false;
+    if (!canEnterShopMetricFacts()) return false;
+    if (isAppAdmin()) return true;
+    const u = currentAuthUser();
+    if (!u) return true;
+    return userCanAccessDept(u, "warehouse");
+}
+
+function deptRecountResponsibleMonth(deptCode, month) {
+    const root = ensureDeptMetrics(deptCode);
+    if (!root.recountResponsible || typeof root.recountResponsible !== "object") {
+        root.recountResponsible = {};
+    }
+    const key = month || selectedMonth;
+    if (!root.recountResponsible[key] || typeof root.recountResponsible[key] !== "object") {
+        root.recountResponsible[key] = {};
+    }
+    return root.recountResponsible[key];
+}
+
+function getDeptRecountResponsibleId(deptCode, day, month) {
+    const rec = deptRecountResponsibleMonth(deptCode, month)[String(day)];
+    return rec && rec.employee_id ? rec.employee_id : "";
+}
+
+function deptRecountResponsiblePoolMetric() {
+    const byId = shopMetricCatalogById(METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID);
+    if (byId) return byId;
+    const nameKey = "ответственный за пересчёт";
+    return shopMetricCatalogItems().find(function (it) {
+        if (!it || metricDepartmentId(it) === "shop") return false;
+        if (metricItemHasObjectSide(it, "shop")) return false;
+        return String(it.name || "").replace(/\s+/g, " ").trim().toLowerCase() === nameKey;
+    }) || null;
+}
+
+/** Пул ФИО из назначений метрики каталога: только office|warehouse, без shop. */
+function deptRecountResponsiblePoolIds() {
+    const it = deptRecountResponsiblePoolMetric();
+    const ids = {};
+    function consider(id) {
+        if (!id || id === SHOP_SELF_CHECKOUT_ID) return;
+        const home = employeeHomeDeptCode(id);
+        if (home === "shop" || !isTerritoryCode(home)) return;
+        if (home !== "office" && home !== "warehouse") return;
+        ids[id] = true;
+    }
+    if (it && Array.isArray(it.assignments) && it.assignments.length) {
+        it.assignments.forEach(function (row) {
+            if (!row) return;
+            const d = String(row.department_id || "");
+            if (d !== "office" && d !== "warehouse") return;
+            if (row.assign_mode === "specific") {
+                (row.employee_ids || []).forEach(consider);
+            } else {
+                employeesForMetricAssignmentRow(row).forEach(function (e) {
+                    if (e && e.id) consider(e.id);
+                });
+            }
+            (row.extra_employee_ids || []).forEach(consider);
+        });
+    }
+    return Object.keys(ids);
+}
+
+function deptRecountResponsibleCandidates(deptCode) {
+    const selectedIds = {};
+    const monthStore = deptRecountResponsibleMonth(deptCode || "warehouse", selectedMonth);
+    Object.keys(monthStore).forEach(function (day) {
+        const id = monthStore[day] && monthStore[day].employee_id;
+        if (id) selectedIds[id] = true;
+    });
+    const ids = {};
+    deptRecountResponsiblePoolIds().forEach(function (id) {
+        const emp = getEmployee(id);
+        if (!emp) return;
+        if (employeeHomeDeptCode(id) === "shop") return;
+        if (isWorking(emp) || selectedIds[id]) ids[id] = true;
+    });
+    Object.keys(selectedIds).forEach(function (id) {
+        if (employeeHomeDeptCode(id) === "shop") return;
+        ids[id] = true;
+    });
+    return Object.keys(ids).map(function (id) {
+        return getEmployee(id) || { id: id, name: "Сотрудник удалён", jobStatus: "fired", position: "" };
+    }).sort(compareEmployeesByStatusThenName);
+}
+
+/** Кандидаты склада/pickers Территории для привязки «Итого пересчитано» (без shop). */
+function deptWarehouseRecountPositionsCandidates() {
+    return shopMetricCatalogItems().filter(function (it) {
+        if (!it || !it.id || !shopCatalogItemShownInUi(it)) return false;
+        if (canonicalMetricId(it.id) === METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID) return false;
+        if (!metricItemHasObjectSide(it, "territory")) return false;
+        if (!metricHostsOnDeptTab(it, "warehouse", "pickers")
+            && !metricAssignedToDeptTab(it, "warehouse", "pickers")) {
+            return false;
+        }
+        const fill = String(it.fill_type || "");
+        if (fill && fill !== "number" && fill !== "money") return false;
+        return true;
+    }).sort(function (a, b) {
+        return shopCatalogSort(a.id, 0) - shopCatalogSort(b.id, 0);
+    });
+}
+
+function deptWarehouseRecountSourceIsValid(metricId) {
+    const mid = canonicalMetricId(metricId);
+    if (!mid || mid === METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID) return false;
+    const it = shopMetricCatalogById(mid);
+    if (!it || !shopCatalogItemShownInUi(it)) return false;
+    if (!metricItemHasObjectSide(it, "territory")) return false;
+    return !!(metricHostsOnDeptTab(it, "warehouse", "pickers")
+        || metricAssignedToDeptTab(it, "warehouse", "pickers"));
+}
+
+/**
+ * Источник «Итого пересчитано»: только явный recount_source_metric_id на метрике-пуле
+ * или единственное точное совпадение имени «Количество позиций в пересчёте» на warehouse/pickers.
+ * Без угадывания по подстроке и без создания дубликата метрики.
+ */
+function deptWarehouseRecountPositionsMetricId() {
+    const pool = deptRecountResponsiblePoolMetric();
+    if (pool) {
+        const explicit = canonicalMetricId(pool.recount_source_metric_id);
+        if (explicit && deptWarehouseRecountSourceIsValid(explicit)) return explicit;
+    }
+    const want = shopMetricNameKey(WAREHOUSE_RECOUNT_POSITIONS_NAME);
+    const hits = deptWarehouseRecountPositionsCandidates().filter(function (it) {
+        return shopMetricNameKey(it.name) === want;
+    });
+    if (hits.length === 1) return hits[0].id;
+    return "";
+}
+
+function deptRecountTotalState(deptCode, day, month) {
+    if (deptCode !== "warehouse") {
+        return { configured: false, sum: null, metricId: "" };
+    }
+    const mid = deptWarehouseRecountPositionsMetricId();
+    if (!mid) return { configured: false, sum: null, metricId: "" };
+    const m = month || selectedMonth;
+    const prevMonth = selectedMonth;
+    let sum = 0;
+    try {
+        if (m && m !== selectedMonth) selectedMonth = m;
+        workMetricPeopleForTab("warehouse", mid, "pickers").forEach(function (e) {
+            if (!e || !e.id) return;
+            if (employeeHomeDeptCode(e.id) === "shop") return;
+            const factDept = metricFactDeptForEmployee(e.id, "warehouse");
+            sum += Number(getDeptMetricStored(factDept, e.id, day, mid, m) || 0);
+        });
+    } finally {
+        if (selectedMonth !== prevMonth) selectedMonth = prevMonth;
+    }
+    return { configured: true, sum: sum, metricId: mid };
+}
+
+function deptRecountDayExecutorTotal(deptCode, day, month) {
+    const st = deptRecountTotalState(deptCode, day, month);
+    return st.configured ? st.sum : null;
+}
+
+function deptRecountTotalCellText(deptCode, day, month) {
+    const st = deptRecountTotalState(deptCode, day, month);
+    if (!st.configured) return "—";
+    return st.sum ? st.sum.toLocaleString("ru-RU") : "—";
+}
+
+function deptRecountTotalCellTitle(deptCode) {
+    const mid = deptWarehouseRecountPositionsMetricId();
+    if (!mid) {
+        return "Источник не настроен. В справочнике метрик у «Ответственный за пересчёт» укажите "
+            + "«" + WAREHOUSE_RECOUNT_POSITIONS_NAME + "» товароразборщиков склада, "
+            + "либо создайте/назначьте метрику с этим точным названием на вкладке Товароразборщики.";
+    }
+    const it = shopMetricCatalogById(mid);
+    return "Сумма «" + ((it && it.name) || mid) + "» по товароразборщикам склада за день";
+}
+
+function setDeptRecountResponsible(deptCode, day, employeeId) {
+    if (shopUiQuiet) return;
+    if (deptCode !== "warehouse") return;
+    if (!canSaveDeptRecountResponsible(deptCode)) {
+        toast("Нет права сохранять ответственного за пересчёт склада. Нужны право заполнения метрик (metricsInput) и доступ к подразделению «Склад».", "error");
+        try { refreshDeptWorkUi(); } catch (errRefresh) {}
+        return;
+    }
+    const store = deptRecountResponsibleMonth(deptCode, selectedMonth);
+    const dayKey = String(day);
+    const id = String(employeeId || "");
+    if (id) {
+        const home = employeeHomeDeptCode(id);
+        if (home !== "office" && home !== "warehouse") {
+            toast("Можно выбрать только сотрудника офиса или склада Территории.", "error");
+            try { refreshDeptWorkUi(); } catch (errHome) {}
+            return;
+        }
+    }
+    const prev = store[dayKey] && store[dayKey].employee_id ? String(store[dayKey].employee_id) : "";
+    if (!id) {
+        if (store[dayKey] && typeof store[dayKey] === "object") {
+            const rec = store[dayKey];
+            if (prev) {
+                if (!Array.isArray(rec.history)) rec.history = [];
+                rec.history.push({
+                    from_employee_id: prev,
+                    to_employee_id: "",
+                    changed_at: new Date().toISOString(),
+                    changed_by_user_id: shopMetricsActorUserId()
+                });
+            }
+            rec.employee_id = "";
+            stampAuthOnRecord(rec);
+        }
+    } else {
+        const rec = store[dayKey] && typeof store[dayKey] === "object" ? store[dayKey] : {};
+        rec.employee_id = id;
+        rec.updated_at = new Date().toISOString();
+        stampAuthOnRecord(rec);
+        if (prev && prev !== id) {
+            if (!Array.isArray(rec.history)) rec.history = [];
+            rec.history.push({
+                from_employee_id: prev,
+                to_employee_id: id,
+                changed_at: rec.updated_at,
+                changed_by_user_id: rec.updated_by_user_id || shopMetricsActorUserId()
+            });
+        }
+        store[dayKey] = rec;
+    }
+    const month = selectedMonth;
+    wtPersistExplicitOps([{
+        path: "deptMetrics.warehouse.recountResponsible." + month + "." + dayKey,
+        value: store[dayKey]
+            ? (typeof wtCloneJson === "function" ? wtCloneJson(store[dayKey]) : store[dayKey])
+            : null
+    }], {
+        paint: function () { refreshDeptWorkUi(); },
+        okToast: "Ответственный за пересчёт сохранён.",
+        errorToast: "Ответственный за пересчёт не записан на сервер. Значение на экране — повторите сохранение."
+    });
+}
+
+function deptRecountSelectHtml(deptCode, day) {
+    const current = getDeptRecountResponsibleId(deptCode, day);
+    let html = '<select class="metrics-responsible-select' + (current ? "" : " is-empty") + '"'
+        + ' id="drecount-resp-' + escapeAttribute(deptCode) + "-" + day + '"'
+        + ' title="Ответственный за пересчёт на эту дату"'
+        + " onchange=\"setDeptRecountResponsible('" + escapeAttribute(deptCode) + "'," + day + ",this.value)\">"
+        + '<option value="">—</option>';
+    deptRecountResponsibleCandidates(deptCode).forEach(function (emp) {
+        html += '<option value="' + escapeAttribute(emp.id) + '"' + (emp.id === current ? " selected" : "") + ">"
+            + escapeHtml(shopMetricEmployeeCaption(emp)) + "</option>";
+    });
+    html += "</select>";
+    return html;
+}
+
+function deptManagerRecountServiceFields(deptCode, tabId) {
+    if (deptCode !== "warehouse" || tabId !== "managers") return [];
+    return [
+        { key: "_recountTotal", label: "Итого пересчитано", type: "computed", service: "recountTotal" },
+        { key: "_recountResponsible", label: "Ответственный за пересчёт", type: "select", service: "recountResponsible" }
+    ];
+}
+
 function deptMetricFields(deptCode, tabId) {
     const tab = tabId || currentDeptMetricTab(deptCode);
     const list = [];
@@ -38512,6 +38880,7 @@ function deptMetricFields(deptCode, tabId) {
         }
         shopCatalogFieldsForItem(it, true).forEach(function (field) { list.push(field); });
     });
+    deptManagerRecountServiceFields(deptCode, tab).forEach(function (svc) { list.push(svc); });
     return list;
 }
 
@@ -39359,8 +39728,11 @@ function fillDeptWorkTable(dept, tab, ids, options) {
         let headHtml = '<tr class="metrics-head-metrics"><th class="metrics-date-col" rowspan="' + dateSpan + '">Дата</th>';
         groups.forEach(function (group) {
             if (group.kind === "service") {
+                const svcCls = group.field.service === "recountResponsible"
+                    ? "metrics-recount-resp"
+                    : "metrics-recount-total";
                 headHtml += '<th class="metrics-group-head ' + shopMetricGroupClass(group.fi)
-                    + (group.fi ? " metrics-group-start" : "") + ' metrics-recount-total" rowspan="' + dateSpan + '" title="'
+                    + (group.fi ? " metrics-group-start" : "") + " " + svcCls + '" rowspan="' + dateSpan + '" title="'
                     + escapeHtml(group.field.label) + '">' + escapeHtml(group.field.label) + "</th>";
                 return;
             }
@@ -39425,6 +39797,19 @@ function fillDeptWorkTable(dept, tab, ids, options) {
                     + ' metrics-group-start">' + (tot ? tot.toLocaleString("ru-RU") : "—") + "</td>";
                 return;
             }
+            if (field.service === "recountTotal") {
+                html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start" id="drecount-total-' + escapeAttribute(dept) + "-" + day + '"'
+                    + ' title="' + escapeAttribute(deptRecountTotalCellTitle(dept)) + '">'
+                    + escapeHtml(deptRecountTotalCellText(dept, day)) + "</td>";
+                return;
+            }
+            if (field.service === "recountResponsible") {
+                html += '<td class="metrics-emp-col metrics-recount-resp ' + shopMetricGroupClass(fi)
+                    + ' metrics-group-start" id="drecount-resp-td-' + escapeAttribute(dept) + "-" + day + '">'
+                    + deptRecountSelectHtml(dept, day) + "</td>";
+                return;
+            }
             const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
             const people = peopleOf(field.metricId);
             people.forEach(function (employee, ei) {
@@ -39455,6 +39840,26 @@ function fillDeptWorkTable(dept, tab, ids, options) {
             for (let d = 1; d <= days; d++) sum += deptCatalogDaySum(dept, d, field.metricId);
             html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
                 + ' metrics-group-start">' + (sum ? sum.toLocaleString("ru-RU") : "0") + "</td>";
+            return;
+        }
+        if (field.service === "recountTotal") {
+            const configured = !!deptWarehouseRecountPositionsMetricId();
+            let sum = 0;
+            if (configured) {
+                for (let d = 1; d <= days; d++) {
+                    const st = deptRecountTotalState(dept, d);
+                    if (st.configured) sum += Number(st.sum || 0);
+                }
+            }
+            html += '<td class="metrics-emp-col metrics-recount-total ' + shopMetricGroupClass(fi)
+                + ' metrics-group-start" id="mtot-_recountTotal-dept"'
+                + ' title="' + escapeAttribute(deptRecountTotalCellTitle(dept)) + '">'
+                + (configured ? (sum ? sum.toLocaleString("ru-RU") : "0") : "—") + "</td>";
+            return;
+        }
+        if (field.service === "recountResponsible") {
+            html += '<td class="metrics-emp-col metrics-recount-resp ' + shopMetricGroupClass(fi)
+                + ' metrics-group-start">—</td>';
             return;
         }
         const people = peopleOf(field.metricId);

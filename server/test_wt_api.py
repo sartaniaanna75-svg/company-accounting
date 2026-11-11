@@ -7595,6 +7595,50 @@ class WtOpsFoundationTests(unittest.TestCase):
         self.assertTrue(st.startswith("200"), st)
         self.assertEqual(self.store["payload"]["shopMetrics"]["facts"]["probe_ok"], 7)
 
+    def test_ops_warehouse_recount_responsible_allowed_for_wh_input(self):
+        """metricsInput склада пишет deptMetrics.warehouse.recountResponsible; shop не пишет."""
+        self.store["payload"].setdefault("deptMetrics", {}).setdefault("warehouse", {})
+        cookie_wh, _ = self.login("usr_wh", "2222")
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "deptMetrics.warehouse.recountResponsible.2026-11.7",
+                    "expected_v": 0,
+                    "value": {"employee_id": "e_wh", "history": []},
+                }
+            },
+            cookie=cookie_wh,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"]["recountResponsible"]["2026-11"]["7"]["employee_id"],
+            "e_wh",
+        )
+        cookie_shop, _ = self.login("usr_001", "1111")
+        before = json.loads(json.dumps(
+            self.store["payload"]["deptMetrics"]["warehouse"].get("recountResponsible")
+        ))
+        st2, data2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "deptMetrics.warehouse.recountResponsible.2026-11.8",
+                    "expected_v": 0,
+                    "value": {"employee_id": "e_shop"},
+                }
+            },
+            cookie=cookie_shop,
+        )
+        self.assertTrue(st2.startswith("403"), st2)
+        self.assertEqual(data2.get("error"), "forbidden")
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"].get("recountResponsible"),
+            before,
+        )
+
     def test_ops_work_access_foreign_emp_forbidden(self):
         """H1: shop metricsSetup не пишет workAccess склада (e_wh) через OPS."""
         self.store["payload"]["shopMetrics"]["workAccess"] = {
@@ -10684,6 +10728,50 @@ class WtCriticalSilentSaveFixTests(unittest.TestCase):
         self.assertIn("shopMetrics.inventoryResults.", inv)
         self.assertIn("shopMetrics.recountResponsible.", resp)
         self.assertIn("shopWriteoffLosses.months.", wo)
+
+    def test_territory_warehouse_recount_responsible_markers(self):
+        """Территория: select + Итого в warehouse managers; без inventory; изоляция shop."""
+        src = self._src()
+        self.assertIn('METRIC_TERRITORY_RECOUNT_RESPONSIBLE_ID = "metric_wh_recount_responsible"', src)
+        self.assertIn("WAREHOUSE_RECOUNT_POSITIONS_NAME", src)
+        self.assertIn("function seedTerritoryRecountResponsibleMetric(", src)
+        self.assertIn("function setDeptRecountResponsible(", src)
+        self.assertIn("function deptRecountSelectHtml(", src)
+        self.assertIn("function deptWarehouseRecountPositionsMetricId(", src)
+        self.assertIn("function deptRecountTotalState(", src)
+        self.assertIn("function deptManagerRecountServiceFields(", src)
+        self.assertIn("function deptRecountResponsibleCandidates(", src)
+        seed = self._fn("seedTerritoryRecountResponsibleMetric", "inferTerritoryMetricCategory")
+        self.assertIn('show_column: false', seed)
+        self.assertIn('department_id: "warehouse"', seed)
+        self.assertNotIn("shopMetrics.recountResponsible", seed)
+        resolve = self._fn("deptWarehouseRecountPositionsMetricId", "deptRecountTotalState")
+        self.assertIn("recount_source_metric_id", resolve)
+        self.assertIn("shopMetricNameKey(WAREHOUSE_RECOUNT_POSITIONS_NAME)", resolve)
+        self.assertNotIn('indexOf("пересч")', resolve)
+        self.assertNotIn('indexOf("recount")', resolve)
+        set_fn = self._fn("setDeptRecountResponsible", "deptRecountSelectHtml")
+        self.assertIn("wtPersistExplicitOps(", set_fn)
+        self.assertIn("deptMetrics.warehouse.recountResponsible.", set_fn)
+        self.assertIn('okToast: "Ответственный за пересчёт сохранён."', set_fn)
+        self.assertIn("Нет права сохранять ответственного за пересчёт склада", set_fn)
+        self.assertNotIn("shopMetrics.", set_fn)
+        self.assertNotIn("inventoryResults", set_fn)
+        pool = self._fn("deptRecountResponsiblePoolIds", "deptRecountResponsibleCandidates")
+        self.assertIn('home === "shop"', pool)
+        self.assertIn('d !== "office" && d !== "warehouse"', pool)
+        svc = self._fn("deptManagerRecountServiceFields", "deptMetricFields")
+        self.assertIn('service: "recountTotal"', svc)
+        self.assertIn('service: "recountResponsible"', svc)
+        self.assertNotIn("invPosting", svc)
+        self.assertNotIn("invWriteoff", svc)
+        self.assertNotIn("invResult", svc)
+        fields = self._fn("deptMetricFields", "deptCatalogDaySum")
+        self.assertIn("deptManagerRecountServiceFields(", fields)
+        # Регресс магазина: shop-путь не тронут.
+        shop_resp = self._fn("setShopRecountResponsible", "shopRecountSelectHtml")
+        self.assertIn("shopMetrics.recountResponsible.", shop_resp)
+        self.assertNotIn("deptMetrics.warehouse.recountResponsible", shop_resp)
 
     def test_delete_day_role_awaits_and_toasts_after(self):
         body = self._fn("deleteShopDayRole", "refreshShopDayRoleHint")
