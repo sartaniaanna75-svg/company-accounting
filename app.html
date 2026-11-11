@@ -12565,7 +12565,10 @@ function putServerStateOnce(options) {
     if (!options._identityChecked) {
         return wtConfirmSessionIdentity().then(function (ok) {
             if (!ok) return false;
-            return putServerStateOnce({ _identityChecked: true });
+            return putServerStateOnce({
+                _identityChecked: true,
+                _queueWaitedMs: Number(options._queueWaitedMs) || 0
+            });
         });
     }
     const tAll = wtSaveNow();
@@ -12615,6 +12618,8 @@ function putServerStateOnce(options) {
         return Promise.resolve(false);
     }
     // Без тайм-аута зависший PUT навсегда блокирует wtPutChain и commitEmployeeCard.busy.
+    // Таймер Abort стартует только здесь (на fetch), не на ожидании wtPutChain.
+    const queueWaitedMs = Number(options._queueWaitedMs) || 0;
     const timeoutMs = 60000;
     const canAbort = typeof AbortController !== "undefined";
     const ctrl = canAbort ? new AbortController() : null;
@@ -12633,6 +12638,9 @@ function putServerStateOnce(options) {
     if (ctrl) fetchOpts.signal = ctrl.signal;
     const tNet = wtSaveNow();
     const sentSliceKeys = wtPutPayloadOverride ? Object.keys(payload) : null;
+    if (queueWaitedMs >= 3000) {
+        try { wtSaveMark("put-queue-waited-" + Math.round(queueWaitedMs) + "ms", tAll); } catch (errQ) {}
+    }
     return fetch("/api/state", fetchOpts).then(function (res) {
         wtSaveMark("network-PUT", tNet);
         if (res.status === 401) return handleWtSaveUnauthorized();
@@ -12770,8 +12778,20 @@ function putServerStateOnce(options) {
     }).catch(function (err) {
         if (err && err.name === "AbortError") {
             // Сервер мог успеть записать до обрыва ответа — не считаем ни успехом, ни отказом.
-            try { wtLastPutResult = { ok: false, timeout: true, catalog_applied_ids: [] }; } catch (errT) {}
-            toast("Нет ответа сервера за 60 с. Запись могла пройти или нет — не обновляйте страницу, проверьте сохранение ещё раз.", "error");
+            try {
+                wtLastPutResult = {
+                    ok: false,
+                    timeout: true,
+                    queueWaitedMs: queueWaitedMs,
+                    catalog_applied_ids: []
+                };
+            } catch (errT) {}
+            if (queueWaitedMs >= 3000) {
+                toast("Сохранение ждало предыдущий запрос (" + Math.round(queueWaitedMs / 1000)
+                    + " с), затем PUT /api/state не ответил за 60 с. Не обновляйте страницу — проверьте данные и повторите сохранение.", "error");
+            } else {
+                toast("Нет ответа PUT /api/state за 60 с. Запись могла пройти или нет — не обновляйте страницу, проверьте сохранение ещё раз.", "error");
+            }
             wtSaveMark("put-timeout", tAll);
             return "timeout";
         }
@@ -13345,7 +13365,14 @@ function wtDomainWriterSave(options) {
     if (options.forcePut || useSlicePut || !wtOpsUiEnabled(true)) {
         // SoftSync параллельно: зафиксировать dirty до асинхронного PUT.
         try { wtSoftProtectPendingLeaves(); } catch (err) {}
-        const jobPut = wtPutChain.then(function () { return putServerStateOnce({ _identityChecked: true }); });
+        const queuedAt = typeof wtSaveNow === "function" ? wtSaveNow() : Date.now();
+        const jobPut = wtPutChain.then(function () {
+            const waited = (typeof wtSaveNow === "function" ? wtSaveNow() : Date.now()) - queuedAt;
+            return putServerStateOnce({
+                _identityChecked: true,
+                _queueWaitedMs: waited
+            });
+        });
         wtPutChain = jobPut.then(function () { return true; }, function () { return true; });
         return jobPut;
     }
@@ -38340,7 +38367,12 @@ function saveMetricCatalogForm(id, dupIgnore) {
             let accessOps = [];
             try { accessOps = wtBuildMetricCatalogAccessOps(liveItem) || []; } catch (errA) { accessOps = []; }
             if (!accessOps.length) return Promise.resolve(true);
-            return Promise.resolve(wtDomainWriterSave({ ops: accessOps, atomic: true }));
+            // Не forcePut: иначе admin уходит в полный снимок и снова ловит 60 с.
+            return Promise.resolve(wtDomainWriterSave({
+                ops: accessOps,
+                atomic: true,
+                forbidForcePut: true
+            }));
         }
         return Promise.resolve(saveAppWithPayloadSlice(function () {
             return metricCatalogAccessPutSlice(liveItem);
@@ -38400,12 +38432,21 @@ function saveMetricCatalogForm(id, dupIgnore) {
     })).then(function (ok) {
         if (ok === "timeout") {
             saveMetricCatalogForm.busy = false;
+            const waited = (wtLastPutResult && Number(wtLastPutResult.queueWaitedMs)) || 0;
             const box = document.getElementById("mcFormError");
             if (box) {
                 box.style.display = "";
-                box.textContent = "Нет подтверждения сохранения. Сервер мог уже принять запись — не закрывайте форму, обновите данные с сервера или повторите «Сохранить».";
+                box.textContent = waited >= 3000
+                    ? ("Сохранение ждало предыдущий запрос ~" + Math.round(waited / 1000)
+                        + " с, затем PUT каталога не ответил за 60 с. Не закрывайте форму — проверьте данные и повторите «Сохранить».")
+                    : "Нет ответа PUT каталога за 60 с. Сервер мог уже принять запись — не закрывайте форму, обновите данные с сервера или повторите «Сохранить».";
             }
-            toast("Ответ сервера не получен за отведённое время. Не считаем метрику сохранённой. Проверьте данные и при необходимости сохраните снова (без F5 сразу).", "error");
+            if (waited >= 3000) {
+                toast("Метрика: ожидание очереди +" + Math.round(waited / 1000)
+                    + " с, затем тайм-аут PUT. Не считаем сохранённой — повторите без F5.", "error");
+            } else {
+                toast("Нет ответа PUT /api/state за 60 с. Не считаем метрику сохранённой. Проверьте данные и сохраните снова (без F5 сразу).", "error");
+            }
             return;
         }
         if (ok === "conflict_review") {

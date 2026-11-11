@@ -3113,6 +3113,190 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(row["work_tab_id"], "cashiers")
         self.assertEqual(row["position_id"], "pos_cashier")
 
+    def test_merge_metric_assignments_updates_extra_employee_ids(self):
+        """Обновление существующего назначения пишет extra_employee_ids (в т.ч. чужой territory-dept)."""
+        current = [{
+            "assignment_id": "a_wh",
+            "department_id": "warehouse",
+            "assign_mode": "specific",
+            "employee_ids": ["e_wh"],
+            "extra_employee_ids": [],
+        }]
+        incoming = [{
+            "assignment_id": "a_wh",
+            "department_id": "warehouse",
+            "assign_mode": "specific",
+            "employee_ids": ["e_wh"],
+            "extra_employee_ids": ["e_office", "e_shop", "e_wh", "e_unknown"],
+        }]
+        emp_dept = {
+            "e_wh": "warehouse",
+            "e_office": "office",
+            "e_shop": "shop",
+            "e_drv": "drivers",
+        }
+        out = wt_api._merge_metric_assignments(
+            current, incoming, {"warehouse", "office"}, emp_dept
+        )
+        row = out[0]
+        self.assertEqual(row["employee_ids"], ["e_wh"])
+        # Территория: только другой territory-dept; shop / тот же dept / unknown отсекаются.
+        self.assertEqual(row["extra_employee_ids"], ["e_office"])
+
+    def test_merge_metric_assignments_clear_extra_employee_ids(self):
+        """Явный [] в incoming очищает extras; отсутствие ключа extras не трогает."""
+        current = [{
+            "assignment_id": "a_wh",
+            "department_id": "warehouse",
+            "assign_mode": "specific",
+            "employee_ids": ["e_wh"],
+            "extra_employee_ids": ["e_office"],
+        }]
+        emp_dept = {"e_wh": "warehouse", "e_office": "office"}
+        cleared = wt_api._merge_metric_assignments(
+            current,
+            [{
+                "assignment_id": "a_wh",
+                "department_id": "warehouse",
+                "employee_ids": ["e_wh"],
+                "extra_employee_ids": [],
+            }],
+            {"warehouse"},
+            emp_dept,
+        )
+        self.assertEqual(cleared[0]["extra_employee_ids"], [])
+        kept = wt_api._merge_metric_assignments(
+            current,
+            [{
+                "assignment_id": "a_wh",
+                "department_id": "warehouse",
+                "employee_ids": ["e_wh"],
+            }],
+            {"warehouse"},
+            emp_dept,
+        )
+        self.assertEqual(kept[0]["extra_employee_ids"], ["e_office"])
+
+    def test_merge_metric_assignments_shop_extra_same_object_only(self):
+        """Магазин: extras только из shop и не из основных employee_ids."""
+        current = [{
+            "assignment_id": "a_shop",
+            "department_id": "shop",
+            "assign_mode": "specific",
+            "employee_ids": ["e_shop"],
+            "extra_employee_ids": [],
+        }]
+        incoming = [{
+            "assignment_id": "a_shop",
+            "department_id": "shop",
+            "employee_ids": ["e_shop"],
+            "extra_employee_ids": ["e_shop2", "e_wh", "e_shop"],
+        }]
+        out = wt_api._merge_metric_assignments(
+            current,
+            incoming,
+            {"shop"},
+            {"e_shop": "shop", "e_shop2": "shop", "e_wh": "warehouse"},
+        )
+        self.assertEqual(out[0]["extra_employee_ids"], ["e_shop2"])
+
+    def test_staff_metric_catalog_put_preserves_cross_dept_extras(self):
+        """metricsSetup склада: повторный PUT назначения сохраняет extra_employee_ids из office."""
+        self._seed_metric_access()
+        workspaces = self.store["payload"].setdefault("workspaces", [])
+        if not any(isinstance(w, dict) and w.get("code") == "office" for w in workspaces):
+            workspaces.append({
+                "id": "ws_office",
+                "code": "office",
+                "name": "Офис",
+                "employees": [{"id": "e_office", "name": "Офисный", "rate": 1000}],
+                "employeeIds": ["e_office"],
+            })
+        for row in self.store["payload"]["shopMetricCatalog"]["items"]:
+            if row.get("id") == "m_wh":
+                row["assignments"] = [{
+                    "assignment_id": "a_wh",
+                    "department_id": "warehouse",
+                    "assign_mode": "specific",
+                    "employee_ids": ["e_wh"],
+                    "extra_employee_ids": [],
+                }]
+        self.add_user({
+            "user_id": "usr_wh_extras",
+            "display_name": "Склад extras",
+            "pin": "7777",
+            "role": "user",
+            "is_active": True,
+            "departments": ["warehouse"],
+            "permissions": {"metricsSetup": "edit"},
+        })
+        cookie, _ = self.login("usr_wh_extras", "7777")
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetricCatalog": {"items": [{
+                    "id": "m_wh",
+                    "name": "Показатель склада",
+                    "department_id": "warehouse",
+                    "assignments": [{
+                        "assignment_id": "a_wh",
+                        "department_id": "warehouse",
+                        "assign_mode": "specific",
+                        "employee_ids": ["e_wh"],
+                        "extra_employee_ids": ["e_office"],
+                    }],
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertIn("m_wh", data.get("catalog_applied_ids") or [])
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_wh"]["assignments"][0]["employee_ids"], ["e_wh"])
+        self.assertEqual(by_id["m_wh"]["assignments"][0]["extra_employee_ids"], ["e_office"])
+        self.assertEqual(by_id["m_shop"]["assignments"][0]["employee_ids"], ["e_shop"])
+
+    def test_admin_metric_catalog_put_preserves_assignment_extras(self):
+        """Админ: узкий PUT одной метрики сохраняет extra_employee_ids назначения."""
+        self._seed_metric_access()
+        workspaces = self.store["payload"].setdefault("workspaces", [])
+        if not any(isinstance(w, dict) and w.get("code") == "office" for w in workspaces):
+            workspaces.append({
+                "id": "ws_office",
+                "code": "office",
+                "name": "Офис",
+                "employees": [{"id": "e_office", "name": "Офисный", "rate": 1000}],
+                "employeeIds": ["e_office"],
+            })
+        cookie, _ = self.login()
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetricCatalog": {"items": [{
+                    "id": "m_wh",
+                    "name": "Показатель склада",
+                    "department_id": "warehouse",
+                    "assignments": [{
+                        "assignment_id": "a_wh",
+                        "department_id": "warehouse",
+                        "assign_mode": "specific",
+                        "employee_ids": ["e_wh"],
+                        "extra_employee_ids": ["e_office"],
+                    }],
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertIn("m_wh", data.get("catalog_applied_ids") or [])
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_wh"]["assignments"][0]["extra_employee_ids"], ["e_office"])
+        self.assertIn("m_shop", by_id)
+
     def test_territory_assignment_position_work_tab_survive_put(self):
         """PUT каталога: складское назначение обновляет должность и группу; магазин — нет."""
         self._seed_metric_access()
@@ -5506,12 +5690,20 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("metricCatalogAccessPutSlice", cat_block)
         cat_save = src[src.find("function afterCatalogPutOk("):src.find("function getDeptMetricStored(")]
         self.assertIn('ok === "timeout"', cat_save)
-        self.assertIn("Нет подтверждения сохранения", cat_save)
+        self.assertIn("Нет ответа PUT каталога за 60 с", cat_save)
+        self.assertIn("ждало предыдущий запрос", cat_save)
+        self.assertIn("queueWaitedMs", cat_save)
         self.assertIn("afterCatalogPutOk", cat_save)
         self.assertIn("confirmMetricCatalogItemSaved", cat_save)
         self.assertIn("metricCatalogPutSliceForItem(savedItemId)", cat_save)
         self.assertIn("persistCatalogAccessFollowUp", cat_save)
         self.assertIn("60000", save)
+        access_fu = src[src.find("function persistCatalogAccessFollowUp("):src.find("function persistCatalogPayrollFollowUp(")]
+        self.assertIn("forbidForcePut: true", access_fu)
+        put_once = src[src.find("function putServerStateOnce("):src.find("function wtJsonCanonEqual(")]
+        self.assertIn("_queueWaitedMs", put_once)
+        self.assertIn("Нет ответа PUT /api/state за 60 с", put_once)
+        self.assertIn("ждало предыдущий запрос", put_once)
         # Успешный toast только из finishCatalogOk после confirm — не в timeout/conflict.
         timeout_branch = cat_save.split('ok === "timeout"')[1].split('ok === "conflict_review"')[0]
         self.assertNotIn("closeMetricCatalogModal", timeout_branch)

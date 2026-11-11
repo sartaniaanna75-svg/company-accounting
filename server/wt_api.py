@@ -1115,6 +1115,38 @@ def _is_territory_assignment_dept(dept: str) -> bool:
     return str(dept or "").strip() in TERRITORY_CODES
 
 
+def _filter_metric_extra_employee_ids(
+    assignment_dept: str, raw: Any, emp_dept: dict[str, str], local_ids: set[str] | None = None
+) -> list[str]:
+    """Доп. сотрудники назначения: как клиент normalizeMetricExtraEmployeeIds.
+
+    Территория: другие territory-dept, не shop и не то же department_id строки.
+    Магазин: только shop, не входящие в основные employee_ids.
+    """
+    dept = str(assignment_dept or "").strip()
+    local = {str(x) for x in (local_ids or set()) if x}
+    out: list[str] = []
+    seen: set[str] = set()
+    for emp_id in _metric_id_list(raw):
+        eid = str(emp_id)
+        if not eid or eid in seen or eid in local:
+            continue
+        home = str(emp_dept.get(eid) or "").strip()
+        if not home:
+            continue
+        if dept == "shop":
+            if home != "shop":
+                continue
+        elif _is_territory_assignment_dept(dept):
+            if home == "shop" or home == dept or home not in TERRITORY_CODES:
+                continue
+        else:
+            continue
+        seen.add(eid)
+        out.append(eid)
+    return out
+
+
 def _merge_metric_assignments(
     current_rows: Any, incoming_rows: Any, codes: set[str], emp_dept: dict[str, str]
 ) -> list:
@@ -1138,6 +1170,7 @@ def _merge_metric_assignments(
             for emp_id in _metric_id_list(row.get("employee_ids"))
             if emp_dept.get(str(emp_id)) == dept
         ]
+        extras = _filter_metric_extra_employee_ids(dept, row.get("extra_employee_ids"), emp_dept, set(eids))
         aid = str(row.get("assignment_id") or "").strip()
         if aid and aid in index:
             dest = result[index[aid]]
@@ -1145,6 +1178,9 @@ def _merge_metric_assignments(
             if dest_dept not in codes:
                 continue
             dest["employee_ids"] = eids
+            # extras всегда с входящего снимка (в т.ч. [] — явная очистка).
+            if "extra_employee_ids" in row:
+                dest["extra_employee_ids"] = extras
             if row.get("assign_mode") in ("specific", "group_all"):
                 dest["assign_mode"] = row.get("assign_mode")
             # Территория: сохранять должность и рабочую группу назначения.
@@ -1162,6 +1198,7 @@ def _merge_metric_assignments(
         created["assignment_id"] = aid
         created["department_id"] = dept
         created["employee_ids"] = eids
+        created["extra_employee_ids"] = extras
         result.append(created)
         index[aid] = len(result) - 1
     return result
