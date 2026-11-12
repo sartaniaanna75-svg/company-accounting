@@ -3703,9 +3703,16 @@ def protect_wt_records_on_put(current: dict, stored: dict, incoming: dict) -> di
 
     Клиентский PUT не может завысить _wt_records: карта версий остаётся серверной.
     Завышенный client_v трактуется как устаревший снимок (лист восстанавливается).
+
+    Пути, чей top-level корень отсутствует во входящем PUT, merge не трогал —
+    set_path_value для них бессмысленен и копирует весь payload на каждую запись
+    (_clone внутри set_path_value). employeeRemovals может затронуть workspaces
+    без явного ключа workspaces — тогда пропускать нельзя.
     """
     if not isinstance(stored, dict):
         return stored
+    if not isinstance(incoming, dict):
+        incoming = {}
     cur_map = records_map(current)
     if not cur_map:
         # Клиентский _wt_records / _wt_idempotency никогда не принимаем как источник истины.
@@ -3718,10 +3725,20 @@ def protect_wt_records_on_put(current: dict, stored: dict, incoming: dict) -> di
             out[WT_IDEMPOTENCY_KEY] = _clone(current.get(WT_IDEMPOTENCY_KEY))
         return out
     in_map = records_map(incoming)
+    touched_tops = {
+        str(k)
+        for k in incoming.keys()
+        if k not in WT_OPS_META_KEYS and not str(k).startswith("_")
+    }
+    removals = "employeeRemovals" in incoming
     out = _clone(stored)
     for path, meta in cur_map.items():
         if not isinstance(meta, dict):
             continue
+        if not removals:
+            top = str(path).split(".", 1)[0]
+            if top and top not in touched_tops:
+                continue
         try:
             server_v = int(meta.get("v") or 0)
         except (TypeError, ValueError):

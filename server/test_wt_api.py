@@ -3361,6 +3361,229 @@ class StoreApiTests(unittest.TestCase):
         }))
         self.assertFalse(wt_api.is_catalog_only_put_payload({"workspaces": []}))
 
+    def _seed_heavy_foreign_wt_records(self, n_foreign=3000):
+        """Синтетическая карта версий: тысячи путей вне каталога + пара путей каталога."""
+        self._seed_metric_access()
+        self.store["payload"]["financeRec"] = {"operations": [{"id": "keep_op", "amount": 42}]}
+        self.store["payload"]["salary"] = {"2026-10": {"e_shop": {"rate": 1500}}}
+        self.store["payload"]["shopMetrics"]["facts"] = {"ok": 1, "nested": {"x": 1}}
+        recs = {}
+        for i in range(n_foreign):
+            recs["shopMetrics.facts.synth_%d.2026-10.e_shop" % i] = {
+                "v": 3,
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "updated_by": "user_admin",
+            }
+        for i in range(200):
+            recs["salary.2026-10.e_synth_%d.rate" % i] = {
+                "v": 2,
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "updated_by": "user_admin",
+            }
+        recs["shopMetricCatalog"] = {
+            "v": 1,
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "updated_by": "user_admin",
+        }
+        self.store["payload"][wt_api.WT_RECORDS_KEY] = recs
+        return recs
+
+    def test_catalog_only_put_skips_foreign_record_clones(self):
+        """Узкий PUT каталога при 3200 чужих _wt_records: без массового _clone, соседи целы."""
+        import time as _time
+
+        recs = self._seed_heavy_foreign_wt_records(3000)
+        workspaces = self.store["payload"].setdefault("workspaces", [])
+        if not any(isinstance(w, dict) and w.get("code") == "office" for w in workspaces):
+            workspaces.append({
+                "id": "ws_office",
+                "code": "office",
+                "name": "Офис",
+                "employees": [{"id": "e_office", "name": "Офисный", "rate": 1000}],
+                "employeeIds": ["e_office"],
+            })
+        before_fin = json.loads(json.dumps(self.store["payload"]["financeRec"]))
+        before_salary = json.loads(json.dumps(self.store["payload"]["salary"]))
+        before_facts = json.loads(json.dumps(self.store["payload"]["shopMetrics"]["facts"]))
+        before_m_shop = json.loads(json.dumps(
+            next(x for x in self.store["payload"]["shopMetricCatalog"]["items"] if x["id"] == "m_shop")
+        ))
+        cookie, _ = self.login()
+        clones = [0]
+        set_calls = [0]
+        real_clone = wt_api._clone
+        real_set = wt_api.set_path_value
+
+        def counting_clone(v):
+            clones[0] += 1
+            return real_clone(v)
+
+        def counting_set(root, path, value):
+            set_calls[0] += 1
+            top = str(path).split(".", 1)[0]
+            self.assertEqual(top, "shopMetricCatalog", path)
+            return real_set(root, path, value)
+
+        wt_api._clone = counting_clone
+        wt_api.set_path_value = counting_set
+        try:
+            t0 = _time.perf_counter()
+            status, data, *_ = call(
+                "PUT",
+                "/api/state",
+                {
+                    "version": int(self.store["version"]),
+                    "payload": {
+                        "shopMetricCatalog": {"items": [{
+                            "id": "m_wh",
+                            "name": "Показатель склада (heavy)",
+                            "department_id": "warehouse",
+                            "assignments": [{
+                                "assignment_id": "a_wh",
+                                "department_id": "warehouse",
+                                "assign_mode": "specific",
+                                "employee_ids": ["e_wh"],
+                                "extra_employee_ids": ["e_office"],
+                            }],
+                        }]},
+                        "_wt_records": {
+                            "shopMetricCatalog": recs["shopMetricCatalog"],
+                        },
+                    },
+                },
+                cookie=cookie,
+            )
+            put_ms = (_time.perf_counter() - t0) * 1000
+        finally:
+            wt_api._clone = real_clone
+            wt_api.set_path_value = real_set
+        self.assertTrue(status.startswith("200"), status)
+        # Чужие корни не восстанавливаем через set_path_value; _clone — единицы, не тысячи.
+        self.assertLess(set_calls[0], 20, set_calls[0])
+        self.assertLess(clones[0], 80, clones[0])
+        self.assertLess(put_ms, 5000.0, put_ms)
+        self.assertEqual((data.get("save_timing_ms") or {}).get("persist_mode"), "paths")
+        self.assertIn("m_wh", data.get("catalog_applied_ids") or [])
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_wh"]["name"], "Показатель склада (heavy)")
+        self.assertEqual(by_id["m_wh"]["assignments"][0]["extra_employee_ids"], ["e_office"])
+        self.assertEqual(by_id["m_shop"], before_m_shop)
+        self.assertEqual(self.store["payload"]["financeRec"], before_fin)
+        self.assertEqual(self.store["payload"]["salary"], before_salary)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"], before_facts)
+        # Повтор без дубля метрики и с сохранением extras (как клиент: актуальные record_updates).
+        records = {}
+        for path, meta in (data.get("record_updates") or {}).items():
+            if str(path).startswith("shopMetricCatalog"):
+                records[path] = meta
+        for path, meta in (self.store["payload"].get(wt_api.WT_RECORDS_KEY) or {}).items():
+            if str(path).startswith("shopMetricCatalog") and path not in records:
+                records[path] = meta
+        status2, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {"items": [{
+                        "id": "m_wh",
+                        "name": "Показатель склада (heavy2)",
+                        "department_id": "warehouse",
+                        "assignments": [{
+                            "assignment_id": "a_wh",
+                            "department_id": "warehouse",
+                            "assign_mode": "specific",
+                            "employee_ids": ["e_wh"],
+                            "extra_employee_ids": ["e_office"],
+                        }],
+                    }]},
+                    "_wt_records": records,
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status2.startswith("200"), status2)
+        items = self.store["payload"]["shopMetricCatalog"]["items"]
+        self.assertEqual(sum(1 for x in items if x["id"] == "m_wh"), 1)
+        self.assertEqual(
+            next(x for x in items if x["id"] == "m_wh")["name"],
+            "Показатель склада (heavy2)",
+        )
+        self.assertEqual(
+            next(x for x in items if x["id"] == "m_wh")["assignments"][0]["extra_employee_ids"],
+            ["e_office"],
+        )
+
+    def test_catalog_only_put_version_conflict_409(self):
+        self._seed_metric_access()
+        cookie = self._add_shop_manager("usr_cat_409", {"metricsSetup": "edit"})
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]) - 1,
+                "payload": {"shopMetricCatalog": {"items": [{
+                    "id": "m_shop",
+                    "name": "stale",
+                    "department_id": "shop",
+                    "assignments": [],
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("409"), status)
+        self.assertEqual(data.get("error"), "conflict")
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_shop"]["name"], "Показатель магазина")
+
+    def test_full_put_still_restores_stale_shop_metrics_leaf(self):
+        """Обычный PUT с устаревшим client_v по shopMetrics восстанавливает лист (защита версий)."""
+        self._seed_metric_access()
+        self.store["payload"]["shopMetrics"]["facts"] = {"ok": 99, "keep": True}
+        self.store["payload"][wt_api.WT_RECORDS_KEY] = {
+            "shopMetrics.facts": {
+                "v": 5,
+                "updated_at": "2026-01-01T00:00:00+00:00",
+                "updated_by": "other",
+            }
+        }
+        cookie, _ = self.login()
+        status, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetrics": {"facts": {"ok": 1}},
+                    "_wt_records": {
+                        "shopMetrics.facts": {
+                            "v": 1,
+                            "updated_at": "2026-01-01T00:00:00+00:00",
+                            "updated_by": "stale",
+                        }
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(self.store["payload"]["shopMetrics"]["facts"], {"ok": 99, "keep": True})
+
+    def test_ops_still_writes_after_protect_skip(self):
+        """OPS не затронут узким skip в protect: запись shopMetrics через op проходит."""
+        self._seed_metric_access()
+        cookie, _ = self.login()
+        path = "shopMetrics.facts.probe"
+        status, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": path, "expected_v": 0, "value": {"n": 7}}},
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        self.assertEqual(wt_api.get_path_value(self.store["payload"], path), {"n": 7})
+        self.assertGreaterEqual(int(data.get("record_v") or 0), 1)
+
     def test_territory_assignment_position_work_tab_survive_put(self):
         """PUT каталога: складское назначение обновляет должность и группу; магазин — нет."""
         self._seed_metric_access()
