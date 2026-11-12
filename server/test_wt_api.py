@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -1230,6 +1231,59 @@ class StoreApiTests(unittest.TestCase):
         # Связка: магазин и dept tabs используют один people-builder.
         self.assertIn("return workMetricPeopleForTab(\"shop\", metricId, catId)", src)
         self.assertIn("return workMetricPeopleForTab(deptCode, metricId, tabId", src)
+
+    def test_client_territory_hub_uses_category_not_org_units(self):
+        """Хаб «Метрик территории»: категория, не org_unit_ids; Торговые/СПУ без изменений."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        hub = src[
+            src.find("function metricBelongsToTerritoryHub(")
+            : src.find("function metricTerritoryCategory(")
+        ]
+        self.assertGreater(src.find("function metricBelongsToTerritoryHub("), 0)
+        # Категория — источник истины; ранний return по org_unit_ids убран.
+        self.assertIn('if (spec.allTerritory) return cat === "common";', hub)
+        self.assertIn("return cat === spec.id;", hub)
+        self.assertIn("metricTerritoryCategory(item)", hub)
+        # Нет ранней ветки членства по org units (упоминание в комментарии допустимо).
+        self.assertNotIn("item.org_unit_ids", hub)
+        self.assertNotIn("orgUnitMatchesTerritoryHub(", hub)
+        # Рабочий раздел «Торговые»: по-прежнему assignments, без требования category для назначенных.
+        fields = src[
+            src.find("function deptMetricFields(")
+            : src.find("function deptCatalogDaySum(")
+        ]
+        self.assertIn("metricAssignedToDeptTab(it, deptCode, tab)", fields)
+        self.assertIn('if (tab === "sales") return cat === "sales_opt"', fields)
+        # СПУ: org_unit_ids по-прежнему живут в связках индикаторов, не в членстве хаба.
+        self.assertIn("function applyMetricOrgUnitAssignments(", src)
+        self.assertIn("function ensureSpuIndicatorOrgLinks(", src)
+        self.assertIn("function orgUnitMatchesTerritoryHub(", src)
+        self.assertIn("function defaultOrgUnitsForMetric(", src)
+        spu_link = src[
+            src.find("function ensureSpuIndicatorOrgLinks(")
+            : src.find("const LEGACY_DEPT_NAMES")
+        ]
+        self.assertIn("m.org_unit_ids = (it.org_unit_ids || []).slice();", spu_link)
+        # Сценарии (документация ожидаемого поведения после фикса):
+        # «Собранные…» cat=sales_opt + org_unit_ids=[warehouse] → hub sales_opt да.
+        # «Загруженные…» cat=sales_opt + org_unit_ids=[] → hub sales_opt да.
+        # cat=warehouse + org sales_opt → hub sales_opt нет (раньше могло быть да только через units).
+        self.assertIn("Категория → раздел «Метрик территории»", hub)
+        harness = Path(__file__).resolve().parent.joinpath("wt_territory_hub_category_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness хаба")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_territory_hub_category_harness: OK", proc.stdout)
 
     def test_client_territory_work_tables_use_home_fact_dept(self):
         """Хаб и dwork/office читают факты по home сотрудника, колонки — по assignments."""

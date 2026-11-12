@@ -19981,13 +19981,9 @@ function migrateTerritoryMetricCategories() {
 }
 
 function metricBelongsToTerritoryHub(item, spec) {
+    // Категория → раздел «Метрик территории». org_unit_ids — только СПУ, не членство в хабе.
     if (!item || !spec || !shopCatalogItemShownInUi(item)) return false;
     if (metricDepartmentId(item) === "shop") return false;
-    if (Array.isArray(item.org_unit_ids) && item.org_unit_ids.length) {
-        return item.org_unit_ids.some(function (uid) {
-            return orgUnitMatchesTerritoryHub(uid, spec);
-        });
-    }
     const cat = metricTerritoryCategory(item);
     if (spec.allTerritory) return cat === "common";
     return cat === spec.id;
