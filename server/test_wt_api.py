@@ -160,18 +160,32 @@ class FakeCursor:
             self._row = None
             return
         if text.startswith("UPDATE app_state"):
-            payload_raw, updated_by, _sid, expected = params
-            if int(self.store["version"]) != int(expected):
+            if int(self.store["version"]) != int(params[-1]):
                 self._row = None
                 return
+            updated_by = params[-3]
             if "jsonb_array_length" in text:
                 current = self.store.get("payload") if isinstance(self.store.get("payload"), dict) else {}
                 users = current.get("users")
                 if isinstance(users, list) and len(users) > 0:
                     self._row = None
                     return
-            payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
-            self.store["payload"] = payload
+            if "jsonb_set" in text:
+                # persist_payload_paths: (key, json, key, json, ..., updated_by, sid, expected)
+                base = self.store.get("payload") if isinstance(self.store.get("payload"), dict) else {}
+                merged = json.loads(json.dumps(base))
+                pairs = params[:-3]
+                for i in range(0, len(pairs), 2):
+                    if i + 1 >= len(pairs):
+                        break
+                    key = pairs[i]
+                    raw_val = pairs[i + 1]
+                    merged[str(key)] = json.loads(raw_val) if isinstance(raw_val, str) else raw_val
+                self.store["payload"] = merged
+            else:
+                payload_raw = params[0]
+                payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+                self.store["payload"] = payload
             self.store["version"] = int(self.store["version"]) + 1
             self.store["updated_by"] = updated_by
             self.store["updated_at"] = datetime.now(timezone.utc)
@@ -3297,6 +3311,56 @@ class StoreApiTests(unittest.TestCase):
         self.assertEqual(by_id["m_wh"]["assignments"][0]["extra_employee_ids"], ["e_office"])
         self.assertIn("m_shop", by_id)
 
+    def test_catalog_only_put_uses_path_persist_and_keeps_siblings(self):
+        """Узкий PUT каталога: persist_mode=paths, соседи и чужие корни payload не затираются."""
+        self._seed_metric_access()
+        self.store["payload"]["financeRec"] = {"operations": [{"id": "keep_op", "amount": 42}]}
+        before_fin = json.loads(json.dumps(self.store["payload"]["financeRec"]))
+        before_salary = json.loads(json.dumps(self.store["payload"].get("salary")))
+        cookie = self._add_shop_manager("usr_cat_paths", {"metricsSetup": "edit"})
+        status, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {"shopMetricCatalog": {"items": [{
+                    "id": "m_shop",
+                    "name": "Показатель магазина (paths)",
+                    "department_id": "shop",
+                    "assignments": [{
+                        "assignment_id": "a_shop",
+                        "department_id": "shop",
+                        "assign_mode": "specific",
+                        "employee_ids": ["e_shop"],
+                    }],
+                }]}},
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(status.startswith("200"), status)
+        timing = data.get("save_timing_ms") or {}
+        self.assertEqual(timing.get("persist_mode"), "paths")
+        self.assertIn("m_shop", data.get("catalog_applied_ids") or [])
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_shop"]["name"], "Показатель магазина (paths)")
+        self.assertIn("m_wh", by_id)
+        self.assertEqual(self.store["payload"].get("financeRec"), before_fin)
+        self.assertEqual(self.store["payload"].get("salary"), before_salary)
+
+    def test_is_catalog_only_put_payload_helper(self):
+        self.assertTrue(wt_api.is_catalog_only_put_payload({
+            "shopMetricCatalog": {"items": []},
+        }))
+        self.assertTrue(wt_api.is_catalog_only_put_payload({
+            "shopMetricCatalog": {"items": []},
+            "_wt_records": {"shopMetricCatalog": {"v": 1}},
+        }))
+        self.assertFalse(wt_api.is_catalog_only_put_payload({
+            "shopMetricCatalog": {"items": []},
+            "salary": {},
+        }))
+        self.assertFalse(wt_api.is_catalog_only_put_payload({"workspaces": []}))
+
     def test_territory_assignment_position_work_tab_survive_put(self):
         """PUT каталога: складское назначение обновляет должность и группу; магазин — нет."""
         self._seed_metric_access()
@@ -5704,6 +5768,17 @@ class StaticPagesTests(unittest.TestCase):
         self.assertIn("_queueWaitedMs", put_once)
         self.assertIn("Нет ответа PUT /api/state за 60 с", put_once)
         self.assertIn("ждало предыдущий запрос", put_once)
+        self.assertIn("function wtCatalogSaveDiagEnabled(", src)
+        self.assertIn("function wtCatalogSaveDiag(", src)
+        self.assertIn('wtCatalogSaveDiag("catalog_save_start"', src)
+        self.assertIn("function catalogPutFailMessage(", src)
+        self.assertIn("save_timing_ms", put_once)
+        api = Path(__file__).resolve().parent.joinpath("wt_api.py").read_text(encoding="utf-8")
+        self.assertIn("def persist_payload_paths(", api)
+        self.assertIn("def is_catalog_only_put_payload(", api)
+        self.assertIn('persist_mode = "paths"', api)
+        self.assertIn("ARRAY[%s]::text[]", api)
+        self.assertNotIn("ops_persist_top_keys", api)
         # Успешный toast только из finishCatalogOk после confirm — не в timeout/conflict.
         timeout_branch = cat_save.split('ok === "timeout"')[1].split('ok === "conflict_review"')[0]
         self.assertNotIn("closeMetricCatalogModal", timeout_branch)

@@ -6257,6 +6257,22 @@ let wtMeIdentityCache = { at: 0, userId: "" };
 function wtSaveTimingEnabled() {
     try { return localStorage.getItem("wtSaveTiming") === "1"; } catch (err) { return false; }
 }
+/** Диагностика сохранения справочника метрик (без PIN/токенов/ФИО/payload). Вкл: localStorage.wtCatalogSaveDiag = "1" */
+function wtCatalogSaveDiagEnabled() {
+    try {
+        return localStorage.getItem("wtCatalogSaveDiag") === "1" || wtSaveTimingEnabled();
+    } catch (err) { return false; }
+}
+function wtCatalogSaveDiag(stage, extra) {
+    if (!wtCatalogSaveDiagEnabled()) return;
+    try {
+        if (extra != null && typeof extra === "object") {
+            console.info("[wt-catalog-save]", stage, extra);
+        } else {
+            console.info("[wt-catalog-save]", stage);
+        }
+    } catch (err) {}
+}
 function wtSaveMark(label, t0) {
     if (!wtSaveTimingEnabled() || t0 == null) return;
     try {
@@ -12643,6 +12659,14 @@ function putServerStateOnce(options) {
     }
     return fetch("/api/state", fetchOpts).then(function (res) {
         wtSaveMark("network-PUT", tNet);
+        try {
+            wtLastPutResult = {
+                ok: false,
+                httpStatus: res.status,
+                queueWaitedMs: queueWaitedMs,
+                catalog_applied_ids: []
+            };
+        } catch (errHs) {}
         if (res.status === 401) return handleWtSaveUnauthorized();
         if (res.status === 409) {
             const localV = Number(wtStateVersion) || 0;
@@ -12731,13 +12755,21 @@ function putServerStateOnce(options) {
             try {
                 wtLastPutResult = {
                     ok: true,
+                    httpStatus: 200,
+                    queueWaitedMs: queueWaitedMs,
                     version: state && state.version != null ? Number(state.version) : null,
                     record_updates: (state && state.record_updates) || {},
                     catalog_applied_ids: Array.isArray(state && state.catalog_applied_ids)
                         ? state.catalog_applied_ids.slice()
-                        : []
+                        : [],
+                    save_timing_ms: (state && state.save_timing_ms) || null
                 };
-            } catch (errMeta) { wtLastPutResult = { ok: true, catalog_applied_ids: [] }; }
+            } catch (errMeta) { wtLastPutResult = { ok: true, httpStatus: 200, catalog_applied_ids: [] }; }
+            try {
+                if (wtCatalogSaveDiagEnabled() && state && state.save_timing_ms) {
+                    wtCatalogSaveDiag("put-server-timing", state.save_timing_ms);
+                }
+            } catch (errDiagT) {}
             stripLocalSecretsAfterSave();
             clearQueuedEmployeeRemovals();
             try {
@@ -12795,7 +12827,15 @@ function putServerStateOnce(options) {
             wtSaveMark("put-timeout", tAll);
             return "timeout";
         }
-        try { wtLastPutResult = { ok: false, catalog_applied_ids: [] }; } catch (errN) {}
+        try {
+            wtLastPutResult = {
+                ok: false,
+                networkError: true,
+                httpStatus: 0,
+                queueWaitedMs: queueWaitedMs,
+                catalog_applied_ids: []
+            };
+        } catch (errN) {}
         toast("Нет соединения с сервером. Изменения не записаны.", "error");
         wtSaveMark("put-network-error", tAll);
         return false;
@@ -38324,8 +38364,21 @@ function saveMetricCatalogForm(id, dupIgnore) {
     const back = metricFormReturnSection;
     /* Catalog-only PUT; workAccess — узкий follow-up; shopPayroll.metrics — OPS при shop. */
     saveMetricCatalogForm.busy = true;
+    const catalogSaveT0 = wtSaveNow();
+    try {
+        wtCatalogSaveDiag("catalog_save_start", {
+            itemIdLen: savedItemId.length,
+            hasAssignments: !!(item.assignments && item.assignments.length)
+        });
+    } catch (errDiag0) {}
     function finishCatalogOk(toastMsg) {
         saveMetricCatalogForm.busy = false;
+        try {
+            wtCatalogSaveDiag("outcome", {
+                outcome: "ok",
+                totalMs: Math.round(wtSaveNow() - catalogSaveT0)
+            });
+        } catch (errDiagOk) {}
         metricFormReturnSection = "";
         closeMetricCatalogModal();
         if (workspace() && workspace().code === dept) deptMetricTab = sectionId;
@@ -38347,6 +38400,16 @@ function saveMetricCatalogForm(id, dupIgnore) {
         toast(msg || "Изменения метрики не записаны.", "error");
         try { renderMetricCatalog(); } catch (err) {}
         try { refreshMetricsUi(); } catch (err) {}
+    }
+    function catalogPutFailMessage() {
+        const st = wtLastPutResult && Number(wtLastPutResult.httpStatus);
+        if (st === 403) return "Изменения метрики не записаны: недостаточно прав.";
+        if (st === 400) return "Изменения метрики не записаны: сервер отклонил данные.";
+        if (st >= 500) return "Изменения метрики не записаны: ошибка сервера. Повторите позже без F5.";
+        if (st === 0 || (wtLastPutResult && wtLastPutResult.networkError)) {
+            return "Изменения метрики не записаны: нет соединения с сервером.";
+        }
+        return "Изменения метрики не записаны.";
     }
     function partialCatalogOk(msg) {
         saveMetricCatalogForm.busy = false;
@@ -38396,17 +38459,32 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     function afterCatalogPutOk() {
         return Promise.resolve(confirmMetricCatalogItemSaved(savedItemId, expectedConfirm)).then(function (confirmed) {
+            try {
+                wtCatalogSaveDiag("catalog_applied_ok", { ok: !!confirmed });
+            } catch (errDiagC) {}
             if (!confirmed) {
                 restoreMetricCatalog();
+                try { wtCatalogSaveDiag("outcome", { outcome: "confirm_fail" }); } catch (errO) {}
                 failCatalogForm("Сервер не подтвердил сохранение метрики. Изменения не записаны — проверьте подразделения и повторите.");
                 return;
             }
+            const accessT0 = wtSaveNow();
+            try { wtCatalogSaveDiag("access_ops_start"); } catch (errA0) {}
             return persistCatalogAccessFollowUp().then(function (accessOk) {
+                try {
+                    wtCatalogSaveDiag("access_ops_done", {
+                        ok: wtSaveOutcomeOk(accessOk),
+                        outcome: accessOk === true ? "ok" : String(accessOk),
+                        ms: Math.round(wtSaveNow() - accessT0)
+                    });
+                } catch (errA1) {}
                 if (!wtSaveOutcomeOk(accessOk)) {
                     if (accessOk === "timeout") {
+                        try { wtCatalogSaveDiag("outcome", { outcome: "access_fail", detail: "timeout" }); } catch (errO2) {}
                         partialCatalogOk("Метрика записана в справочник, но назначения сотрудников не подтверждены (тайм-аут). Повторите «Сохранить» без F5 — дубликат метрики не создастся.");
                         return;
                     }
+                    try { wtCatalogSaveDiag("outcome", { outcome: "access_fail" }); } catch (errO3) {}
                     partialCatalogOk("Метрика записана в справочник, но назначения сотрудников не записаны. Повторите «Сохранить» без F5 — дубликат метрики не создастся.");
                     return;
                 }
@@ -38420,19 +38498,38 @@ function saveMetricCatalogForm(id, dupIgnore) {
                     partialCatalogOk("Метрика и назначения записаны, но связь с расчётом не подтверждена. Повторите «Сохранить» без F5.");
                 });
             }, function () {
+                try { wtCatalogSaveDiag("outcome", { outcome: "access_fail", detail: "reject" }); } catch (errO4) {}
                 partialCatalogOk("Метрика записана в справочник, но назначения сотрудников не записаны. Повторите «Сохранить» без F5 — дубликат метрики не создастся.");
             });
         }, function () {
             restoreMetricCatalog();
+            try { wtCatalogSaveDiag("outcome", { outcome: "confirm_fail", detail: "reject" }); } catch (errO5) {}
             failCatalogForm("Не удалось подтвердить сохранение метрики с сервера.");
         });
     }
     Promise.resolve(saveAppWithPayloadSlice(function () {
         return metricCatalogPutSliceForItem(savedItemId);
     })).then(function (ok) {
+        const waited = (wtLastPutResult && Number(wtLastPutResult.queueWaitedMs)) || 0;
+        try {
+            wtCatalogSaveDiag("put_done", {
+                outcome: ok === true ? "ok" : String(ok),
+                queueWaitedMs: waited,
+                httpStatus: wtLastPutResult && wtLastPutResult.httpStatus,
+                putMs: Math.round(wtSaveNow() - catalogSaveT0),
+                persistMode: wtLastPutResult && wtLastPutResult.save_timing_ms
+                    && wtLastPutResult.save_timing_ms.persist_mode
+            });
+        } catch (errDiagP) {}
         if (ok === "timeout") {
             saveMetricCatalogForm.busy = false;
-            const waited = (wtLastPutResult && Number(wtLastPutResult.queueWaitedMs)) || 0;
+            try {
+                wtCatalogSaveDiag("outcome", {
+                    outcome: "timeout",
+                    uncertain_server_write: true,
+                    queueWaitedMs: waited
+                });
+            } catch (errTo) {}
             const box = document.getElementById("mcFormError");
             if (box) {
                 box.style.display = "";
@@ -38451,6 +38548,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
         }
         if (ok === "conflict_review") {
             saveMetricCatalogForm.busy = false;
+            try { wtCatalogSaveDiag("outcome", { outcome: "conflict" }); } catch (errCf) {}
             const box = document.getElementById("mcFormError");
             if (box) {
                 box.style.display = "";
@@ -38461,13 +38559,20 @@ function saveMetricCatalogForm(id, dupIgnore) {
         }
         if (!wtSaveOutcomeOk(ok)) {
             restoreMetricCatalog();
-            failCatalogForm("Изменения метрики не записаны.");
+            try {
+                wtCatalogSaveDiag("outcome", {
+                    outcome: "false",
+                    httpStatus: wtLastPutResult && wtLastPutResult.httpStatus
+                });
+            } catch (errFl) {}
+            failCatalogForm(catalogPutFailMessage());
             return;
         }
         return afterCatalogPutOk();
     }).catch(function () {
         restoreMetricCatalog();
-        failCatalogForm("Изменения метрики не записаны.");
+        try { wtCatalogSaveDiag("outcome", { outcome: "false", detail: "reject" }); } catch (errRj) {}
+        failCatalogForm(catalogPutFailMessage());
     });
 }
 

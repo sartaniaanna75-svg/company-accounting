@@ -5888,6 +5888,74 @@ def persist_payload(cur, payload: dict, expected_version: int, updated_by: str):
     return cur.fetchone()
 
 
+# Узкий PUT справочника метрик: клиент шлёт только эти корни (см. metricCatalogPutSliceForItem).
+CATALOG_ONLY_PUT_KEYS = frozenset({"shopMetricCatalog", WT_RECORDS_KEY})
+
+
+def is_catalog_only_put_payload(incoming: dict | None) -> bool:
+    """True, если входящий payload — срез только каталога метрик (+ _wt_records)."""
+    if not isinstance(incoming, dict) or "shopMetricCatalog" not in incoming:
+        return False
+    for key in incoming.keys():
+        k = str(key or "")
+        if k in CATALOG_ONLY_PUT_KEYS:
+            continue
+        if k in WT_OPS_META_KEYS:
+            continue
+        return False
+    return True
+
+
+def persist_payload_paths(
+    cur, full_payload: dict, keys: list[str] | tuple[str, ...], expected_version: int, updated_by: str
+):
+    """Пишет только указанные top-level ключи через jsonb_set (малый bind, без полного dumps).
+
+    full_payload — актуальный снимок после merge в памяти; в БД меняются лишь keys.
+    Широкий persist_payload не заменяется для прочих PUT.
+    """
+    if not isinstance(full_payload, dict):
+        full_payload = {}
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in keys or []:
+        k = str(raw or "").strip()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        ordered.append(k)
+    if not ordered:
+        return persist_payload(cur, full_payload, expected_version, updated_by)
+    cur.execute(
+        """
+        INSERT INTO app_state (id, payload, version, updated_by)
+        VALUES (%s, '{}'::jsonb, 0, '')
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (STATE_ID,),
+    )
+    expr = "COALESCE(payload, '{}'::jsonb)"
+    params: list[Any] = []
+    for k in ordered:
+        expr = f"jsonb_set({expr}, ARRAY[%s]::text[], COALESCE(%s::jsonb, 'null'::jsonb), true)"
+        params.append(k)
+        params.append(json.dumps(full_payload.get(k), ensure_ascii=False, default=str))
+    params.extend([updated_by, STATE_ID, expected_version])
+    cur.execute(
+        f"""
+        UPDATE app_state
+        SET payload = {expr},
+            version = version + 1,
+            updated_at = NOW(),
+            updated_by = %s
+        WHERE id = %s AND version = %s
+        RETURNING version, updated_at, updated_by
+        """,
+        tuple(params),
+    )
+    return cur.fetchone()
+
+
 def fetch_state_for_update(cur) -> dict:
     """Блокирует строку app_state для атомарного резерва ID."""
     cur.execute(
@@ -6288,6 +6356,9 @@ def handle_get_state_version(environ):
 
 
 def handle_put_state(environ):
+    import time as _time
+
+    t_all = _time.perf_counter()
     raw = read_body(environ)
     try:
         data = json.loads(raw.decode("utf-8") or "{}")
@@ -6310,7 +6381,9 @@ def handle_put_state(environ):
     if err:
         return err
 
+    t_load0 = _time.perf_counter()
     state, err = load_state_or_error()
+    load_ms = int((_time.perf_counter() - t_load0) * 1000)
     if err:
         return err
     current_payload = state.get("payload") if state else None
@@ -6326,10 +6399,13 @@ def handle_put_state(environ):
     if expected != current_version:
         return json_bytes(conflict_body(state), "409 Conflict")
     before_records = records_map(current_payload)
+    catalog_only = is_catalog_only_put_payload(payload)
+    t_merge0 = _time.perf_counter()
     try:
         stored, denied = prepare_put_payload(current_payload, payload, user)
     except PinPepperMissing:
         return auth_unavailable()
+    merge_ms = int((_time.perf_counter() - t_merge0) * 1000)
     if denied == "duplicate_pin":
         return json_bytes({"error": "duplicate pin"}, "400 Bad Request")
     if denied == "duplicate_employee_id":
@@ -6399,7 +6475,18 @@ def handle_put_state(environ):
         return db_unavailable()
     try:
         with conn.cursor() as cur:
-            row = persist_payload(cur, stored, expected, updated_by)
+            t_persist0 = _time.perf_counter()
+            if catalog_only:
+                # Узкий bind: только каталог + карта версий (не полный dumps всего WorkTime).
+                path_keys = ["shopMetricCatalog"]
+                if WT_RECORDS_KEY in (stored or {}):
+                    path_keys.append(WT_RECORDS_KEY)
+                row = persist_payload_paths(cur, stored, path_keys, expected, updated_by)
+                persist_mode = "paths"
+            else:
+                row = persist_payload(cur, stored, expected, updated_by)
+                persist_mode = "full"
+            persist_ms = int((_time.perf_counter() - t_persist0) * 1000)
             if row:
                 conn.commit()
                 version, updated_at, updated_by_row = row[0], row[1], row[2]
@@ -6408,6 +6495,7 @@ def handle_put_state(environ):
                 )
                 # Полный payload не отдаём; record_updates — чтобы клиент не слал устаревший expected.
                 # catalog_applied_ids — узкое подтверждение сохранения метрик без GET всего state.
+                # save_timing_ms — только числа (без payload/PIN/ФИО).
                 return json_bytes({
                     "ok": True,
                     "version": int(version or 0),
@@ -6415,6 +6503,13 @@ def handle_put_state(environ):
                     "updated_by": updated_by_row or "",
                     "record_updates": record_updates,
                     "catalog_applied_ids": catalog_applied_ids,
+                    "save_timing_ms": {
+                        "load": load_ms,
+                        "merge": merge_ms,
+                        "persist": persist_ms,
+                        "total": int((_time.perf_counter() - t_all) * 1000),
+                        "persist_mode": persist_mode,
+                    },
                 })
             latest = fetch_state(cur)
             conn.rollback()
