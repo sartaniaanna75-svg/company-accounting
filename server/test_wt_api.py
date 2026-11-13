@@ -12317,6 +12317,64 @@ class WtSpuFormulaWeekCheckMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_formula_week_version_harness: OK", proc.stdout)
 
 
+class WtSpuFormulaPlanFactWeekMarkerTests(unittest.TestCase):
+    """Формулы СПУ: факт/план × текущая/предыдущая неделя; plan_formula_expr без затирания store."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_client_markers(self):
+        src = self._src()
+        self.assertIn("function spuReadFormulaIndOperand(", src)
+        self.assertIn("function spuFormulaIndKindKey(", src)
+        self.assertIn("plan_formula_expr", src)
+        self.assertIn("plan_calc_mode", src)
+        self.assertIn("Факт СПУ — текущая неделя", src)
+        self.assertIn("Факт СПУ — предыдущая неделя", src)
+        self.assertIn("План СПУ — текущая неделя", src)
+        self.assertIn("План СПУ — предыдущая неделя", src)
+        self.assertIn("Формула факта", src)
+        self.assertIn("Формула плана", src)
+        self.assertIn("Считать план по формуле", src)
+        self.assertIn("function mgmtIndicatorPlan(it, stack)", src)
+        self.assertIn("ind_fact_0", src)
+        self.assertIn("ind_fact_m1", src)
+        self.assertIn("ind_plan_0", src)
+        self.assertIn("ind_plan_m1", src)
+        self.assertIn("function spuIndFormulaChipKindSelectHtml(", src)
+        chip = src[
+            src.find("function spuIndFormulaChipKindSelectHtml(")
+            : src.find("function spuIndFormulaChipsHtml(")
+        ]
+        self.assertNotIn(">Показатель СПУ</option>", chip)
+        plan_fn = src[
+            src.find("function mgmtIndicatorPlan(")
+            : src.find("function mgmtSpuOrgOptionsHtml(")
+        ]
+        self.assertIn('planMode === "formula"', plan_fn)
+        self.assertIn("spuEvalFormula(it, planExpr", plan_fn)
+        self.assertNotIn("setMgmtPlanValue(", plan_fn)
+
+    def test_harness_plan_fact_week(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_formula_plan_fact_week_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness plan/fact week")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_formula_plan_fact_week_harness: OK", proc.stdout)
+
+
 class WtSalesCallActorsMarkerTests(unittest.TestCase):
     """Маркеры замещения ОПТ: store вне facts, узкий OPS, select на всех money sales_opt, unlock при cover."""
 

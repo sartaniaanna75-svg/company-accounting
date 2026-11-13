@@ -43763,10 +43763,16 @@ let spuIndFormSources = [];
 let spuIndFormKind = "manual";
 let spuIndFormCalc = "sum";
 let spuIndFormFormula = [];
+/** Черновик UI: формула плана (plan_formula_expr). */
+let spuIndFormPlanFormula = [];
+/** Черновик UI: считать план по формуле (plan_calc_mode === "formula"). */
+let spuIndFormPlanCalcOn = false;
 /** Черновик UI: дата начала действия формулы (ISO). Не пишется в versions при простом открытии. */
 let spuIndFormFormulaEffectiveFrom = "";
 /** Черновик UI: четверг выбранной недели для «Проверить формулу за период». */
 let spuIndFormCheckWeekFrom = "";
+/** Memo одного прохода План–факт: ключ → число|null. */
+let spuFormulaEvalMemo = null;
 let spuIndListTab = "all";
 let spuIndListFilter = { q: "", dept: "", kind: "" };
 let spuIndSelected = {};
@@ -45001,14 +45007,136 @@ function spuMigrateLegacyCalcSources(it) {
 function spuNormalizeFormulaTokens(it, sources, tokens) {
     const srcList = sources || (it && it.sources) || [];
     return (tokens || []).map(function (tok) {
-        if (!tok || tok.t !== "src") return tok;
+        if (!tok) return tok;
+        if (tok.t !== "src") {
+            if (tok.t === "ind") return spuFormulaIndTokenNormalize(tok);
+            return tok;
+        }
         const s = srcList.find(function (x) { return x && x.source_id === tok.id; });
         if (s && (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual")
             && s.source_indicator_id) {
-            return { t: "ind", id: s.source_indicator_id };
+            return spuFormulaIndTokenNormalize({
+                t: "ind",
+                id: s.source_indicator_id,
+                value_kind: tok.value_kind,
+                week_offset: tok.week_offset
+            });
         }
         return tok;
     });
+}
+
+/** Старые токены без полей = факт текущей недели. Не мутирует исходный объект. */
+function spuFormulaIndTokenNormalize(tok) {
+    if (!tok || tok.t !== "ind") return tok;
+    const kind = String(tok.value_kind || "fact") === "plan" ? "plan" : "fact";
+    let off = Number(tok.week_offset);
+    if (!Number.isFinite(off)) off = 0;
+    off = Math.trunc(off);
+    return {
+        t: "ind",
+        id: String(tok.id || ""),
+        value_kind: kind,
+        week_offset: off
+    };
+}
+
+function spuFormulaIndKindKey(tok) {
+    const n = spuFormulaIndTokenNormalize(tok || { t: "ind" });
+    const offKey = n.week_offset === -1 ? "m1" : "0";
+    return "ind_" + n.value_kind + "_" + offKey;
+}
+
+function spuFormulaIndTokenFromKindKey(kindKey, id) {
+    const k = String(kindKey || "ind_fact_0");
+    if (k === "ind_fact_m1") return spuFormulaIndTokenNormalize({ t: "ind", id: id || "", value_kind: "fact", week_offset: -1 });
+    if (k === "ind_plan_0") return spuFormulaIndTokenNormalize({ t: "ind", id: id || "", value_kind: "plan", week_offset: 0 });
+    if (k === "ind_plan_m1") return spuFormulaIndTokenNormalize({ t: "ind", id: id || "", value_kind: "plan", week_offset: -1 });
+    if (k === "ind" || k === "ind_fact_0") {
+        return spuFormulaIndTokenNormalize({ t: "ind", id: id || "", value_kind: "fact", week_offset: 0 });
+    }
+    return null;
+}
+
+function spuFormulaIndKindLabel(kindKey) {
+    if (kindKey === "ind_fact_m1") return "Факт СПУ — предыдущая неделя";
+    if (kindKey === "ind_plan_0") return "План СПУ — текущая неделя";
+    if (kindKey === "ind_plan_m1") return "План СПУ — предыдущая неделя";
+    return "Факт СПУ — текущая неделя";
+}
+
+function spuFormulaOperandWeekFrom(anchorFrom, weekOffset) {
+    let from = String(anchorFrom || "").trim();
+    if (!from) {
+        try {
+            const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+            from = (r && r.from) || "";
+        } catch (err) { from = ""; }
+    }
+    const off = Number(weekOffset) || 0;
+    if (!from || !off) return from;
+    return isoAddDays(from, off * 7);
+}
+
+function spuFormulaEvalMemoGet(key) {
+    if (!spuFormulaEvalMemo || typeof spuFormulaEvalMemo !== "object") return undefined;
+    return Object.prototype.hasOwnProperty.call(spuFormulaEvalMemo, key) ? spuFormulaEvalMemo[key] : undefined;
+}
+
+function spuFormulaEvalMemoSet(key, val) {
+    if (!spuFormulaEvalMemo || typeof spuFormulaEvalMemo !== "object") return;
+    spuFormulaEvalMemo[key] = val;
+}
+
+/**
+ * Чтение операнда ind с value_kind / week_offset относительно текущего якоря UI.
+ * asPlanDefault — для токенов без kind при старом вызове asPlan.
+ */
+function spuReadFormulaIndOperand(selfIt, tok, stack, asPlanDefault) {
+    const n = spuFormulaIndTokenNormalize(tok);
+    const id = n.id;
+    if (!id) return null;
+    if (selfIt && id === selfIt.indicator_id && n.value_kind === "fact" && n.week_offset === 0) return null;
+    const other = ((appData.management && appData.management.indicators) || []).find(function (x) {
+        return x && x.indicator_id === id;
+    });
+    if (!other) return null;
+    let kind = n.value_kind;
+    if (tok && tok.value_kind == null && tok.week_offset == null && asPlanDefault) kind = "plan";
+    const off = n.week_offset;
+    const stackKey = id + "|" + kind + "|" + off;
+    const trail = stack || [];
+    if (trail.indexOf(stackKey) !== -1 || trail.indexOf(id) !== -1 && kind === "fact" && off === 0) {
+        return null;
+    }
+    const nextStack = trail.concat([stackKey]);
+    let anchorFrom = "";
+    try {
+        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+        anchorFrom = (r && r.from) || "";
+    } catch (errA) { anchorFrom = ""; }
+    const targetFrom = spuFormulaOperandWeekFrom(anchorFrom, off);
+    const memoKey = stackKey + "|" + targetFrom;
+    const hit = spuFormulaEvalMemoGet(memoKey);
+    if (hit !== undefined) return hit;
+
+    function readInWeek() {
+        if (kind === "plan") {
+            const p = typeof mgmtIndicatorPlan === "function" ? mgmtIndicatorPlan(other, nextStack) : null;
+            return p == null || !Number.isFinite(Number(p)) ? null : Number(p);
+        }
+        const read = mgmtReadIndicator(other, nextStack);
+        return read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+    }
+
+    let out = null;
+    if (off && targetFrom && typeof mgmtRunInThuWeek === "function") {
+        out = mgmtRunInThuWeek(targetFrom, readInWeek);
+    } else {
+        out = readInWeek();
+    }
+    spuFormulaEvalMemoSet(memoKey, out);
+    return out;
 }
 
 function setSpuStructureTab(tab) {
@@ -45250,6 +45378,10 @@ function spuActiveConfig(it) {
             sources: (v.sources || []).map(function (s) { return spuNewSourceRow(s); }),
             aggregation_type: v.aggregation_type || it.aggregation_type || "sum",
             formula_expr: Array.isArray(v.formula_expr) ? v.formula_expr : (it.formula_expr || []),
+            plan_formula_expr: Array.isArray(v.plan_formula_expr)
+                ? v.plan_formula_expr
+                : (Array.isArray(it.plan_formula_expr) ? it.plan_formula_expr : []),
+            plan_calc_mode: (v.plan_calc_mode === "formula" || it.plan_calc_mode === "formula") ? "formula" : "manual",
             calc_mode: v.calc_mode || it.calc_mode || it.aggregation_type || "sum"
         };
     }
@@ -45257,6 +45389,8 @@ function spuActiveConfig(it) {
         sources: spuNormalizeSources(it),
         aggregation_type: it.aggregation_type || "sum",
         formula_expr: it.formula_expr || [],
+        plan_formula_expr: Array.isArray(it.plan_formula_expr) ? it.plan_formula_expr : [],
+        plan_calc_mode: it.plan_calc_mode === "formula" ? "formula" : "manual",
         calc_mode: it.calc_mode || it.aggregation_type || "sum"
     };
 }
@@ -45286,8 +45420,32 @@ function spuSourceVersionFingerprint(cfg) {
         }),
         a: cfg && cfg.aggregation_type,
         c: cfg && cfg.calc_mode,
-        f: cfg && cfg.formula_expr
+        f: cfg && cfg.formula_expr,
+        pf: cfg && cfg.plan_formula_expr,
+        pcm: cfg && cfg.plan_calc_mode
     });
+}
+
+function spuVersionPayloadPack(payload) {
+    const p = payload || {};
+    return {
+        sources: ((p.sources) || []).map(function (s) { return spuNewSourceRow(s); }),
+        aggregation_type: p.aggregation_type || "sum",
+        formula_expr: Array.isArray(p.formula_expr) ? p.formula_expr : [],
+        calc_mode: p.calc_mode || p.aggregation_type || "sum",
+        plan_formula_expr: Array.isArray(p.plan_formula_expr) ? p.plan_formula_expr : [],
+        plan_calc_mode: p.plan_calc_mode === "formula" ? "formula" : "manual"
+    };
+}
+
+function spuVersionRecordWrite(target, body) {
+    if (!target || !body) return;
+    target.sources = (body.sources || []).map(function (s) { return spuNewSourceRow(s); });
+    target.aggregation_type = body.aggregation_type || "sum";
+    target.formula_expr = body.formula_expr || [];
+    target.calc_mode = body.calc_mode || body.aggregation_type || "sum";
+    target.plan_formula_expr = Array.isArray(body.plan_formula_expr) ? body.plan_formula_expr : [];
+    target.plan_calc_mode = body.plan_calc_mode === "formula" ? "formula" : "manual";
 }
 
 /**
@@ -45297,12 +45455,7 @@ function spuSourceVersionFingerprint(cfg) {
 function spuFormulaVersionPlan(it, fromIso, payload) {
     const from = String(fromIso || "").trim();
     const today = todayIsoDate();
-    const body = {
-        sources: ((payload && payload.sources) || []).map(function (s) { return spuNewSourceRow(s); }),
-        aggregation_type: (payload && payload.aggregation_type) || "sum",
-        formula_expr: (payload && payload.formula_expr) || [],
-        calc_mode: (payload && payload.calc_mode) || (payload && payload.aggregation_type) || "sum"
-    };
+    const body = spuVersionPayloadPack(payload);
     const vers = (it && Array.isArray(it.source_versions)) ? it.source_versions.slice() : [];
     const lines = [];
     function pack(mode, ok, message, extra) {
@@ -45398,59 +45551,49 @@ function spuFormulaVersionPlan(it, fromIso, payload) {
 function spuApplyFormulaVersionPlan(it, plan) {
     if (!it || !plan || !plan.ok) return false;
     if (!Array.isArray(it.source_versions)) it.source_versions = [];
-    const body = plan.payload || {};
-    const sources = (body.sources || []).map(function (s) { return spuNewSourceRow(s); });
+    const body = spuVersionPayloadPack(plan.payload || {});
     if (plan.mode === "noop") return true;
     if (plan.mode === "create") {
-        it.source_versions.push({
+        const rec = {
             version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
             effective_from: plan.createFrom || plan.from || "2000-01-01",
-            effective_to: "",
-            sources: sources,
-            aggregation_type: body.aggregation_type || "sum",
-            formula_expr: body.formula_expr || [],
-            calc_mode: body.calc_mode || body.aggregation_type || "sum"
-        });
+            effective_to: ""
+        };
+        spuVersionRecordWrite(rec, body);
+        it.source_versions.push(rec);
         return true;
     }
     if (plan.mode === "inplace") {
         const cur = plan.target;
         if (!cur) return false;
-        cur.sources = sources;
-        cur.aggregation_type = body.aggregation_type || "sum";
-        cur.formula_expr = body.formula_expr || [];
-        cur.calc_mode = body.calc_mode || body.aggregation_type || "sum";
+        spuVersionRecordWrite(cur, body);
         return true;
     }
     if (plan.mode === "split_tail") {
         const V = plan.cover;
         if (!V) return false;
         V.effective_to = isoAddDays(plan.from, -1);
-        it.source_versions.push({
+        const rec = {
             version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
             effective_from: plan.from,
-            effective_to: "",
-            sources: sources,
-            aggregation_type: body.aggregation_type || "sum",
-            formula_expr: body.formula_expr || [],
-            calc_mode: body.calc_mode || body.aggregation_type || "sum"
-        });
+            effective_to: ""
+        };
+        spuVersionRecordWrite(rec, body);
+        it.source_versions.push(rec);
         return true;
     }
     if (plan.mode === "insert_segment") {
         const V = plan.cover;
         if (!V || !plan.segmentTo) return false;
         V.effective_to = isoAddDays(plan.from, -1);
-        it.source_versions.push({
+        const rec = {
             version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
             effective_from: plan.from,
             effective_to: plan.segmentTo,
-            sources: sources,
-            aggregation_type: body.aggregation_type || "sum",
-            formula_expr: body.formula_expr || [],
-            calc_mode: body.calc_mode || body.aggregation_type || "sum",
             replaced_note: "insert_segment_before:" + ((plan.next && plan.next.version_id) || "")
-        });
+        };
+        spuVersionRecordWrite(rec, body);
+        it.source_versions.push(rec);
         // Стабильный порядок по effective_from.
         it.source_versions.sort(function (a, b) {
             return String((a && a.effective_from) || "").localeCompare(String((b && b.effective_from) || ""));
@@ -45469,27 +45612,31 @@ function spuCommitSourceVersion(it, nextSources, nextAgg, nextFormula, nextCalc,
     options = options || {};
     if (!it) return { ok: false, message: "нет показателя" };
     const today = todayIsoDate();
-    const payload = {
-        sources: (nextSources || []).map(function (s) { return spuNewSourceRow(s); }),
+    const payload = spuVersionPayloadPack({
+        sources: nextSources || [],
         aggregation_type: nextAgg || "sum",
         formula_expr: nextFormula || [],
-        calc_mode: nextCalc || nextAgg || "sum"
-    };
+        calc_mode: nextCalc || nextAgg || "sum",
+        plan_formula_expr: options.planFormula != null
+            ? options.planFormula
+            : (Array.isArray(it.plan_formula_expr) ? it.plan_formula_expr : []),
+        plan_calc_mode: options.planCalcMode != null
+            ? options.planCalcMode
+            : (it.plan_calc_mode === "formula" ? "formula" : "manual")
+    });
     if (!Array.isArray(it.source_versions)) it.source_versions = [];
 
     // Совместимость: без даты — прежнее поведение «с сегодня».
     let from = String(options.effectiveFrom || "").trim();
     if (!from) {
         if (!it.source_versions.length) {
-            it.source_versions.push({
+            const rec0 = {
                 version_id: nextPrefixedId("sver", []),
                 effective_from: "2000-01-01",
-                effective_to: "",
-                sources: payload.sources,
-                aggregation_type: payload.aggregation_type,
-                formula_expr: payload.formula_expr,
-                calc_mode: payload.calc_mode
-            });
+                effective_to: ""
+            };
+            spuVersionRecordWrite(rec0, payload);
+            it.source_versions.push(rec0);
             return { ok: true, mode: "create_legacy", plan: null };
         }
         const open = it.source_versions.filter(function (v) { return v && !v.effective_to; });
@@ -45498,22 +45645,17 @@ function spuCommitSourceVersion(it, nextSources, nextAgg, nextFormula, nextCalc,
             return { ok: true, mode: "noop", plan: null };
         }
         if (cur && String(cur.effective_from || "") >= today) {
-            cur.sources = payload.sources;
-            cur.aggregation_type = payload.aggregation_type;
-            cur.formula_expr = payload.formula_expr;
-            cur.calc_mode = payload.calc_mode;
+            spuVersionRecordWrite(cur, payload);
             return { ok: true, mode: "inplace_today", plan: null };
         }
         if (cur) cur.effective_to = isoAddDays(today, -1);
-        it.source_versions.push({
+        const recN = {
             version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
             effective_from: today,
-            effective_to: "",
-            sources: payload.sources,
-            aggregation_type: payload.aggregation_type,
-            formula_expr: payload.formula_expr,
-            calc_mode: payload.calc_mode
-        });
+            effective_to: ""
+        };
+        spuVersionRecordWrite(recN, payload);
+        it.source_versions.push(recN);
         return { ok: true, mode: "split_today", plan: null };
     }
 
@@ -45622,17 +45764,13 @@ function spuEvalFormula(it, tokens, stack, asPlan) {
         if (tok.t === "src") {
             const src = (spuActiveConfig(it).sources || []).find(function (s) { return s.source_id === tok.id; });
             if (!src) return null;
+            // Legacy src: без per-token kind — как раньше (весь прогон asPlan).
             if (asPlan) return mgmtReadSourcePlan(src, it);
             const read = mgmtReadSourceFact(src, it, stack);
             return read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
         }
         if (tok.t === "ind") {
-            if (tok.id === (it && it.indicator_id)) return null;
-            const other = ((appData.management && appData.management.indicators) || []).find(function (x) { return x && x.indicator_id === tok.id; });
-            if (!other) return null;
-            if (asPlan) return mgmtIndicatorPlan(other);
-            const read = mgmtReadIndicator(other, (stack || []).concat([it.indicator_id]));
-            return read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+            return spuReadFormulaIndOperand(it, tok, stack || [], !!asPlan);
         }
         return null;
     }
@@ -45667,6 +45805,9 @@ function spuIndicatorDepIds(it, cfg) {
         if (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual") add(s.source_indicator_id);
     });
     ((cfg && cfg.formula_expr) || it.formula_expr || []).forEach(function (tok) {
+        if (tok && tok.t === "ind") add(tok.id);
+    });
+    ((cfg && cfg.plan_formula_expr) || it.plan_formula_expr || []).forEach(function (tok) {
         if (tok && tok.t === "ind") add(tok.id);
     });
     if (it.calc_left_id) add(it.calc_left_id);
@@ -45732,44 +45873,62 @@ function spuCollectFormulaIndicatorIds(tokens, out, seen, depth) {
 }
 
 function spuFormulaFactPeriodConflict(it, tokens, anchorIso) {
-    const ids = spuCollectFormulaIndicatorIds(tokens || (it && it.formula_expr) || [], [], {}, 0);
-    if (it && it.indicator_id && ids.indexOf(it.indicator_id) === -1) ids.unshift(it.indicator_id);
-    if (ids.length < 2) return { ok: true };
+    const toks = tokens || (it && it.formula_expr) || [];
     const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : null;
     const anchor = anchorIso || (r && r.from) || mgmtAnchorIso || "";
-    const rows = [];
-    ids.forEach(function (id) {
-        const ind = ((appData.management && appData.management.indicators) || []).find(function (x) {
-            return x && x.indicator_id === id;
-        });
-        if (!ind) return;
-        if (String(ind.periodicity || "week") !== "week") return;
-        const win = typeof mgmtIndicatorFactWindow === "function"
-            ? mgmtIndicatorFactWindow(ind, anchor)
-            : null;
-        if (!win) return;
-        rows.push({
-            id: id,
-            name: ind.name || id,
-            start: win.start_date,
-            end: win.end_date,
-            label: win.label,
-            rangeRu: win.rangeRu
-        });
+    // Группы по week_offset: разные недели в одной формуле допустимы.
+    const groups = {};
+    toks.forEach(function (tok) {
+        if (!tok || tok.t !== "ind" || !tok.id) return;
+        const n = spuFormulaIndTokenNormalize(tok);
+        const g = String(n.week_offset || 0);
+        if (!groups[g]) groups[g] = [];
+        groups[g].push(n);
     });
-    if (rows.length < 2) return { ok: true };
-    const key0 = rows[0].start + "|" + rows[0].end;
-    const bad = rows.filter(function (row) { return (row.start + "|" + row.end) !== key0; });
-    if (!bad.length) return { ok: true };
-    const lines = rows.map(function (row) {
-        return "«" + row.name + "»: " + row.label + " (" + row.rangeRu + ")";
-    });
-    return {
-        ok: false,
-        message: "Конфликт фактических периодов в формуле. Все показатели одной формулы должны использовать один интервал.\n"
-            + lines.join("\n"),
-        rows: rows
-    };
+    const allRows = [];
+    const groupKeys = Object.keys(groups);
+    for (let gi = 0; gi < groupKeys.length; gi++) {
+        const gToks = groups[groupKeys[gi]];
+        const off = Number(groupKeys[gi]) || 0;
+        const groupAnchor = spuFormulaOperandWeekFrom(anchor, off) || anchor;
+        const rows = [];
+        gToks.forEach(function (n) {
+            const ind = ((appData.management && appData.management.indicators) || []).find(function (x) {
+                return x && x.indicator_id === n.id;
+            });
+            if (!ind) return;
+            if (String(ind.periodicity || "week") !== "week") return;
+            const win = typeof mgmtIndicatorFactWindow === "function"
+                ? mgmtIndicatorFactWindow(ind, groupAnchor)
+                : null;
+            if (!win) return;
+            rows.push({
+                id: n.id,
+                name: ind.name || n.id,
+                start: win.start_date,
+                end: win.end_date,
+                label: win.label,
+                rangeRu: win.rangeRu,
+                week_offset: off
+            });
+        });
+        allRows.push.apply(allRows, rows);
+        if (rows.length < 2) continue;
+        const key0 = rows[0].start + "|" + rows[0].end;
+        const bad = rows.filter(function (row) { return (row.start + "|" + row.end) !== key0; });
+        if (!bad.length) continue;
+        const lines = rows.map(function (row) {
+            return "«" + row.name + "»: " + row.label + " (" + row.rangeRu + ")";
+        });
+        return {
+            ok: false,
+            message: "Конфликт фактических периодов в формуле (одинаковое смещение недели). "
+                + "Показатели с одним смещением должны использовать один интервал.\n"
+                + lines.join("\n"),
+            rows: rows
+        };
+    }
+    return { ok: true, rows: allRows };
 }
 
 function mgmtAggregateNumbers(values, type) {
@@ -46020,8 +46179,20 @@ function mgmtReadFromSources(it, stack) {
     return { value: value, status: value == null ? "missing" : "auto" };
 }
 
-function mgmtIndicatorPlan(it) {
+function mgmtIndicatorPlan(it, stack) {
     if (!it) return null;
+    const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : null;
+    const planMode = (cfg && cfg.plan_calc_mode) || it.plan_calc_mode;
+    const planExpr = (cfg && cfg.plan_formula_expr) || it.plan_formula_expr || [];
+    // Формульный план: только отображение, store не пишем и не чистим.
+    if (planMode === "formula" && Array.isArray(planExpr) && planExpr.length) {
+        const trail = stack || [];
+        const selfKey = String(it.indicator_id || "") + "|plan|0";
+        if (trail.indexOf(selfKey) !== -1) return null;
+        const value = spuEvalFormula(it, planExpr, trail.concat([selfKey]), true);
+        if (value != null && Number.isFinite(Number(value))) return Number(value);
+        return null;
+    }
     // 1) План управленческого периода (новая модель) — всегда главнее источника факта и старых week-записей.
     if (typeof spuComputedPeriodWeekPlan === "function") {
         const per = typeof mgmtSpuReportingPeriod === "function" ? mgmtSpuReportingPeriod() : null;
@@ -46905,6 +47076,11 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         ];
         if (it.calc_op === "percent") spuIndFormFormula.push({ t: "op", v: "*" }, { t: "num", v: 100 });
     }
+    spuIndFormPlanFormula = (cfg && Array.isArray(cfg.plan_formula_expr) && cfg.plan_formula_expr.length)
+        ? cfg.plan_formula_expr.slice()
+        : ((it && Array.isArray(it.plan_formula_expr)) ? it.plan_formula_expr.slice() : []);
+    spuIndFormPlanCalcOn = !!(cfg && cfg.plan_calc_mode === "formula")
+        || !!(it && it.plan_calc_mode === "formula");
     // Черновики UI дат: не мутируют source_versions при открытии. Дефолт первичной настройки — 05.11.2026.
     spuIndFormFormulaEffectiveFrom = "2026-11-05";
     spuIndFormCheckWeekFrom = "2026-11-05";
@@ -47128,7 +47304,11 @@ function spuFormulaTokenLabel(tok, sources) {
         const o = ((appData.management && appData.management.indicators) || []).find(function (x) {
             return x && x.indicator_id === tok.id;
         });
-        return o ? o.name : tok.id;
+        const name = o ? o.name : tok.id;
+        const n = spuFormulaIndTokenNormalize(tok);
+        const tag = (n.value_kind === "plan" ? "план" : "факт")
+            + (n.week_offset === -1 ? " пред.нед." : "");
+        return name + " [" + tag + "]";
     }
     return "?";
 }
@@ -47195,24 +47375,8 @@ function spuEvalFormulaExplain(it, tokens, stack, asPlan) {
                 }
             }
         } else if (tok.t === "ind") {
-            if (!tok.id || tok.id === (it && it.indicator_id)) {
-                missing = true;
-                parts.push("—");
-                return;
-            }
-            const other = ((appData.management && appData.management.indicators) || []).find(function (x) {
-                return x && x.indicator_id === tok.id;
-            });
-            if (!other) {
-                missing = true;
-                parts.push("—");
-                return;
-            }
-            if (asPlan) val = mgmtIndicatorPlan(other);
-            else {
-                const read = mgmtReadIndicator(other, (stack || []).concat([it && it.indicator_id]));
-                val = read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
-            }
+            val = spuReadFormulaIndOperand(it, tok, stack || [], !!asPlan);
+            if (val == null) missing = true;
         }
         if (val == null || !Number.isFinite(Number(val))) missing = true;
         parts.push(spuFormatFormulaOperand(tok, val));
@@ -47224,6 +47388,91 @@ function spuEvalFormulaExplain(it, tokens, stack, asPlan) {
         result: result,
         missing: missing || result == null || !Number.isFinite(Number(result))
     };
+}
+
+function spuIndFormTokenList(which) {
+    if (which === "plan") {
+        if (!Array.isArray(spuIndFormPlanFormula)) spuIndFormPlanFormula = [];
+        return spuIndFormPlanFormula;
+    }
+    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
+    return spuIndFormFormula;
+}
+
+function spuIndFormulaChipKindSelectHtml(tok, i, which) {
+    const w = which === "plan" ? "plan" : "fact";
+    let selected = "op";
+    if (!tok) selected = "ind_fact_0";
+    else if (tok.t === "lp" || tok.t === "rp") selected = tok.t;
+    else if (tok.t === "op") selected = "op";
+    else if (tok.t === "num") selected = "num";
+    else selected = spuFormulaIndKindKey(tok);
+    const opts = [
+        ["ind_fact_0", spuFormulaIndKindLabel("ind_fact_0")],
+        ["ind_fact_m1", spuFormulaIndKindLabel("ind_fact_m1")],
+        ["ind_plan_0", spuFormulaIndKindLabel("ind_plan_0")],
+        ["ind_plan_m1", spuFormulaIndKindLabel("ind_plan_m1")],
+        ["op", "Операция"],
+        ["num", "Число"],
+        ["lp", "("],
+        ["rp", ")"]
+    ];
+    let html = '<select onchange="spuIndFormulaChangeKind(' + i + ',this.value,\'' + w + '\')" title="Тип элемента">';
+    opts.forEach(function (p) {
+        html += '<option value="' + p[0] + '"' + (selected === p[0] || (selected === "ind" && p[0] === "ind_fact_0") ? " selected" : "") + ">"
+            + escapeHtml(p[1]) + "</option>";
+    });
+    html += "</select>";
+    return html;
+}
+
+function spuIndFormulaChipsHtml(which, inds) {
+    const w = which === "plan" ? "plan" : "fact";
+    const tokens = spuIndFormTokenList(w);
+    let html = '<div class="spu-fx-row">';
+    if (!tokens.length) {
+        html += '<span class="note">Формула пуста. Нажмите «+ Добавить элемент».</span>';
+    }
+    tokens.forEach(function (tok, i) {
+        html += '<div class="spu-fx-chip" data-i="' + i + '" data-fx="' + w + '">';
+        html += spuIndFormulaChipKindSelectHtml(tok, i, w);
+        if (tok && tok.t === "ind") {
+            html += '<select onchange="spuIndFormulaSetInd(' + i + ',this.value,\'' + w + '\')" title="Показатель СПУ">'
+                + '<option value="">— выберите —</option>';
+            (inds || []).forEach(function (x) {
+                html += '<option value="' + escapeAttribute(x.indicator_id) + '"'
+                    + (tok.id === x.indicator_id ? " selected" : "") + ">"
+                    + escapeHtml(x.name || x.indicator_id)
+                    + (x.unit ? " · " + escapeHtml(x.unit) : "")
+                    + "</option>";
+            });
+            html += "</select>";
+        } else if (tok && tok.t === "op") {
+            const ov = tok.v === "×" ? "*" : (tok.v === "÷" ? "/" : tok.v);
+            html += '<select onchange="spuIndFormulaSetOp(' + i + ',this.value,\'' + w + '\')">'
+                + [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].map(function (p) {
+                    return '<option value="' + p[0] + '"' + (ov === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
+                }).join("")
+                + "</select>";
+        } else if (tok && tok.t === "num") {
+            html += '<input type="number" step="any" value="' + escapeAttribute(String(tok.v != null ? tok.v : 100)) + '"'
+                + ' onchange="spuIndFormulaSetNum(' + i + ',this.value,\'' + w + '\')">';
+        }
+        html += ' <button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaRemove(' + i + ',\'' + w + '\')" title="Удалить">×</button>';
+        html += "</div>";
+    });
+    html += "</div>";
+    html += '<div class="toolbar" style="flex-wrap:wrap;gap:6px;margin-top:6px">'
+        + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaAddElement(\'ind_fact_0\',\'' + w + '\')">+ Добавить элемент</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'op\',\'' + w + '\')">+ Операция</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'num\',\'' + w + '\')">+ Число</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'lp\',\'' + w + '\')">(</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'rp\',\'' + w + '\')">)</button>'
+        + "</div>";
+    html += '<div class="spu-fx-human"><b>Запись:</b> '
+        + escapeHtml(spuFormulaHumanText(tokens, spuIndFormSources) || "—")
+        + "</div>";
+    return html;
 }
 
 function renderSpuIndFormulaBox() {
@@ -47241,56 +47490,25 @@ function renderSpuIndFormulaBox() {
         if (aggEl) aggEl.value = "formula";
     }
     if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
+    if (!Array.isArray(spuIndFormPlanFormula)) spuIndFormPlanFormula = [];
     const selfId = ((document.getElementById("spuIndId") || {}).value || "");
     const inds = spuFormulaOperandIndicators(selfId);
     const unitNow = ((document.getElementById("spuIndUnit") || {}).value || "number");
-    let html = '<div class="spu-fx-box"><h4>Формула</h4>'
-        + '<div class="note">Составьте формулу из Показателей СПУ, операций, чисел и скобок. '
-        + "Внутри хранятся spu_indicator_id — переименование источника формулу не ломает. "
-        + "Период берётся из текущего отчётного периода СПУ.</div>";
+    let html = '<div class="spu-fx-box"><h4>Формула факта</h4>'
+        + '<div class="note">Составьте формулу из фактов/планов СПУ текущей или предыдущей недели, операций, чисел и скобок. '
+        + "Тип и неделя задаются в списке типа элемента; справа — конкретный показатель. "
+        + "Период проверки — относительно выбранной недели чт–ср.</div>";
     if (unitNow === "percent") {
         html += '<div class="note" style="color:#8a5a00">Тип «Процент»: значение уже в пунктах (5,7 = 5,7%). '
             + "Шаблон отклонения: ( 1 − A ÷ B ) × 100. Без внешних скобок 1 − A ÷ B × 100 даст неверный результат.</div>";
     }
-    html += '<div class="spu-fx-row">';
-    if (!spuIndFormFormula.length) {
-        html += '<span class="note">Формула пуста. Нажмите «+ Добавить элемент».</span>';
-    }
-    spuIndFormFormula.forEach(function (tok, i) {
-        const kind = tok.t === "lp" || tok.t === "rp" ? tok.t : (tok.t || "ind");
-        html += '<div class="spu-fx-chip" data-i="' + i + '">';
-        html += '<select onchange="spuIndFormulaChangeKind(' + i + ',this.value)" title="Тип элемента">'
-            + '<option value="ind"' + (kind === "ind" ? " selected" : "") + ">Показатель СПУ</option>"
-            + '<option value="op"' + (kind === "op" ? " selected" : "") + ">Операция</option>"
-            + '<option value="num"' + (kind === "num" ? " selected" : "") + ">Число</option>"
-            + '<option value="lp"' + (kind === "lp" ? " selected" : "") + ">(</option>"
-            + '<option value="rp"' + (kind === "rp" ? " selected" : "") + ">)</option>"
-            + "</select>";
-        if (kind === "ind") {
-            html += '<select onchange="spuIndFormulaSetInd(' + i + ',this.value)" title="Показатель СПУ">'
-                + '<option value="">— выберите —</option>';
-            inds.forEach(function (x) {
-                html += '<option value="' + escapeAttribute(x.indicator_id) + '"'
-                    + (tok.id === x.indicator_id ? " selected" : "") + ">"
-                    + escapeHtml(x.name || x.indicator_id)
-                    + (x.unit ? " · " + escapeHtml(x.unit) : "")
-                    + "</option>";
-            });
-            html += "</select>";
-        } else if (kind === "op") {
-            const ov = tok.v === "×" ? "*" : (tok.v === "÷" ? "/" : tok.v);
-            html += '<select onchange="spuIndFormulaSetOp(' + i + ',this.value)">'
-                + [["+", "+"], ["-", "−"], ["*", "×"], ["/", "÷"]].map(function (p) {
-                    return '<option value="' + p[0] + '"' + (ov === p[0] ? " selected" : "") + ">" + p[1] + "</option>";
-                }).join("")
-                + "</select>";
-        } else if (kind === "num") {
-            html += '<input type="number" step="any" value="' + escapeAttribute(String(tok.v != null ? tok.v : 100)) + '"'
-                + ' onchange="spuIndFormulaSetNum(' + i + ',this.value)">';
-        }
-        html += ' <button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaRemove(' + i + ')" title="Удалить">×</button>';
-        html += "</div>";
-    });
+    html += spuIndFormulaChipsHtml("fact", inds);
+    html += '</div><div class="spu-fx-box" style="margin-top:10px"><h4>Формула плана</h4>'
+        + '<label class="check"><input id="spuIndPlanCalcOn" type="checkbox"'
+        + (spuIndFormPlanCalcOn ? " checked" : "")
+        + ' onchange="spuIndFormPlanCalcOn=!!this.checked"> Считать план по формуле</label>'
+        + '<div class="note">Результат показывается в колонке «План» План–факта. Ручные и месячные планы не удаляются и снова используются при выключении галочки.</div>';
+    html += spuIndFormulaChipsHtml("plan", inds);
     html += "</div>";
     if (!spuIndFormFormulaEffectiveFrom) spuIndFormFormulaEffectiveFrom = "2026-11-05";
     if (!spuIndFormCheckWeekFrom) spuIndFormCheckWeekFrom = "2026-11-05";
@@ -47308,21 +47526,14 @@ function renderSpuIndFormulaBox() {
         + spuIndFormulaWeekOptionsHtml(spuIndFormCheckWeekFrom)
         + "</select></div>";
     html += '<div class="toolbar" style="flex-wrap:wrap;gap:6px;margin-top:6px">'
-        + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaAddElement(\'ind\')">+ Добавить элемент</button>'
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'op\')">+ Операция</button>'
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'num\')">+ Число</button>'
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'lp\')">(</button>'
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'rp\')">)</button>'
-        + '<button type="button" class="btn btn-primary" onclick="spuIndFormulaCheckForPeriod()">Проверить формулу за период</button>'
-        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaCheck()">Проверить (текущий период UI)</button>'
-        + "</div>";
-    html += '<div class="spu-fx-human"><b>Запись:</b> '
-        + escapeHtml(spuFormulaHumanText(spuIndFormFormula, spuIndFormSources) || "—")
+        + '<button type="button" class="btn btn-primary" onclick="spuIndFormulaCheckForPeriod(null,\'fact\')">Проверить формулу факта</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaCheckForPeriod(null,\'plan\')">Проверить формулу плана</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaCheck()">Проверить факт (текущий период UI)</button>'
         + "</div>";
     html += '<div id="spuIndFormulaCheck" class="spu-fx-check" style="display:none"></div>';
-    html += "</div>";
     box.innerHTML = html;
 }
+
 
 function spuIndFormulaWeekOptionsHtml(selectedFrom) {
     const sel = String(selectedFrom || "2026-11-05");
@@ -47367,11 +47578,11 @@ function spuIndFormulaWeekOptionsHtml(selectedFrom) {
     }).join("");
 }
 
-/** Подробная расшифровка черновика формулы на фактах выбранной недели (без записи). */
-function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom) {
+function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom, asPlan) {
     const rows = [];
     let missing = false;
-    (tokens || []).forEach(function (tok, idx) {
+    const usePlan = !!asPlan;
+    (tokens || []).forEach(function (tok) {
         if (!tok) return;
         if (tok.t === "op" || tok.t === "lp" || tok.t === "rp") {
             rows.push({ kind: "op", text: spuFormulaTokenLabel(tok) });
@@ -47382,15 +47593,34 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom) {
             return;
         }
         if (tok.t === "ind") {
-            const id = String(tok.id || "");
+            const n = spuFormulaIndTokenNormalize(tok);
+            const id = String(n.id || "");
+            const valueKind = n.value_kind;
+            const weekOff = n.week_offset;
+            const srcWeekFrom = spuFormulaOperandWeekFrom(weekFrom, weekOff);
+            let srcWeek = null;
+            try { srcWeek = mgmtSpuReportingWeek(srcWeekFrom); } catch (errSW) { srcWeek = null; }
+            const srcWeekLabel = srcWeek
+                ? ((typeof mgmtFmtRu === "function"
+                    ? (mgmtFmtRu(srcWeek.start_date) + "–" + mgmtFmtRu(srcWeek.end_date))
+                    : (srcWeek.start_date + "–" + srcWeek.end_date)))
+                : (srcWeekFrom || "—");
             if (!id) {
                 missing = true;
-                rows.push({ kind: "ind", id: "", name: "— не выбран —", value: null, reason: "В формуле не выбран показатель." });
+                rows.push({
+                    kind: "ind", id: "", name: "— не выбран —", value: null,
+                    value_kind: valueKind, week_offset: weekOff, week_label: srcWeekLabel,
+                    reason: "В формуле не выбран показатель."
+                });
                 return;
             }
-            if (id === (draft && draft.indicator_id)) {
+            if (id === (draft && draft.indicator_id) && valueKind === "fact" && weekOff === 0) {
                 missing = true;
-                rows.push({ kind: "ind", id: id, name: "сам показатель", value: null, reason: "Самоссылка запрещена." });
+                rows.push({
+                    kind: "ind", id: id, name: "сам показатель", value: null,
+                    value_kind: valueKind, week_offset: weekOff, week_label: srcWeekLabel,
+                    reason: "Самоссылка запрещена."
+                });
                 return;
             }
             const other = ((appData.management && appData.management.indicators) || []).find(function (x) {
@@ -47398,17 +47628,20 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom) {
             });
             if (!other) {
                 missing = true;
-                rows.push({ kind: "ind", id: id, name: id, value: null, reason: "Показатель с таким ID не найден." });
+                rows.push({
+                    kind: "ind", id: id, name: id, value: null,
+                    value_kind: valueKind, week_offset: weekOff, week_label: srcWeekLabel,
+                    reason: "Показатель с таким ID не найден."
+                });
                 return;
             }
-            const read = mgmtReadIndicator(other, [draft && draft.indicator_id].filter(Boolean));
-            const val = read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+            const val = spuReadFormulaIndOperand(draft, tok, [draft && draft.indicator_id].filter(Boolean), usePlan);
             let reason = "";
             if (val == null) {
                 missing = true;
-                if (read && read.status === "error") reason = read.message || "ошибка периода / цикл";
-                else if (read && read.status === "one_c") reason = "Источник 1С не подключен";
-                else reason = "Нет фактического значения за выбранную неделю (пусто / не число).";
+                reason = valueKind === "plan"
+                    ? "Нет планового значения за выбранную неделю источника."
+                    : "Нет фактического значения за выбранную неделю источника (пусто / не число / ÷0).";
             }
             rows.push({
                 kind: "ind",
@@ -47416,11 +47649,13 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom) {
                 name: other.name || id,
                 value: val,
                 reason: reason,
-                status: read && read.status
+                value_kind: valueKind,
+                week_offset: weekOff,
+                week_label: srcWeekLabel
             });
         }
     });
-    const result = spuEvalFormula(draft, tokens, [], false);
+    const result = spuEvalFormula(draft, tokens, [], usePlan);
     let week = null;
     try { week = mgmtSpuReportingWeek(weekFrom); } catch (errW) { week = null; }
     return {
@@ -47433,42 +47668,57 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom) {
     };
 }
 
-function spuIndFormulaAddElement(kind) {
-    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
-    if (kind === "op") spuIndFormFormula.push({ t: "op", v: "/" });
-    else if (kind === "num") spuIndFormFormula.push({ t: "num", v: 100 });
-    else if (kind === "lp") spuIndFormFormula.push({ t: "lp", v: "(" });
-    else if (kind === "rp") spuIndFormFormula.push({ t: "rp", v: ")" });
-    else spuIndFormFormula.push({ t: "ind", id: "" });
+function spuIndFormulaAddElement(kind, which) {
+    const list = spuIndFormTokenList(which);
+    const indTok = spuFormulaIndTokenFromKindKey(kind, "");
+    if (indTok) list.push(indTok);
+    else if (kind === "op") list.push({ t: "op", v: "/" });
+    else if (kind === "num") list.push({ t: "num", v: 100 });
+    else if (kind === "lp") list.push({ t: "lp", v: "(" });
+    else if (kind === "rp") list.push({ t: "rp", v: ")" });
+    else list.push(spuFormulaIndTokenNormalize({ t: "ind", id: "", value_kind: "fact", week_offset: 0 }));
     renderSpuIndFormulaBox();
 }
 
-function spuIndFormulaChangeKind(i, kind) {
-    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
-    if (kind === "op") spuIndFormFormula[i] = { t: "op", v: "/" };
-    else if (kind === "num") spuIndFormFormula[i] = { t: "num", v: 100 };
-    else if (kind === "lp") spuIndFormFormula[i] = { t: "lp", v: "(" };
-    else if (kind === "rp") spuIndFormFormula[i] = { t: "rp", v: ")" };
-    else spuIndFormFormula[i] = { t: "ind", id: "" };
+function spuIndFormulaChangeKind(i, kind, which) {
+    const list = spuIndFormTokenList(which);
+    if (!list[i]) return;
+    const prevId = list[i].t === "ind" ? list[i].id : "";
+    const indTok = spuFormulaIndTokenFromKindKey(kind, prevId);
+    if (indTok) list[i] = indTok;
+    else if (kind === "op") list[i] = { t: "op", v: "/" };
+    else if (kind === "num") list[i] = { t: "num", v: 100 };
+    else if (kind === "lp") list[i] = { t: "lp", v: "(" };
+    else if (kind === "rp") list[i] = { t: "rp", v: ")" };
+    else list[i] = spuFormulaIndTokenNormalize({ t: "ind", id: prevId || "", value_kind: "fact", week_offset: 0 });
     renderSpuIndFormulaBox();
 }
 
-function spuIndFormulaSetInd(i, id) {
-    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
-    spuIndFormFormula[i] = { t: "ind", id: String(id || "") };
+function spuIndFormulaSetInd(i, id, which) {
+    const list = spuIndFormTokenList(which);
+    if (!list[i]) return;
+    const prev = list[i].t === "ind" ? list[i] : { t: "ind", value_kind: "fact", week_offset: 0 };
+    list[i] = spuFormulaIndTokenNormalize({
+        t: "ind",
+        id: String(id || ""),
+        value_kind: prev.value_kind,
+        week_offset: prev.week_offset
+    });
     renderSpuIndFormulaBox();
 }
 
-function spuIndFormulaSetOp(i, op) {
-    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
-    spuIndFormFormula[i] = { t: "op", v: String(op || "/") };
+function spuIndFormulaSetOp(i, op, which) {
+    const list = spuIndFormTokenList(which);
+    if (!list[i]) return;
+    list[i] = { t: "op", v: String(op || "/") };
     renderSpuIndFormulaBox();
 }
 
-function spuIndFormulaSetNum(i, raw) {
-    if (!Array.isArray(spuIndFormFormula) || !spuIndFormFormula[i]) return;
+function spuIndFormulaSetNum(i, raw, which) {
+    const list = spuIndFormTokenList(which);
+    if (!list[i]) return;
     const n = Number(String(raw == null ? "" : raw).replace(",", "."));
-    spuIndFormFormula[i] = { t: "num", v: Number.isFinite(n) ? n : 0 };
+    list[i] = { t: "num", v: Number.isFinite(n) ? n : 0 };
     renderSpuIndFormulaBox();
 }
 
@@ -47484,14 +47734,13 @@ function spuIndFormulaPushNum(preset) {
 }
 
 function spuIndFormulaPush(tok) {
-    if (!Array.isArray(spuIndFormFormula)) spuIndFormFormula = [];
-    spuIndFormFormula.push(tok);
+    spuIndFormTokenList("fact").push(tok);
     renderSpuIndFormulaBox();
 }
 
-function spuIndFormulaRemove(i) {
-    if (!Array.isArray(spuIndFormFormula)) return;
-    spuIndFormFormula.splice(i, 1);
+function spuIndFormulaRemove(i, which) {
+    const list = spuIndFormTokenList(which);
+    list.splice(i, 1);
     renderSpuIndFormulaBox();
 }
 
@@ -47503,21 +47752,24 @@ function spuIndFormulaCheck() {
     } catch (err) {
         weekFrom = spuIndFormCheckWeekFrom || "2026-11-05";
     }
-    spuIndFormulaCheckForPeriod(weekFrom);
+    spuIndFormulaCheckForPeriod(weekFrom, "fact");
 }
 
-function spuIndFormulaCheckForPeriod(forcedWeekFrom) {
+function spuIndFormulaCheckForPeriod(forcedWeekFrom, which) {
     const box = document.getElementById("spuIndFormulaCheck");
     if (!box) return;
+    const mode = which === "plan" ? "plan" : "fact";
     const weekEl = document.getElementById("spuIndFormulaCheckWeek");
     const weekFrom = String(forcedWeekFrom || (weekEl && weekEl.value) || spuIndFormCheckWeekFrom || "2026-11-05");
     spuIndFormCheckWeekFrom = weekFrom;
     const effEl = document.getElementById("spuIndFormulaEffectiveFrom");
     if (effEl && effEl.value) spuIndFormFormulaEffectiveFrom = effEl.value;
-    const tokens = (spuIndFormFormula || []).slice();
+    const planOnEl = document.getElementById("spuIndPlanCalcOn");
+    if (planOnEl) spuIndFormPlanCalcOn = !!planOnEl.checked;
+    const tokens = spuIndFormTokenList(mode).slice();
     if (!tokens.length) {
         box.style.display = "";
-        box.innerHTML = "Формула пуста.";
+        box.innerHTML = mode === "plan" ? "Формула плана пуста." : "Формула факта пуста.";
         return;
     }
     const emptyInd = tokens.some(function (t) { return t && t.t === "ind" && !t.id; });
@@ -47533,7 +47785,9 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom) {
     const draft = {
         indicator_id: selfId,
         sources: spuFormulaSourcesFromExpr(tokens),
-        formula_expr: tokens,
+        formula_expr: mode === "fact" ? tokens : (spuIndFormFormula || []).slice(),
+        plan_formula_expr: mode === "plan" ? tokens : (spuIndFormPlanFormula || []).slice(),
+        plan_calc_mode: spuIndFormPlanCalcOn ? "formula" : "manual",
         aggregation_type: "formula",
         calc_mode: "formula",
         source_type: "calculated",
@@ -47550,15 +47804,17 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom) {
                 ? (mgmtFmtRu(week.start_date) + "–" + mgmtFmtRu(week.end_date))
                 : (week.start_date + "–" + week.end_date)))
             : weekFrom;
-        html += "<div><b>Выбранная неделя:</b> " + escapeHtml(rangeRu)
+        html += "<div><b>Выбранная неделя расчёта:</b> " + escapeHtml(rangeRu)
             + " <span class=\"note\">(week:" + escapeHtml(week && week.start_date || weekFrom) + ")</span></div>";
+        html += "<div style=\"margin-top:6px\"><b>Проверяется:</b> "
+            + (mode === "plan" ? "формула плана" : "формула факта") + "</div>";
         html += "<div style=\"margin-top:6px\"><b>Черновик формулы:</b> "
             + escapeHtml(spuFormulaHumanText(tokens, draft.sources) || "—") + "</div>";
-        html += '<div class="note">Проверка считает несохранённый черновик на фактах выбранной недели. '
-            + "Исторические source_versions и факты не изменяются.</div>";
+        html += '<div class="note">Проверка считает несохранённый черновик относительно выбранной недели. '
+            + "Исторические source_versions, факты и ручные планы не изменяются.</div>";
 
         if (typeof spuFormulaFactPeriodConflict === "function") {
-            const periodConflict = spuFormulaFactPeriodConflict(draft, tokens);
+            const periodConflict = spuFormulaFactPeriodConflict(draft, tokens, weekFrom);
             if (periodConflict && periodConflict.ok === false) {
                 html += '<div style="color:#b45309;margin-top:8px">'
                     + String(periodConflict.message || "").split("\n").map(function (line) {
@@ -47571,21 +47827,24 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom) {
             }
         }
 
-        const detail = spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom);
+        const detail = spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom, mode === "plan");
         html += '<table class="spu-fx-check-table" style="margin-top:8px;width:100%;border-collapse:collapse">';
-        html += "<tr><th align=\"left\">Элемент</th><th align=\"left\">ID</th><th align=\"right\">Факт</th><th align=\"left\">Комментарий</th></tr>";
+        html += "<tr><th align=\"left\">Показатель</th><th align=\"left\">Тип</th><th align=\"left\">Неделя источника</th>"
+            + "<th align=\"right\">Значение</th><th align=\"left\">Комментарий</th></tr>";
         detail.rows.forEach(function (row) {
             if (row.kind === "op" || row.kind === "num") {
-                html += "<tr><td colspan=\"4\">" + escapeHtml(row.text || "") + "</td></tr>";
+                html += "<tr><td colspan=\"5\">" + escapeHtml(row.text || "") + "</td></tr>";
                 return;
             }
-            const factTxt = row.value == null
+            const valTxt = row.value == null
                 ? "нет данных"
                 : mgmtFormatValue({ unit: unit }, row.value, "auto");
+            const typeTxt = row.value_kind === "plan" ? "План" : "Факт";
             html += "<tr>"
                 + "<td>" + escapeHtml(row.name || "—") + "</td>"
-                + "<td><code>" + escapeHtml(row.id || "—") + "</code></td>"
-                + "<td align=\"right\">" + escapeHtml(String(factTxt)) + "</td>"
+                + "<td>" + escapeHtml(typeTxt) + "</td>"
+                + "<td>" + escapeHtml(row.week_label || "—") + "</td>"
+                + "<td align=\"right\">" + escapeHtml(String(valTxt)) + "</td>"
                 + "<td>" + escapeHtml(row.reason || "") + "</td>"
                 + "</tr>";
         });
@@ -47607,7 +47866,9 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom) {
         const plan = spuFormulaVersionPlan(editIt || { source_versions: [] }, eff, {
             sources: draft.sources,
             aggregation_type: "formula",
-            formula_expr: tokens,
+            formula_expr: (spuIndFormFormula || []).slice(),
+            plan_formula_expr: (spuIndFormPlanFormula || []).slice(),
+            plan_calc_mode: spuIndFormPlanCalcOn ? "formula" : "manual",
             calc_mode: "formula"
         });
         html += '<div style="margin-top:10px"><b>Влияние при сохранении с даты '
@@ -47983,7 +48244,13 @@ function saveSpuOrgIndicator() {
         }
         sources = spuFormulaSourcesFromExpr(tokens);
         spuIndFormSources = sources;
-        if (spuWouldCycle(editId || "mind_new", { sources: sources, formula_expr: tokens, aggregation_type: "formula", calc_mode: "formula" })) {
+        if (spuWouldCycle(editId || "mind_new", {
+            sources: sources,
+            formula_expr: tokens,
+            plan_formula_expr: spuIndFormPlanFormula || [],
+            aggregation_type: "formula",
+            calc_mode: "formula"
+        })) {
             toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
@@ -48016,7 +48283,13 @@ function saveSpuOrgIndicator() {
             toast("Добавьте хотя бы один источник.", "error");
             return;
         }
-        if (spuWouldCycle(editId || "mind_new", { sources: sources, formula_expr: spuIndFormFormula, aggregation_type: calc, calc_mode: calc })) {
+        if (spuWouldCycle(editId || "mind_new", {
+            sources: sources,
+            formula_expr: spuIndFormFormula,
+            plan_formula_expr: spuIndFormPlanFormula || [],
+            aggregation_type: calc,
+            calc_mode: calc
+        })) {
             toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
@@ -48108,6 +48381,8 @@ function saveSpuOrgIndicator() {
         it.aggregation_type = "none";
         it.calc_mode = "none";
         it.formula_expr = [];
+        it.plan_formula_expr = [];
+        it.plan_calc_mode = "manual";
         it.plan_mode = "spu";
         const factVal = ((document.getElementById("spuIndFact") || {}).value || "");
         if (document.getElementById("spuIndFact")) {
@@ -48165,6 +48440,16 @@ function saveSpuOrgIndicator() {
     it.formula_expr = (kind === "calculated" || calc === "formula")
         ? spuNormalizeFormulaTokens(it, it.sources, (spuIndFormFormula || []).slice())
         : [];
+    {
+        const planOnEl = document.getElementById("spuIndPlanCalcOn");
+        if (planOnEl) spuIndFormPlanCalcOn = !!planOnEl.checked;
+        it.plan_formula_expr = (kind === "calculated" || calc === "formula")
+            ? spuNormalizeFormulaTokens(it, it.sources, (spuIndFormPlanFormula || []).slice())
+            : [];
+        it.plan_calc_mode = (kind === "calculated" || calc === "formula") && spuIndFormPlanCalcOn
+            ? "formula"
+            : "manual";
+    }
     if (kind === "calculated") {
         it.aggregation_type = "formula";
         it.calc_mode = "formula";
@@ -48191,7 +48476,11 @@ function saveSpuOrgIndicator() {
         const effElSave = document.getElementById("spuIndFormulaEffectiveFrom");
         if (effElSave && effElSave.value) spuIndFormFormulaEffectiveFrom = effElSave.value;
         const effFrom = String(spuIndFormFormulaEffectiveFrom || "").trim();
-        let commitOpts = { effectiveFrom: effFrom || "2026-11-05" };
+        let commitOpts = {
+            effectiveFrom: effFrom || "2026-11-05",
+            planFormula: it.plan_formula_expr || [],
+            planCalcMode: it.plan_calc_mode || "manual"
+        };
         let commitRes = spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, commitOpts);
         if (commitRes && commitRes.blocked) {
             toast(commitRes.message || "Сохранение формулы заблокировано из‑за истории версий.", "error");
@@ -54217,6 +54506,7 @@ function mgmtPfLeaderOptions(selected) {
 }
 
 function renderMgmtPlanFactHtml() {
+    spuFormulaEvalMemo = {};
     mgmtEnsurePfWeeks();
     const canHead = canEditMgmtIndicators() || isAppAdmin() || canOpenManagement();
     const canEdit = canEditMgmtIndicators();
