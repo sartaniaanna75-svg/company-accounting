@@ -43749,6 +43749,10 @@ let spuIndFormSources = [];
 let spuIndFormKind = "manual";
 let spuIndFormCalc = "sum";
 let spuIndFormFormula = [];
+/** Черновик UI: дата начала действия формулы (ISO). Не пишется в versions при простом открытии. */
+let spuIndFormFormulaEffectiveFrom = "";
+/** Черновик UI: четверг выбранной недели для «Проверить формулу за период». */
+let spuIndFormCheckWeekFrom = "";
 let spuIndListTab = "all";
 let spuIndListFilter = { q: "", dept: "", kind: "" };
 let spuIndSelected = {};
@@ -45243,8 +45247,213 @@ function spuActiveConfig(it) {
     };
 }
 
-function spuCommitSourceVersion(it, nextSources, nextAgg, nextFormula, nextCalc) {
-    if (!it) return;
+function spuIsoDateOk(iso) {
+    return /^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""));
+}
+
+function spuVersionCoversDay(v, day) {
+    if (!v || !spuIsoDateOk(day)) return false;
+    if (v.effective_from && String(v.effective_from) > day) return false;
+    if (v.effective_to && String(v.effective_to) < day) return false;
+    return true;
+}
+
+function spuVersionLabel(v) {
+    if (!v) return "—";
+    const a = v.effective_from || "?";
+    const b = v.effective_to ? v.effective_to : "∞";
+    return (v.version_id || "sver") + " [" + a + " … " + b + "]";
+}
+
+function spuSourceVersionFingerprint(cfg) {
+    return JSON.stringify({
+        s: ((cfg && cfg.sources) || []).map(function (s) {
+            return [s.source_type, s.source_metric_id, s.source_result, s.source_work_tab_id, s.source_submetric_id, s.source_sales_plan_view, s.source_sales_plan_field, s.source_timesheet_agg, s.source_department_id, s.source_indicator_id];
+        }),
+        a: cfg && cfg.aggregation_type,
+        c: cfg && cfg.calc_mode,
+        f: cfg && cfg.formula_expr
+    });
+}
+
+/**
+ * План безопасного изменения source_versions для формулы с даты from.
+ * Не мутирует it. modes: noop | create | inplace | split_tail | insert_segment | block.
+ */
+function spuFormulaVersionPlan(it, fromIso, payload) {
+    const from = String(fromIso || "").trim();
+    const today = todayIsoDate();
+    const body = {
+        sources: ((payload && payload.sources) || []).map(function (s) { return spuNewSourceRow(s); }),
+        aggregation_type: (payload && payload.aggregation_type) || "sum",
+        formula_expr: (payload && payload.formula_expr) || [],
+        calc_mode: (payload && payload.calc_mode) || (payload && payload.aggregation_type) || "sum"
+    };
+    const vers = (it && Array.isArray(it.source_versions)) ? it.source_versions.slice() : [];
+    const lines = [];
+    function pack(mode, ok, message, extra) {
+        return Object.assign({
+            ok: !!ok,
+            mode: mode,
+            message: message || "",
+            lines: lines.slice(),
+            from: from,
+            today: today,
+            payload: body,
+            needsConfirm: mode === "insert_segment" || mode === "split_tail"
+        }, extra || {});
+    }
+    if (!spuIsoDateOk(from)) {
+        return pack("block", false, "Укажите корректную дату начала действия формулы (ГГГГ-ММ-ДД).");
+    }
+    if (!vers.length) {
+        lines.push("Будет создана первая версия с " + from + " (открытая).");
+        lines.push("Недели план-факта с концом недели ≥ " + from + " получат новую формулу.");
+        return pack("create", true, "Создать первую версию формулы с " + from + ".", {
+            needsConfirm: false,
+            createFrom: from
+        });
+    }
+    const sameFrom = vers.filter(function (v) { return v && String(v.effective_from || "") === from; });
+    if (sameFrom.length > 1) {
+        return pack("block", false, "Несколько версий начинаются с " + from + ". Исправьте историю вручную.");
+    }
+    if (sameFrom.length === 1) {
+        const cur = sameFrom[0];
+        if (spuSourceVersionFingerprint(cur) === spuSourceVersionFingerprint(body)) {
+            return pack("noop", true, "Формула и источники уже совпадают с версией на " + from + ".", { needsConfirm: false });
+        }
+        lines.push("Обновится на месте: " + spuVersionLabel(cur));
+        lines.push("Интервал дат версии не изменится. Предыдущий текст формулы в этой версии будет заменён (даты сохранены).");
+        return pack("inplace", true, "Обновить формулу версии с " + from + " без сдвига дат.", {
+            needsConfirm: true,
+            target: cur
+        });
+    }
+    const covering = vers.filter(function (v) { return spuVersionCoversDay(v, from); });
+    if (covering.length !== 1) {
+        if (!covering.length) {
+            return pack("block", false,
+                "Дата " + from + " не покрыта ни одной версией (разрыв истории). Выберите дату внутри существующего интервала.");
+        }
+        return pack("block", false, "Дата " + from + " покрыта несколькими версиями (пересечение). Сохранение заблокировано.");
+    }
+    const V = covering[0];
+    if (!(String(V.effective_from || "") < from)) {
+        return pack("block", false, "Некорректный разрез version " + spuVersionLabel(V) + ".");
+    }
+    const later = vers.filter(function (v) {
+        return v && String(v.effective_from || "") > from;
+    }).sort(function (a, b) {
+        return String(a.effective_from).localeCompare(String(b.effective_from));
+    });
+    if (!later.length) {
+        const oldTo = V.effective_to ? String(V.effective_to) : "";
+        lines.push("Было: " + spuVersionLabel(V));
+        lines.push("Станет: " + (V.version_id || "sver") + " [" + (V.effective_from || "?") + " … " + isoAddDays(from, -1) + "]");
+        lines.push("Новая открытая версия [" + from + " … ∞] с исправленной формулой.");
+        lines.push("Недели с концом ≥ " + from + " перейдут на новую формулу; более ранние останутся на прежней.");
+        return pack("split_tail", true, "Разрезать текущую версию и открыть новую с " + from + ".", {
+            cover: V,
+            newTo: oldTo
+        });
+    }
+    const next = later[0];
+    const nextFrom = String(next.effective_from || "");
+    const segTo = isoAddDays(nextFrom, -1);
+    if (segTo < from) {
+        return pack("block", false, "Нельзя вставить сегмент: следующая версия начинается слишком рано (" + nextFrom + ").");
+    }
+    lines.push("Было:");
+    lines.push("  " + spuVersionLabel(V));
+    later.forEach(function (w) { lines.push("  " + spuVersionLabel(w)); });
+    lines.push("Станет (без удаления поздних версий):");
+    lines.push("  " + (V.version_id || "sver") + " [" + (V.effective_from || "?") + " … " + isoAddDays(from, -1) + "] — прежняя формула");
+    lines.push("  новая [" + from + " … " + segTo + "] — исправленная формула");
+    lines.push("  " + spuVersionLabel(next) + " и последующие — без изменения формулы");
+    lines.push("Недели с концом в [" + from + " … " + segTo + "] получат новую формулу.");
+    lines.push("Недели с концом ≥ " + nextFrom + " останутся на поздних версиях.");
+    return pack("insert_segment", true, "Вставить сегмент формулы с " + from + " до " + segTo + " без удаления поздних версий.", {
+        cover: V,
+        next: next,
+        segmentTo: segTo,
+        later: later
+    });
+}
+
+function spuApplyFormulaVersionPlan(it, plan) {
+    if (!it || !plan || !plan.ok) return false;
+    if (!Array.isArray(it.source_versions)) it.source_versions = [];
+    const body = plan.payload || {};
+    const sources = (body.sources || []).map(function (s) { return spuNewSourceRow(s); });
+    if (plan.mode === "noop") return true;
+    if (plan.mode === "create") {
+        it.source_versions.push({
+            version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
+            effective_from: plan.createFrom || plan.from || "2000-01-01",
+            effective_to: "",
+            sources: sources,
+            aggregation_type: body.aggregation_type || "sum",
+            formula_expr: body.formula_expr || [],
+            calc_mode: body.calc_mode || body.aggregation_type || "sum"
+        });
+        return true;
+    }
+    if (plan.mode === "inplace") {
+        const cur = plan.target;
+        if (!cur) return false;
+        cur.sources = sources;
+        cur.aggregation_type = body.aggregation_type || "sum";
+        cur.formula_expr = body.formula_expr || [];
+        cur.calc_mode = body.calc_mode || body.aggregation_type || "sum";
+        return true;
+    }
+    if (plan.mode === "split_tail") {
+        const V = plan.cover;
+        if (!V) return false;
+        V.effective_to = isoAddDays(plan.from, -1);
+        it.source_versions.push({
+            version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
+            effective_from: plan.from,
+            effective_to: "",
+            sources: sources,
+            aggregation_type: body.aggregation_type || "sum",
+            formula_expr: body.formula_expr || [],
+            calc_mode: body.calc_mode || body.aggregation_type || "sum"
+        });
+        return true;
+    }
+    if (plan.mode === "insert_segment") {
+        const V = plan.cover;
+        if (!V || !plan.segmentTo) return false;
+        V.effective_to = isoAddDays(plan.from, -1);
+        it.source_versions.push({
+            version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
+            effective_from: plan.from,
+            effective_to: plan.segmentTo,
+            sources: sources,
+            aggregation_type: body.aggregation_type || "sum",
+            formula_expr: body.formula_expr || [],
+            calc_mode: body.calc_mode || body.aggregation_type || "sum",
+            replaced_note: "insert_segment_before:" + ((plan.next && plan.next.version_id) || "")
+        });
+        // Стабильный порядок по effective_from.
+        it.source_versions.sort(function (a, b) {
+            return String((a && a.effective_from) || "").localeCompare(String((b && b.effective_from) || ""));
+        });
+        return true;
+    }
+    return false;
+}
+
+/**
+ * options.effectiveFrom — ISO дата начала действия.
+ * options.confirm — true, если пользователь уже подтвердил план с needsConfirm.
+ * Возвращает { ok, plan, blocked, message }.
+ */
+function spuCommitSourceVersion(it, nextSources, nextAgg, nextFormula, nextCalc, options) {
+    options = options || {};
+    if (!it) return { ok: false, message: "нет показателя" };
     const today = todayIsoDate();
     const payload = {
         sources: (nextSources || []).map(function (s) { return spuNewSourceRow(s); }),
@@ -45252,47 +45461,59 @@ function spuCommitSourceVersion(it, nextSources, nextAgg, nextFormula, nextCalc)
         formula_expr: nextFormula || [],
         calc_mode: nextCalc || nextAgg || "sum"
     };
-    const fp = function (cfg) {
-        return JSON.stringify({
-            s: (cfg.sources || []).map(function (s) {
-                return [s.source_type, s.source_metric_id, s.source_result, s.source_work_tab_id, s.source_submetric_id, s.source_sales_plan_view, s.source_sales_plan_field, s.source_timesheet_agg, s.source_department_id, s.source_indicator_id];
-            }),
-            a: cfg.aggregation_type, c: cfg.calc_mode, f: cfg.formula_expr
-        });
-    };
     if (!Array.isArray(it.source_versions)) it.source_versions = [];
-    if (!it.source_versions.length) {
+
+    // Совместимость: без даты — прежнее поведение «с сегодня».
+    let from = String(options.effectiveFrom || "").trim();
+    if (!from) {
+        if (!it.source_versions.length) {
+            it.source_versions.push({
+                version_id: nextPrefixedId("sver", []),
+                effective_from: "2000-01-01",
+                effective_to: "",
+                sources: payload.sources,
+                aggregation_type: payload.aggregation_type,
+                formula_expr: payload.formula_expr,
+                calc_mode: payload.calc_mode
+            });
+            return { ok: true, mode: "create_legacy", plan: null };
+        }
+        const open = it.source_versions.filter(function (v) { return v && !v.effective_to; });
+        const cur = open.length ? open[open.length - 1] : it.source_versions[it.source_versions.length - 1];
+        if (cur && spuSourceVersionFingerprint(cur) === spuSourceVersionFingerprint(payload)) {
+            return { ok: true, mode: "noop", plan: null };
+        }
+        if (cur && String(cur.effective_from || "") >= today) {
+            cur.sources = payload.sources;
+            cur.aggregation_type = payload.aggregation_type;
+            cur.formula_expr = payload.formula_expr;
+            cur.calc_mode = payload.calc_mode;
+            return { ok: true, mode: "inplace_today", plan: null };
+        }
+        if (cur) cur.effective_to = isoAddDays(today, -1);
         it.source_versions.push({
-            version_id: nextPrefixedId("sver", []),
-            effective_from: "2000-01-01",
+            version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
+            effective_from: today,
             effective_to: "",
             sources: payload.sources,
             aggregation_type: payload.aggregation_type,
             formula_expr: payload.formula_expr,
             calc_mode: payload.calc_mode
         });
-        return;
+        return { ok: true, mode: "split_today", plan: null };
     }
-    const open = it.source_versions.filter(function (v) { return v && !v.effective_to; });
-    const cur = open.length ? open[open.length - 1] : it.source_versions[it.source_versions.length - 1];
-    if (cur && fp(cur) === fp(payload)) return;
-    if (cur && String(cur.effective_from || "") >= today) {
-        cur.sources = payload.sources;
-        cur.aggregation_type = payload.aggregation_type;
-        cur.formula_expr = payload.formula_expr;
-        cur.calc_mode = payload.calc_mode;
-        return;
+
+    const plan = spuFormulaVersionPlan(it, from, payload);
+    if (!plan.ok) {
+        return { ok: false, blocked: true, plan: plan, message: plan.message || "Сохранение заблокировано." };
     }
-    if (cur) cur.effective_to = isoAddDays(today, -1);
-    it.source_versions.push({
-        version_id: nextPrefixedId("sver", it.source_versions.map(function (v) { return v && v.version_id; })),
-        effective_from: today,
-        effective_to: "",
-        sources: payload.sources,
-        aggregation_type: payload.aggregation_type,
-        formula_expr: payload.formula_expr,
-        calc_mode: payload.calc_mode
-    });
+    if (plan.needsConfirm && !options.confirm) {
+        return { ok: false, needsConfirm: true, plan: plan, message: plan.message || "Требуется подтверждение." };
+    }
+    if (!spuApplyFormulaVersionPlan(it, plan)) {
+        return { ok: false, message: "Не удалось применить план версий." };
+    }
+    return { ok: true, plan: plan, mode: plan.mode };
 }
 
 function spuSafeDiv(a, b) {
@@ -46670,6 +46891,9 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         ];
         if (it.calc_op === "percent") spuIndFormFormula.push({ t: "op", v: "*" }, { t: "num", v: 100 });
     }
+    // Черновики UI дат: не мутируют source_versions при открытии. Дефолт первичной настройки — 05.11.2026.
+    spuIndFormFormulaEffectiveFrom = "2026-11-05";
+    spuIndFormCheckWeekFrom = "2026-11-05";
     spuIndFormSources = sources.length ? sources : (kind === "manual" || kind === "one_c" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
     spuIndSrcMetricFilters = {};
     (spuIndFormSources || []).forEach(function (s) {
@@ -47054,13 +47278,29 @@ function renderSpuIndFormulaBox() {
         html += "</div>";
     });
     html += "</div>";
+    if (!spuIndFormFormulaEffectiveFrom) spuIndFormFormulaEffectiveFrom = "2026-11-05";
+    if (!spuIndFormCheckWeekFrom) spuIndFormCheckWeekFrom = "2026-11-05";
+    html += '<div class="form-group" style="margin-top:8px">'
+        + '<label>Дата начала действия формулы</label>'
+        + '<input type="date" id="spuIndFormulaEffectiveFrom" value="'
+        + escapeAttribute(spuIndFormFormulaEffectiveFrom)
+        + '" onchange="spuIndFormFormulaEffectiveFrom=this.value">'
+        + '<div class="note">С этой даты новая версия формулы действует для недель план-факта '
+        + "(ориентир — конец недели). Для первичной настройки по умолчанию 05.11.2026. "
+        + "Открытие карточки само по себе историю версий не меняет.</div></div>";
+    html += '<div class="form-group">'
+        + '<label>Проверить формулу за период (чт–ср)</label>'
+        + '<select id="spuIndFormulaCheckWeek" onchange="spuIndFormCheckWeekFrom=this.value">'
+        + spuIndFormulaWeekOptionsHtml(spuIndFormCheckWeekFrom)
+        + "</select></div>";
     html += '<div class="toolbar" style="flex-wrap:wrap;gap:6px;margin-top:6px">'
         + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaAddElement(\'ind\')">+ Добавить элемент</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'op\')">+ Операция</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'num\')">+ Число</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'lp\')">(</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'rp\')">)</button>'
-        + '<button type="button" class="btn btn-primary" onclick="spuIndFormulaCheck()">Проверить формулу</button>'
+        + '<button type="button" class="btn btn-primary" onclick="spuIndFormulaCheckForPeriod()">Проверить формулу за период</button>'
+        + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaCheck()">Проверить (текущий период UI)</button>'
         + "</div>";
     html += '<div class="spu-fx-human"><b>Запись:</b> '
         + escapeHtml(spuFormulaHumanText(spuIndFormFormula, spuIndFormSources) || "—")
@@ -47068,6 +47308,115 @@ function renderSpuIndFormulaBox() {
     html += '<div id="spuIndFormulaCheck" class="spu-fx-check" style="display:none"></div>';
     html += "</div>";
     box.innerHTML = html;
+}
+
+function spuIndFormulaWeekOptionsHtml(selectedFrom) {
+    const sel = String(selectedFrom || "2026-11-05");
+    const weeks = [];
+    const seen = {};
+    function addIso(iso) {
+        if (!spuIsoDateOk(iso) || seen[iso]) return;
+        seen[iso] = true;
+        let w = null;
+        try { w = mgmtSpuReportingWeek(iso); } catch (err) { w = null; }
+        if (!w || !w.start_date) return;
+        weeks.push(w);
+    }
+    addIso("2026-11-05");
+    try {
+        const cur = mgmtSpuReportingWeek(todayIsoDate());
+        if (cur && cur.start_date) addIso(cur.start_date);
+    } catch (errC) {}
+    // Несколько соседних недель вокруг контрольной и текущей.
+    ["2026-10-29", "2026-11-05", "2026-11-12", "2026-11-19", "2026-11-26", "2026-12-03"].forEach(addIso);
+    try {
+        let anchor = todayIsoDate();
+        for (let i = 0; i < 8; i++) {
+            const w = mgmtSpuReportingWeek(anchor);
+            if (w && w.start_date) {
+                addIso(w.start_date);
+                anchor = isoAddDays(w.start_date, -7);
+            } else break;
+        }
+    } catch (errL) {}
+    weeks.sort(function (a, b) {
+        return String(a.start_date).localeCompare(String(b.start_date));
+    });
+    return weeks.map(function (w) {
+        const lab = (typeof mgmtFmtRu === "function"
+            ? (mgmtFmtRu(w.start_date) + "–" + mgmtFmtRu(w.end_date))
+            : (w.start_date + "–" + w.end_date))
+            + " (week:" + w.start_date + ")";
+        return '<option value="' + escapeAttribute(w.start_date) + '"'
+            + (w.start_date === sel ? " selected" : "") + ">"
+            + escapeHtml(lab) + "</option>";
+    }).join("");
+}
+
+/** Подробная расшифровка черновика формулы на фактах выбранной недели (без записи). */
+function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom) {
+    const rows = [];
+    let missing = false;
+    (tokens || []).forEach(function (tok, idx) {
+        if (!tok) return;
+        if (tok.t === "op" || tok.t === "lp" || tok.t === "rp") {
+            rows.push({ kind: "op", text: spuFormulaTokenLabel(tok) });
+            return;
+        }
+        if (tok.t === "num") {
+            rows.push({ kind: "num", text: String(tok.v), value: Number(tok.v) });
+            return;
+        }
+        if (tok.t === "ind") {
+            const id = String(tok.id || "");
+            if (!id) {
+                missing = true;
+                rows.push({ kind: "ind", id: "", name: "— не выбран —", value: null, reason: "В формуле не выбран показатель." });
+                return;
+            }
+            if (id === (draft && draft.indicator_id)) {
+                missing = true;
+                rows.push({ kind: "ind", id: id, name: "сам показатель", value: null, reason: "Самоссылка запрещена." });
+                return;
+            }
+            const other = ((appData.management && appData.management.indicators) || []).find(function (x) {
+                return x && x.indicator_id === id;
+            });
+            if (!other) {
+                missing = true;
+                rows.push({ kind: "ind", id: id, name: id, value: null, reason: "Показатель с таким ID не найден." });
+                return;
+            }
+            const read = mgmtReadIndicator(other, [draft && draft.indicator_id].filter(Boolean));
+            const val = read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
+            let reason = "";
+            if (val == null) {
+                missing = true;
+                if (read && read.status === "error") reason = read.message || "ошибка периода / цикл";
+                else if (read && read.status === "one_c") reason = "Источник 1С не подключен";
+                else reason = "Нет фактического значения за выбранную неделю (пусто / не число).";
+            }
+            rows.push({
+                kind: "ind",
+                id: id,
+                name: other.name || id,
+                value: val,
+                reason: reason,
+                status: read && read.status
+            });
+        }
+    });
+    const result = spuEvalFormula(draft, tokens, [], false);
+    let week = null;
+    try { week = mgmtSpuReportingWeek(weekFrom); } catch (errW) { week = null; }
+    return {
+        rows: rows,
+        missing: missing || result == null || !Number.isFinite(Number(result)),
+        result: result,
+        week: week,
+        weekFrom: weekFrom,
+        expression: spuFormulaHumanText(tokens, draft.sources || [])
+    };
 }
 
 function spuIndFormulaAddElement(kind) {
@@ -47133,8 +47482,24 @@ function spuIndFormulaRemove(i) {
 }
 
 function spuIndFormulaCheck() {
+    let weekFrom = "";
+    try {
+        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+        weekFrom = (r && r.from) || spuIndFormCheckWeekFrom || "2026-11-05";
+    } catch (err) {
+        weekFrom = spuIndFormCheckWeekFrom || "2026-11-05";
+    }
+    spuIndFormulaCheckForPeriod(weekFrom);
+}
+
+function spuIndFormulaCheckForPeriod(forcedWeekFrom) {
     const box = document.getElementById("spuIndFormulaCheck");
     if (!box) return;
+    const weekEl = document.getElementById("spuIndFormulaCheckWeek");
+    const weekFrom = String(forcedWeekFrom || (weekEl && weekEl.value) || spuIndFormCheckWeekFrom || "2026-11-05");
+    spuIndFormCheckWeekFrom = weekFrom;
+    const effEl = document.getElementById("spuIndFormulaEffectiveFrom");
+    if (effEl && effEl.value) spuIndFormFormulaEffectiveFrom = effEl.value;
     const tokens = (spuIndFormFormula || []).slice();
     if (!tokens.length) {
         box.style.display = "";
@@ -47149,6 +47514,8 @@ function spuIndFormulaCheck() {
     }
     const selfId = ((document.getElementById("spuIndId") || {}).value || "mind_preview");
     const unit = ((document.getElementById("spuIndUnit") || {}).value || "number");
+    const perChk = ((document.getElementById("spuIndPeriodicity") || {}).value || "week");
+    const wsChk = Number(((document.getElementById("spuIndWeekStart") || {}).value || 4));
     const draft = {
         indicator_id: selfId,
         sources: spuFormulaSourcesFromExpr(tokens),
@@ -47156,50 +47523,112 @@ function spuIndFormulaCheck() {
         aggregation_type: "formula",
         calc_mode: "formula",
         source_type: "calculated",
-        unit: unit
+        unit: unit,
+        periodicity: perChk,
+        reporting_week_start_day: (perChk === "week" && wsChk === 3) ? 3 : 4
     };
-    let periodNote = "";
-    try {
-        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
-        if (r && r.from && r.to) periodNote = "Период: " + r.from + " — " + r.to + ". ";
-    } catch (err) {}
-    if (typeof spuFormulaFactPeriodConflict === "function") {
-        const perChk = ((document.getElementById("spuIndPeriodicity") || {}).value || "week");
-        const wsChk = Number(((document.getElementById("spuIndWeekStart") || {}).value || 4));
-        draft.periodicity = perChk;
-        draft.reporting_week_start_day = (perChk === "week" && wsChk === 3) ? 3 : 4;
-        const periodConflict = spuFormulaFactPeriodConflict(draft, tokens);
-        if (periodConflict && periodConflict.ok === false) {
-            box.style.display = "";
-            box.innerHTML = periodNote
-                + '<span style="color:#b45309">'
-                + String(periodConflict.message || "").split("\n").map(function (line) {
-                    return escapeHtml(line);
-                }).join("<br>")
-                + "</span>";
-            return;
+    const run = function () {
+        let html = "";
+        let week = null;
+        try { week = mgmtSpuReportingWeek(weekFrom); } catch (errW) { week = null; }
+        const rangeRu = week
+            ? ((typeof mgmtFmtRu === "function"
+                ? (mgmtFmtRu(week.start_date) + "–" + mgmtFmtRu(week.end_date))
+                : (week.start_date + "–" + week.end_date)))
+            : weekFrom;
+        html += "<div><b>Выбранная неделя:</b> " + escapeHtml(rangeRu)
+            + " <span class=\"note\">(week:" + escapeHtml(week && week.start_date || weekFrom) + ")</span></div>";
+        html += "<div style=\"margin-top:6px\"><b>Черновик формулы:</b> "
+            + escapeHtml(spuFormulaHumanText(tokens, draft.sources) || "—") + "</div>";
+        html += '<div class="note">Проверка считает несохранённый черновик на фактах выбранной недели. '
+            + "Исторические source_versions и факты не изменяются.</div>";
+
+        if (typeof spuFormulaFactPeriodConflict === "function") {
+            const periodConflict = spuFormulaFactPeriodConflict(draft, tokens);
+            if (periodConflict && periodConflict.ok === false) {
+                html += '<div style="color:#b45309;margin-top:8px">'
+                    + String(periodConflict.message || "").split("\n").map(function (line) {
+                        return escapeHtml(line);
+                    }).join("<br>")
+                    + "</div>";
+                box.style.display = "";
+                box.innerHTML = html;
+                return;
+            }
         }
+
+        const detail = spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom);
+        html += '<table class="spu-fx-check-table" style="margin-top:8px;width:100%;border-collapse:collapse">';
+        html += "<tr><th align=\"left\">Элемент</th><th align=\"left\">ID</th><th align=\"right\">Факт</th><th align=\"left\">Комментарий</th></tr>";
+        detail.rows.forEach(function (row) {
+            if (row.kind === "op" || row.kind === "num") {
+                html += "<tr><td colspan=\"4\">" + escapeHtml(row.text || "") + "</td></tr>";
+                return;
+            }
+            const factTxt = row.value == null
+                ? "нет данных"
+                : mgmtFormatValue({ unit: unit }, row.value, "auto");
+            html += "<tr>"
+                + "<td>" + escapeHtml(row.name || "—") + "</td>"
+                + "<td><code>" + escapeHtml(row.id || "—") + "</code></td>"
+                + "<td align=\"right\">" + escapeHtml(String(factTxt)) + "</td>"
+                + "<td>" + escapeHtml(row.reason || "") + "</td>"
+                + "</tr>";
+        });
+        html += "</table>";
+
+        let resultHtml = "<b style=\"color:#b45309\">Нет данных</b>";
+        if (!detail.missing && detail.result != null && Number.isFinite(Number(detail.result))) {
+            resultHtml = "<b>" + escapeHtml(mgmtFormatValue(draft, detail.result, "auto")) + "</b>";
+        } else if (detail.missing) {
+            resultHtml = "<b style=\"color:#b45309\">Нет данных</b>"
+                + '<div class="note">Один или несколько операндов пусты, либо деление на ноль / нечисловой итог.</div>';
+        }
+        html += '<div style="margin-top:8px"><b>Итог черновика:</b> ' + resultHtml + "</div>";
+
+        const eff = String(spuIndFormFormulaEffectiveFrom || "2026-11-05");
+        const editIt = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === selfId;
+        });
+        const plan = spuFormulaVersionPlan(editIt || { source_versions: [] }, eff, {
+            sources: draft.sources,
+            aggregation_type: "formula",
+            formula_expr: tokens,
+            calc_mode: "formula"
+        });
+        html += '<div style="margin-top:10px"><b>Влияние при сохранении с даты '
+            + escapeHtml(eff) + ":</b></div>";
+        if (plan.lines && plan.lines.length) {
+            html += "<ul style=\"margin:4px 0 0 18px\">"
+                + plan.lines.map(function (ln) { return "<li>" + escapeHtml(ln) + "</li>"; }).join("")
+                + "</ul>";
+        }
+        if (!plan.ok) {
+            html += '<div style="color:#b91c1c;margin-top:6px"><b>Сохранение будет заблокировано:</b> '
+                + escapeHtml(plan.message || "") + "</div>";
+        } else if (plan.needsConfirm) {
+            html += '<div style="color:#92400e;margin-top:6px"><b>Потребуется подтверждение:</b> '
+                + escapeHtml(plan.message || "") + "</div>";
+        } else {
+            html += '<div class="note" style="margin-top:6px">' + escapeHtml(plan.message || "") + "</div>";
+        }
+
+        const percentHints = typeof spuFormulaPercentUxHints === "function"
+            ? spuFormulaPercentUxHints(tokens, unit, detail.result)
+            : [];
+        if (percentHints.length) {
+            html += '<div class="note" style="color:#8a5a00;margin-top:8px">'
+                + percentHints.map(function (h) { return escapeHtml(h); }).join("<br><br>")
+                + "</div>";
+        }
+        box.style.display = "";
+        box.innerHTML = html;
+    };
+    if (typeof mgmtRunInThuWeek === "function") {
+        mgmtRunInThuWeek(weekFrom, run);
+    } else {
+        run();
     }
-    const expl = spuEvalFormulaExplain(draft, tokens, []);
-    let resultHtml = "<b>Нет данных</b>";
-    if (!expl.missing && expl.result != null && Number.isFinite(Number(expl.result))) {
-        resultHtml = "<b>" + escapeHtml(mgmtFormatValue(draft, expl.result, "auto")) + "</b>";
-    }
-    const percentHints = typeof spuFormulaPercentUxHints === "function"
-        ? spuFormulaPercentUxHints(tokens, unit, expl.result)
-        : [];
-    let hintsHtml = "";
-    if (percentHints.length) {
-        hintsHtml = '<div class="note" style="color:#8a5a00;margin-top:8px">'
-            + percentHints.map(function (h) { return escapeHtml(h); }).join("<br><br>")
-            + "</div>";
-    }
-    box.style.display = "";
-    box.innerHTML = periodNote
-        + "Проверка (без сохранения фактов):<br>"
-        + escapeHtml(expl.expression || "—")
-        + " = " + resultHtml
-        + hintsHtml;
 }
 
 function spuIndExtraNodesCheckboxesHtml(it, primaryPreset) {
@@ -47744,7 +48173,38 @@ function saveSpuOrgIndicator() {
         it.source_type = "calculated";
         it.indicator_kind = "calculated";
     }
-    spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode);
+    if (kind === "calculated" || calc === "formula") {
+        const effElSave = document.getElementById("spuIndFormulaEffectiveFrom");
+        if (effElSave && effElSave.value) spuIndFormFormulaEffectiveFrom = effElSave.value;
+        const effFrom = String(spuIndFormFormulaEffectiveFrom || "").trim();
+        let commitOpts = { effectiveFrom: effFrom || "2026-11-05" };
+        let commitRes = spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, commitOpts);
+        if (commitRes && commitRes.blocked) {
+            toast(commitRes.message || "Сохранение формулы заблокировано из‑за истории версий.", "error");
+            return;
+        }
+        if (commitRes && commitRes.needsConfirm && commitRes.plan) {
+            const msg = (commitRes.plan.message || "Подтвердите изменение истории версий.")
+                + "\n\n"
+                + ((commitRes.plan.lines || []).join("\n"))
+                + "\n\nПредыдущие версии не удаляются. Продолжить сохранение?";
+            if (!window.confirm(msg)) {
+                toast("Сохранение отменено.", "error");
+                return;
+            }
+            commitOpts.confirm = true;
+            commitRes = spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, commitOpts);
+            if (!commitRes || !commitRes.ok) {
+                toast((commitRes && commitRes.message) || "Не удалось сохранить версии формулы.", "error");
+                return;
+            }
+        } else if (commitRes && !commitRes.ok) {
+            toast(commitRes.message || "Не удалось сохранить версии формулы.", "error");
+            return;
+        }
+    } else {
+        spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, {});
+    }
     const m0 = shopMetricCatalogById(first.source_metric_id);
     if (m0 && !it.department_id) it.department_id = metricDepartmentId(m0) || it.department_id || "";
     const onlyStaffDirectory = sources.length > 0 && sources.every(function (s) {

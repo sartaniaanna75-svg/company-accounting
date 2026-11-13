@@ -12271,6 +12271,52 @@ class WtSpuClientQueueStateTests(unittest.TestCase):
         self.assertNotIn("mind_drift", self._server_week())
 
 
+class WtSpuFormulaWeekCheckMarkerTests(unittest.TestCase):
+    """Проверка/сохранение формулы СПУ с датой действия и неделей чт–ср."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_client_markers(self):
+        src = self._src()
+        self.assertIn("function spuFormulaVersionPlan(", src)
+        self.assertIn("function spuApplyFormulaVersionPlan(", src)
+        self.assertIn("function spuIndFormulaCheckForPeriod(", src)
+        self.assertIn("function spuIndFormulaDraftExplainHtml(", src)
+        self.assertIn("Дата начала действия формулы", src)
+        self.assertIn("Проверить формулу за период", src)
+        self.assertIn("insert_segment", src)
+        self.assertIn("2026-11-05", src)
+        self.assertIn("mgmtRunInThuWeek(weekFrom, run)", src)
+        # Commit принимает effectiveFrom / confirm.
+        commit = src[
+            src.find("function spuCommitSourceVersion(")
+            : src.find("function spuSafeDiv(")
+        ]
+        self.assertIn("effectiveFrom", commit)
+        self.assertIn("needsConfirm", commit)
+        self.assertIn("spuFormulaVersionPlan(", commit)
+
+    def test_harness_version_and_eval(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_formula_week_version_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness formula week")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_formula_week_version_harness: OK", proc.stdout)
+
+
 class WtSalesCallActorsMarkerTests(unittest.TestCase):
     """Маркеры замещения обзвона ОПТ: store вне facts, узкий OPS, UI в 1-м блоке."""
 
