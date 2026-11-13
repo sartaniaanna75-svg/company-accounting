@@ -12318,7 +12318,7 @@ class WtSpuFormulaWeekCheckMarkerTests(unittest.TestCase):
 
 
 class WtSalesCallActorsMarkerTests(unittest.TestCase):
-    """Маркеры замещения обзвона ОПТ: store вне facts, узкий OPS, UI в 1-м блоке."""
+    """Маркеры замещения ОПТ: store вне facts, узкий OPS, select на всех money sales_opt, unlock при cover."""
 
     def _src(self):
         return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
@@ -12331,6 +12331,8 @@ class WtSalesCallActorsMarkerTests(unittest.TestCase):
         self.assertIn("function setSalesCallActor(", src)
         self.assertIn("function wtSaveSalesCallActorValue(", src)
         self.assertIn("function salesCallActorSelectHtml(", src)
+        self.assertIn("function isSalesOptCoverMetric(", src)
+        self.assertIn("function salesOptCoverAllowsMetricInput(", src)
         self.assertIn("function setEmployeeCanCoverSalesReps(", src)
         self.assertIn("can_cover_sales_reps", src)
         self.assertIn("Может замещать торговых представителей", src)
@@ -12350,14 +12352,33 @@ class WtSalesCallActorsMarkerTests(unittest.TestCase):
         ]
         self.assertIn("wtSaveSalesCallActorValue(", set_fn)
         self.assertNotIn("saveMetricChange(", set_fn)
-        # UI только в fillDeptWorkTable (первый metricId), без employee-major.
+        # UI: select на всех money sales_opt в fillDeptWorkTable (общий store на день).
         fill_start = src.find("function fillDeptWorkTable(")
         self.assertGreater(fill_start, 0)
         fill = src[fill_start:fill_start + 28000]
         self.assertIn("isSalesOptActorsTableContext(", fill)
+        self.assertIn("isSalesOptCoverMetric(", fill)
         self.assertIn("salesCallActorSelectHtml(", fill)
-        self.assertIn("salesCallActorHintHtml(", fill)
-        self.assertIn("salesActorsFirstMetricId", fill)
+        self.assertIn("showSalesActor", fill)
+        self.assertNotIn("salesActorsFirstMetricId", fill)
+        # Unlock в input/save scoped.
+        input_fn = src[
+            src.find("function deptMetricInputHtml(")
+            : src.find("function onDeptMetricNav(")
+        ]
+        self.assertIn("salesOptCoverAllowsMetricInput(", input_fn)
+        set_val = src[
+            src.find("function setDeptMetricValue(")
+            : src.find("function setDeptMetricCheck(")
+        ]
+        self.assertIn("salesOptCoverAllowsMetricInput(", set_val)
+        allow_fn = src[
+            src.find("function salesOptCoverAllowsMetricInput(")
+            : src.find("function refreshMetricsUi(")
+        ]
+        self.assertIn('resolved.mode === "self"', allow_fn)
+        self.assertIn('resolved.mode === "other"', allow_fn)
+        self.assertIn("isSalesOptCoverMetric(", allow_fn)
 
     def test_harness_timesheet_resolve(self):
         harness = Path(__file__).resolve().parent.joinpath("wt_sales_call_actors_harness.js")

@@ -1488,7 +1488,7 @@
             font-variant-numeric: tabular-nums;
         }
 
-        /* Замещение торговых ОПТ: select под суммой в 1-м блоке (без перестройки колонок). */
+        /* Замещение торговых ОПТ: select под суммой в каждом money sales_opt блоке. */
         .metrics-table tbody td.metrics-sales-actor-cell {
             height: auto;
             min-height: 34px;
@@ -22638,6 +22638,27 @@ function isSalesOptActorsTableContext(dept, tab) {
     return String(dept || "") === "drivers" && String(tab || "") === "sales";
 }
 
+/** Денежная метрика Продажи ОПТ (этапы заявок) — cover и unlock только для них. */
+function isSalesOptCoverMetric(metricId) {
+    const it = typeof shopMetricCatalogById === "function" ? shopMetricCatalogById(metricId) : null;
+    if (!it || it.active === false) return false;
+    if (String(it.territory_category || "") !== "sales_opt") return false;
+    return String(it.fill_type || "") === "money";
+}
+
+/**
+ * Разрешить ввод суммы при absence-lock табеля: только sales_opt money + cover self/other.
+ * unset/none не разблокируют. Табель не меняется. Сумма остаётся у основного.
+ */
+function salesOptCoverAllowsMetricInput(timesheetDept, salesRepId, day, metricId, month) {
+    if (!isSalesOptCoverMetric(metricId)) return false;
+    const resolved = resolveSalesCallActor(salesRepId, day, month || selectedMonth, timesheetDept || "drivers");
+    if (!resolved) return false;
+    if (resolved.mode === "self") return true;
+    if (resolved.mode === "other" && resolved.actor_id) return true;
+    return false;
+}
+
 function refreshMetricsUi() {
     if (workspace() && workspace().code === "shop") renderShopMetrics();
     if (currentSection === "territoryMetrics") renderTerritoryMetrics();
@@ -39643,8 +39664,11 @@ function clearDeptMetricDayIfEmpty(deptCode, employeeId, day) {
 }
 
 function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricId) {
-    if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
     const parsed = parseMetricFactKey(metricId, submetricId);
+    if (deptTimesheetLockLabel(deptCode, employeeId, day)
+        && !salesOptCoverAllowsMetricInput(deptCode, employeeId, day, parsed.metricId)) {
+        return;
+    }
     const it = shopMetricCatalogById(parsed.metricId);
     if (!it || it.active === false) return;
     const key = metricFactStorageKey(parsed.metricId, parsed.submetricId);
@@ -39678,8 +39702,11 @@ function setDeptMetricValue(deptCode, employeeId, day, metricId, raw, submetricI
 }
 
 function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark, submetricId) {
-    if (deptTimesheetLockLabel(deptCode, employeeId, day)) return;
     const parsed = parseMetricFactKey(metricId, submetricId);
+    if (deptTimesheetLockLabel(deptCode, employeeId, day)
+        && !salesOptCoverAllowsMetricInput(deptCode, employeeId, day, parsed.metricId)) {
+        return;
+    }
     const it = shopMetricCatalogById(parsed.metricId);
     if (!it || it.active === false) return;
     const key = metricFactStorageKey(parsed.metricId, parsed.submetricId);
@@ -39706,10 +39733,15 @@ function setDeptMetricCheck(deptCode, employeeId, day, metricId, mark, submetric
 
 function deptMetricInputHtml(deptCode, employeeId, day, field) {
     const lock = deptTimesheetLockLabel(deptCode, employeeId, day);
-    if (lock === "В") {
-        return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
+    const coverUnlock = !!(lock && field && salesOptCoverAllowsMetricInput(
+        deptCode, employeeId, day, field.metricId
+    ));
+    if (lock && !coverUnlock) {
+        if (lock === "В") {
+            return '<span class="metrics-dayoff metrics-dayoff-short" title="Выходной">В</span>';
+        }
+        return '<span class="metrics-dayoff" title="По табелю">' + escapeHtml(lock) + "</span>";
     }
-    if (lock) return '<span class="metrics-dayoff" title="По табелю">' + escapeHtml(lock) + "</span>";
     const it = shopMetricCatalogById(field.metricId);
     const canEdit = !!(it && it.active !== false);
     const sid = field.submetricId || "";
@@ -40511,15 +40543,6 @@ function fillDeptWorkTable(dept, tab, ids, options) {
     }
     const days = daysInMonth();
     const salesActorsCtx = isSalesOptActorsTableContext(dept, tab);
-    let salesActorsFirstMetricId = "";
-    if (salesActorsCtx) {
-        for (let sfi = 0; sfi < fields.length; sfi++) {
-            if (fields[sfi] && !fields[sfi].service && fields[sfi].metricId) {
-                salesActorsFirstMetricId = fields[sfi].metricId;
-                break;
-            }
-        }
-    }
     let html = "";
     for (let day = 1; day <= days; day++) {
         const rowCls = ["metrics-data-row", isWeekend(day) ? "metrics-weekend" : "", isToday(day) ? "metrics-today" : ""]
@@ -40562,26 +40585,17 @@ function fillDeptWorkTable(dept, tab, ids, options) {
             }
             const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
             const people = peopleOf(field.metricId);
-            const isSalesActorFirst = salesActorsCtx && salesActorsFirstMetricId
-                && field.metricId === salesActorsFirstMetricId;
-            const isSalesActorOther = salesActorsCtx && salesActorsFirstMetricId
-                && field.metricId && field.metricId !== salesActorsFirstMetricId;
+            const showSalesActor = salesActorsCtx && field.metricId && isSalesOptCoverMetric(field.metricId);
             people.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
                 const factDept = factDeptOf(employee.id);
-                const dayOff = deptTimesheetStatus(factDept, employee.id, day) === "В";
+                const dayOff = !!deptTimesheetLockLabel(factDept, employee.id, day);
                 let cellInner = deptMetricInputHtml(factDept, employee.id, day, field);
                 let actorCls = "";
-                if (isSalesActorFirst) {
+                if (showSalesActor) {
                     cellInner = '<div class="metrics-sales-cell-stack">' + cellInner
                         + salesCallActorSelectHtml(factDept, employee.id, day) + "</div>";
                     actorCls = " metrics-sales-actor-cell";
-                } else if (isSalesActorOther) {
-                    const hint = salesCallActorHintHtml(factDept, employee.id, day);
-                    if (hint) {
-                        cellInner = '<div class="metrics-sales-cell-stack">' + cellInner + hint + "</div>";
-                        actorCls = " metrics-sales-actor-cell";
-                    }
                 }
                 html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi)
                     + (wide ? " metrics-money-col" : "")
