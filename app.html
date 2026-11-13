@@ -22638,17 +22638,30 @@ function isSalesOptActorsTableContext(dept, tab) {
     return String(dept || "") === "drivers" && String(tab || "") === "sales";
 }
 
-/** Денежная метрика Продажи ОПТ (этапы заявок) — cover и unlock только для них. */
+/**
+ * Ручная числовая метрика Продажи ОПТ (money|number, в т.ч. возвраты) на вкладке Торговые.
+ * Cover/unlock без allowlist ID: новые назначенные метрики подхватываются автоматически.
+ * Check/auto/vehicle и чужие подразделения — false. Назначение ТП проверяется ячейкой peopleOf.
+ */
 function isSalesOptCoverMetric(metricId) {
     const it = typeof shopMetricCatalogById === "function" ? shopMetricCatalogById(metricId) : null;
     if (!it || it.active === false) return false;
-    if (String(it.territory_category || "") !== "sales_opt") return false;
-    return String(it.fill_type || "") === "money";
+    const cat = typeof metricTerritoryCategory === "function"
+        ? metricTerritoryCategory(it)
+        : String(it.territory_category || "");
+    if (cat !== "sales_opt") return false;
+    if (typeof metricHostsOnDeptTab === "function") {
+        if (!metricHostsOnDeptTab(it, "drivers", "sales")) return false;
+    } else if (typeof metricShowsOnTab === "function" && !metricShowsOnTab(it, "sales")) {
+        return false;
+    }
+    const ft = String(it.fill_type || "");
+    return ft === "money" || ft === "number";
 }
 
 /**
- * Разрешить ввод суммы при absence-lock табеля: только sales_opt money + cover self/other.
- * unset/none не разблокируют. Табель не меняется. Сумма остаётся у основного.
+ * Разрешить ввод при absence-lock табеля: sales_opt money|number + cover self/other.
+ * unset/none не разблокируют. Табель не меняется. Сумма остаётся у основного ТП.
  */
 function salesOptCoverAllowsMetricInput(timesheetDept, salesRepId, day, metricId, month) {
     if (!isSalesOptCoverMetric(metricId)) return false;

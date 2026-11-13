@@ -12396,6 +12396,19 @@ class WtSalesCallActorsMarkerTests(unittest.TestCase):
         self.assertIn("Может замещать торговых представителей", src)
         self.assertIn("deptMetrics.drivers.salesCallActors.", src)
         self.assertIn("salesCallActors: {}", src)
+        # Gate: sales_opt via metricTerritoryCategory + money|number + hosts sales (не allowlist ID).
+        gate_fn = src[
+            src.find("function isSalesOptCoverMetric(")
+            : src.find("function salesOptCoverAllowsMetricInput(")
+        ]
+        self.assertIn("metricTerritoryCategory(", gate_fn)
+        self.assertIn('ft === "money"', gate_fn)
+        self.assertIn('ft === "number"', gate_fn)
+        self.assertIn("metricHostsOnDeptTab(", gate_fn)
+        self.assertIn('"drivers"', gate_fn)
+        self.assertIn('"sales"', gate_fn)
+        self.assertNotIn('territory_category || "") !== "sales_opt"', gate_fn)
+        self.assertNotIn("METRIC_RETURNS_COUNT_ID", gate_fn)
         # Не писать actor через широкий PUT метрик.
         save_fn = src[
             src.find("function wtSaveSalesCallActorValue(")
@@ -12410,7 +12423,7 @@ class WtSalesCallActorsMarkerTests(unittest.TestCase):
         ]
         self.assertIn("wtSaveSalesCallActorValue(", set_fn)
         self.assertNotIn("saveMetricChange(", set_fn)
-        # UI: select на всех money sales_opt в fillDeptWorkTable (общий store на день).
+        # UI: select на всех cover-метриках sales_opt в fillDeptWorkTable (общий store на день).
         fill_start = src.find("function fillDeptWorkTable(")
         self.assertGreater(fill_start, 0)
         fill = src[fill_start:fill_start + 28000]
