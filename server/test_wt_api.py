@@ -8234,6 +8234,77 @@ class WtOpsFoundationTests(unittest.TestCase):
             before,
         )
 
+    def test_ops_sales_call_actors_allowed_for_drivers_input(self):
+        """metricsInput drivers пишет salesCallActors; shop не пишет (whitelist + dept)."""
+        self.assertIn("salesCallActors", wt_api.METRIC_INPUT_KEYS)
+        self.store["payload"].setdefault("deptMetrics", {}).setdefault("drivers", {})
+        self.store["payload"]["users"].append(
+            {
+                "user_id": "usr_drv_sca",
+                "display_name": "Drivers SCA",
+                "pin": "4747",
+                "role": "user",
+                "legacy_role": "staff",
+                "is_active": True,
+                "departments": ["drivers"],
+                "permissions": {"metricsInput": "edit", "timesheet": "edit"},
+            }
+        )
+        cookie_drv, _ = self.login("usr_drv_sca", "4747")
+        path = "deptMetrics.drivers.salesCallActors.2026-11.e_nat.4"
+        value = {
+            "mode": "other",
+            "actor_id": "e_sveta",
+            "updated_at": "2026-11-04T10:00:00Z",
+            "updated_by": "usr_drv_sca",
+        }
+        st, *_ = call(
+            "POST",
+            "/api/state/op",
+            {"op": {"path": path, "expected_v": 0, "value": value}},
+            cookie=cookie_drv,
+        )
+        self.assertTrue(st.startswith("200"), st)
+        stored = (
+            self.store["payload"]["deptMetrics"]["drivers"]
+            .get("salesCallActors", {})
+            .get("2026-11", {})
+            .get("e_nat", {})
+            .get("4")
+        )
+        self.assertEqual(stored.get("mode"), "other")
+        self.assertEqual(stored.get("actor_id"), "e_sveta")
+        # Соседний день не затронут.
+        self.assertIsNone(
+            self.store["payload"]["deptMetrics"]["drivers"]
+            .get("salesCallActors", {})
+            .get("2026-11", {})
+            .get("e_nat", {})
+            .get("5")
+        )
+        cookie_shop, _ = self.login("usr_001", "1111")
+        before = json.loads(json.dumps(
+            self.store["payload"]["deptMetrics"]["drivers"].get("salesCallActors")
+        ))
+        st2, data2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "op": {
+                    "path": "deptMetrics.drivers.salesCallActors.2026-11.e_nat.5",
+                    "expected_v": 0,
+                    "value": {"mode": "self", "actor_id": ""},
+                }
+            },
+            cookie=cookie_shop,
+        )
+        self.assertTrue(st2.startswith("403"), st2)
+        self.assertEqual(data2.get("error"), "forbidden")
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["drivers"].get("salesCallActors"),
+            before,
+        )
+
     def test_ops_work_access_foreign_emp_forbidden(self):
         """H1: shop metricsSetup не пишет workAccess склада (e_wh) через OPS."""
         self.store["payload"]["shopMetrics"]["workAccess"] = {
@@ -12198,6 +12269,79 @@ class WtSpuClientQueueStateTests(unittest.TestCase):
         self.assertEqual(self.store["payload"].get("shopMetrics"), before_shop)
         self.assertEqual(self._server_week()["mind_a"]["plan_value"], 42)
         self.assertNotIn("mind_drift", self._server_week())
+
+
+class WtSalesCallActorsMarkerTests(unittest.TestCase):
+    """Маркеры замещения обзвона ОПТ: store вне facts, узкий OPS, UI в 1-м блоке."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_whitelist_and_client_paths(self):
+        self.assertIn("salesCallActors", wt_api.METRIC_INPUT_KEYS)
+        src = self._src()
+        self.assertIn("function wtSalesCallActorLeafPath(", src)
+        self.assertIn("function resolveSalesCallActor(", src)
+        self.assertIn("function setSalesCallActor(", src)
+        self.assertIn("function wtSaveSalesCallActorValue(", src)
+        self.assertIn("function salesCallActorSelectHtml(", src)
+        self.assertIn("function setEmployeeCanCoverSalesReps(", src)
+        self.assertIn("can_cover_sales_reps", src)
+        self.assertIn("Может замещать торговых представителей", src)
+        self.assertIn("deptMetrics.drivers.salesCallActors.", src)
+        self.assertIn("salesCallActors: {}", src)
+        # Не писать actor через широкий PUT метрик.
+        save_fn = src[
+            src.find("function wtSaveSalesCallActorValue(")
+            : src.find("function setSalesCallActor(")
+        ]
+        self.assertIn("saveMetricLeafViaOp(", save_fn)
+        self.assertNotIn("saveMetricChange(", save_fn)
+        self.assertNotIn("saveApp(", save_fn)
+        set_fn = src[
+            src.find("function setSalesCallActor(")
+            : src.find("function onSalesCallActorSelectChange(")
+        ]
+        self.assertIn("wtSaveSalesCallActorValue(", set_fn)
+        self.assertNotIn("saveMetricChange(", set_fn)
+        # UI только в fillDeptWorkTable (первый metricId), без employee-major.
+        fill_start = src.find("function fillDeptWorkTable(")
+        self.assertGreater(fill_start, 0)
+        fill = src[fill_start:fill_start + 28000]
+        self.assertIn("isSalesOptActorsTableContext(", fill)
+        self.assertIn("salesCallActorSelectHtml(", fill)
+        self.assertIn("salesCallActorHintHtml(", fill)
+        self.assertIn("salesActorsFirstMetricId", fill)
+
+    def test_harness_timesheet_resolve(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_sales_call_actors_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness salesCallActors")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_sales_call_actors_harness: OK", proc.stdout)
+
+    def test_flag_narrow_ops_not_full_card(self):
+        src = self._src()
+        fn = src[
+            src.find("function setEmployeeCanCoverSalesReps(")
+            : src.find("function employeeOutsourcingFieldsHtml(")
+        ]
+        self.assertIn("can_cover_sales_reps", fn)
+        self.assertIn("wtDomainWriterSave(", fn)
+        self.assertIn(".can_cover_sales_reps", fn)
+        # При OPS — явный ops-массив одного leaf (local-only saveApp допустим).
+        self.assertIn("ops: [{", fn)
+        self.assertIn("atomic: true", fn)
 
 
 if __name__ == "__main__":

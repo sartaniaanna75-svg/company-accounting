@@ -902,6 +902,8 @@ METRIC_INPUT_KEYS = frozenset(
         "inventoryResults",
         "dayRoles",
         "entries",
+        # Замещение обзвона ОПТ: deptMetrics.drivers.salesCallActors.<month>.<salesRepId>.<day>
+        "salesCallActors",
     }
 ) | METRIC_CATEGORY_STORE_KEYS
 METRIC_SETUP_KEYS = frozenset({"workAccess", "extraAccess"})

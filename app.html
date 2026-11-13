@@ -1488,6 +1488,49 @@
             font-variant-numeric: tabular-nums;
         }
 
+        /* Замещение торговых ОПТ: select под суммой в 1-м блоке (без перестройки колонок). */
+        .metrics-table tbody td.metrics-sales-actor-cell {
+            height: auto;
+            min-height: 34px;
+            vertical-align: top;
+        }
+        .metrics-sales-cell-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            min-width: 0;
+        }
+        .metrics-sales-cell-stack > .metrics-input,
+        .metrics-sales-cell-stack > .metrics-dayoff,
+        .metrics-sales-cell-stack > .metrics-dayoff-short,
+        .metrics-sales-cell-stack > .metrics-auto-fact {
+            flex: 0 0 auto;
+        }
+        select.metrics-sales-actor-select {
+            display: block;
+            width: 100%;
+            min-width: 0;
+            max-width: 100%;
+            height: 18px;
+            margin: 0;
+            padding: 0 2px;
+            border: 1px solid #c5d0db;
+            border-radius: 2px;
+            background: #f8fafc;
+            font-size: 10px;
+            line-height: 16px;
+            color: #334155;
+        }
+        .metrics-sales-actor-hint {
+            display: block;
+            font-size: 9px;
+            line-height: 12px;
+            color: #64748b;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
         .metrics-table input.metrics-input:focus {
             outline: 2px solid #93c5fd;
             outline-offset: -1px;
@@ -10750,6 +10793,7 @@ function normalizeEmployee(e) {
     if (e.jobStatus !== "fired") e.jobStatus = "working";
     e.fired_on = normalizeFiredOnIso(e.fired_on);
     if (!e.terms || typeof e.terms !== "object") e.terms = {};
+    e.can_cover_sales_reps = e.can_cover_sales_reps === true;
     e.outsourcing = e.outsourcing === true;
     if (e.outsourcing) {
         e.outsourcingFixedPay = parseMoney(
@@ -11006,6 +11050,7 @@ function cloneEmployeeRecord(src) {
         fired_on: normalizeFiredOnIso(src.fired_on),
         participates_in_spu_meetings: src.participates_in_spu_meetings === true,
         meeting_participant: src.participates_in_spu_meetings === true,
+        can_cover_sales_reps: src.can_cover_sales_reps === true,
         outsourcing: src.outsourcing === true,
         outsourcingFixedPay: parseMoney(
             src.outsourcingFixedPay != null ? src.outsourcingFixedPay : (src.outsourcing ? src.rate : 0),
@@ -16459,6 +16504,89 @@ function employeeSpuMeetingsFieldHtml(employee, disabled, deptCode) {
     );
 }
 
+function employeeCanCoverSalesRepsFieldHtml(employee, disabled, deptCode) {
+    if (!employee || !employee.id) return "";
+    const on = employee.can_cover_sales_reps === true;
+    const code = String(deptCode || (workspace() && workspace().code) || "");
+    const deptArg = code ? (",'" + code + "'") : "";
+    return fieldBlock(
+        "Замещение торговых",
+        '<label class="check"><input type="checkbox" class="emp-cover-sales"'
+            + (on ? " checked" : "") + (disabled ? " disabled" : "")
+            + ' onchange="setEmployeeCanCoverSalesReps(\'' + employee.id + '\', this.checked' + deptArg + ')">'
+            + " Может замещать торговых представителей</label>",
+        "emp-field-cover-sales"
+    );
+}
+
+/** Узкий OPS одной галочки can_cover_sales_reps — без saveApp всей карточки. */
+function setEmployeeCanCoverSalesReps(employeeId, enabled, deptCode) {
+    const eid = String(employeeId || "");
+    if (!eid) return;
+    if (!canEditStaff()) {
+        try { toast("Нет права менять карточку сотрудника.", "error"); } catch (errP) {}
+        return;
+    }
+    const code = String(deptCode || (typeof employeeHomeDeptCode === "function" && employeeHomeDeptCode(eid)) || "").trim();
+    let employee = null;
+    try {
+        if (code) {
+            const resolved = resolveEmployeeCardForSave(code, eid);
+            employee = resolved && resolved.employee;
+        }
+    } catch (errR) { employee = null; }
+    if (!employee) {
+        try { employee = getEmployee(eid); } catch (errG) { employee = null; }
+    }
+    if (!employee) return;
+    const prev = employee.can_cover_sales_reps === true;
+    const next = enabled === true || enabled === "true";
+    employee.can_cover_sales_reps = next;
+    const path = code && code !== "summary"
+        ? ("workspaces." + code + ".employees." + eid + ".can_cover_sales_reps")
+        : "";
+    function paint() {
+        try { renderFio(); } catch (errF) {}
+        try { renderEmployees(); } catch (errE) {}
+        try { renderSummaryStaff(); } catch (errS) {}
+        try { refreshDeptWorkUi(); } catch (errR) {}
+    }
+    paint();
+    if (!path) return;
+    if (!wtServerMode) {
+        try { saveApp(); } catch (errL) {}
+        return;
+    }
+    if (typeof wtOpsUiEnabled === "function" && !wtOpsUiEnabled(true)) {
+        employee.can_cover_sales_reps = prev;
+        paint();
+        try { toast("OPS выключен — галочка замещения не сохранена.", "error"); } catch (errT) {}
+        return;
+    }
+    try { if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path); } catch (errM) {}
+    Promise.resolve(wtDomainWriterSave({
+        ops: [{
+            path: path,
+            value: next,
+            expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
+        }],
+        atomic: true,
+        silentFail: false
+    })).then(function (ok) {
+        if (!wtSaveOutcomeOk(ok)) {
+            employee.can_cover_sales_reps = prev;
+            paint();
+            try { toast("Не удалось сохранить галочку замещения торговых.", "error"); } catch (errT2) {}
+            return;
+        }
+        try { if (typeof wtSoftClearDirty === "function") wtSoftClearDirty(path); } catch (errC) {}
+    }, function () {
+        employee.can_cover_sales_reps = prev;
+        paint();
+        try { toast("Не удалось сохранить галочку замещения торговых.", "error"); } catch (errT3) {}
+    });
+}
+
 function employeeOutsourcingFieldsHtml(employee, disabled, deptCode) {
     if (!employee || !employee.id) return "";
     const on = isOutsourcingEmployee(employee);
@@ -21314,12 +21442,13 @@ function ensureDeptMetrics(deptCode) {
     if (!isGenericMetricsDept(deptCode)) return ensureShopMetrics();
     if (!appData.deptMetrics || typeof appData.deptMetrics !== "object") appData.deptMetrics = {};
     if (!appData.deptMetrics[deptCode] || typeof appData.deptMetrics[deptCode] !== "object") {
-        appData.deptMetrics[deptCode] = { facts: {}, workAccess: {}, entries: {} };
+        appData.deptMetrics[deptCode] = { facts: {}, workAccess: {}, entries: {}, salesCallActors: {} };
     }
     const root = appData.deptMetrics[deptCode];
     if (!root.facts || typeof root.facts !== "object") root.facts = {};
     if (!root.workAccess || typeof root.workAccess !== "object") root.workAccess = {};
     if (!root.entries || typeof root.entries !== "object") root.entries = {};
+    if (!root.salesCallActors || typeof root.salesCallActors !== "object") root.salesCallActors = {};
     if (deptCode === "warehouse") {
         if (!root.recountResponsible || typeof root.recountResponsible !== "object") {
             root.recountResponsible = {};
@@ -22252,6 +22381,261 @@ function timesheetMetricsAbsenceLabel(status) {
 
 function deptTimesheetLockLabel(deptCode, employeeId, day, month) {
     return timesheetMetricsAbsenceLabel(deptTimesheetStatus(deptCode, employeeId, day, month));
+}
+
+/* ============================================================
+   ЗАМЕЩЕНИЕ ОБЗВОНА ОПТ (salesCallActors) — метаданные, не facts
+============================================================ */
+function wtSalesCallActorLeafPath(month, salesRepId, day) {
+    if (!wtMetricPathSegOk(month) || !wtMetricPathSegOk(salesRepId) || !wtMetricPathSegOk(day)) return null;
+    return "deptMetrics.drivers.salesCallActors." + String(month) + "." + String(salesRepId) + "." + String(day);
+}
+
+function salesCallActorsMonthMap(month) {
+    const root = ensureDeptMetrics("drivers");
+    const key = month || selectedMonth;
+    if (!root.salesCallActors || typeof root.salesCallActors !== "object") root.salesCallActors = {};
+    if (!root.salesCallActors[key] || typeof root.salesCallActors[key] !== "object") {
+        root.salesCallActors[key] = {};
+    }
+    return root.salesCallActors[key];
+}
+
+function getSalesCallActorRec(salesRepId, day, month) {
+    const map = salesCallActorsMonthMap(month);
+    const empMap = map[String(salesRepId || "")];
+    if (!empMap || typeof empMap !== "object") return null;
+    const rec = empMap[String(day)];
+    return rec && typeof rec === "object" ? rec : null;
+}
+
+/** Явка на работе: «Я» или «О» (опоздание). Не путать с выходным «В». */
+function salesRepTimesheetPresent(status) {
+    return status === "Я" || status === "О";
+}
+
+/**
+ * Ручной store имеет приоритет. Без записи: Я/О → Сам (derived), иначе «Не указано».
+ * Смена табеля не удаляет сохранённый rec.
+ */
+function resolveSalesCallActor(salesRepId, day, month, timesheetDept) {
+    const dept = timesheetDept || "drivers";
+    const stored = getSalesCallActorRec(salesRepId, day, month);
+    if (stored && stored.mode) {
+        const mode = String(stored.mode);
+        if (mode === "self" || mode === "none" || mode === "other" || mode === "unset") {
+            return {
+                source: "stored",
+                mode: mode,
+                actor_id: mode === "other" ? String(stored.actor_id || "") : "",
+                rec: stored
+            };
+        }
+    }
+    const st = deptTimesheetStatus(dept, salesRepId, day, month);
+    if (salesRepTimesheetPresent(st)) {
+        return { source: "derived", mode: "self", actor_id: "", rec: null };
+    }
+    return { source: "derived", mode: "unset", actor_id: "", rec: null };
+}
+
+function salesCallActorLabel(resolved) {
+    if (!resolved) return "Не указано";
+    if (resolved.mode === "self") return "Сам";
+    if (resolved.mode === "none") return "Никто не работал";
+    if (resolved.mode === "other") {
+        const eid = String(resolved.actor_id || "");
+        if (!eid) return "Не указано";
+        const emp = typeof getEmployee === "function" ? getEmployee(eid) : null;
+        const name = emp && emp.name ? String(emp.name) : eid;
+        if (!emp || emp.can_cover_sales_reps !== true) {
+            return name + " (больше не в списке)";
+        }
+        return name;
+    }
+    return "Не указано";
+}
+
+function salesCallCoverCandidateEmployees(salesRepId) {
+    const selfId = String(salesRepId || "");
+    const out = [];
+    const seen = {};
+    function pushEmp(emp) {
+        if (!emp || !emp.id || seen[emp.id]) return;
+        if (emp.jobStatus === "fired" && emp.id !== selfId) return;
+        seen[emp.id] = true;
+        out.push(emp);
+    }
+    if (selfId) {
+        try { pushEmp(getEmployee(selfId)); } catch (errS) {}
+    }
+    const spaces = typeof deptWorkspaces === "function" ? deptWorkspaces() : [];
+    spaces.forEach(function (w) {
+        if (!w || !Array.isArray(w.employees)) return;
+        w.employees.forEach(function (emp) {
+            if (!emp || emp.can_cover_sales_reps !== true) return;
+            pushEmp(emp);
+        });
+    });
+    out.sort(function (a, b) {
+        if (a.id === selfId) return -1;
+        if (b.id === selfId) return 1;
+        return String(a.name || "").localeCompare(String(b.name || ""), "ru");
+    });
+    return out;
+}
+
+function canEditSalesCallActor(salesRepId) {
+    if (typeof canSaveShopMetricFactsFor === "function") {
+        return canSaveShopMetricFactsFor(salesRepId);
+    }
+    return typeof canEnterShopMetricFacts === "function" && canEnterShopMetricFacts();
+}
+
+function wtSaveSalesCallActorValue(path, value) {
+    if (!path) {
+        return Promise.resolve({ status: "error", error: "path" });
+    }
+    if (!wtServerMode) {
+        return Promise.resolve({ status: "saved", via: "local" });
+    }
+    // Замещения — только узкий OPS; широкий saveMetricChange запрещён.
+    if (!wtOpsUiEnabled(true)) {
+        const mapped = {
+            status: "error",
+            error: "ops_required",
+            message: "OPS выключен — замещение обзвона не записано на сервер."
+        };
+        try { toast(mapped.message, "error"); } catch (errT) {}
+        return Promise.resolve(mapped);
+    }
+    try { wtSoftMarkDirty(path); } catch (errM) {}
+    return wtOpsWithIncidentalBlock(function () {
+        return saveMetricLeafViaOp(path, value);
+    }).then(function (res) {
+        if (res && (res.status === "saved" || res.status === "conflict_kept_server")) {
+            try { wtSoftClearDirty(path); } catch (errC) {}
+        }
+        try { if (typeof wtSoftFlushPendingRender === "function") wtSoftFlushPendingRender(); } catch (errF) {}
+        return res || { status: "error", error: "empty" };
+    }, function (err) {
+        const res = {
+            status: "error",
+            error: "promise",
+            message: String((err && err.message) || err || "reject")
+        };
+        try { toast("Замещение не сохранено: " + res.message, "error"); } catch (errT2) {}
+        return res;
+    });
+}
+
+function setSalesCallActor(salesRepId, day, mode, actorId) {
+    const eid = String(salesRepId || "");
+    const dayKey = String(day);
+    if (!eid || !dayKey) return;
+    if (!canEditSalesCallActor(eid)) {
+        try { toast("Нет права менять замещение обзвона (нужен metricsInput).", "error"); } catch (errP) {}
+        return;
+    }
+    const month = selectedMonth;
+    const path = wtSalesCallActorLeafPath(month, eid, dayKey);
+    if (!path) return;
+    const map = salesCallActorsMonthMap(month);
+    if (!map[eid] || typeof map[eid] !== "object") map[eid] = {};
+    const nextMode = String(mode || "unset");
+    let value = null;
+    if (nextMode === "unset" || nextMode === "") {
+        map[eid][dayKey] = null;
+        const hasLive = Object.keys(map[eid]).some(function (d) {
+            return map[eid][d] != null && typeof map[eid][d] === "object";
+        });
+        if (!hasLive) map[eid] = null;
+        value = null;
+    } else {
+        const rec = {
+            mode: nextMode === "other" ? "other" : (nextMode === "none" ? "none" : "self"),
+            actor_id: nextMode === "other" ? String(actorId || "") : "",
+            updated_at: new Date().toISOString(),
+            updated_by: currentAuthUserId()
+        };
+        if (rec.mode === "other" && !rec.actor_id) {
+            try { toast("Выберите замещающего сотрудника.", "error"); } catch (errA) {}
+            return;
+        }
+        map[eid][dayKey] = rec;
+        value = rec;
+    }
+    try { refreshDeptWorkUi(); } catch (errR) {}
+    wtSaveSalesCallActorValue(path, value);
+}
+
+function onSalesCallActorSelectChange(salesRepId, day, selectEl) {
+    const raw = String((selectEl && selectEl.value) || "");
+    if (raw === "unset" || raw === "") {
+        setSalesCallActor(salesRepId, day, "unset", "");
+        return;
+    }
+    if (raw === "self") {
+        setSalesCallActor(salesRepId, day, "self", "");
+        return;
+    }
+    if (raw === "none") {
+        setSalesCallActor(salesRepId, day, "none", "");
+        return;
+    }
+    if (raw.indexOf("other:") === 0) {
+        setSalesCallActor(salesRepId, day, "other", raw.slice(6));
+        return;
+    }
+    setSalesCallActor(salesRepId, day, "unset", "");
+}
+
+function salesCallActorSelectHtml(timesheetDept, salesRepId, day) {
+    const resolved = resolveSalesCallActor(salesRepId, day, selectedMonth, timesheetDept);
+    const canEdit = canEditSalesCallActor(salesRepId);
+    if (!canEdit) {
+        return '<span class="metrics-sales-actor-hint" title="Кто замещал">'
+            + escapeHtml(salesCallActorLabel(resolved)) + "</span>";
+    }
+    let selected = "unset";
+    if (resolved.mode === "self") selected = "self";
+    else if (resolved.mode === "none") selected = "none";
+    else if (resolved.mode === "other" && resolved.actor_id) selected = "other:" + resolved.actor_id;
+    const candidates = salesCallCoverCandidateEmployees(salesRepId);
+    let opts = '<option value="unset"' + (selected === "unset" ? " selected" : "") + ">Не указано</option>"
+        + '<option value="self"' + (selected === "self" ? " selected" : "") + ">Сам</option>"
+        + '<option value="none"' + (selected === "none" ? " selected" : "") + ">Никто не работал</option>";
+    const seen = { "": true };
+    candidates.forEach(function (emp) {
+        if (!emp || !emp.id || emp.id === salesRepId) return;
+        seen[emp.id] = true;
+        const val = "other:" + emp.id;
+        opts += '<option value="' + escapeAttribute(val) + '"'
+            + (selected === val ? " selected" : "") + ">"
+            + escapeHtml(emp.name || emp.id) + "</option>";
+    });
+    if (resolved.mode === "other" && resolved.actor_id && !seen[resolved.actor_id]) {
+        const orphan = typeof getEmployee === "function" ? getEmployee(resolved.actor_id) : null;
+        const label = (orphan && orphan.name ? orphan.name : resolved.actor_id) + " (больше не в списке)";
+        const val = "other:" + resolved.actor_id;
+        opts += '<option value="' + escapeAttribute(val) + '" selected>'
+            + escapeHtml(label) + "</option>";
+    }
+    return '<select class="metrics-sales-actor-select" title="Кто замещал"'
+        + " onchange=\"onSalesCallActorSelectChange('" + escapeAttribute(salesRepId) + "'," + Number(day)
+        + ",this)\">" + opts + "</select>";
+}
+
+function salesCallActorHintHtml(timesheetDept, salesRepId, day) {
+    const resolved = resolveSalesCallActor(salesRepId, day, selectedMonth, timesheetDept);
+    if (!resolved || resolved.mode === "unset") return "";
+    if (resolved.source === "derived" && resolved.mode === "self") return "";
+    return '<span class="metrics-sales-actor-hint" title="Кто замещал">'
+        + escapeHtml(salesCallActorLabel(resolved)) + "</span>";
+}
+
+function isSalesOptActorsTableContext(dept, tab) {
+    return String(dept || "") === "drivers" && String(tab || "") === "sales";
 }
 
 function refreshMetricsUi() {
@@ -40126,6 +40510,16 @@ function fillDeptWorkTable(dept, tab, ids, options) {
         head.innerHTML = headHtml;
     }
     const days = daysInMonth();
+    const salesActorsCtx = isSalesOptActorsTableContext(dept, tab);
+    let salesActorsFirstMetricId = "";
+    if (salesActorsCtx) {
+        for (let sfi = 0; sfi < fields.length; sfi++) {
+            if (fields[sfi] && !fields[sfi].service && fields[sfi].metricId) {
+                salesActorsFirstMetricId = fields[sfi].metricId;
+                break;
+            }
+        }
+    }
     let html = "";
     for (let day = 1; day <= days; day++) {
         const rowCls = ["metrics-data-row", isWeekend(day) ? "metrics-weekend" : "", isToday(day) ? "metrics-today" : ""]
@@ -40168,16 +40562,34 @@ function fillDeptWorkTable(dept, tab, ids, options) {
             }
             const wide = field.type === "money" || field.type === "vehicle" || field.fill_type === "vehicle";
             const people = peopleOf(field.metricId);
+            const isSalesActorFirst = salesActorsCtx && salesActorsFirstMetricId
+                && field.metricId === salesActorsFirstMetricId;
+            const isSalesActorOther = salesActorsCtx && salesActorsFirstMetricId
+                && field.metricId && field.metricId !== salesActorsFirstMetricId;
             people.forEach(function (employee, ei) {
                 const fired = !isWorking(employee);
                 const factDept = factDeptOf(employee.id);
                 const dayOff = deptTimesheetStatus(factDept, employee.id, day) === "В";
+                let cellInner = deptMetricInputHtml(factDept, employee.id, day, field);
+                let actorCls = "";
+                if (isSalesActorFirst) {
+                    cellInner = '<div class="metrics-sales-cell-stack">' + cellInner
+                        + salesCallActorSelectHtml(factDept, employee.id, day) + "</div>";
+                    actorCls = " metrics-sales-actor-cell";
+                } else if (isSalesActorOther) {
+                    const hint = salesCallActorHintHtml(factDept, employee.id, day);
+                    if (hint) {
+                        cellInner = '<div class="metrics-sales-cell-stack">' + cellInner + hint + "</div>";
+                        actorCls = " metrics-sales-actor-cell";
+                    }
+                }
                 html += '<td class="metrics-emp-col ' + shopMetricGroupClass(fi)
                     + (wide ? " metrics-money-col" : "")
                     + (ei === 0 ? " metrics-group-start" : "")
                     + (fired ? " metrics-fired" : "")
-                    + (dayOff ? " metrics-off-day" : "") + '">'
-                    + deptMetricInputHtml(factDept, employee.id, day, field)
+                    + (dayOff ? " metrics-off-day" : "")
+                    + actorCls + '">'
+                    + cellInner
                     + "</td>";
             });
             if (!people.length) {
@@ -40422,6 +40834,7 @@ function renderFio() {
             + fieldBlock("Статус", jobStatusSelect(employee, !canEditStaff(), deptCode), "emp-field-status")
             + employeeFiredOnFieldHtml(employee, !canEditStaff(), deptCode)
             + employeeSpuMeetingsFieldHtml(employee, !canEditStaff(), deptCode)
+            + employeeCanCoverSalesRepsFieldHtml(employee, !canEditStaff() || fired, deptCode)
             + employeeOutsourcingFieldsHtml(employee, !canEditStaff() || fired, deptCode)
             + (isOutsourcingEmployee(employee)
                 ? fieldBlock("Фиксированная сумма в месяц",
@@ -42305,6 +42718,7 @@ function renderSummaryStaff() {
                 + fieldBlock("Статус", statusSel, "emp-field-status")
                 + employeeFiredOnFieldHtml(employee, locked, deptCode)
                 + employeeSpuMeetingsFieldHtml(employee, locked, deptCode)
+                + employeeCanCoverSalesRepsFieldHtml(employee, locked || fired, deptCode)
                 + shopExtraFunctionsHtml(employee)
                 + employeeOutsourcingFieldsHtml(employee, locked || fired, deptCode)
                 + (isOutsourcingEmployee(employee)
