@@ -12537,5 +12537,50 @@ class WtSalesOptCoverSummaryMarkerTests(unittest.TestCase):
         self.assertIn("wt_sales_opt_cover_summary_harness: OK", proc.stdout)
 
 
+class WtSpuMetricGroupFactMarkerTests(unittest.TestCase):
+    """Маркеры: group_total worktime → назначения вкладки + day-facts, без entries."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_group_total_uses_assigned_people_path(self):
+        src = self._src()
+        self.assertIn("function mgmtCollectAssignedWorktimeMetricSeries(", src)
+        self.assertIn("function mgmtDeptMetricFactIsPresent(", src)
+        fact_fn = src[
+            src.find("function mgmtMetricFact(")
+            : src.find("function mgmtSalesPlanFact(")
+        ]
+        self.assertIn('srcResult === "group_total"', fact_fn)
+        self.assertIn("mgmtCollectAssignedWorktimeMetricSeries(", fact_fn)
+        self.assertIn("return null", fact_fn)
+        collect_fn = src[
+            src.find("function mgmtCollectAssignedWorktimeMetricSeries(")
+            : src.find("function mgmtMetricFact(")
+        ]
+        self.assertIn("workMetricPeopleForTab(", collect_fn)
+        self.assertIn("metricFactDeptForEmployee(", collect_fn)
+        self.assertIn("getDeptMetricStored(", collect_fn)
+        self.assertNotIn("driverMetricEntriesMonth(", collect_fn)
+        self.assertNotIn("fromTrips", collect_fn)
+
+    def test_harness_group_isolation(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_spu_metric_group_fact_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness spu metric group fact")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_metric_group_fact_harness: OK", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51093,6 +51093,49 @@ function collectShopMetricPeriodSeries(metricId, subId, days) {
 }
 
 /**
+ * Есть ли в day-facts выбранной метрики явная запись (в т.ч. 0).
+ * Отсутствие ключа ≠ факт 0.
+ */
+function mgmtDeptMetricFactIsPresent(deptCode, employeeId, day, metricId, month, submetricId) {
+    const key = metricFactStorageKey(metricId, submetricId);
+    const facts = deptMetricFactsMonth(deptCode, month);
+    const rec = facts[employeeId] && facts[employeeId][String(day)];
+    if (!rec || typeof rec !== "object") return false;
+    if (rec[key] != null && rec[key] !== "") return true;
+    if (rec[key + "Mark"] === "done" || rec[key + "Mark"] === "fail") return true;
+    return false;
+}
+
+/**
+ * Ряд дневных фактов только у сотрудников назначений выбранной рабочей группы.
+ * Store = home (metricFactDeptForEmployee). Без entries / без чужих групп.
+ * present=false → за период нет ни одной записи выбранного metric_id.
+ */
+function mgmtCollectAssignedWorktimeMetricSeries(hostDept, metricId, subId, days, workTabId) {
+    const mid = canonicalMetricId(metricId);
+    const tab = String(workTabId || "");
+    const host = String(hostDept || "");
+    const series = [];
+    if (!mid || !host || !tab || typeof workMetricPeopleForTab !== "function") {
+        return { present: false, series: series };
+    }
+    const people = workMetricPeopleForTab(host, mid, tab) || [];
+    (days || []).forEach(function (d) {
+        const month = d.month || selectedMonth;
+        const dayNum = d.day;
+        people.forEach(function (e) {
+            if (!e || !e.id) return;
+            const factDept = typeof metricFactDeptForEmployee === "function"
+                ? metricFactDeptForEmployee(e.id, host)
+                : host;
+            if (!mgmtDeptMetricFactIsPresent(factDept, e.id, dayNum, mid, month, subId)) return;
+            series.push(Number(getDeptMetricStored(factDept, e.id, dayNum, mid, month, subId) || 0));
+        });
+    });
+    return { present: series.length > 0, series: series };
+}
+
+/**
  * Факт Work Time за отчётный период СПУ:
  * только дни из days (mgmtDaysInPeriod), в т.ч. через границу месяцев;
  * без копирования фактов; агрегация — из настройки Показателя / period_agg метрики.
@@ -51104,7 +51147,19 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
         const catalogItem = shopMetricCatalogById(mid);
         const dayList = days || [];
         const agg = mgmtResolveMetricDayAgg(indicator, catalogItem);
-        if (catalogItem && metricRollupEnabled(catalogItem) && metricDepartmentId(catalogItem) !== "shop") {
+        const srcResult = indicator ? String(indicator.source_result || "") : "";
+        const workTab = indicator ? String(indicator.source_work_tab_id || "") : "";
+        /* Обычные метрики: group_total обязан учитывать вкладку (как таблица), не весь dept/entries.
+         * Rollup-пилот склада — прежняя ветка ниже, без изменений. */
+        const rollupPilot = !!(catalogItem && metricRollupEnabled(catalogItem)
+            && metricDepartmentId(catalogItem) !== "shop");
+        if (!rollupPilot && srcResult === "group_total" && workTab) {
+            const host = String(deptCode || (catalogItem && metricDepartmentId(catalogItem)) || "");
+            const collected = mgmtCollectAssignedWorktimeMetricSeries(host, mid, subId, dayList, workTab);
+            if (!collected.present) return null;
+            return aggregateMetricNumbers(collected.series, agg);
+        }
+        if (rollupPilot) {
             const src = indicator && indicator.source_result;
             let rollup = 0;
             if (src === "group_total" && indicator.source_work_tab_id) {
