@@ -12582,5 +12582,73 @@ class WtSpuMetricGroupFactMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_metric_group_fact_harness: OK", proc.stdout)
 
 
+class WtSpuSourceGroupUxMarkerTests(unittest.TestCase):
+    """Маркеры: UX авто group_total только при смене метрики; legacy не мигрируется при open."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_autofill_only_on_metric_change(self):
+        src = self._src()
+        self.assertIn("function spuIndApplyWorktimeGroupAutofill(", src)
+        self.assertIn("function spuIndWorktimeSourceUiMode(", src)
+        self.assertIn("function spuIndWorktimeResultHtml(", src)
+        self.assertIn("function spuIndWorktimeSourcesMissingGroup(", src)
+        self.assertIn(
+            "Для выбранной метрики не определена рабочая группа. Проверьте назначения метрики",
+            src,
+        )
+        autofill_fn = src[
+            src.find("function spuIndApplyWorktimeGroupAutofill(")
+            : src.find("function spuIndWorktimeSourcesMissingGroup(")
+        ]
+        # 0 групп не должны тихо становиться department_total после выбора метрики
+        self.assertIn('s.source_result = "group_total"', autofill_fn)
+        self.assertNotIn(
+            "0 групп — не выдумывать group_total",
+            autofill_fn,
+        )
+        on_metric = src[
+            src.find("function spuIndOnMetricChange()")
+            : src.find("function renderSpuIndSourcesBox()")
+        ]
+        self.assertIn("spuIndApplyWorktimeGroupAutofill(", on_metric)
+        open_fn = src[
+            src.find("function openSpuOrgIndicatorForm(")
+            : src.find("function openSpuOrgIndicatorForm(") + 2500
+        ]
+        # open не вызывает autofill
+        self.assertNotIn("spuIndApplyWorktimeGroupAutofill(", open_fn)
+        render_fn = src[
+            src.find("function renderSpuIndSourcesBox()")
+            : src.find("function spuOrgFillExistingIndicator()")
+        ]
+        self.assertIn("spuIndWorktimeResultHtml(", render_fn)
+        self.assertNotIn("spuIndApplyWorktimeGroupAutofill(", render_fn)
+        # расчёт 9c29a44 не трогали этим UX-блоком
+        fact_fn = src[
+            src.find("function mgmtMetricFact(")
+            : src.find("function mgmtSalesPlanFact(")
+        ]
+        self.assertIn("mgmtCollectAssignedWorktimeMetricSeries(", fact_fn)
+
+    def test_harness_source_group_ux(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_spu_source_group_ux_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness spu source group ux")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_source_group_ux_harness: OK", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

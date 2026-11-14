@@ -48313,8 +48313,124 @@ function spuIndRemoveSource(sourceId) {
     renderSpuIndFormulaBox();
 }
 
-function spuIndOnMetricChange() {
+/* UI режима источника worktime: legacy = fact|department_total|metric_total (сохранённые),
+ * simple = group_total, pending = метрика ещё не выбрана. Autofill только при смене метрики. */
+function spuIndWorktimeSourceUiMode(s) {
+    if (!s) return "pending";
+    const type = s.source_type || "worktime_metric";
+    if (type !== "worktime_metric") return "other";
+    if (!s.source_metric_id) return "pending";
+    const r = String(s.source_result || "department_total");
+    if (r === "group_total") return "simple";
+    if (r === "fact" || r === "department_total" || r === "metric_total") return "legacy";
+    return "legacy";
+}
+
+function spuIndApplyWorktimeGroupAutofill(s) {
+    if (!s || (s.source_type || "worktime_metric") !== "worktime_metric") return;
+    if (!s.source_metric_id) {
+        /* Пустая строка без метрики — дефолт черновика, не режим «итог подразделения». */
+        s.source_result = "department_total";
+        s.source_work_tab_id = "";
+        return;
+    }
+    const item = typeof shopMetricCatalogById === "function" ? shopMetricCatalogById(s.source_metric_id) : null;
+    const tabs = (item && typeof metricWorkTabIds === "function") ? metricWorkTabIds(item) : [];
+    if (tabs.length === 1) {
+        s.source_result = "group_total";
+        s.source_work_tab_id = tabs[0];
+        return;
+    }
+    if (tabs.length > 1) {
+        const cur = String(s.source_work_tab_id || "");
+        s.source_result = "group_total";
+        s.source_work_tab_id = tabs.indexOf(cur) !== -1 ? cur : "";
+        return;
+    }
+    /* 0 групп: не подставлять department_total; ждём назначений / явного legacy. */
+    s.source_result = "group_total";
+    s.source_work_tab_id = "";
+}
+
+function spuIndWorktimeSourcesMissingGroup(sources) {
+    let hit = null;
+    (sources || []).some(function (s) {
+        if (!s || (s.source_type || "worktime_metric") !== "worktime_metric") return false;
+        if (String(s.source_result || "") !== "group_total") return false;
+        if (String(s.source_work_tab_id || "")) return false;
+        hit = s;
+        return true;
+    });
+    return hit;
+}
+
+function spuIndWorktimeResultHtml(s, item) {
+    const mode = spuIndWorktimeSourceUiMode(s);
+    if (mode === "pending" || mode === "other" || !item) return "";
+    const tabs = typeof metricWorkTabIds === "function" ? metricWorkTabIds(item) : [];
+    const dept = (typeof metricRollupDeptCode === "function" ? metricRollupDeptCode(item) : "")
+        || (typeof metricDepartmentId === "function" ? metricDepartmentId(item) : "");
+    if (mode === "legacy") {
+        let html = '<div class="form-group"><label>Результат</label><select class="spu-src-result">';
+        html += '<option value="fact"' + (s.source_result === "fact" ? " selected" : "") + ">Факт</option>";
+        html += '<option value="department_total"'
+            + (!s.source_result || s.source_result === "department_total" || s.source_result === "metric_total" ? " selected" : "")
+            + ">Итого подразделения / Итого метрики</option>";
+        tabs.forEach(function (tabId) {
+            html += '<option value="group:' + escapeAttribute(tabId) + '"'
+                + (s.source_result === "group_total" && s.source_work_tab_id === tabId ? " selected" : "") + ">Итого группы: "
+                + escapeHtml(metricTabLabel(dept, tabId)) + "</option>";
+        });
+        html += "</select></div>";
+        return html;
+    }
+    if (!tabs.length) {
+        return '<div class="form-group"><label>Рабочая группа</label>'
+            + '<div class="note">Для выбранной метрики не определена рабочая группа. Проверьте назначения метрики</div>'
+            + '<select class="spu-src-result" style="display:none" aria-hidden="true">'
+            + '<option value="group:" selected></option>'
+            + "</select></div>";
+    }
+    if (tabs.length === 1) {
+        const tabId = tabs[0];
+        return '<div class="form-group"><label>Рабочая группа</label>'
+            + '<div class="note">' + escapeHtml(metricTabLabel(dept, tabId)) + "</div>"
+            + '<select class="spu-src-result" style="display:none" aria-hidden="true">'
+            + '<option value="group:' + escapeAttribute(tabId) + '" selected></option>'
+            + "</select></div>";
+    }
+    const cur = String(s.source_work_tab_id || "");
+    const curOk = !!(cur && tabs.indexOf(cur) !== -1);
+    let html = '<div class="form-group"><label>Рабочая группа</label>'
+        + '<select class="spu-src-result" onchange="spuIndOnWorkGroupChange()">'
+        + '<option value="group:"' + (!curOk ? " selected" : "") + ">Выберите рабочую группу</option>";
+    tabs.forEach(function (tabId) {
+        html += '<option value="group:' + escapeAttribute(tabId) + '"'
+            + (curOk && cur === tabId ? " selected" : "") + ">"
+            + escapeHtml(metricTabLabel(dept, tabId)) + "</option>";
+    });
+    html += "</select></div>";
+    return html;
+}
+
+function spuIndOnWorkGroupChange() {
     spuIndSyncDraftFromDom();
+    renderSpuIndFormulaBox();
+}
+
+function spuIndOnMetricChange() {
+    const prevById = {};
+    (spuIndFormSources || []).forEach(function (s) {
+        if (!s || !s.source_id) return;
+        prevById[s.source_id] = String(s.source_metric_id || "");
+    });
+    spuIndSyncDraftFromDom();
+    (spuIndFormSources || []).forEach(function (s) {
+        if (!s || !s.source_id) return;
+        if ((s.source_type || "worktime_metric") !== "worktime_metric") return;
+        if (String(prevById[s.source_id] || "") === String(s.source_metric_id || "")) return;
+        spuIndApplyWorktimeGroupAutofill(s);
+    });
     renderSpuIndSourcesBox();
     renderSpuIndFormulaBox();
 }
@@ -48390,17 +48506,7 @@ function renderSpuIndSourcesBox() {
         } else {
             const item = shopMetricCatalogById(s.source_metric_id);
             html += spuIndSrcMetricPickerHtml(s, metrics);
-            html += '<div class="form-group"><label>Результат</label><select class="spu-src-result">';
-            html += '<option value="fact"' + (s.source_result === "fact" ? " selected" : "") + ">Факт</option>";
-            html += '<option value="department_total"' + (!s.source_result || s.source_result === "department_total" || s.source_result === "metric_total" ? " selected" : "") + ">Итого подразделения / Итого метрики</option>";
-            if (item) {
-                metricWorkTabIds(item).forEach(function (tabId) {
-                    html += '<option value="group:' + escapeAttribute(tabId) + '"'
-                        + (s.source_result === "group_total" && s.source_work_tab_id === tabId ? " selected" : "") + ">Итого группы: "
-                        + escapeHtml(metricTabLabel(metricRollupDeptCode(item) || metricDepartmentId(item), tabId)) + "</option>";
-                });
-            }
-            html += "</select></div>";
+            html += spuIndWorktimeResultHtml(s, item);
             if (item) {
                 const subs = metricSubmetrics(item, true);
                 if (subs.length) {
@@ -48509,6 +48615,10 @@ function saveSpuOrgIndicator() {
         });
         if (!sources.length) {
             toast("Добавьте хотя бы один источник.", "error");
+            return;
+        }
+        if (typeof spuIndWorktimeSourcesMissingGroup === "function" && spuIndWorktimeSourcesMissingGroup(sources)) {
+            toast("Для метрики Work Time не выбрана рабочая группа. Проверьте назначения метрики.", "error");
             return;
         }
         if (spuWouldCycle(editId || "mind_new", {
@@ -57229,6 +57339,9 @@ function saveMgmtIndicator(id) {
             return !!prevKeep[canonicalMetricId(m.id)];
         });
         if (!sources.length) return mgmtMarkInvalid("miSource", "Выберите метрику, отмеченную «Участвует в СПУ».");
+        if (typeof spuIndWorktimeSourcesMissingGroup === "function" && spuIndWorktimeSourcesMissingGroup(sources)) {
+            return mgmtMarkInvalid("miSource", "Для метрики Work Time не выбрана рабочая группа. Проверьте назначения метрики.");
+        }
         const first = sources[0];
         it.source_metric_id = first.source_metric_id;
         it.source_result = first.source_result || "department_total";
