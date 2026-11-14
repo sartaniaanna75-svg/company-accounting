@@ -12482,5 +12482,60 @@ class WtSalesCallActorsMarkerTests(unittest.TestCase):
         self.assertIn("atomic: true", fn)
 
 
+class WtSalesOptCoverSummaryMarkerTests(unittest.TestCase):
+    """Маркеры read-only сводки замещений ОПТ (путь B: exact label колонки)."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_summary_host_and_exact_resolve(self):
+        src = self._src()
+        self.assertIn('id="salesOptCoverSummaryBox"', src)
+        self.assertIn("function resolveSalesOptLoadedOrdersMetricFromFields(", src)
+        self.assertIn("function buildSalesOptCoverSummaryRows(", src)
+        self.assertIn("function renderSalesOptCoverSummary(", src)
+        self.assertIn("function salesCallActorsMonthMapReadonly(", src)
+        self.assertIn('SALES_OPT_LOADED_ORDERS_FIELD_LABEL = "Загруженные заявки от торговых ОПТ"', src)
+        resolve_fn = src[
+            src.find("function resolveSalesOptLoadedOrdersMetricFromFields(")
+            : src.find("function salesCallActorsMonthMapReadonly(")
+        ]
+        self.assertIn('!== exact', resolve_fn)
+        self.assertNotIn("shopMetricNameKey", resolve_fn)
+        self.assertIn("ambiguous", resolve_fn)
+        self.assertIn("not_found", resolve_fn)
+        build_fn = src[
+            src.find("function buildSalesOptCoverSummaryRows(")
+            : src.find("function toggleSalesOptCoverSummary(")
+        ]
+        self.assertIn('!== "other"', build_fn)
+        self.assertIn("actor_id", build_fn)
+        self.assertNotIn("resolveSalesCallActor(", build_fn)
+        self.assertNotIn("setSalesCallActor(", build_fn)
+        self.assertNotIn("setDeptMetricValue(", build_fn)
+        fill = src[
+            src.find("function fillDeptWorkTable(")
+            : src.find("function fillDeptWorkTable(") + 32000
+        ]
+        self.assertIn("renderSalesOptCoverSummary(", fill)
+
+    def test_harness_summary(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_sales_opt_cover_summary_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness cover summary")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_sales_opt_cover_summary_harness: OK", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4067,6 +4067,47 @@
             font-size: 14px;
         }
         .metric-rollup-muted { color: #94a3b8; }
+        .sales-opt-cover-summary {
+            margin-top: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: #fff;
+            padding: 10px 12px;
+        }
+        .sales-opt-cover-summary-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+        .sales-opt-cover-summary-head h4 {
+            margin: 0;
+            font-size: 14px;
+        }
+        .sales-opt-cover-summary-head button {
+            border: 0;
+            background: transparent;
+            color: #1d4ed8;
+            cursor: pointer;
+            padding: 0;
+            font-size: 12px;
+        }
+        .sales-opt-cover-summary-body { margin-top: 8px; overflow-x: auto; }
+        .sales-opt-cover-summary-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .sales-opt-cover-summary-table th,
+        .sales-opt-cover-summary-table td {
+            border-bottom: 1px solid #e2e8f0;
+            padding: 6px 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        .sales-opt-cover-summary-table th { color: #64748b; font-weight: 600; }
+        .sales-opt-cover-summary-table td.num { text-align: right; white-space: nowrap; }
+        .sales-opt-cover-summary-note { margin-top: 6px; font-size: 12px; color: #64748b; }
         .mc-tab-scope {
             width: 100%;
             margin: 0;
@@ -5073,6 +5114,7 @@
                             <tbody id="metricsBody"></tbody>
                         </table>
                     </div>
+                    <div id="salesOptCoverSummaryBox" class="sales-opt-cover-summary" style="display:none"></div>
                     <div id="metricsGrandBox"></div>
                 </div>
                 <div class="card" id="shopDayRolesBox" style="display:none"></div>
@@ -22636,6 +22678,178 @@ function salesCallActorHintHtml(timesheetDept, salesRepId, day) {
 
 function isSalesOptActorsTableContext(dept, tab) {
     return String(dept || "") === "drivers" && String(tab || "") === "sales";
+}
+
+/** Точное имя колонки «Загруженные заявки…» для сводки замещений (путь B). */
+const SALES_OPT_LOADED_ORDERS_FIELD_LABEL = "Загруженные заявки от торговых ОПТ";
+let salesOptCoverSummaryExpanded = false;
+
+/**
+ * Среди колонок таблицы (deptMetricFields / fields) — ровно одна с точным label.
+ * Без fuzzy. 0 или >1 → ok:false.
+ */
+function resolveSalesOptLoadedOrdersMetricFromFields(fields) {
+    const exact = SALES_OPT_LOADED_ORDERS_FIELD_LABEL;
+    const hits = [];
+    const seenIds = {};
+    (fields || []).forEach(function (field) {
+        if (!field || field.service || !field.metricId) return;
+        if (String(field.label || "").trim() !== exact) return;
+        const mid = String(field.metricId);
+        if (seenIds[mid]) return;
+        seenIds[mid] = true;
+        hits.push(field);
+    });
+    if (hits.length === 1) {
+        return { ok: true, metricId: String(hits[0].metricId), reason: "" };
+    }
+    if (hits.length === 0) {
+        return { ok: false, metricId: "", reason: "not_found" };
+    }
+    return { ok: false, metricId: "", reason: "ambiguous" };
+}
+
+/** Read-only month map salesCallActors без ensure пустого месяца. */
+function salesCallActorsMonthMapReadonly(month) {
+    const root = appData && appData.deptMetrics && appData.deptMetrics.drivers;
+    if (!root || !root.salesCallActors || typeof root.salesCallActors !== "object") return null;
+    const map = root.salesCallActors[month || selectedMonth];
+    return map && typeof map === "object" ? map : null;
+}
+
+/**
+ * Строки сводки: только stored other+actor_id; суммы loaded-метрики у основного ТП.
+ * Не пишет в store. Не использует resolveSalesCallActor.
+ */
+function buildSalesOptCoverSummaryRows(month, loadedMetricId, options) {
+    options = options || {};
+    const rowsMap = {};
+    const getFact = typeof options.getFact === "function"
+        ? options.getFact
+        : function (salesRepId, day) {
+            const factDept = typeof metricFactDeptForEmployee === "function"
+                ? metricFactDeptForEmployee(salesRepId, "drivers")
+                : "drivers";
+            return Number(getDeptMetricStored(factDept, salesRepId, day, loadedMetricId, month) || 0);
+        };
+    const empCaption = typeof options.empCaption === "function"
+        ? options.empCaption
+        : function (id) {
+            const emp = typeof getEmployee === "function" ? getEmployee(id) : null;
+            if (typeof shopMetricEmployeeCaption === "function" && emp) {
+                return shopMetricEmployeeCaption(emp);
+            }
+            return (emp && emp.name) ? String(emp.name) : String(id || "");
+        };
+    const map = typeof options.actorsMap !== "undefined"
+        ? options.actorsMap
+        : salesCallActorsMonthMapReadonly(month);
+    if (!map || !loadedMetricId) return [];
+    Object.keys(map).forEach(function (salesRepId) {
+        const byDay = map[salesRepId];
+        if (!byDay || typeof byDay !== "object") return;
+        Object.keys(byDay).forEach(function (dayKey) {
+            const rec = byDay[dayKey];
+            if (!rec || typeof rec !== "object") return;
+            if (String(rec.mode || "") !== "other") return;
+            const actorId = String(rec.actor_id || "");
+            if (!actorId) return;
+            const dayNum = Number(dayKey);
+            if (!Number.isFinite(dayNum) || dayNum < 1) return;
+            const key = actorId + "|" + salesRepId;
+            if (!rowsMap[key]) {
+                rowsMap[key] = {
+                    actorId: actorId,
+                    salesRepId: salesRepId,
+                    actorName: empCaption(actorId),
+                    salesRepName: empCaption(salesRepId),
+                    days: {},
+                    sum: 0
+                };
+            }
+            if (rowsMap[key].days[dayKey]) return;
+            rowsMap[key].days[dayKey] = true;
+            rowsMap[key].sum += getFact(salesRepId, dayNum);
+        });
+    });
+    return Object.keys(rowsMap).map(function (k) {
+        const row = rowsMap[k];
+        return {
+            actorId: row.actorId,
+            salesRepId: row.salesRepId,
+            actorName: row.actorName,
+            salesRepName: row.salesRepName,
+            daysCount: Object.keys(row.days).length,
+            sum: row.sum
+        };
+    }).sort(function (a, b) {
+        const an = String(a.actorName || "").localeCompare(String(b.actorName || ""), "ru");
+        if (an) return an;
+        return String(a.salesRepName || "").localeCompare(String(b.salesRepName || ""), "ru");
+    });
+}
+
+function toggleSalesOptCoverSummary() {
+    salesOptCoverSummaryExpanded = !salesOptCoverSummaryExpanded;
+    const body = document.getElementById("salesOptCoverSummaryBody");
+    const btn = document.getElementById("salesOptCoverSummaryToggle");
+    if (body) body.style.display = salesOptCoverSummaryExpanded ? "" : "none";
+    if (btn) btn.textContent = salesOptCoverSummaryExpanded ? "Свернуть" : "Развернуть";
+}
+
+/**
+ * Read-only блок под таблицей Торговые/Продажи ОПТ. Только metricsWrap + sales.
+ * fields — те же колонки, что у таблицы (после deptMetricFields / prepare).
+ */
+function renderSalesOptCoverSummary(dept, tab, wrapId, fields) {
+    const box = document.getElementById("salesOptCoverSummaryBox");
+    if (!box) return;
+    const show = isSalesOptActorsTableContext(dept, tab) && String(wrapId || "") === "metricsWrap";
+    if (!show) {
+        box.style.display = "none";
+        box.innerHTML = "";
+        return;
+    }
+    const resolved = resolveSalesOptLoadedOrdersMetricFromFields(fields);
+    let note = "";
+    let rows = [];
+    if (!resolved.ok) {
+        if (resolved.reason === "ambiguous") {
+            note = "Не удалось определить метрику «Загруженные заявки от торговых ОПТ»: найдено несколько колонок с таким названием. Суммы не рассчитаны.";
+        } else {
+            note = "Колонка «Загруженные заявки от торговых ОПТ» не найдена в таблице. Суммы не рассчитаны.";
+        }
+    } else {
+        rows = buildSalesOptCoverSummaryRows(selectedMonth, resolved.metricId);
+    }
+    const expanded = !!salesOptCoverSummaryExpanded;
+    let bodyHtml = "";
+    if (note) {
+        bodyHtml = '<div class="sales-opt-cover-summary-note">' + escapeHtml(note) + "</div>";
+    } else if (!rows.length) {
+        bodyHtml = '<div class="sales-opt-cover-summary-note">Нет замещений другим сотрудником за '
+            + escapeHtml(monthLabel(selectedMonth)) + ".</div>";
+    } else {
+        bodyHtml = '<table class="sales-opt-cover-summary-table"><thead><tr>'
+            + "<th>Кто замещал</th><th>Кого замещал</th><th>Количество дней</th><th>Сумма загруженных заявок</th>"
+            + "</tr></thead><tbody>";
+        rows.forEach(function (row) {
+            const n = Math.round(Number(row.sum) || 0);
+            const sumTxt = n ? n.toLocaleString("ru-RU") : "0";
+            bodyHtml += "<tr><td>" + escapeHtml(row.actorName)
+                + "</td><td>" + escapeHtml(row.salesRepName)
+                + '</td><td class="num">' + escapeHtml(String(row.daysCount))
+                + '</td><td class="num">' + escapeHtml(sumTxt) + " ₽</td></tr>";
+        });
+        bodyHtml += "</tbody></table>";
+    }
+    box.style.display = "";
+    box.innerHTML = '<div class="sales-opt-cover-summary-head">'
+        + "<h4>Сводка замещений ОПТ</h4>"
+        + '<button type="button" id="salesOptCoverSummaryToggle" onclick="toggleSalesOptCoverSummary()">'
+        + (expanded ? "Свернуть" : "Развернуть") + "</button></div>"
+        + '<div id="salesOptCoverSummaryBody" class="sales-opt-cover-summary-body"'
+        + (expanded ? "" : ' style="display:none"') + ">" + bodyHtml + "</div>";
 }
 
 /**
@@ -40707,6 +40921,7 @@ function fillDeptWorkTable(dept, tab, ids, options) {
         wrap.scrollTop = scrollTop;
     }
     try { renderMetricRollupHost(ids.wrap, dept); } catch (err) { console.error(err); }
+    try { renderSalesOptCoverSummary(dept, tab, ids.wrap, fields); } catch (errSum) { console.error(errSum); }
 }
 
 function shopExtraFunctionsHtml(employee) {
