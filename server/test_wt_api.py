@@ -11553,11 +11553,19 @@ class WtSpuPlanFactNarrowOpsTests(unittest.TestCase):
         self.assertIn("Ответ сервера не получен", persist)
         self.assertNotIn("wtDomainWriterSave(", persist)
         self.assertNotIn("wtPersistExplicitOps(", persist)
+        # SoftSync: dirty до POST; clear только на saved.
+        self.assertIn("wtSoftMarkDirty(path)", persist)
+        mark_idx = persist.find("wtSoftMarkDirty(path)")
+        post_idx = persist.find("wtSpuPostStateOp(path, value, expectedV)")
+        self.assertGreater(post_idx, mark_idx, "dirty до сборки/POST OPS")
+        self.assertIn("wtSoftClearDirty(path)", persist)
         # Timeout/offline: без авто-повтора POST после offline.
         offline_idx = persist.find('status === "offline"')
         self.assertGreater(offline_idx, 0)
         after_offline = persist[offline_idx:offline_idx + 450]
         self.assertNotIn("wtSpuPostStateOp(", after_offline)
+        # Offline-ветка не чистит dirty (нет Clear рядом с offline).
+        self.assertNotIn("wtSoftClearDirty(", after_offline)
 
         plan = self._fn("setMgmtPlanValue", "spuIsoToRu")
         fact = self._fn("setMgmtManualFact", "setMgmtPlanValue")
@@ -11575,6 +11583,23 @@ class WtSpuPlanFactNarrowOpsTests(unittest.TestCase):
         self.assertIn("отказ сохранить всю локальную ветку", helper)
         self.assertIn("buildPlans", helper)
         self.assertIn("buildFacts", helper)
+        # Indicators: snapshot при постановке + frozen rebuild, не live в конце очереди.
+        self.assertIn("frozenIndicatorsOverlay", helper)
+        self.assertIn("wtSpuIndicatorsOverlayFrozenRows(", helper)
+        self.assertIn('wtSoftMarkDirty("management.indicators")', helper)
+        ind_block = helper[
+            helper.find("if (flags.indicators)")
+            : helper.find("if (!chain.length)")
+        ]
+        self.assertIn(
+            "const frozenIndicatorsOverlay = wtSpuIndicatorsOverlayLiveRows(indIds)",
+            ind_block,
+        )
+        self.assertIn("wtSpuCloneJson(frozenIndicatorsOverlay)", ind_block)
+        # buildFn в очереди не перечитывает live
+        chain_push = ind_block[ind_block.find("chain.push(") :]
+        self.assertIn("wtSpuCloneJson(frozenIndicatorsOverlay)", chain_push)
+        self.assertNotIn("wtSpuIndicatorsOverlayLiveRows(", chain_push)
 
     def test_planfact_ui_and_period_tab(self):
         pf_plan = self._fn("setMgmtPfPlan", "setMgmtPfFact")
@@ -12732,6 +12757,56 @@ class WtSpuWorktimePlanFormulaMarkerTests(unittest.TestCase):
             self.skipTest("node недоступен для harness worktime plan formula")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_worktime_plan_formula_harness: OK", proc.stdout)
+
+
+class WtSpuIndicatorSoftSyncPersistMarkerTests(unittest.TestCase):
+    """Маркеры/harness: SoftSync+dirty, snapshot overlay, roundtrip group_total/sales."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_frozen_overlay_helper_and_dirty_markers(self):
+        src = self._src()
+        self.assertIn("function wtSpuIndicatorsOverlayFrozenRows(", src)
+        self.assertIn("function wtSpuIndicatorsOverlayLiveRows(", src)
+        persist = src[
+            src.find("function wtSpuPersistRecordOp(")
+            : src.find("function wtPersistMgmtBranches(")
+        ]
+        self.assertIn("wtSoftMarkDirty(path)", persist)
+        self.assertIn("SoftSync не должен откатить ветку до ответа OPS", persist)
+        helper = src[
+            src.find("function wtPersistMgmtBranches(")
+            : src.find("function setMgmtManualFact(")
+        ]
+        self.assertIn("frozenIndicatorsOverlay", helper)
+        self.assertIn("wtSpuIndicatorsOverlayFrozenRows(", helper)
+        # Не меняли расчёт факта group_total этим фиксом
+        fact_fn = src[
+            src.find("function mgmtMetricFact(")
+            : src.find("function mgmtSalesPlanFact(")
+        ]
+        self.assertIn("mgmtCollectAssignedWorktimeMetricSeries(", fact_fn)
+        self.assertIn('srcResult === "group_total"', fact_fn)
+
+    def test_harness_indicator_softsync_persist(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_indicator_softsync_persist_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness indicator softsync persist")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_indicator_softsync_persist_harness: OK", proc.stdout)
 
 
 if __name__ == "__main__":

@@ -51688,6 +51688,38 @@ function wtSpuIndicatorsOverlayLiveRows(indicatorIds) {
     return out;
 }
 
+/** Upsert замороженных строк показателя поверх base (server_value при 409), без чтения live appData. */
+function wtSpuIndicatorsOverlayFrozenRows(baseList, indicatorIds, frozenRows) {
+    const want = {};
+    (indicatorIds || []).forEach(function (id) {
+        if (id) want[String(id)] = true;
+    });
+    const frozenById = {};
+    (Array.isArray(frozenRows) ? frozenRows : []).forEach(function (x) {
+        if (!x || x.indicator_id == null) return;
+        const id = String(x.indicator_id);
+        if (want[id]) frozenById[id] = x;
+    });
+    const seen = {};
+    const out = [];
+    (Array.isArray(baseList) ? baseList : []).forEach(function (it) {
+        if (!it) return;
+        const id = String(it.indicator_id || "");
+        if (want[id]) {
+            seen[id] = true;
+            if (frozenById[id]) out.push(wtSpuCloneJson(frozenById[id]));
+            else out.push(wtSpuCloneJson(it));
+            return;
+        }
+        out.push(wtSpuCloneJson(it));
+    });
+    Object.keys(want).forEach(function (id) {
+        if (seen[id] || !frozenById[id]) return;
+        out.push(wtSpuCloneJson(frozenById[id]));
+    });
+    return out;
+}
+
 function wtSpuIndicatorsOverlayPlanMode(indicatorId) {
     return wtSpuIndicatorsOverlayLiveRows([indicatorId]);
 }
@@ -51995,6 +52027,10 @@ function wtSpuPersistRecordOp(path, buildFnOrValue, options) {
         return Promise.resolve(paintDone(false));
     }
 
+    // SoftSync не должен откатить ветку до ответа OPS (poll /api/state/version).
+    // Clear только на status===saved в handleNonConflictResult; fail/offline/conflict-cancel оставляют dirty.
+    try { if (path && typeof wtSoftMarkDirty === "function") wtSoftMarkDirty(path); } catch (errMark) {}
+
     // Участие в существующей очереди (без изменения реализации wtOpsChain / wtSaveRecordOp).
     const job = Promise.resolve(typeof wtOpsChain !== "undefined" ? wtOpsChain : null).then(function () {
         const base = wtSpuBranchFromLastLoaded(path);
@@ -52141,29 +52177,21 @@ function wtPersistMgmtBranches(flags, options) {
             toast("СПУ: отказ сохранить весь список показателей без списка id.", "error");
             return Promise.resolve(false);
         }
+        // Snapshot сразу после локальной мутации (тот же тик, что saveSpuOrgIndicator).
+        // Не перечитывать live в конце очереди: SoftSync мог бы уже откатить appData.
+        const frozenIndicatorsOverlay = wtSpuIndicatorsOverlayLiveRows(indIds);
+        try { if (typeof wtSoftMarkDirty === "function") wtSoftMarkDirty("management.indicators"); } catch (errIndDirty) {}
         chain.push(function () {
             return wtSpuPersistRecordOp("management.indicators", function () {
-                return wtSpuIndicatorsOverlayLiveRows(indIds);
+                return wtSpuCloneJson(frozenIndicatorsOverlay);
             }, {
                 conflictCellLabel: "карточку показателя",
                 rebuildOnServer: function (serverVal) {
-                    const prev = wtLastLoadedPayload && wtLastLoadedPayload.management
-                        ? wtLastLoadedPayload.management.indicators
-                        : null;
-                    try {
-                        if (wtLastLoadedPayload && wtLastLoadedPayload.management) {
-                            wtLastLoadedPayload.management.indicators = Array.isArray(serverVal)
-                                ? wtSpuCloneJson(serverVal)
-                                : [];
-                        }
-                    } catch (errI) {}
-                    const rebuilt = wtSpuIndicatorsOverlayLiveRows(indIds);
-                    try {
-                        if (wtLastLoadedPayload && wtLastLoadedPayload.management) {
-                            wtLastLoadedPayload.management.indicators = prev;
-                        }
-                    } catch (errI2) {}
-                    return rebuilt;
+                    return wtSpuIndicatorsOverlayFrozenRows(
+                        Array.isArray(serverVal) ? serverVal : [],
+                        indIds,
+                        frozenIndicatorsOverlay
+                    );
                 }
             });
         });
