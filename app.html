@@ -47756,13 +47756,18 @@ function spuIndFormulaChipsHtml(which, inds) {
         html += "</div>";
     });
     html += "</div>";
+    /* Формула плана: новый ind по умолчанию — план текущей недели; факт — только явным выбором. */
+    const addIndKind = w === "plan" ? "ind_plan_0" : "ind_fact_0";
     html += '<div class="toolbar" style="flex-wrap:wrap;gap:6px;margin-top:6px">'
-        + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaAddElement(\'ind_fact_0\',\'' + w + '\')">+ Добавить элемент</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaAddElement(\'' + addIndKind + '\',\'' + w + '\')">+ Добавить элемент</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'op\',\'' + w + '\')">+ Операция</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'num\',\'' + w + '\')">+ Число</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'lp\',\'' + w + '\')">(</button>'
         + '<button type="button" class="btn btn-secondary btn-small" onclick="spuIndFormulaAddElement(\'rp\',\'' + w + '\')">)</button>'
         + "</div>";
+    if (w === "plan") {
+        html += '<div class="note" style="margin:6px 0 0">Новые показатели добавляются из плана. Для каждого показателя можно выбрать план или факт.</div>';
+    }
     html += '<div class="spu-fx-human"><b>Запись:</b> '
         + escapeHtml(spuFormulaHumanText(tokens, spuIndFormSources) || "—")
         + "</div>";

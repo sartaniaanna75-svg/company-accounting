@@ -12347,6 +12347,18 @@ class WtSpuFormulaPlanFactWeekMarkerTests(unittest.TestCase):
             : src.find("function spuIndFormulaChipsHtml(")
         ]
         self.assertNotIn(">Показатель СПУ</option>", chip)
+        chips_fn = src[
+            src.find("function spuIndFormulaChipsHtml(")
+            : src.find("function renderSpuIndFormulaBox()")
+        ]
+        self.assertIn('addIndKind = w === "plan" ? "ind_plan_0" : "ind_fact_0"', chips_fn)
+        self.assertIn(
+            "Новые показатели добавляются из плана. Для каждого показателя можно выбрать план или факт.",
+            chips_fn,
+        )
+        # Движок чтения plan/fact не меняли этим UX-фиксом
+        self.assertIn("function spuEvalFormula(it, tokens, stack, asPlan)", src)
+        self.assertIn("function spuReadFormulaIndOperand(", src)
         plan_fn = src[
             src.find("function mgmtIndicatorPlan(")
             : src.find("function mgmtSpuOrgOptionsHtml(")
@@ -12373,6 +12385,25 @@ class WtSpuFormulaPlanFactWeekMarkerTests(unittest.TestCase):
             self.skipTest("node недоступен для harness plan/fact week")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_formula_plan_fact_week_harness: OK", proc.stdout)
+
+    def test_harness_plan_chip_default(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_plan_formula_chip_default_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness plan chip default")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_plan_formula_chip_default_harness: OK", proc.stdout)
 
 
 class WtSalesCallActorsMarkerTests(unittest.TestCase):
