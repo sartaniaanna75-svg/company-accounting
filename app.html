@@ -47411,7 +47411,15 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         + "Здесь показывается только план текущей отчётной недели (после раздачи). <b>Факт</b> и источник факта настраиваются выше — они не зависят от плана.</div>"
         + '<input id="spuIndPlan" placeholder="План текущей недели (только просмотр / точечная правка)" value="'
         + escapeAttribute(planVal == null ? "" : String(planVal)) + '">'
-        + '<div class="note" style="margin:4px 0 0">Точечная правка недели не заменяет план управленческого периода. Основной ввод — во вкладке «Планы СПУ».</div></div>'
+        + '<div class="note" style="margin:4px 0 0">Точечная правка недели не заменяет план управленческого периода. Основной ввод — во вкладке «Планы СПУ».</div>'
+        + '<label class="check" id="spuIndWorktimePlanCalcWrap" style="display:none;margin-top:8px">'
+        + '<input id="spuIndWorktimePlanCalcOn" type="checkbox"'
+        + (spuIndFormPlanCalcOn ? " checked" : "")
+        + ' onchange="onSpuIndWorktimePlanCalcChange()"> Рассчитывать план по формуле</label>'
+        + '<div class="note" id="spuIndWorktimePlanCalcNote" style="display:none;margin:4px 0 0">'
+        + "Формула рассчитывает только план. Факт поступает из метрики WorkTime</div>"
+        + '<div id="spuIndWorktimePlanFormulaBox"></div>'
+        + "</div>"
         + '<div class="form-group" id="spuIndFactWrap"><label>Факт текущего периода</label><input id="spuIndFact" placeholder="Факт" value="'
         + escapeAttribute(factVal == null ? "" : String(factVal)) + '"></div>'
         + '<label class="check"><input id="spuIndPf" type="checkbox"' + (pfOn ? " checked" : "") + "> Показывать в План–факте</label>"
@@ -47485,12 +47493,70 @@ function onSpuIndKindChange() {
         }
         renderSpuIndFormulaBox();
     }
+    const wtPlanWrap = document.getElementById("spuIndWorktimePlanCalcWrap");
+    const wtPlanNote = document.getElementById("spuIndWorktimePlanCalcNote");
+    const showWtPlan = spuIndFormKind === "worktime";
+    if (wtPlanWrap) wtPlanWrap.style.display = showWtPlan ? "" : "none";
+    if (wtPlanNote) wtPlanNote.style.display = showWtPlan ? "" : "none";
+    if (showWtPlan) {
+        const planOnEl = document.getElementById("spuIndWorktimePlanCalcOn");
+        if (planOnEl) planOnEl.checked = !!spuIndFormPlanCalcOn;
+        renderSpuIndWorktimePlanFormulaBox();
+    } else {
+        const wtBox = document.getElementById("spuIndWorktimePlanFormulaBox");
+        if (wtBox) wtBox.innerHTML = "";
+    }
+}
+
+function onSpuIndWorktimePlanCalcChange() {
+    const el = document.getElementById("spuIndWorktimePlanCalcOn");
+    spuIndFormPlanCalcOn = !!(el && el.checked);
+    renderSpuIndWorktimePlanFormulaBox();
+}
+
+function spuIndSyncPlanCalcOnFromDom() {
+    const wt = document.getElementById("spuIndWorktimePlanCalcOn");
+    const calc = document.getElementById("spuIndPlanCalcOn");
+    if (spuIndFormKind === "worktime" && wt) spuIndFormPlanCalcOn = !!wt.checked;
+    else if (calc) spuIndFormPlanCalcOn = !!calc.checked;
+}
+
+/** Редактор формулы плана для worktime (без формулы факта и без смены типа). */
+function renderSpuIndWorktimePlanFormulaBox() {
+    const box = document.getElementById("spuIndWorktimePlanFormulaBox");
+    if (!box) return;
+    if (spuIndFormKind !== "worktime" || !spuIndFormPlanCalcOn) {
+        box.innerHTML = "";
+        return;
+    }
+    if (!Array.isArray(spuIndFormPlanFormula)) spuIndFormPlanFormula = [];
+    const selfId = ((document.getElementById("spuIndId") || {}).value || "");
+    const inds = spuFormulaOperandIndicators(selfId);
+    let html = '<div class="spu-fx-box" style="margin-top:8px"><h4>Формула плана</h4>'
+        + '<div class="note">Результат — колонка «План» в План–факте. Ручные и периодные планы не удаляются '
+        + "и снова используются при выключении галочки.</div>";
+    html += spuIndFormulaChipsHtml("plan", inds);
+    if (!spuIndFormCheckWeekFrom) spuIndFormCheckWeekFrom = "2026-11-05";
+    html += '<div class="form-group" style="margin-top:8px">'
+        + '<label>Проверить формулу плана за период (чт–ср)</label>'
+        + '<select id="spuIndFormulaCheckWeek" onchange="spuIndFormCheckWeekFrom=this.value">'
+        + spuIndFormulaWeekOptionsHtml(spuIndFormCheckWeekFrom)
+        + "</select></div>";
+    html += '<div class="toolbar" style="flex-wrap:wrap;gap:6px;margin-top:6px">'
+        + '<button type="button" class="btn btn-secondary" onclick="spuIndFormulaCheckForPeriod(null,\'plan\')">Проверить формулу плана</button>'
+        + "</div>";
+    html += '<div id="spuIndFormulaCheck" class="spu-fx-check" style="display:none"></div>';
+    html += "</div>";
+    box.innerHTML = html;
 }
 
 function spuFormulaOperandIndicators(excludeId) {
     const selfId = String(excludeId || ((document.getElementById("spuIndId") || {}).value || ""));
     const keepIds = {};
     (spuIndFormFormula || []).forEach(function (tok) {
+        if (tok && tok.t === "ind" && tok.id) keepIds[tok.id] = true;
+    });
+    (spuIndFormPlanFormula || []).forEach(function (tok) {
         if (tok && tok.t === "ind" && tok.id) keepIds[tok.id] = true;
     });
     const layerRank = function (x) {
@@ -47711,6 +47777,7 @@ function renderSpuIndFormulaBox() {
     const isCalcKind = spuIndFormKind === "calculated";
     if (!isCalcKind && calc !== "formula") {
         box.innerHTML = "";
+        if (typeof renderSpuIndWorktimePlanFormulaBox === "function") renderSpuIndWorktimePlanFormulaBox();
         return;
     }
     if (isCalcKind) {
@@ -47760,6 +47827,7 @@ function renderSpuIndFormulaBox() {
         + "</div>";
     html += '<div id="spuIndFormulaCheck" class="spu-fx-check" style="display:none"></div>';
     box.innerHTML = html;
+    if (typeof renderSpuIndWorktimePlanFormulaBox === "function") renderSpuIndWorktimePlanFormulaBox();
 }
 
 
@@ -47992,8 +48060,7 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom, which) {
     spuIndFormCheckWeekFrom = weekFrom;
     const effEl = document.getElementById("spuIndFormulaEffectiveFrom");
     if (effEl && effEl.value) spuIndFormFormulaEffectiveFrom = effEl.value;
-    const planOnEl = document.getElementById("spuIndPlanCalcOn");
-    if (planOnEl) spuIndFormPlanCalcOn = !!planOnEl.checked;
+    if (typeof spuIndSyncPlanCalcOnFromDom === "function") spuIndSyncPlanCalcOnFromDom();
     const tokens = spuIndFormTokenList(mode).slice();
     if (!tokens.length) {
         box.style.display = "";
@@ -48621,6 +48688,18 @@ function saveSpuOrgIndicator() {
             toast("Для метрики Work Time не выбрана рабочая группа. Проверьте назначения метрики.", "error");
             return;
         }
+        if (typeof spuIndSyncPlanCalcOnFromDom === "function") spuIndSyncPlanCalcOnFromDom();
+        if (spuIndFormPlanCalcOn) {
+            const ptoks = spuIndFormPlanFormula || [];
+            if (!ptoks.length) {
+                toast("Составьте формулу плана или выключите «Рассчитывать план по формуле».", "error");
+                return;
+            }
+            if (ptoks.some(function (t) { return t && t.t === "ind" && !t.id; })) {
+                toast("В формуле плана выберите все Показатели СПУ.", "error");
+                return;
+            }
+        }
         if (spuWouldCycle(editId || "mind_new", {
             sources: sources,
             formula_expr: spuIndFormFormula,
@@ -48779,14 +48858,21 @@ function saveSpuOrgIndicator() {
         ? spuNormalizeFormulaTokens(it, it.sources, (spuIndFormFormula || []).slice())
         : [];
     {
-        const planOnEl = document.getElementById("spuIndPlanCalcOn");
-        if (planOnEl) spuIndFormPlanCalcOn = !!planOnEl.checked;
-        it.plan_formula_expr = (kind === "calculated" || calc === "formula")
-            ? spuNormalizeFormulaTokens(it, it.sources, (spuIndFormPlanFormula || []).slice())
-            : [];
-        it.plan_calc_mode = (kind === "calculated" || calc === "formula") && spuIndFormPlanCalcOn
-            ? "formula"
-            : "manual";
+        if (typeof spuIndSyncPlanCalcOnFromDom === "function") spuIndSyncPlanCalcOnFromDom();
+        const allowPlanFormula = (kind === "calculated" || calc === "formula" || kind === "worktime");
+        if (allowPlanFormula) {
+            /* Не стираем выражение при выключенной галочке — только режим. */
+            const draftPlanFx = Array.isArray(spuIndFormPlanFormula) ? spuIndFormPlanFormula.slice() : [];
+            if (draftPlanFx.length) {
+                it.plan_formula_expr = spuNormalizeFormulaTokens(it, it.sources, draftPlanFx);
+            } else if (!Array.isArray(it.plan_formula_expr)) {
+                it.plan_formula_expr = [];
+            }
+            it.plan_calc_mode = spuIndFormPlanCalcOn ? "formula" : "manual";
+        } else {
+            it.plan_formula_expr = [];
+            it.plan_calc_mode = "manual";
+        }
     }
     if (kind === "calculated") {
         it.aggregation_type = "formula";
@@ -48794,6 +48880,7 @@ function saveSpuOrgIndicator() {
         if (!it.sources.length) it.sources = spuFormulaSourcesFromExpr(it.formula_expr);
     }
     // Для расчётных: зафиксируем calc_left/right по первым двум ind/src показателям (для legacy-читателей).
+    // worktime + только формула плана — kind/source_type не меняем.
     if (kind === "calculated" || calc === "formula") {
         const indIds = [];
         (it.formula_expr || []).forEach(function (tok) {
@@ -48844,7 +48931,10 @@ function saveSpuOrgIndicator() {
             return;
         }
     } else {
-        spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, {});
+        spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, {
+            planFormula: it.plan_formula_expr || [],
+            planCalcMode: it.plan_calc_mode || "manual"
+        });
     }
     const m0 = shopMetricCatalogById(first.source_metric_id);
     if (m0 && !it.department_id) it.department_id = metricDepartmentId(m0) || it.department_id || "";

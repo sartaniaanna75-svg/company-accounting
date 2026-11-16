@@ -12650,5 +12650,58 @@ class WtSpuSourceGroupUxMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_source_group_ux_harness: OK", proc.stdout)
 
 
+class WtSpuWorktimePlanFormulaMarkerTests(unittest.TestCase):
+    """Маркеры: worktime может сохранять plan_formula без смены kind; UI-галочка в блоке План."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_worktime_plan_formula_ui_and_save(self):
+        src = self._src()
+        self.assertIn("function onSpuIndWorktimePlanCalcChange(", src)
+        self.assertIn("function renderSpuIndWorktimePlanFormulaBox(", src)
+        self.assertIn("spuIndWorktimePlanCalcOn", src)
+        self.assertIn("Рассчитывать план по формуле", src)
+        self.assertIn(
+            "Формула рассчитывает только план. Факт поступает из метрики WorkTime",
+            src,
+        )
+        start = src.find("function saveSpuOrgIndicator()")
+        self.assertGreaterEqual(start, 0)
+        save_fn = src[start : start + 22000]
+        self.assertIn('kind === "worktime"', save_fn)
+        self.assertIn("allowPlanFormula", save_fn)
+        self.assertIn("planFormula: it.plan_formula_expr || []", save_fn)
+        # Не конвертировать worktime→calculated из‑за plan formula
+        self.assertIn(
+            "worktime + только формула плана — kind/source_type не меняем",
+            src,
+        )
+        fact_fn = src[
+            src.find("function mgmtMetricFact(")
+            : src.find("function mgmtSalesPlanFact(")
+        ]
+        self.assertIn("mgmtCollectAssignedWorktimeMetricSeries(", fact_fn)
+
+    def test_harness_worktime_plan_formula(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_worktime_plan_formula_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness worktime plan formula")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_worktime_plan_formula_harness: OK", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
