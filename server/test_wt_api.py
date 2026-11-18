@@ -12308,7 +12308,7 @@ class WtSpuFormulaWeekCheckMarkerTests(unittest.TestCase):
         self.assertIn("function spuApplyFormulaVersionPlan(", src)
         self.assertIn("function spuIndFormulaCheckForPeriod(", src)
         self.assertIn("function spuIndFormulaDraftExplainHtml(", src)
-        self.assertIn("Дата начала действия формулы", src)
+        self.assertIn("Дата начала действия изменений", src)
         self.assertIn("Проверить формулу за период", src)
         self.assertIn("insert_segment", src)
         self.assertIn("2026-11-05", src)
@@ -12807,6 +12807,93 @@ class WtSpuIndicatorSoftSyncPersistMarkerTests(unittest.TestCase):
             self.skipTest("node недоступен для harness indicator softsync persist")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_indicator_softsync_persist_harness: OK", proc.stdout)
+
+
+class WtSpuFormulaEffectiveFromMarkerTests(unittest.TestCase):
+    """Маркеры: дата начала действия, изоляция факт/план, 3 действия для later versions."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_effective_from_ui_and_isolation_markers(self):
+        src = self._src()
+        self.assertIn("Дата начала действия изменений", src)
+        self.assertIn("function spuIndDefaultEffectiveFromIso(", src)
+        self.assertIn("function spuIndNormalizeEffectiveFromInput(", src)
+        self.assertIn("function spuIndAskLaterVersionsAction(", src)
+        self.assertIn("function spuIndPropagateFactPatchesToLater(", src)
+        self.assertIn("function spuIndPropagateSideToLater(", src)
+        self.assertIn("function spuIndSideOperandReplacements(", src)
+        self.assertIn("function spuIndFactOperandReplacements(", src)
+        self.assertIn("function spuIndPreflightPropagateSideToLater(", src)
+        self.assertIn("function spuIndPreflightPropagateFactToLater(", src)
+        self.assertIn("function spuIndPreflightPropagatePlanToLater(", src)
+        self.assertIn("function spuIndCanApplyOperandReplacementsToFormula(", src)
+        self.assertIn("function spuIndBaselineCfgAtFrom(", src)
+        self.assertIn("spuIndFormOpenedCfg", src)
+        self.assertIn("spuIndCfgFactFingerprint(", src)
+        self.assertIn("spuIndCfgPlanFingerprint(", src)
+        self.assertIn('propagateMode: "calc_mode"', src)
+        # Нет небезопасного full-replace formula_expr при propagate
+        prop_fn = src[
+            src.find("function spuIndPropagateSideToLater(")
+            : src.find("function spuIndPropagateFactPatchesToLater(")
+        ]
+        self.assertNotIn("draftCfg.formula_expr", prop_fn)
+        self.assertIn("spuIndApplyOperandReplacementsToFormula(", prop_fn)
+        self.assertIn("plan_formula_expr", prop_fn)
+        self.assertIn("plan_calc_mode", prop_fn)
+        open_fn = src[
+            src.find("function openSpuOrgIndicatorForm(")
+            : src.find("function openSpuOrgIndicatorForm(") + 4500
+        ]
+        self.assertIn("spuIndDefaultEffectiveFromIso(", open_fn)
+        self.assertIn("spuIndFormOpenedCfg", open_fn)
+        # Не хардкодить только 2026-11-05 как единственный дефолт open
+        self.assertIn("spuIndDefaultEffectiveFromIso", open_fn)
+        save_fn = src[
+            src.find("function saveSpuOrgIndicator()")
+            : src.find("function saveSpuOrgIndicator()") + 28000
+        ]
+        self.assertIn("spuIndAskLaterVersionsAction(", save_fn)
+        self.assertIn("spuIndPreflightPropagateSideToLater(", save_fn)
+        self.assertIn("spuIndPreflightPropagatePlanToLater(", save_fn)
+        self.assertIn("spuIndPropagateSideToLater(", save_fn)
+        self.assertIn('laterAction === "propagate"', save_fn)
+        self.assertIn('laterAction === "cancel"', save_fn)
+        self.assertIn("spuIndRestoreFormulaFields(", save_fn)
+        self.assertIn("factDirty", save_fn)
+        self.assertIn("planDirty", save_fn)
+        self.assertIn("baselineAtFrom", save_fn)
+        self.assertIn("preFactProp", save_fn)
+        self.assertIn("prePlanProp", save_fn)
+        # mgmtIndicatorPlan: формульный план + period_plans + fallback plans (порядок не меняем)
+        plan_fn = src[
+            src.find("function mgmtIndicatorPlan(")
+            : src.find("function mgmtIndicatorPlan(") + 2200
+        ]
+        self.assertIn("plan_formula_expr", plan_fn)
+        self.assertIn("spuComputedPeriodWeekPlan(", plan_fn)
+        self.assertIn("mgmtPlanStoredValue(", plan_fn)
+
+    def test_harness_formula_effective_from(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_formula_effective_from_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness formula effective from")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_formula_effective_from_harness: OK", proc.stdout)
 
 
 if __name__ == "__main__":

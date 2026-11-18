@@ -43995,10 +43995,12 @@ let spuIndFormFormula = [];
 let spuIndFormPlanFormula = [];
 /** Черновик UI: считать план по формуле (plan_calc_mode === "formula"). */
 let spuIndFormPlanCalcOn = false;
-/** Черновик UI: дата начала действия формулы (ISO). Не пишется в versions при простом открытии. */
+/** Черновик UI: дата начала действия изменений (ISO). Не пишется в versions при простом открытии. */
 let spuIndFormFormulaEffectiveFrom = "";
 /** Черновик UI: четверг выбранной недели для «Проверить формулу за период». */
 let spuIndFormCheckWeekFrom = "";
+/** Снимок активной config при open (fact/plan) — для factDirty/planDirty. */
+let spuIndFormOpenedCfg = null;
 /** Memo одного прохода План–факт: ключ → число|null. */
 let spuFormulaEvalMemo = null;
 let spuIndListTab = "all";
@@ -45652,6 +45654,387 @@ function spuSourceVersionFingerprint(cfg) {
         pf: cfg && cfg.plan_formula_expr,
         pcm: cfg && cfg.plan_calc_mode
     });
+}
+
+/** Четверг (старт) учётной недели СПУ для iso/сегодня — без UTC-сдвига (local Date). */
+function spuIndAccountingWeekStartIso(iso) {
+    try {
+        const w = typeof mgmtSpuReportingWeek === "function"
+            ? mgmtSpuReportingWeek(iso || (typeof todayIsoDate === "function" ? todayIsoDate() : ""))
+            : null;
+        if (w && w.start_date) return String(w.start_date);
+    } catch (err) {}
+    return String(iso || "").trim() || "2026-11-05";
+}
+
+/** Дефолт даты нового изменения: старт текущей учётной недели (из периода UI или сегодня). */
+function spuIndDefaultEffectiveFromIso() {
+    try {
+        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+        const anchor = r.from || r.to || (typeof todayIsoDate === "function" ? todayIsoDate() : "");
+        return spuIndAccountingWeekStartIso(anchor);
+    } catch (err2) {}
+    return spuIndAccountingWeekStartIso();
+}
+
+function spuIndNormalizeEffectiveFromInput(rawIso) {
+    const raw = String(rawIso || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        return { ok: false, iso: "", normalized: false, message: "Укажите корректную дату (ГГГГ-ММ-ДД)." };
+    }
+    const thu = spuIndAccountingWeekStartIso(raw);
+    return { ok: true, iso: thu, normalized: thu !== raw, message: thu !== raw
+        ? ("Дата приведена к началу учётной недели: " + thu + ".")
+        : "" };
+}
+
+function spuIndOnFormulaEffectiveFromChange(el) {
+    const raw = el && el.value != null ? el.value : spuIndFormFormulaEffectiveFrom;
+    const norm = spuIndNormalizeEffectiveFromInput(raw);
+    if (!norm.ok) {
+        toast(norm.message || "Некорректная дата.", "error");
+        return;
+    }
+    spuIndFormFormulaEffectiveFrom = norm.iso;
+    if (el) el.value = norm.iso;
+    if (norm.normalized) toast(norm.message, "info");
+}
+
+function spuIndCfgFactFingerprint(cfg) {
+    return JSON.stringify({
+        s: ((cfg && cfg.sources) || []).map(function (s) {
+            return [s.source_type, s.source_metric_id, s.source_result, s.source_work_tab_id, s.source_submetric_id, s.source_sales_plan_view, s.source_sales_plan_field, s.source_timesheet_agg, s.source_department_id, s.source_indicator_id];
+        }),
+        a: cfg && cfg.aggregation_type,
+        c: cfg && cfg.calc_mode,
+        f: cfg && cfg.formula_expr
+    });
+}
+
+function spuIndCfgPlanFingerprint(cfg) {
+    return JSON.stringify({
+        pf: cfg && cfg.plan_formula_expr,
+        pcm: cfg && cfg.plan_calc_mode
+    });
+}
+
+function spuIndSnapshotOpenedCfg(cfg) {
+    const c = cfg || {};
+    return {
+        sources: (c.sources || []).map(function (s) { return spuNewSourceRow(s); }),
+        aggregation_type: c.aggregation_type || "sum",
+        calc_mode: c.calc_mode || c.aggregation_type || "sum",
+        formula_expr: Array.isArray(c.formula_expr) ? c.formula_expr.map(function (t) { return Object.assign({}, t); }) : [],
+        plan_formula_expr: Array.isArray(c.plan_formula_expr) ? c.plan_formula_expr.map(function (t) { return Object.assign({}, t); }) : [],
+        plan_calc_mode: c.plan_calc_mode === "formula" ? "formula" : "manual"
+    };
+}
+
+function spuIndBaselineCfgAtFrom(it, fromIso) {
+    const v = typeof spuVersionAt === "function" ? spuVersionAt(it, fromIso) : null;
+    if (v) {
+        return spuIndSnapshotOpenedCfg({
+            sources: v.sources,
+            aggregation_type: v.aggregation_type,
+            calc_mode: v.calc_mode,
+            formula_expr: v.formula_expr,
+            plan_formula_expr: v.plan_formula_expr,
+            plan_calc_mode: v.plan_calc_mode
+        });
+    }
+    return spuIndSnapshotOpenedCfg({
+        sources: typeof spuNormalizeSources === "function" ? spuNormalizeSources(it) : (it && it.sources) || [],
+        aggregation_type: it && it.aggregation_type,
+        calc_mode: it && (it.calc_mode || it.aggregation_type),
+        formula_expr: it && it.formula_expr,
+        plan_formula_expr: it && it.plan_formula_expr,
+        plan_calc_mode: it && it.plan_calc_mode
+    });
+}
+
+function spuIndFormulaIndTokens(tokens) {
+    const out = [];
+    (Array.isArray(tokens) ? tokens : []).forEach(function (tok, idx) {
+        if (tok && tok.t === "ind") out.push({ index: idx, id: String(tok.id || ""), tok: tok });
+    });
+    return out;
+}
+
+/**
+ * Однозначные замены операндов opened→draft (только id у ind).
+ * sideLabel: «факта» | «плана» — для текста ошибок.
+ */
+function spuIndSideOperandReplacements(openedTokens, draftTokens, sideLabel) {
+    const side = sideLabel || "факта";
+    const a = spuIndFormulaIndTokens(openedTokens);
+    const b = spuIndFormulaIndTokens(draftTokens);
+    if (a.length !== b.length) {
+        return {
+            ok: false,
+            replacements: [],
+            message: "Число операндов в формуле " + side
+                + " изменилось — безопасное распространение на поздние версии невозможно."
+        };
+    }
+    const map = Object.create(null);
+    const replacements = [];
+    for (let i = 0; i < a.length; i++) {
+        const fromId = a[i].id;
+        const toId = b[i].id;
+        if (fromId === toId) continue;
+        if (map[fromId] != null && map[fromId] !== toId) {
+            return {
+                ok: false,
+                replacements: [],
+                message: "Неоднозначная замена операнда «" + fromId + "» в формуле " + side
+                    + " — распространение отменено."
+            };
+        }
+        if (map[fromId] == null) {
+            map[fromId] = toId;
+            replacements.push({ fromId: fromId, toId: toId });
+        }
+    }
+    if (!replacements.length) {
+        return {
+            ok: false,
+            replacements: [],
+            message: "Нет однозначных изменений операндов формулы " + side + " для распространения."
+        };
+    }
+    return { ok: true, replacements: replacements, message: "" };
+}
+
+function spuIndFactOperandReplacements(openedTokens, draftTokens) {
+    return spuIndSideOperandReplacements(openedTokens, draftTokens, "факта");
+}
+
+/** Проверка: замены применимы к версии без угадываний (каждый fromId есть, число вхождений = opened). */
+function spuIndCanApplyOperandReplacementsToFormula(laterTokens, openedTokens, replacements) {
+    const laterInd = spuIndFormulaIndTokens(laterTokens);
+    const openedInd = spuIndFormulaIndTokens(openedTokens);
+    const openedCount = Object.create(null);
+    openedInd.forEach(function (x) {
+        openedCount[x.id] = (openedCount[x.id] || 0) + 1;
+    });
+    const laterCount = Object.create(null);
+    laterInd.forEach(function (x) {
+        laterCount[x.id] = (laterCount[x.id] || 0) + 1;
+    });
+    for (let i = 0; i < (replacements || []).length; i++) {
+        const r = replacements[i];
+        if (!r || !r.fromId) {
+            return { ok: false, message: "Пустая замена операнда." };
+        }
+        const need = openedCount[r.fromId] || 0;
+        const have = laterCount[r.fromId] || 0;
+        if (have === 0) {
+            return {
+                ok: false,
+                message: "В формуле нет операнда «" + r.fromId + "» — однозначно заменить нельзя."
+            };
+        }
+        if (have !== need) {
+            return {
+                ok: false,
+                message: "Число вхождений операнда «" + r.fromId + "» (" + have
+                    + ") не совпадает с открытой формулой (" + need + ")."
+            };
+        }
+    }
+    return { ok: true, message: "" };
+}
+
+function spuIndApplyOperandReplacementsToFormula(tokens, replacements) {
+    const map = Object.create(null);
+    (replacements || []).forEach(function (r) {
+        if (r && r.fromId) map[r.fromId] = r.toId;
+    });
+    return (Array.isArray(tokens) ? tokens : []).map(function (tok) {
+        if (!tok || tok.t !== "ind") return tok ? Object.assign({}, tok) : tok;
+        const id = String(tok.id || "");
+        if (!Object.prototype.hasOwnProperty.call(map, id)) return Object.assign({}, tok);
+        return Object.assign({}, tok, { id: String(map[id] || "") });
+    });
+}
+
+function spuIndLaterVersionsAfter(it, fromIso) {
+    const from = String(fromIso || "");
+    return ((it && it.source_versions) || []).filter(function (v) {
+        return v && String(v.effective_from || "") > from;
+    }).sort(function (a, b) {
+        return String(a.effective_from || "").localeCompare(String(b.effective_from || ""));
+    });
+}
+
+function spuIndVersionLabelShort(v) {
+    return (v && v.version_id ? v.version_id : "sver")
+        + " [" + ((v && v.effective_from) || "?") + " … " + ((v && v.effective_to) || "∞") + "]";
+}
+
+/**
+ * Preflight propagate для стороны fact|plan.
+ * opts: { openedFx, draftFx, openedPlanMode, draftPlanMode } — для plan mode-only.
+ * Возвращает { ok, replacements, propagateMode: 'operands'|'calc_mode'|'none', message }.
+ */
+function spuIndPreflightPropagateSideToLater(it, fromIso, side, opts) {
+    opts = opts || {};
+    const later = spuIndLaterVersionsAfter(it, fromIso);
+    if (!later.length) {
+        return {
+            ok: false,
+            replacements: [],
+            propagateMode: "none",
+            message: "Нет последующих версий для распространения."
+        };
+    }
+    const isPlan = side === "plan";
+    const openedFx = opts.openedFx;
+    const draftFx = opts.draftFx;
+    const sideLabel = isPlan ? "плана" : "факта";
+
+    if (isPlan) {
+        const openedMode = opts.openedPlanMode === "formula" ? "formula" : "manual";
+        const draftMode = opts.draftPlanMode === "formula" ? "formula" : "manual";
+        const fxSame = JSON.stringify(openedFx || []) === JSON.stringify(draftFx || []);
+        if (fxSame && openedMode !== draftMode) {
+            return {
+                ok: true,
+                replacements: [],
+                propagateMode: "calc_mode",
+                planCalcMode: draftMode,
+                message: ""
+            };
+        }
+    }
+
+    const repl = spuIndSideOperandReplacements(openedFx, draftFx, sideLabel);
+    if (!repl.ok) {
+        return {
+            ok: false,
+            replacements: [],
+            propagateMode: "none",
+            message: repl.message || ("Распространение формулы " + sideLabel + " невозможно.")
+        };
+    }
+    for (let i = 0; i < later.length; i++) {
+        const v = later[i];
+        const laterTokens = isPlan
+            ? (v && v.plan_formula_expr)
+            : (v && v.formula_expr);
+        const check = spuIndCanApplyOperandReplacementsToFormula(laterTokens, openedFx, repl.replacements);
+        if (!check.ok) {
+            return {
+                ok: false,
+                replacements: repl.replacements,
+                propagateMode: "none",
+                message: "Нельзя безопасно распространить формулу " + sideLabel + " на версию "
+                    + spuIndVersionLabelShort(v) + ": "
+                    + (check.message || "неоднозначное соответствие операндов.")
+            };
+        }
+    }
+    const out = {
+        ok: true,
+        replacements: repl.replacements,
+        propagateMode: "operands",
+        message: ""
+    };
+    if (isPlan) {
+        const draftMode = opts.draftPlanMode === "formula" ? "formula" : "manual";
+        const openedMode = opts.openedPlanMode === "formula" ? "formula" : "manual";
+        if (draftMode !== openedMode) {
+            out.planCalcMode = draftMode;
+        }
+    }
+    return out;
+}
+
+function spuIndPreflightPropagateFactToLater(it, fromIso, openedFx, draftFx) {
+    return spuIndPreflightPropagateSideToLater(it, fromIso, "fact", {
+        openedFx: openedFx,
+        draftFx: draftFx
+    });
+}
+
+function spuIndPreflightPropagatePlanToLater(it, fromIso, openedSnap, draftSnap) {
+    return spuIndPreflightPropagateSideToLater(it, fromIso, "plan", {
+        openedFx: openedSnap && openedSnap.plan_formula_expr,
+        draftFx: draftSnap && draftSnap.plan_formula_expr,
+        openedPlanMode: openedSnap && openedSnap.plan_calc_mode,
+        draftPlanMode: draftSnap && draftSnap.plan_calc_mode
+    });
+}
+
+/**
+ * Пропагация стороны: fact — formula_expr (+ sources); plan — plan_formula_expr / plan_calc_mode.
+ * Другую сторону и прочие поля later не трогает.
+ */
+function spuIndPropagateSideToLater(it, fromIso, side, preflightResult) {
+    const later = spuIndLaterVersionsAfter(it, fromIso);
+    const mode = preflightResult && preflightResult.propagateMode;
+    const replacements = (preflightResult && preflightResult.replacements) || [];
+    later.forEach(function (v) {
+        if (!v) return;
+        if (side === "fact") {
+            if (mode !== "operands" || !replacements.length) return;
+            const nextFx = spuIndApplyOperandReplacementsToFormula(v.formula_expr, replacements);
+            v.formula_expr = nextFx;
+            if (typeof spuFormulaSourcesFromExpr === "function") {
+                v.sources = spuFormulaSourcesFromExpr(nextFx);
+            }
+            return;
+        }
+        if (side === "plan") {
+            if (mode === "calc_mode") {
+                v.plan_calc_mode = preflightResult.planCalcMode === "formula" ? "formula" : "manual";
+                return;
+            }
+            if (mode === "operands" && replacements.length) {
+                v.plan_formula_expr = spuIndApplyOperandReplacementsToFormula(
+                    v.plan_formula_expr,
+                    replacements
+                );
+                if (preflightResult.planCalcMode === "formula" || preflightResult.planCalcMode === "manual") {
+                    v.plan_calc_mode = preflightResult.planCalcMode;
+                }
+            }
+        }
+    });
+    return later.length;
+}
+
+function spuIndPropagateFactPatchesToLater(it, fromIso, replacements) {
+    return spuIndPropagateSideToLater(it, fromIso, "fact", {
+        propagateMode: "operands",
+        replacements: replacements || []
+    });
+}
+
+/** Три действия при поздних версиях: propagate | until_next | cancel */
+function spuIndAskLaterVersionsAction(laterList, fromIso, divergentNotes, sidesHint) {
+    const lines = (laterList || []).map(function (v) {
+        return "- " + spuIndVersionLabelShort(v);
+    });
+    const warn = (divergentNotes && divergentNotes.length)
+        ? ("\n\nВнимание — отличаются от открытой конфигурации:\n" + divergentNotes.join("\n"))
+        : "";
+    const sides = sidesHint || "факт и/или план";
+    const raw = window.prompt(
+        "С " + fromIso + " есть более поздние версии настройки:\n"
+        + lines.join("\n")
+        + warn
+        + "\n\nВведите число действия:\n"
+        + "1 — Применить ко всем последующим версиям (" + sides
+        + "; незатронутая сторона каждой версии сохранится)\n"
+        + "2 — Изменить только до следующей версии (поздние без изменений)\n"
+        + "3 — Отменить сохранение\n",
+        "3"
+    );
+    const n = String(raw == null ? "3" : raw).trim();
+    if (n === "1") return "propagate";
+    if (n === "2") return "until_next";
+    return "cancel";
 }
 
 function spuVersionPayloadPack(payload) {
@@ -47309,10 +47692,23 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         : ((it && Array.isArray(it.plan_formula_expr)) ? it.plan_formula_expr.slice() : []);
     spuIndFormPlanCalcOn = !!(cfg && cfg.plan_calc_mode === "formula")
         || !!(it && it.plan_calc_mode === "formula");
-    // Черновики UI дат: не мутируют source_versions при открытии. Дефолт первичной настройки — 05.11.2026.
-    spuIndFormFormulaEffectiveFrom = "2026-11-05";
-    spuIndFormCheckWeekFrom = "2026-11-05";
+    // Дата нового изменения ≠ дата просмотра: дефолт = четверг текущей учётной недели.
+    // Открытие само по себе source_versions не мутирует.
+    spuIndFormFormulaEffectiveFrom = typeof spuIndDefaultEffectiveFromIso === "function"
+        ? spuIndDefaultEffectiveFromIso()
+        : (typeof todayIsoDate === "function" ? todayIsoDate() : "2026-11-05");
+    spuIndFormCheckWeekFrom = spuIndFormFormulaEffectiveFrom;
     spuIndFormSources = sources.length ? sources : (kind === "manual" || kind === "one_c" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
+    spuIndFormOpenedCfg = typeof spuIndSnapshotOpenedCfg === "function"
+        ? spuIndSnapshotOpenedCfg({
+            sources: spuIndFormSources,
+            aggregation_type: spuIndFormCalc,
+            calc_mode: spuIndFormCalc,
+            formula_expr: spuIndFormFormula,
+            plan_formula_expr: spuIndFormPlanFormula,
+            plan_calc_mode: spuIndFormPlanCalcOn ? "formula" : "manual"
+        })
+        : null;
     spuIndSrcMetricFilters = {};
     (spuIndFormSources || []).forEach(function (s) {
         if (s && s.source_id && s.source_metric_id) spuIndSrcMetricFilterGet(s.source_id, s.source_metric_id);
@@ -47810,15 +48206,20 @@ function renderSpuIndFormulaBox() {
         + '<div class="note">Результат показывается в колонке «План» План–факта. Ручные и месячные планы не удаляются и снова используются при выключении галочки.</div>';
     html += spuIndFormulaChipsHtml("plan", inds);
     html += "</div>";
-    if (!spuIndFormFormulaEffectiveFrom) spuIndFormFormulaEffectiveFrom = "2026-11-05";
-    if (!spuIndFormCheckWeekFrom) spuIndFormCheckWeekFrom = "2026-11-05";
+    if (!spuIndFormFormulaEffectiveFrom) {
+        spuIndFormFormulaEffectiveFrom = typeof spuIndDefaultEffectiveFromIso === "function"
+            ? spuIndDefaultEffectiveFromIso()
+            : "2026-11-05";
+    }
+    if (!spuIndFormCheckWeekFrom) spuIndFormCheckWeekFrom = spuIndFormFormulaEffectiveFrom;
     html += '<div class="form-group" style="margin-top:8px">'
-        + '<label>Дата начала действия формулы</label>'
+        + '<label>Дата начала действия изменений</label>'
         + '<input type="date" id="spuIndFormulaEffectiveFrom" value="'
         + escapeAttribute(spuIndFormFormulaEffectiveFrom)
-        + '" onchange="spuIndFormFormulaEffectiveFrom=this.value">'
-        + '<div class="note">С этой даты новая версия формулы действует для недель план-факта '
-        + "(ориентир — конец недели). Для первичной настройки по умолчанию 05.11.2026. "
+        + '" onchange="spuIndOnFormulaEffectiveFromChange(this)">'
+        + '<div class="note">С этой даты действует новая настройка источников/формулы для недель план-факта '
+        + "(начало учётной недели — четверг). Прошлые недели остаются на прежней версии. "
+        + "По умолчанию предлагается четверг текущей учётной недели. "
         + "Открытие карточки само по себе историю версий не меняет.</div></div>";
     html += '<div class="form-group">'
         + '<label>Проверить формулу за период (чт–ср)</label>'
@@ -48855,6 +49256,35 @@ function saveSpuOrgIndicator() {
             it.department_id = srcDeptRaw || it.department_id || "";
         }
     }
+    const formulaFieldRollback = (kind === "calculated" || calc === "formula")
+        ? {
+            formula_expr: Array.isArray(it.formula_expr) ? JSON.parse(JSON.stringify(it.formula_expr)) : [],
+            plan_formula_expr: Array.isArray(it.plan_formula_expr) ? JSON.parse(JSON.stringify(it.plan_formula_expr)) : [],
+            plan_calc_mode: it.plan_calc_mode === "formula" ? "formula" : "manual",
+            sources: Array.isArray(it.sources) ? JSON.parse(JSON.stringify(it.sources)) : [],
+            source_versions: Array.isArray(it.source_versions) ? JSON.parse(JSON.stringify(it.source_versions)) : [],
+            aggregation_type: it.aggregation_type,
+            calc_mode: it.calc_mode,
+            calc_left_id: it.calc_left_id,
+            calc_right_id: it.calc_right_id,
+            source_type: it.source_type,
+            indicator_kind: it.indicator_kind
+        }
+        : null;
+    function spuIndRestoreFormulaFields() {
+        if (!formulaFieldRollback || !it) return;
+        it.formula_expr = formulaFieldRollback.formula_expr;
+        it.plan_formula_expr = formulaFieldRollback.plan_formula_expr;
+        it.plan_calc_mode = formulaFieldRollback.plan_calc_mode;
+        it.sources = formulaFieldRollback.sources;
+        it.source_versions = formulaFieldRollback.source_versions;
+        it.aggregation_type = formulaFieldRollback.aggregation_type;
+        it.calc_mode = formulaFieldRollback.calc_mode;
+        it.calc_left_id = formulaFieldRollback.calc_left_id;
+        it.calc_right_id = formulaFieldRollback.calc_right_id;
+        it.source_type = formulaFieldRollback.source_type;
+        it.indicator_kind = formulaFieldRollback.indicator_kind;
+    }
     it.sources = sources.map(function (s, i) { return spuNewSourceRow(Object.assign({}, s, { source_id: s.source_id || ("ssrc_" + i) })); });
     it.aggregation_type = calc === "formula" ? "formula" : calc;
     it.calc_mode = calc;
@@ -48905,14 +49335,124 @@ function saveSpuOrgIndicator() {
     if (kind === "calculated" || calc === "formula") {
         const effElSave = document.getElementById("spuIndFormulaEffectiveFrom");
         if (effElSave && effElSave.value) spuIndFormFormulaEffectiveFrom = effElSave.value;
-        const effFrom = String(spuIndFormFormulaEffectiveFrom || "").trim();
+        const normEff = typeof spuIndNormalizeEffectiveFromInput === "function"
+            ? spuIndNormalizeEffectiveFromInput(spuIndFormFormulaEffectiveFrom)
+            : { ok: true, iso: String(spuIndFormFormulaEffectiveFrom || "").trim(), normalized: false };
+        if (!normEff.ok || !normEff.iso) {
+            spuIndRestoreFormulaFields();
+            toast((normEff && normEff.message) || "Укажите дату начала действия изменений.", "error");
+            return;
+        }
+        if (normEff.normalized) {
+            spuIndFormFormulaEffectiveFrom = normEff.iso;
+            if (effElSave) effElSave.value = normEff.iso;
+            toast(normEff.message, "info");
+        }
+        const effFrom = normEff.iso;
+        const openedSnap = spuIndFormOpenedCfg || spuIndSnapshotOpenedCfg({});
+        const draftSnap = spuIndSnapshotOpenedCfg({
+            sources: it.sources,
+            aggregation_type: it.aggregation_type,
+            calc_mode: it.calc_mode,
+            formula_expr: it.formula_expr,
+            plan_formula_expr: it.plan_formula_expr,
+            plan_calc_mode: it.plan_calc_mode
+        });
+        const factDirty = spuIndCfgFactFingerprint(draftSnap) !== spuIndCfgFactFingerprint(openedSnap);
+        const planDirty = spuIndCfgPlanFingerprint(draftSnap) !== spuIndCfgPlanFingerprint(openedSnap);
+        const baselineAtFrom = spuIndBaselineCfgAtFrom(it, effFrom);
+        const commitSources = factDirty ? draftSnap.sources : baselineAtFrom.sources;
+        const commitAgg = factDirty ? draftSnap.aggregation_type : baselineAtFrom.aggregation_type;
+        const commitCalc = factDirty ? draftSnap.calc_mode : baselineAtFrom.calc_mode;
+        const commitFormula = factDirty ? draftSnap.formula_expr : baselineAtFrom.formula_expr;
+        const commitPlanFx = planDirty ? draftSnap.plan_formula_expr : baselineAtFrom.plan_formula_expr;
+        const commitPlanMode = planDirty ? draftSnap.plan_calc_mode : baselineAtFrom.plan_calc_mode;
+        it.sources = (commitSources || []).map(function (s, i) {
+            return spuNewSourceRow(Object.assign({}, s, { source_id: (s && s.source_id) || ("ssrc_" + i) }));
+        });
+        it.aggregation_type = commitAgg || it.aggregation_type;
+        it.calc_mode = commitCalc || it.calc_mode;
+        it.formula_expr = Array.isArray(commitFormula) ? commitFormula : [];
+        it.plan_formula_expr = Array.isArray(commitPlanFx) ? commitPlanFx : [];
+        it.plan_calc_mode = commitPlanMode === "formula" ? "formula" : "manual";
+        {
+            const indIds2 = [];
+            (it.formula_expr || []).forEach(function (tok) {
+                if (tok && tok.t === "ind" && tok.id && indIds2.indexOf(tok.id) === -1) indIds2.push(tok.id);
+            });
+            if (indIds2[0]) it.calc_left_id = indIds2[0];
+            if (indIds2[1]) it.calc_right_id = indIds2[1];
+        }
+        const curWeekStart = typeof spuIndDefaultEffectiveFromIso === "function"
+            ? spuIndDefaultEffectiveFromIso()
+            : effFrom;
+        const laterVers = typeof spuIndLaterVersionsAfter === "function"
+            ? spuIndLaterVersionsAfter(it, effFrom)
+            : [];
+        let laterAction = "until_next";
+        let preFactProp = null;
+        let prePlanProp = null;
+        if ((factDirty || planDirty) && laterVers.length && String(effFrom) < String(curWeekStart)) {
+            const divergentNotes = [];
+            laterVers.forEach(function (v) {
+                const label = spuIndVersionLabelShort(v);
+                if (factDirty) {
+                    const vf = Array.isArray(v.formula_expr) ? v.formula_expr : [];
+                    const of = openedSnap.formula_expr || [];
+                    if (JSON.stringify(vf) !== JSON.stringify(of)) {
+                        divergentNotes.push("- " + label + " — формула факта отличается от открытой");
+                    }
+                }
+                if (planDirty) {
+                    const vp = Array.isArray(v.plan_formula_expr) ? v.plan_formula_expr : [];
+                    const op = openedSnap.plan_formula_expr || [];
+                    const vm = v.plan_calc_mode === "formula" ? "formula" : "manual";
+                    const om = openedSnap.plan_calc_mode === "formula" ? "formula" : "manual";
+                    if (JSON.stringify(vp) !== JSON.stringify(op) || vm !== om) {
+                        divergentNotes.push("- " + label + " — формула/режим плана отличается от открытой");
+                    }
+                }
+            });
+            const sidesHint = (factDirty && planDirty)
+                ? "факт и план"
+                : (factDirty ? "только факт" : "только план");
+            laterAction = spuIndAskLaterVersionsAction(laterVers, effFrom, divergentNotes, sidesHint);
+            if (laterAction === "cancel") {
+                spuIndRestoreFormulaFields();
+                toast("Сохранение отменено.", "error");
+                return;
+            }
+            if (laterAction === "propagate") {
+                if (factDirty) {
+                    preFactProp = spuIndPreflightPropagateSideToLater(it, effFrom, "fact", {
+                        openedFx: openedSnap.formula_expr,
+                        draftFx: draftSnap.formula_expr
+                    });
+                    if (!preFactProp.ok) {
+                        spuIndRestoreFormulaFields();
+                        toast(preFactProp.message || "Безопасное распространение факта невозможно.", "error");
+                        return;
+                    }
+                }
+                if (planDirty) {
+                    prePlanProp = spuIndPreflightPropagatePlanToLater(it, effFrom, openedSnap, draftSnap);
+                    if (!prePlanProp.ok) {
+                        spuIndRestoreFormulaFields();
+                        toast(prePlanProp.message || "Безопасное распространение плана невозможно.", "error");
+                        return;
+                    }
+                }
+            }
+        }
         let commitOpts = {
-            effectiveFrom: effFrom || "2026-11-05",
+            effectiveFrom: effFrom,
             planFormula: it.plan_formula_expr || [],
-            planCalcMode: it.plan_calc_mode || "manual"
+            planCalcMode: it.plan_calc_mode || "manual",
+            confirm: false
         };
         let commitRes = spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, commitOpts);
         if (commitRes && commitRes.blocked) {
+            spuIndRestoreFormulaFields();
             toast(commitRes.message || "Сохранение формулы заблокировано из‑за истории версий.", "error");
             return;
         }
@@ -48922,18 +49462,44 @@ function saveSpuOrgIndicator() {
                 + ((commitRes.plan.lines || []).join("\n"))
                 + "\n\nПредыдущие версии не удаляются. Продолжить сохранение?";
             if (!window.confirm(msg)) {
+                spuIndRestoreFormulaFields();
                 toast("Сохранение отменено.", "error");
                 return;
             }
             commitOpts.confirm = true;
             commitRes = spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, commitOpts);
             if (!commitRes || !commitRes.ok) {
+                spuIndRestoreFormulaFields();
                 toast((commitRes && commitRes.message) || "Не удалось сохранить версии формулы.", "error");
                 return;
             }
         } else if (commitRes && !commitRes.ok) {
+            spuIndRestoreFormulaFields();
             toast(commitRes.message || "Не удалось сохранить версии формулы.", "error");
             return;
+        }
+        if (laterAction === "propagate") {
+            if (factDirty) {
+                const pre2f = spuIndPreflightPropagateSideToLater(it, effFrom, "fact", {
+                    openedFx: openedSnap.formula_expr,
+                    draftFx: draftSnap.formula_expr
+                });
+                if (!pre2f.ok) {
+                    spuIndRestoreFormulaFields();
+                    toast(pre2f.message || "Распространение факта отменено: данные не записаны.", "error");
+                    return;
+                }
+                spuIndPropagateSideToLater(it, effFrom, "fact", pre2f);
+            }
+            if (planDirty) {
+                const pre2p = spuIndPreflightPropagatePlanToLater(it, effFrom, openedSnap, draftSnap);
+                if (!pre2p.ok) {
+                    spuIndRestoreFormulaFields();
+                    toast(pre2p.message || "Распространение плана отменено: данные не записаны.", "error");
+                    return;
+                }
+                spuIndPropagateSideToLater(it, effFrom, "plan", pre2p);
+            }
         }
     } else {
         spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, {
