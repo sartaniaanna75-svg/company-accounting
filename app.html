@@ -7407,10 +7407,10 @@ function setMetricWorkGroupInclude(metricId, tabId, on) {
     if (!item.work_group_include || typeof item.work_group_include !== "object") item.work_group_include = {};
     item.work_group_include[tabId] = !!on;
     Promise.resolve(wtSaveShopMetricCatalogItemsOp()).then(function (ok) {
-        if (!ok) toast("Не удалось сохранить настройку группы метрики.", "error");
+        wtMetricCatalogListSaveFeedback(ok, "Не удалось сохранить настройку группы метрики.");
         if (typeof refreshMetricsUi === "function") refreshMetricsUi();
     }, function () {
-        toast("Не удалось сохранить настройку группы метрики.", "error");
+        wtMetricCatalogListSaveFeedback(false, "Не удалось сохранить настройку группы метрики.");
         if (typeof refreshMetricsUi === "function") refreshMetricsUi();
     });
 }
@@ -8345,12 +8345,12 @@ function generateBonusRuleId() {
 
 function generateKpiId() {
     const ids = ((appData.shopPayroll && appData.shopPayroll.kpiDefs) || []).map(function (d) { return d && d.kpi_id; });
-    return nextPrefixedId("kpi", ids);
+    return nextPrefixedUniqueId("kpi", ids);
 }
 
 function generateKpiAssignId() {
     const ids = ((appData.shopPayroll && appData.shopPayroll.assignments) || []).map(function (a) { return a && a.id; });
-    return nextPrefixedId("kpa", ids);
+    return nextPrefixedUniqueId("kpa", ids);
 }
 
 function generateSalaryRateId() {
@@ -8360,7 +8360,7 @@ function generateSalaryRateId() {
 
 function generateMetricId() {
     const ids = (ensureMetricCatalog() || []).map(function (m) { return m.id; });
-    return nextPrefixedId("metric", ids);
+    return nextPrefixedUniqueId("metric", ids);
 }
 
 function generateRevisionGroupId(unique) {
@@ -10294,7 +10294,7 @@ function migrateAppUsers(data) {
 }
 
 function generateAccessUserId() {
-    return nextPrefixedId("usr", appUsers().map(function (u) { return u && u.user_id; }));
+    return nextPrefixedUniqueId("usr", appUsers().map(function (u) { return u && u.user_id; }));
 }
 
 function summaryRoleInfo(role) {
@@ -13594,7 +13594,17 @@ function wtDomainWriterSave(options) {
                     if (path && appData) {
                         try {
                             const live = wtGetByPath(appData, path);
-                            if (live !== undefined) value = live;
+                            if (live !== undefined) {
+                                // Не снимать create/remove-обёртки keyed-списков (каталог / KPI).
+                                if (value && typeof value === "object" && !Array.isArray(value)
+                                    && (value.__wt_kpi_list__ === true || value.__wt_metric_catalog_items__ === true)) {
+                                    const next = typeof wtCloneJson === "function" ? wtCloneJson(value) : value;
+                                    next.items = typeof wtCloneJson === "function" ? wtCloneJson(live) : live;
+                                    value = next;
+                                } else {
+                                    value = live;
+                                }
+                            }
                         } catch (errLive) {}
                     }
                     return {
@@ -13757,10 +13767,16 @@ function wtDomainWriterSave(options) {
             });
         }, function (err) {
             if (err && err.name === "AbortError") {
-                toast("Сервер не ответил за " + Math.round(WT_OPS_FETCH_TIMEOUT_MS / 1000) + " с. Изменения могли не записаться — не обновляйте страницу, сохранение будет повторено.", "error");
-            } else {
-                toast("Нет соединения с сервером. Изменения не записаны.", "error");
+                // D19: неизвестный итог OPS — не success и не автоповтор (идемпотентность не доказана).
+                // Данные на экране / dirty не трогаем.
+                toast(
+                    "Сервер не ответил за " + Math.round(WT_OPS_FETCH_TIMEOUT_MS / 1000)
+                    + " с. Сохранение не подтверждено: запись могла пройти или нет. Не обновляйте страницу — проверьте данные и повторите сохранение только после проверки.",
+                    "error"
+                );
+                return "timeout";
             }
+            toast("Нет соединения с сервером. Изменения не записаны.", "error");
             return false;
         });
     });
@@ -13818,7 +13834,12 @@ const WT_KEYED_LIST_PATHS = {
     // Записи по id (OPS) поднимают версию корня: широкий писатель на 409 сливает по id, не затирает.
     "financeRec.audit": "audit_id",
     "financeRec.import_batches": "import_batch_id",
-    "financeRec.money_transits": "transit_id"
+    "financeRec.money_transits": "transit_id",
+    // Каталог метрик: SoftSync/409 не должны затирать чужие id полным массивом (D1/D4).
+    "shopMetricCatalog.items": "id",
+    // KPI: SoftSync не подставляет свежий expected_v к устаревшему полному массиву.
+    "shopPayroll.kpiDefs": "id",
+    "shopPayroll.assignments": "id"
 };
 
 function wtKeyedListKey(path) {
@@ -14006,30 +14027,30 @@ function wtKeyedListResolveConflict(c) {
     }
     if (!res.ok) {
         const lines = res.conflicts.slice(0, 8).map(function (x) {
-            const kindTxt = x.kind === "both_changed" ? "изменена и вами, и другим сотрудником"
-                : x.kind === "local_deleted_server_changed" ? "вы удалили, другой сотрудник изменил"
-                    : x.kind === "server_deleted_local_changed" ? "другой сотрудник удалил, вы изменили"
+            const kindTxt = x.kind === "both_changed" ? "изменена и вами, и другим администратором"
+                : x.kind === "local_deleted_server_changed" ? "вы удалили, другой администратор изменил"
+                    : x.kind === "server_deleted_local_changed" ? "другой администратор удалил, вы изменили"
                         : "разные записи с одним номером";
             return "• " + wtKeyedListRowCaption(path, x.local || x.server, x.id) + " — " + kindTxt;
         });
         const more = res.conflicts.length > 8 ? ("\n… и ещё " + (res.conflicts.length - 8)) : "";
         const mine = window.confirm(
-            wtKeyedListConflictLabel(path) + ": конфликт с изменениями другого сотрудника.\n"
+            wtKeyedListConflictLabel(path) + ": эту запись уже изменил другой администратор.\n"
             + lines.join("\n") + more + "\n\n"
-            + "Новые записи обоих сотрудников сохранятся в любом случае.\n"
+            + "Новые записи обоих администраторов сохранятся в любом случае.\n"
             + "OK — записать ВАШ вариант этих записей.\n"
-            + "Отмена — выбрать другое действие."
+            + "Отмена — выбрать другое действие (на сервер пока ничего не записывается)."
         );
         let mode = mine ? "mine" : "";
         if (!mine) {
             const takeServer = window.confirm(
-                "Принять вариант другого сотрудника для этих записей?\n"
+                "Принять вариант другого администратора для этих записей?\n"
                 + "OK — заменить ваш вариант серверным (ваш вариант сохранится в резервной копии браузера).\n"
-                + "Отмена — ничего не записывать: ваш вариант остаётся на экране, вариант сервера не меняется."
+                + "Отмена — ничего не записывать на сервер: ваш вариант остаётся только на экране."
             );
             if (!takeServer) {
                 wtConflictBackupSave(path, "unresolved_local", local);
-                toast("Конфликт не разрешён: ваш вариант остаётся на экране и НЕ записан. Не обновляйте страницу.", "error");
+                toast("Конфликт не разрешён: ваш вариант остаётся на экране и НЕ записан на сервер. Не обновляйте страницу.", "error");
                 return "cancel";
             }
             mode = "server";
@@ -14084,13 +14105,16 @@ const WT_ATOMIC_YOURS_MAX_ROUNDS = 5;
 function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice, conflictRound) {
     conflictRound = Number(conflictRound) || 0;
     const conflicts = outcome.wtConflicts || [];
+    // Полный успех только если нет fail и все конфликты закрыты без cancel.
+    // Частичный saved + неразрешённый conflict → false (см. allWritten на cancel/server).
     let allWritten = !outcome.failedCount;
+    let unresolvedAfterReview = false;
     const retryPaths = {};
     let chosenYours = presetChoice === "yours";
     let chain = Promise.resolve();
     conflicts.forEach(function (c) {
         chain = chain.then(function () {
-            if (!c || !c.path) { allWritten = false; return; }
+            if (!c || !c.path) { allWritten = false; unresolvedAfterReview = true; return; }
             let live;
             try { live = appData ? wtGetByPath(appData, c.path) : undefined; } catch (errL) { live = undefined; }
             // Запрос мог пройти до тайм-аута/повтора: сервер уже хранит ровно наш вариант.
@@ -14101,7 +14125,10 @@ function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice, conflictR
             if (wtKeyedListKey(c.path)) {
                 const r = wtKeyedListResolveConflict(c);
                 if (r === "merged") retryPaths[c.path] = true;
-                else if (r !== "server_same") allWritten = false;
+                else if (r !== "server_same") {
+                    allWritten = false;
+                    unresolvedAfterReview = true;
+                }
                 // Атомарный пакет сервер отклонил целиком: повторить все его пути, не только слитый список.
                 if (atomic && (r === "merged" || r === "server_same")) {
                     (outcome.opsPaths || []).forEach(function (p) { retryPaths[p] = true; });
@@ -14158,10 +14185,13 @@ function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice, conflictR
                 if (choice === "server") {
                     wtDomainWriterAdoptServerValue(c);
                     allWritten = false;
+                    // Приняли сервер: локальный черновик не записан — это не полный успех «ваших» правок.
+                    unresolvedAfterReview = true;
                     return;
                 }
                 try { wtSoftMarkDirty(c.path); } catch (errD) {}
                 allWritten = false;
+                unresolvedAfterReview = true;
             });
         });
     });
@@ -14176,14 +14206,19 @@ function wtDomainWriterResolveConflicts(outcome, atomic, presetChoice, conflictR
                 return true;
             }
         });
-        if (!pending.length) return allWritten;
+        if (!pending.length) {
+            // Cancel / отказ записи → false даже если часть batch уже была saved ранее.
+            if (unresolvedAfterReview) return false;
+            return allWritten === true;
+        }
         return Promise.resolve(wtDomainWriterSave({
             atomic: atomic,
             ops: pending.map(function (p) { return { path: p }; }),
             _conflictChoice: (atomic && chosenYours) ? "yours" : "",
             _conflictRound: conflictRound + 1
         })).then(function (ok) {
-            return ok === true && allWritten;
+            if (unresolvedAfterReview) return false;
+            return ok === true && allWritten === true;
         });
     });
 }
@@ -14983,23 +15018,23 @@ function wtResolveRecordConflict(conflict, opts) {
             + "На сервере: " + serverTxt + "\n"
             + "Ваш вариант: " + yoursTxt + "\n\n"
             + "OK — записать ВАШ вариант поверх (с повторной проверкой версии).\n"
-            + "Отмена — выбрать: принять сервер или оставить черновик и повторить после обновления данных.")
-        : ("Эту запись уже изменили с другого окна или устройства.\n"
+            + "Отмена — выбрать другое действие (на сервер пока ничего не записывается).")
+        : ("Эту запись уже изменил другой администратор (другое окно или устройство).\n"
             + "Путь: " + pathLabel + "\n\n"
             + "На сервере: " + serverTxt + "\n"
             + "Ваш вариант: " + yoursTxt + "\n\n"
             + "OK — записать ваш вариант (с повторной проверкой).\n"
-            + "Отмена — выбрать другое действие.");
+            + "Отмена — выбрать другое действие (на сервер пока ничего не записывается).");
     const replace = window.confirm(msg);
     if (!replace) {
         const takeServer = window.confirm(
             isKpiMoneyPath
                 ? ("Принять актуальные KPI с сервера?\n"
                     + "OK — заменить экран серверным вариантом (ваш черновик сохранится в резервной копии браузера).\n"
-                    + "Отмена — ничего не записывать: ваш вариант остаётся черновиком, можно повторить после обновления данных.")
+                    + "Отмена — ничего не записывать на сервер: ваш вариант остаётся черновиком на экране.")
                 : ("Заменить ваш ввод значением с сервера?\n"
                     + "OK — заменить (ваш вариант сохранится в резервной копии браузера).\n"
-                    + "Отмена — ничего не записывать: ваш вариант остаётся черновиком на экране.")
+                    + "Отмена — ничего не записывать на сервер: ваш вариант остаётся черновиком на экране.")
         );
         if (!takeServer) return Promise.resolve("cancel");
         wtConflictBackupSave(conflict.path, "replaced_local_value", conflict.your_value);
@@ -15343,6 +15378,52 @@ let wtSoftAppliedVersion = 0;
 /** Явные несохранённые/ожидающие записи leaf-пути → true. */
 let wtSoftDirtyPaths = Object.create(null);
 let wtSoftVisibilityHooked = false;
+/** SoftSync both_changed: path|id → уже показано предупреждение (не спамить poll). */
+let wtSoftBothChangedWarned = Object.create(null);
+
+function wtSoftClearBothChangedWarned(path) {
+    if (!path) {
+        wtSoftBothChangedWarned = Object.create(null);
+        return;
+    }
+    const prefix = String(path) + "|";
+    Object.keys(wtSoftBothChangedWarned).forEach(function (k) {
+        if (k.indexOf(prefix) === 0) delete wtSoftBothChangedWarned[k];
+    });
+}
+
+/**
+ * Одно предупреждение на path+id при SoftSync both_changed.
+ * Не меняет merge и не пишет на сервер.
+ */
+function wtSoftNotifyBothChanged(path, conflicts) {
+    if (!path || !Array.isArray(conflicts) || !conflicts.length) return;
+    const fresh = [];
+    conflicts.forEach(function (c) {
+        if (!c || c.kind !== "both_changed" || c.id == null || c.id === "") return;
+        const k = String(path) + "|" + String(c.id);
+        if (wtSoftBothChangedWarned[k]) return;
+        wtSoftBothChangedWarned[k] = true;
+        fresh.push(c);
+    });
+    if (!fresh.length) return;
+    let label = "";
+    try {
+        label = typeof wtKeyedListRowCaption === "function"
+            ? wtKeyedListRowCaption(path, fresh[0].local || fresh[0].server, fresh[0].id)
+            : String(fresh[0].id);
+    } catch (errL) {
+        label = String(fresh[0].id);
+    }
+    const more = fresh.length > 1 ? (" и ещё " + (fresh.length - 1)) : "";
+    try {
+        toast(
+            "Запись «" + label + "»" + more
+            + " изменена и вами, и другим администратором. На экране ваш вариант; при сохранении будет предложено разрешить конфликт. Автоматически ничего не записано.",
+            "error"
+        );
+    } catch (errT) {}
+}
 
 function wtSoftMarkDirty(path) {
     if (!path) return;
@@ -15352,10 +15433,12 @@ function wtSoftMarkDirty(path) {
 function wtSoftClearDirty(path) {
     if (!path) return;
     delete wtSoftDirtyPaths[String(path)];
+    try { wtSoftClearBothChangedWarned(path); } catch (errW) {}
 }
 
 function wtSoftClearAllDirty() {
     wtSoftDirtyPaths = Object.create(null);
+    try { wtSoftClearBothChangedWarned(); } catch (errW) {}
 }
 
 /**
@@ -15489,6 +15572,36 @@ function wtSoftDirtyMapForMerge() {
 function wtSoftMergePreferServer(server, draft, dirty, path) {
     path = path || "";
     if (path && dirty[path]) {
+        const keyed = typeof wtKeyedListKey === "function" ? wtKeyedListKey(path) : "";
+        if (keyed && (Array.isArray(server) || Array.isArray(draft))) {
+            // 3-way: чужие новые id с сервера сохраняются; локальные правки/удаления — по draft.
+            let baseList = [];
+            try {
+                baseList = (typeof wtGetByPath === "function" && wtLastLoadedPayload)
+                    ? wtGetByPath(wtLastLoadedPayload, path)
+                    : [];
+            } catch (errBase) { baseList = []; }
+            if (typeof wtKeyedListMerge3 === "function") {
+                const merged = wtKeyedListMerge3(
+                    baseList,
+                    Array.isArray(draft) ? draft : [],
+                    Array.isArray(server) ? server : [],
+                    keyed,
+                    "mine"
+                );
+                if (merged && merged.ok && Array.isArray(merged.merged)) {
+                    // Политика mine/siblings/keyedKeep без изменений; только одноразовый warn на both_changed.
+                    try { wtSoftNotifyBothChanged(path, merged.conflicts); } catch (errBoth) {}
+                    return merged.merged;
+                }
+                if (merged && merged.unkeyed) {
+                    try {
+                        toast("Конфликт каталога метрик: дублирующиеся id. Обновление экрана пропущено для этого списка — сохраните ещё раз.", "error");
+                    } catch (errToast) {}
+                    return Array.isArray(draft) ? wtCloneJson(draft) : wtCloneJson(server);
+                }
+            }
+        }
         return draft === undefined ? wtCloneJson(server) : wtCloneJson(draft);
     }
     if (Array.isArray(server) || Array.isArray(draft)) {
@@ -20537,7 +20650,7 @@ function nextMetricAssignmentId(existing) {
             if (row && row.assignment_id) used.push(row.assignment_id);
         });
     });
-    return nextPrefixedId("mas", used);
+    return nextPrefixedUniqueId("mas", used);
 }
 
 function normalizeMetricAssignmentRow(row, siblings) {
@@ -23974,10 +24087,26 @@ function wtBuildWorkAccessSaveOps(employeeId) {
     return ops;
 }
 
-/** Явный OPS всего shopMetricCatalog.items — без collect постороннего diff. */
-function wtSaveShopMetricCatalogItemsOp() {
+/** Явный OPS shopMetricCatalog.items — сервер сливает по id без silent prune (D1). */
+function wtSaveShopMetricCatalogItemsOp(options) {
+    options = options || {};
     if (!wtServerMode) return Promise.resolve(saveApp());
-    if (!wtOpsUiEnabled(true)) return Promise.resolve(saveApp());
+    const removeIds = Array.isArray(options.removeIds)
+        ? options.removeIds.map(function (x) { return String(x || ""); }).filter(Boolean)
+        : [];
+    const createIds = Array.isArray(options.createIds)
+        ? options.createIds.map(function (x) { return String(x || ""); }).filter(Boolean)
+        : [];
+    // Hard-delete через remove_ids требует OPS merge; PUT каталога id не удаляет.
+    if (!wtOpsUiEnabled(true)) {
+        if (removeIds.length) {
+            try {
+                toast("Удаление метрики из справочника недоступно без OPS. Можно отключить метрику (active=false).", "error");
+            } catch (errRm) {}
+            return Promise.resolve(false);
+        }
+        return Promise.resolve(saveApp());
+    }
     let items = [];
     try {
         const cat = ensureShopMetricCatalog();
@@ -23989,23 +24118,33 @@ function wtSaveShopMetricCatalogItemsOp() {
     let prev;
     try { prev = wtGetByPath(wtLastLoadedPayload || {}, path); } catch (errP) { prev = undefined; }
     try {
-        if (typeof wtJsonCanonEqual === "function" && wtJsonCanonEqual(prev, items)) {
+        if (!removeIds.length && !createIds.length && typeof wtJsonCanonEqual === "function" && wtJsonCanonEqual(prev, items)) {
             return Promise.resolve(true);
         }
     } catch (errEq) {}
+    const clonedItems = typeof wtCloneJson === "function" ? wtCloneJson(items) : items;
+    const value = (removeIds.length || createIds.length)
+        ? {
+            __wt_metric_catalog_items__: true,
+            items: clonedItems,
+            remove_ids: removeIds,
+            create_ids: createIds
+        }
+        : clonedItems;
     return Promise.resolve(wtDomainWriterSave({
         ops: [{
             path: path,
-            value: typeof wtCloneJson === "function" ? wtCloneJson(items) : items,
+            value: value,
             expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion(path) : 0
         }]
     }));
 }
 
 /** Список справочника: items (+ shopPayroll.metrics при sync). Без полного DomainWriter-diff. */
-function wtPersistMetricCatalogListChange(needPayrollMetrics) {
-    return Promise.resolve(wtSaveShopMetricCatalogItemsOp()).then(function (ok) {
-        if (!ok) return false;
+function wtPersistMetricCatalogListChange(needPayrollMetrics, options) {
+    options = options || {};
+    return Promise.resolve(wtSaveShopMetricCatalogItemsOp(options)).then(function (ok) {
+        if (!wtSaveOutcomeOk(ok)) return ok;
         if (!(needPayrollMetrics && wtServerMode && typeof wtOpsUiEnabled === "function" && wtOpsUiEnabled(true))) {
             return true;
         }
@@ -24017,8 +24156,28 @@ function wtPersistMetricCatalogListChange(needPayrollMetrics) {
                 value: metricsVal,
                 expected_v: typeof wtRecordVersion === "function" ? wtRecordVersion("shopPayroll.metrics") : 0
             }]
-        })).then(function (payOk) { return !!payOk; }, function () { return false; });
+        })).then(function (payOk) {
+            return wtSaveOutcomeOk(payOk) ? true : payOk;
+        }, function () { return false; });
     }, function () { return false; });
+}
+
+/** Toast исхода list-save каталога (D18: timeout/conflict ≠ успех). */
+function wtMetricCatalogListSaveFeedback(ok, failMsg, successMsg) {
+    if (wtSaveOutcomeOk(ok)) {
+        if (successMsg) toast(successMsg);
+        return true;
+    }
+    if (ok === "timeout") {
+        toast("Ответ сервера не получен. Изменения каталога на экране — не обновляйте страницу, проверьте сохранение.", "error");
+        return false;
+    }
+    if (ok === "conflict_review") {
+        toast("Конфликт версий каталога: данные на экране обновлены. На сервер ещё не записано — повторите сохранение.", "error");
+        return false;
+    }
+    toast(failMsg || "Не удалось сохранить справочник метрик.", "error");
+    return false;
 }
 
 function canViewFioWorkMetrics() {
@@ -30250,6 +30409,68 @@ const WT_SHOP_PAYROLL_SALARIES_PATH = "shopPayroll.salaries";
 const WT_SHOP_PAYROLL_RECEIVING_SHARED_PATH = "shopPayroll.receivingShared";
 const WT_SHOP_PAYROLL_SHARED_BUDGETS_PATH = "shopPayroll.sharedBudgets";
 
+/** Create-маркеры KPI относительно последнего подтверждённого серверного списка. */
+function wtKpiListCreateMarkers(path, items) {
+    const createIds = [];
+    const createKpiIds = [];
+    let prev = [];
+    try {
+        prev = (typeof wtGetByPath === "function" && wtLastLoadedPayload)
+            ? (wtGetByPath(wtLastLoadedPayload, path) || [])
+            : [];
+    } catch (errP) { prev = []; }
+    if (!Array.isArray(prev)) prev = [];
+    const prevIds = {};
+    const prevKpiIds = {};
+    prev.forEach(function (row) {
+        if (!row || typeof row !== "object") return;
+        if (row.id != null && row.id !== "") prevIds[String(row.id)] = true;
+        if (row.kpi_id != null && row.kpi_id !== "") prevKpiIds[String(row.kpi_id)] = true;
+    });
+    (items || []).forEach(function (row) {
+        if (!row || row.id == null || row.id === "") return;
+        const id = String(row.id);
+        if (prevIds[id]) return;
+        createIds.push(id);
+        const kid = row.kpi_id != null && row.kpi_id !== "" ? String(row.kpi_id) : "";
+        // Brand-new правило: kpi_id тоже новый. Mutate/reopen — kpi_id уже был.
+        if (kid && !prevKpiIds[kid] && createKpiIds.indexOf(kid) === -1) createKpiIds.push(kid);
+    });
+    return { createIds: createIds, createKpiIds: createKpiIds };
+}
+
+function wtKpiListOpValue(path, items, withKpiIds) {
+    const list = Array.isArray(items) ? items : [];
+    const markers = wtKpiListCreateMarkers(path, list);
+    const createIds = markers.createIds || [];
+    const createKpiIds = withKpiIds ? (markers.createKpiIds || []) : [];
+    if (!createIds.length && !createKpiIds.length) return list;
+    const cloned = typeof wtCloneJson === "function" ? wtCloneJson(list) : list;
+    const out = {
+        __wt_kpi_list__: true,
+        items: cloned,
+        create_ids: createIds,
+        remove_ids: []
+    };
+    if (withKpiIds) out.create_kpi_ids = createKpiIds;
+    return out;
+}
+
+function wtKpiSaveOutcomeMessage(ok, body) {
+    if (ok === true) return "";
+    if (ok === "timeout") {
+        return "Ответ сервера по KPI не получен. Не считаем сохранённым — проверьте данные и повторите без F5.";
+    }
+    if (ok === "conflict_review") {
+        return "Конфликт версий KPI: данные на экране обновлены. На сервер ещё не записано — повторите сохранение.";
+    }
+    const err = body && body.error;
+    if (err === "kpi_row_id_conflict" || err === "kpi_id_conflict" || err === "duplicate_kpi_row_id") {
+        return (body && body.message) || "Нельзя создать KPI: такой идентификатор уже занят. Запись не заменена — измените данные и повторите.";
+    }
+    return "";
+}
+
 /**
  * Сохранить только kpiDefs — без полного DomainWriter-diff приложения.
  * При OPS: один leaf. Без OPS на сервере — отказ (не saveApp / forcePut).
@@ -30271,15 +30492,24 @@ function saveShopPayrollKpiDefs(options) {
         return Promise.resolve(false);
     }
     const p = ensureShopPayroll();
+    const items = Array.isArray(p.kpiDefs) ? p.kpiDefs : [];
+    const value = wtKpiListOpValue(WT_SHOP_PAYROLL_KPI_DEFS_PATH, items, true);
     return Promise.resolve(wtDomainWriterSave({
         ops: [{
             path: WT_SHOP_PAYROLL_KPI_DEFS_PATH,
-            value: Array.isArray(p.kpiDefs) ? p.kpiDefs : [],
+            value: value,
             expected_v: wtRecordVersion(WT_SHOP_PAYROLL_KPI_DEFS_PATH)
         }],
         forbidForcePut: true,
         silentFail: !!options.silentFail
-    })).then(function (ok) { return ok === true; }, function () { return false; });
+    })).then(function (ok) {
+        if (wtSaveOutcomeOk(ok)) return true;
+        if (!options.silentFail) {
+            const msg = wtKpiSaveOutcomeMessage(ok, null);
+            if (msg) toast(msg, "error");
+        }
+        return ok === true;
+    }, function () { return false; });
 }
 
 /**
@@ -30303,15 +30533,24 @@ function saveShopPayrollKpiAssignments(options) {
         return Promise.resolve(false);
     }
     const p = ensureShopPayroll();
+    const items = Array.isArray(p.assignments) ? p.assignments : [];
+    const value = wtKpiListOpValue(WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH, items, false);
     return Promise.resolve(wtDomainWriterSave({
         ops: [{
             path: WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH,
-            value: Array.isArray(p.assignments) ? p.assignments : [],
+            value: value,
             expected_v: wtRecordVersion(WT_SHOP_PAYROLL_KPI_ASSIGNMENTS_PATH)
         }],
         forbidForcePut: true,
         silentFail: !!options.silentFail
-    })).then(function (ok) { return ok === true; }, function () { return false; });
+    })).then(function (ok) {
+        if (wtSaveOutcomeOk(ok)) return true;
+        if (!options.silentFail) {
+            const msg = wtKpiSaveOutcomeMessage(ok, null);
+            if (msg) toast(msg, "error");
+        }
+        return ok === true;
+    }, function () { return false; });
 }
 
 /**
@@ -30456,7 +30695,7 @@ function shopKpiDefSignature(r) {
 
 function stampKpiDef(def) {
     if (!def.kpi_id) def.kpi_id = generateKpiId();
-    if (!def.id) def.id = nextPrefixedId("kpv", (ensureShopPayroll().kpiDefs || []).map(function (x) { return x && x.id; }));
+    if (!def.id) def.id = nextPrefixedUniqueId("kpv", (ensureShopPayroll().kpiDefs || []).map(function (x) { return x && x.id; }));
     def.metric_id = canonicalMetricId(def.metricId || def.metric_id);
     def.metricId = def.metric_id;
     def.department_id = def.department_id || def.departmentId || "shop";
@@ -36999,7 +37238,7 @@ function syncPayrollMetricFromCatalog(item) {
 }
 
 function shopCatalogNextCustomId() {
-    return nextPrefixedId("metric_custom", shopMetricCatalogItems().map(function (it) { return it.id; }));
+    return nextPrefixedUniqueId("metric_custom", shopMetricCatalogItems().map(function (it) { return it.id; }));
 }
 
 function shopCatalogNextOrder(sectionId, deptCode) {
@@ -37328,7 +37567,7 @@ function allSubmetricIds() {
 }
 
 function nextSubmetricId() {
-    return nextPrefixedId("sms", allSubmetricIds());
+    return nextPrefixedUniqueId("sms", allSubmetricIds());
 }
 
 function addMetricSubmetric(metricId) {
@@ -37342,7 +37581,7 @@ function addMetricSubmetric(metricId) {
     it.submetrics.push({ id: nextSubmetricId(), name: "Новая", sort_order: max + 10, active: true });
     metricCatalogExpanded[metricId] = true;
     Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
-        if (!ok) toast("Не удалось сохранить подметрику.", "error");
+        wtMetricCatalogListSaveFeedback(ok, "Не удалось сохранить подметрику.");
         renderMetricCatalog();
         refreshMetricsUi();
     });
@@ -37357,7 +37596,7 @@ function renameMetricSubmetric(metricId, subId, name) {
     if (!next) return;
     sub.name = next;
     Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
-        if (!ok) toast("Не удалось сохранить название подметрики.", "error");
+        wtMetricCatalogListSaveFeedback(ok, "Не удалось сохранить название подметрики.");
         renderMetricCatalog();
         refreshMetricsUi();
     });
@@ -37370,7 +37609,7 @@ function setMetricSubmetricOrder(metricId, subId, value) {
     if (!sub) return;
     sub.sort_order = Number(value) || 0;
     Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
-        if (!ok) toast("Не удалось сохранить порядок подметрики.", "error");
+        wtMetricCatalogListSaveFeedback(ok, "Не удалось сохранить порядок подметрики.");
         renderMetricCatalog();
         refreshMetricsUi();
     });
@@ -37383,8 +37622,11 @@ function setMetricSubmetricActive(metricId, subId, on) {
     if (!sub) return;
     sub.active = !!on;
     Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
-        if (!ok) toast("Не удалось сохранить статус подметрики.", "error");
-        else toast(on ? "Подметрика включена." : "Подметрика скрыта. История сохранена.");
+        wtMetricCatalogListSaveFeedback(
+            ok,
+            "Не удалось сохранить статус подметрики.",
+            on ? "Подметрика включена." : "Подметрика скрыта. История сохранена."
+        );
         renderMetricCatalog();
         refreshMetricsUi();
     });
@@ -37410,7 +37652,7 @@ function onMetricCatalogDrop(ev, targetId) {
     src.sort_order = Number(dst.sort_order || 0);
     dst.sort_order = a;
     Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
-        if (!ok) toast("Не удалось сохранить порядок метрик.", "error");
+        wtMetricCatalogListSaveFeedback(ok, "Не удалось сохранить порядок метрик.");
         renderMetricCatalog();
         refreshMetricsUi();
     });
@@ -37424,8 +37666,11 @@ function setShopMetricCatalogActive(id, on) {
     const needPay = metricDepartmentId(it) === "shop";
     if (needPay) syncPayrollMetricFromCatalog(it);
     Promise.resolve(wtPersistMetricCatalogListChange(needPay)).then(function (ok) {
-        if (!ok) toast("Не удалось сохранить статус метрики.", "error");
-        else toast(on ? "Метрика включена." : "Метрика отключена. История сохранена.");
+        wtMetricCatalogListSaveFeedback(
+            ok,
+            "Не удалось сохранить статус метрики.",
+            on ? "Метрика включена." : "Метрика отключена. История сохранена."
+        );
         renderMetricCatalog();
         refreshMetricsUi();
     });
@@ -37440,18 +37685,26 @@ function deleteShopMetricCatalogItem(id) {
         const needPay = metricDepartmentId(it) === "shop";
         if (needPay) syncPayrollMetricFromCatalog(it);
         Promise.resolve(wtPersistMetricCatalogListChange(needPay)).then(function (ok) {
-            if (!ok) toast("Не удалось отключить метрику.", "error");
-            else toast((metricIsChecklist(it) ? "Чек-лист" : "Метрика")
-                + " уже использовался — отключён, история сохранена.", "error");
+            wtMetricCatalogListSaveFeedback(
+                ok,
+                "Не удалось отключить метрику.",
+                (metricIsChecklist(it) ? "Чек-лист" : "Метрика")
+                    + " уже использовался — отключён, история сохранена."
+            );
+            // Исторически этот toast был error-стиля даже при успехе — сохраняем смысл текста.
             renderMetricCatalog();
             refreshMetricsUi();
         });
         return;
     }
+    const removeId = String(id || "");
     ensureShopMetricCatalog().items = shopMetricCatalogItems().filter(function (x) { return x.id !== id; });
-    Promise.resolve(wtPersistMetricCatalogListChange(false)).then(function (ok) {
-        if (!ok) toast("Не удалось удалить метрику.", "error");
-        else toast(metricIsChecklist(it) ? "Чек-лист удалён." : "Метрика удалена.");
+    Promise.resolve(wtPersistMetricCatalogListChange(false, { removeIds: [removeId] })).then(function (ok) {
+        wtMetricCatalogListSaveFeedback(
+            ok,
+            "Не удалось удалить метрику.",
+            metricIsChecklist(it) ? "Чек-лист удалён." : "Метрика удалена."
+        );
         renderMetricCatalog();
         refreshMetricsUi();
     });
@@ -38826,6 +39079,7 @@ function saveMetricCatalogForm(id, dupIgnore) {
     } else if (fill === "auto_sum") {
         formula = { op: "sum", left: (document.getElementById("mcLeft") || {}).value || "" };
     }
+    const creatingMetric = !String(id || "").trim() || !shopMetricCatalogById(id);
     let item = id ? shopMetricCatalogById(id) : null;
     if (!item) {
         item = {
@@ -39031,7 +39285,12 @@ function saveMetricCatalogForm(id, dupIgnore) {
     }
     function catalogPutFailMessage() {
         const st = wtLastPutResult && Number(wtLastPutResult.httpStatus);
+        const errCode = wtLastPutResult && wtLastPutResult.body && wtLastPutResult.body.error;
+        if (errCode === "metric_id_conflict") {
+            return "Нельзя создать метрику: такой id уже занят. Сохранение отклонено без замены существующей записи.";
+        }
         if (st === 403) return "Изменения метрики не записаны: недостаточно прав.";
+        if (st === 409) return "Изменения метрики не записаны: конфликт версий или id.";
         if (st === 400) return "Изменения метрики не записаны: сервер отклонил данные.";
         if (st >= 500) return "Изменения метрики не записаны: ошибка сервера. Повторите позже без F5.";
         if (st === 0 || (wtLastPutResult && wtLastPutResult.networkError)) {
@@ -39136,7 +39395,13 @@ function saveMetricCatalogForm(id, dupIgnore) {
         });
     }
     Promise.resolve(saveAppWithPayloadSlice(function () {
-        return metricCatalogPutSliceForItem(savedItemId);
+        const slice = metricCatalogPutSliceForItem(savedItemId);
+        // D3: сервер отклоняет create при занятом id (не silent update).
+        if (creatingMetric && slice && slice.shopMetricCatalog && Array.isArray(slice.shopMetricCatalog.items)
+            && slice.shopMetricCatalog.items[0]) {
+            slice.shopMetricCatalog.items[0].__wt_create__ = true;
+        }
+        return slice;
     })).then(function (ok) {
         const waited = (wtLastPutResult && Number(wtLastPutResult.queueWaitedMs)) || 0;
         try {
@@ -47103,9 +47368,17 @@ function spuIndSrcMetricPickerHtml(s, allMetrics) {
         + '" placeholder="Название метрики" oninput="spuIndOnSrcMetricFilterChange(\''
         + escapeAttribute(sid) + '\',\'q\',this.value)"></label>';
     html += "</div>";
+    const orphanMetricId = String(s.source_metric_id || "");
+    let orphanMissing = false;
+    if (orphanMetricId) {
+        const inFiltered = filtered.some(function (m) { return m && String(m.id) === orphanMetricId; });
+        const inAll = (allMetrics || []).some(function (m) { return m && String(m.id) === orphanMetricId; });
+        // Нет в кандидатах picker (удалена / inactive / нет use_in_spu и не keep) — не стираем id.
+        orphanMissing = !inFiltered && !inAll;
+    }
     html += '<div class="form-group"><label>Метрика Work Time</label><select class="spu-src-metric" onchange="spuIndOnMetricChange()">'
         + '<option value="">Выберите метрику Work Time (не копируется в СПУ)</option>';
-    if (!filtered.length) {
+    if (!filtered.length && !orphanMissing) {
         if (!(allMetrics || []).length) {
             html += '<option value="" disabled>Нет метрик с отметкой «Участвует в СПУ»</option>';
         } else {
@@ -47116,8 +47389,15 @@ function spuIndSrcMetricPickerHtml(s, allMetrics) {
         html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
             + escapeHtml(m.name) + "</option>";
     });
+    if (orphanMissing) {
+        html += '<option value="' + escapeAttribute(orphanMetricId) + '" selected>'
+            + escapeHtml(orphanMetricId) + " (больше не в каталоге)</option>";
+    }
     html += "</select>";
-    if (!(allMetrics || []).length) {
+    if (orphanMissing) {
+        html += '<div class="note" style="margin:4px 0 0;color:#a35b00">Источник ссылается на метрику, которой нет в справочнике WorkTime. '
+            + "Ссылка сохранена; факты и формулы не изменялись. Выберите другую метрику вручную или восстановите метрику в справочнике.</div>";
+    } else if (!(allMetrics || []).length) {
         html += '<div class="note" style="margin:4px 0 0">Нет метрик с отметкой «Участвует в СПУ». Откройте справочник метрик WorkTime и включите участие у нужной метрики.</div>';
     } else {
         html += '<div class="note" style="margin:4px 0 0">Показано ' + filtered.length + " из " + (allMetrics || []).length

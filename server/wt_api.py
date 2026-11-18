@@ -805,9 +805,51 @@ def _is_closed_key(key: str, allow_salary: bool) -> bool:
 
 
 def _list_item_key(item: dict) -> str | None:
-    for cand in ("id", "employee_id", "user_id", "code"):
+    # id раньше *_id — employees/KPI/catalog не ломаем; indicator/position/version — D13.
+    for cand in (
+        "id",
+        "employee_id",
+        "user_id",
+        "code",
+        "indicator_id",
+        "position_id",
+        "version_id",
+    ):
         if item.get(cand) not in (None, ""):
             return cand
+    return None
+
+
+class OverlayListKeyAmbiguous(Exception):
+    """Повторяющийся устойчивый ключ списка — без автовыбора записи."""
+
+    def __init__(self, key_name: str, key_value: str):
+        self.key_name = str(key_name or "")
+        self.key_value = str(key_value or "")
+        super().__init__(self.key_name, self.key_value)
+
+
+def _list_rows_matching_key(current: list, key_name: str, needle: str) -> list[tuple[int, dict]]:
+    out: list[tuple[int, dict]] = []
+    for row_i, row in enumerate(current):
+        if isinstance(row, dict) and str(row.get(key_name) or "") == needle:
+            out.append((row_i, row))
+    return out
+
+
+def _incoming_list_duplicate_key(items: list) -> tuple[str, str] | None:
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        key_name = _list_item_key(item)
+        if not key_name:
+            continue
+        needle = str(item.get(key_name))
+        mark = key_name + "=" + needle
+        if mark in seen:
+            return key_name, needle
+        seen.add(mark)
     return None
 
 
@@ -815,9 +857,10 @@ def _match_list_item(current: list, item: dict, index: int) -> Any:
     key_name = _list_item_key(item)
     if key_name:
         needle = str(item.get(key_name))
-        for row in current:
-            if isinstance(row, dict) and str(row.get(key_name) or "") == needle:
-                return row
+        matches = _list_rows_matching_key(current, key_name, needle)
+        if len(matches) == 1:
+            return matches[0][1]
+        # 0 — нет; >1 — неоднозначно: для closed-check не угадываем (как «нет пары»).
         return None
     if 0 <= index < len(current):
         return current[index]
@@ -858,6 +901,9 @@ def _overlay_open(current: Any, incoming: Any, allow_salary: bool = False) -> An
     if isinstance(incoming, dict):
         base = _clone(current) if isinstance(current, dict) else {}
         for key, val in incoming.items():
+            # Служебный маркер create (D3) — не сохраняем в payload.
+            if key == "__wt_create__":
+                continue
             if _is_closed_key(str(key), allow_salary):
                 continue
             if val is None:
@@ -868,6 +914,9 @@ def _overlay_open(current: Any, incoming: Any, allow_salary: bool = False) -> An
     if isinstance(incoming, list):
         cur_list = _clone(current) if isinstance(current, list) else []
         if incoming and isinstance(incoming[0], dict):
+            dup = _incoming_list_duplicate_key(incoming)
+            if dup:
+                raise OverlayListKeyAmbiguous(dup[0], dup[1])
             for index, item in enumerate(incoming):
                 if not isinstance(item, dict):
                     continue
@@ -875,11 +924,13 @@ def _overlay_open(current: Any, incoming: Any, allow_salary: bool = False) -> An
                 replaced = False
                 if key_name:
                     needle = str(item.get(key_name))
-                    for row_i, row in enumerate(cur_list):
-                        if isinstance(row, dict) and str(row.get(key_name) or "") == needle:
-                            cur_list[row_i] = _overlay_open(row, item, allow_salary)
-                            replaced = True
-                            break
+                    matches = _list_rows_matching_key(cur_list, key_name, needle)
+                    if len(matches) > 1:
+                        raise OverlayListKeyAmbiguous(key_name, needle)
+                    if len(matches) == 1:
+                        row_i, row = matches[0]
+                        cur_list[row_i] = _overlay_open(row, item, allow_salary)
+                        replaced = True
                 elif index < len(cur_list):
                     cur_list[index] = _overlay_open(cur_list[index], item, allow_salary)
                     replaced = True
@@ -1206,6 +1257,332 @@ def _merge_metric_assignments(
     return result
 
 
+def _metric_catalog_items_duplicate_ids(items: list) -> str | None:
+    """Первый повторяющийся id в списке метрик, иначе None."""
+    seen: set[str] = set()
+    for row in items:
+        if not isinstance(row, dict) or row.get("id") in (None, ""):
+            continue
+        iid = str(row.get("id"))
+        if iid in seen:
+            return iid
+        seen.add(iid)
+    return None
+
+
+def _merge_metric_catalog_items_ops(
+    current_items: Any,
+    incoming_items: Any,
+    remove_ids: list[str] | None = None,
+    create_ids: list[str] | None = None,
+) -> tuple[list | None, dict | None]:
+    """
+    OPS shopMetricCatalog.items: upsert по id без silent prune.
+    Элементы, отсутствующие во входящем списке, сохраняются.
+    Явное удаление — только через remove_ids (намеренный delete клиента).
+    create_ids: id новых записей; если id уже есть на сервере → metric_id_conflict (не silent update).
+    Дубли id во входящем списке → ошибка (без автовыбора).
+    """
+    cur = [row for row in (current_items if isinstance(current_items, list) else []) if isinstance(row, dict)]
+    inc = incoming_items if isinstance(incoming_items, list) else None
+    if inc is None:
+        return None, {
+            "error": "invalid value",
+            "message": "shopMetricCatalog.items: ожидается список метрик.",
+        }
+    dup = _metric_catalog_items_duplicate_ids(inc)
+    if dup:
+        return None, {
+            "error": "duplicate_metric_id",
+            "message": "В каталоге метрик повторяется id «%s». Сохранение отклонено." % dup,
+            "metric_id": dup,
+        }
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
+    for row in cur:
+        iid = str(row.get("id") or "")
+        if not iid:
+            continue
+        if iid in by_id:
+            # На сервере уже дубль — не угадываем, блокируем запись.
+            return None, {
+                "error": "duplicate_metric_id",
+                "message": "В сохранённом каталоге уже есть дубль id «%s». Обратитесь к администратору." % iid,
+                "metric_id": iid,
+            }
+        by_id[iid] = _clone(row)
+        order.append(iid)
+    remove_set = {str(x) for x in (remove_ids or []) if x not in (None, "")}
+    for rid in remove_set:
+        by_id.pop(rid, None)
+    create_set = {str(x) for x in (create_ids or []) if x not in (None, "")}
+    for cid in create_set:
+        if cid in remove_set:
+            continue
+        if cid in by_id:
+            return None, {
+                "error": "metric_id_conflict",
+                "message": (
+                    "Нельзя создать метрику с id «%s»: такая запись уже есть. "
+                    "Сохранение отклонено без замены."
+                ) % cid,
+                "metric_id": cid,
+            }
+    for row in inc:
+        if not isinstance(row, dict) or row.get("id") in (None, ""):
+            continue
+        iid = str(row.get("id"))
+        if iid in remove_set:
+            continue
+        cloned = _clone(row)
+        cloned.pop("__wt_create__", None)
+        cloned["id"] = iid
+        if iid not in by_id:
+            order.append(iid)
+        by_id[iid] = cloned
+    order = [iid for iid in order if iid in by_id]
+    return [by_id[iid] for iid in order], None
+
+
+def _parse_metric_catalog_items_op_value(
+    value: Any,
+) -> tuple[list | None, list[str], list[str], dict | None]:
+    """Список items (+ optional remove_ids / create_ids) из OPS value."""
+    if isinstance(value, list):
+        return value, [], [], None
+    if isinstance(value, dict) and value.get("__wt_metric_catalog_items__") is True:
+        items = value.get("items")
+        if not isinstance(items, list):
+            items = []
+        remove_ids = [
+            str(x) for x in (value.get("remove_ids") or [])
+            if x not in (None, "")
+        ]
+        create_ids = [
+            str(x) for x in (value.get("create_ids") or [])
+            if x not in (None, "")
+        ]
+        return items, remove_ids, create_ids, None
+    return None, [], [], {
+        "error": "invalid value",
+        "message": "shopMetricCatalog.items: некорректное значение операции.",
+    }
+
+
+def _metric_catalog_put_create_conflict(current: dict, incoming: dict) -> str | None:
+    """PUT: __wt_create__ на уже существующем id → конфликт (не silent update)."""
+    if not isinstance(incoming, dict) or "shopMetricCatalog" not in incoming:
+        return None
+    inc_cat = incoming.get("shopMetricCatalog")
+    if not isinstance(inc_cat, dict):
+        return None
+    inc_items = inc_cat.get("items") if isinstance(inc_cat.get("items"), list) else []
+    cur_cat = current.get("shopMetricCatalog") if isinstance(current, dict) else None
+    cur_items = cur_cat.get("items") if isinstance(cur_cat, dict) else None
+    existing = {
+        str(row.get("id"))
+        for row in (cur_items if isinstance(cur_items, list) else [])
+        if isinstance(row, dict) and row.get("id") not in (None, "")
+    }
+    for item in inc_items:
+        if not isinstance(item, dict) or item.get("__wt_create__") is not True:
+            continue
+        iid = str(item.get("id") or "")
+        if iid and iid in existing:
+            return iid
+    return None
+
+
+class KpiListMergeError(Exception):
+    """Отказ merge KPI-списка без изменения payload."""
+
+    def __init__(self, body: dict):
+        self.body = body if isinstance(body, dict) else {"error": "kpi_merge_failed"}
+        super().__init__(str(self.body.get("error") or "kpi_merge_failed"))
+
+
+def _kpi_list_duplicate_ids(items: list) -> str | None:
+    seen: set[str] = set()
+    for row in items:
+        if not isinstance(row, dict) or row.get("id") in (None, ""):
+            continue
+        iid = str(row.get("id"))
+        if iid in seen:
+            return iid
+        seen.add(iid)
+    return None
+
+
+def _merge_kpi_list_ops(
+    current_items: Any,
+    incoming_items: Any,
+    remove_ids: list[str] | None = None,
+    create_ids: list[str] | None = None,
+    create_kpi_ids: list[str] | None = None,
+    list_label: str = "KPI",
+) -> tuple[list | None, dict | None]:
+    """
+    shopPayroll.kpiDefs / assignments: upsert по row id без silent prune.
+    Не сливать по kpi_id (несколько kpv_* на один kpi_id — норма).
+    create_ids: занятый row id → отказ без замены.
+    create_kpi_ids: только brand-new правило; занятый kpi_id → отказ.
+    """
+    cur = [row for row in (current_items if isinstance(current_items, list) else []) if isinstance(row, dict)]
+    inc = incoming_items if isinstance(incoming_items, list) else None
+    if inc is None:
+        return None, {
+            "error": "invalid value",
+            "message": "%s: ожидается список записей." % list_label,
+        }
+    # Legacy: все строки без row id — прежняя полная замена списка (старые тесты/seed).
+    # Современный клиент всегда шлёт id (kpv_*/kpa_*) → ветка merge-by-id ниже.
+    cur_keyed = [row for row in cur if row.get("id") not in (None, "")]
+    inc_keyed = [row for row in inc if isinstance(row, dict) and row.get("id") not in (None, "")]
+    if not cur_keyed and not inc_keyed and not (create_ids or []):
+        return [_clone(row) for row in inc if isinstance(row, dict)], None
+    dup = _kpi_list_duplicate_ids(inc)
+    if dup:
+        return None, {
+            "error": "duplicate_kpi_row_id",
+            "message": "В списке %s повторяется id «%s». Сохранение отклонено." % (list_label, dup),
+            "id": dup,
+        }
+    by_id: dict[str, dict] = {}
+    order: list[str] = []
+    unkeyed_keep: list[dict] = []
+    for row in cur:
+        iid = str(row.get("id") or "")
+        if not iid:
+            unkeyed_keep.append(_clone(row))
+            continue
+        if iid in by_id:
+            return None, {
+                "error": "duplicate_kpi_row_id",
+                "message": "В сохранённом списке %s уже есть дубль id «%s»." % (list_label, iid),
+                "id": iid,
+            }
+        by_id[iid] = _clone(row)
+        order.append(iid)
+    remove_set = {str(x) for x in (remove_ids or []) if x not in (None, "")}
+    for rid in remove_set:
+        by_id.pop(rid, None)
+    create_set = {str(x) for x in (create_ids or []) if x not in (None, "")}
+    for cid in create_set:
+        if cid in remove_set:
+            continue
+        if cid in by_id:
+            return None, {
+                "error": "kpi_row_id_conflict",
+                "message": (
+                    "Нельзя создать запись %s с id «%s»: такая строка уже есть. "
+                    "Сохранение отклонено без замены."
+                ) % (list_label, cid),
+                "id": cid,
+            }
+    existing_kpi_ids = {
+        str(row.get("kpi_id"))
+        for row in by_id.values()
+        if isinstance(row, dict) and row.get("kpi_id") not in (None, "")
+    }
+    create_kpi_set = {str(x) for x in (create_kpi_ids or []) if x not in (None, "")}
+    for kid in create_kpi_set:
+        if kid in existing_kpi_ids:
+            return None, {
+                "error": "kpi_id_conflict",
+                "message": (
+                    "Нельзя создать правило KPI «%s»: такой kpi_id уже есть. "
+                    "Сохранение отклонено без замены."
+                ) % kid,
+                "kpi_id": kid,
+            }
+    unkeyed_in: list[dict] = []
+    for row in inc:
+        if not isinstance(row, dict):
+            continue
+        if row.get("id") in (None, ""):
+            cloned = _clone(row)
+            cloned.pop("__wt_create__", None)
+            unkeyed_in.append(cloned)
+            continue
+        iid = str(row.get("id"))
+        if iid in remove_set:
+            continue
+        cloned = _clone(row)
+        cloned.pop("__wt_create__", None)
+        cloned["id"] = iid
+        if iid not in by_id:
+            order.append(iid)
+        by_id[iid] = cloned
+    order = [iid for iid in order if iid in by_id]
+    # Unkeyed: не prune молча; входящие без id дописываем (не матчим по kpi_id).
+    return [by_id[iid] for iid in order] + unkeyed_keep + unkeyed_in, None
+
+
+def _parse_kpi_list_op_value(
+    value: Any,
+    list_label: str = "KPI",
+) -> tuple[list | None, list[str], list[str], list[str], dict | None]:
+    """Список KPI (+ optional remove_ids / create_ids / create_kpi_ids)."""
+    if isinstance(value, list):
+        return value, [], [], [], None
+    if isinstance(value, dict) and value.get("__wt_kpi_list__") is True:
+        items = value.get("items")
+        if not isinstance(items, list):
+            items = []
+        remove_ids = [str(x) for x in (value.get("remove_ids") or []) if x not in (None, "")]
+        create_ids = [str(x) for x in (value.get("create_ids") or []) if x not in (None, "")]
+        create_kpi_ids = [str(x) for x in (value.get("create_kpi_ids") or []) if x not in (None, "")]
+        return items, remove_ids, create_ids, create_kpi_ids, None
+    return None, [], [], [], {
+        "error": "invalid value",
+        "message": "%s: некорректное значение операции." % list_label,
+    }
+
+
+def _merge_admin_shop_payroll(current: Any, incoming: Any) -> tuple[dict | None, dict | None]:
+    """
+    Admin PUT shopPayroll: kpiDefs/assignments — merge-by-id (как OPS), остальные поля — как раньше.
+    """
+    base = _clone(current) if isinstance(current, dict) else {}
+    if not isinstance(incoming, dict):
+        return _clone(incoming) if incoming is not None else base, None
+    out = _clone(base)
+    for key, val in incoming.items():
+        if key in ("kpiDefs", "assignments"):
+            label = "shopPayroll." + key
+            items_in = val
+            remove_ids: list[str] = []
+            create_ids: list[str] = []
+            create_kpi_ids: list[str] = []
+            if isinstance(val, dict) and val.get("__wt_kpi_list__") is True:
+                items_in, remove_ids, create_ids, create_kpi_ids, parse_err = _parse_kpi_list_op_value(
+                    val, label
+                )
+                if parse_err is not None:
+                    return None, parse_err
+            # __wt_create__ на строках → create_ids
+            if isinstance(items_in, list):
+                for row in items_in:
+                    if isinstance(row, dict) and row.get("__wt_create__") is True and row.get("id") not in (None, ""):
+                        create_ids.append(str(row.get("id")))
+            merged, merge_err = _merge_kpi_list_ops(
+                base.get(key),
+                items_in,
+                remove_ids,
+                create_ids,
+                create_kpi_ids,
+                label,
+            )
+            if merge_err is not None:
+                return None, merge_err
+            out[key] = merged
+            continue
+        if _empty_wipe(val, base.get(key)):
+            continue
+        out[key] = _clone(val)
+    return out, None
+
+
 def _apply_metric_catalog(current: Any, incoming: Any, user: dict, emp_dept: dict[str, str]) -> Any:
     base = _clone(current) if isinstance(current, dict) else {}
     codes = user_dept_codes(user)
@@ -1218,6 +1595,10 @@ def _apply_metric_catalog(current: Any, incoming: Any, user: dict, emp_dept: dic
             continue
         iid = str(item.get("id"))
         existing = items[by_id[iid]] if iid in by_id else None
+        # Create-флаг при уже существующем id должен быть отклонён выше (prepare_put).
+        # Здесь тихо снимаем служебное поле, чтобы не попало в payload.
+        if item.get("__wt_create__") is True and existing is not None:
+            continue
         probe = item if _user_can_touch_metric_item(item, codes) else None
         if probe is None and existing is not None and _user_can_touch_metric_item(existing, codes):
             probe = existing
@@ -1226,6 +1607,7 @@ def _apply_metric_catalog(current: Any, incoming: Any, user: dict, emp_dept: dic
         dept = _metric_item_dept(item) or (_metric_item_dept(existing) if existing else "")
         patch = _clone(item)
         patch.pop("assignments", None)
+        patch.pop("__wt_create__", None)
         if existing is not None:
             if not _user_can_touch_metric_item(existing, codes):
                 continue
@@ -2695,6 +3077,14 @@ def _merge_admin_payload(current: dict, incoming: dict) -> dict:
             if _empty_wipe(val, stored.get(key)):
                 continue
             stored[key] = _overlay_open(stored.get(key), val, False)
+        elif key == "shopPayroll":
+            # kpiDefs/assignments — merge-by-id; не wholesale _clone (защита начислений).
+            if _empty_wipe(val, stored.get(key)):
+                continue
+            merged_pay, pay_err = _merge_admin_shop_payroll(stored.get(key), val)
+            if pay_err is not None:
+                raise KpiListMergeError(pay_err)
+            stored[key] = merged_pay
         elif key in ("shopMetrics", "deptMetrics"):
             # Не затираем целиком: иначе устаревший снимок админа стирает свежий ввод сотрудника.
             # workAccess/extraAccess мержим отдельно — иначе overlay по спискам назначений мог
@@ -4655,6 +5045,42 @@ def apply_state_op(payload: dict, op: dict, user: dict) -> tuple[dict | None, di
                         "audit_id": aid,
                     }
 
+    # Каталог метрик: полный OPS-list без silent prune (D1). Явное удаление — remove_ids;
+    # create_ids — отказ при занятом id (D3), без silent update.
+    if path == "shopMetricCatalog.items":
+        items_in, remove_ids, create_ids, parse_err = _parse_metric_catalog_items_op_value(your_value)
+        if parse_err is not None:
+            return None, parse_err
+        cur_cat = payload.get("shopMetricCatalog") if isinstance(payload, dict) else None
+        cur_items = cur_cat.get("items") if isinstance(cur_cat, dict) else None
+        merged_items, merge_err = _merge_metric_catalog_items_ops(
+            cur_items, items_in, remove_ids, create_ids
+        )
+        if merge_err is not None:
+            return None, merge_err
+        your_value = merged_items
+
+    # KPI defs/assignments: merge-by-id (не по kpi_id), без silent prune; create_* — отказ.
+    if path in ("shopPayroll.kpiDefs", "shopPayroll.assignments"):
+        label = path
+        items_in, remove_ids, create_ids, create_kpi_ids, parse_err = _parse_kpi_list_op_value(
+            your_value, label
+        )
+        if parse_err is not None:
+            return None, parse_err
+        cur_pay = payload.get("shopPayroll") if isinstance(payload, dict) else None
+        leaf = path.split(".", 1)[1]
+        cur_items = cur_pay.get(leaf) if isinstance(cur_pay, dict) else None
+        # create_kpi_ids только для kpiDefs (правила); для assignments игнорируем.
+        if path == "shopPayroll.assignments":
+            create_kpi_ids = []
+        merged_items, merge_err = _merge_kpi_list_ops(
+            cur_items, items_in, remove_ids, create_ids, create_kpi_ids, label
+        )
+        if merge_err is not None:
+            return None, merge_err
+        your_value = merged_items
+
     next_payload = set_path_value(payload, path, your_value)
     # users.* через OPS: как PUT — хешируем новый pin и сохраняем pin_hash, если pin не передан.
     if path == "users" or path.startswith("users."):
@@ -5151,6 +5577,9 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     # Новые дубли ID блокируем; исторические (уже в current) — нет.
     if employee_id_put_denied(current, incoming):
         return None, "duplicate_employee_id"
+    create_conflict = _metric_catalog_put_create_conflict(current, incoming)
+    if create_conflict:
+        return None, "metric_id_conflict:" + create_conflict
     # Удаление карточек: сначала владелец (env), затем значимая история.
     denied_owner = employee_delete_owner_denied(user, incoming)
     if denied_owner:
@@ -5158,34 +5587,42 @@ def prepare_put_payload(current: dict, incoming: dict, user: dict) -> tuple[dict
     denied_rm = employee_removals_denied(current, incoming)
     if denied_rm:
         return None, denied_rm
-    if is_app_admin(user):
-        if incoming_admin_pin_duplicate(current, incoming):
-            return None, "duplicate_pin"
-        fr_plans, fr_err = _fr_lists_put_plans(current, incoming, True, True)
+    try:
+        if is_app_admin(user):
+            if incoming_admin_pin_duplicate(current, incoming):
+                return None, "duplicate_pin"
+            fr_plans, fr_err = _fr_lists_put_plans(current, incoming, True, True)
+            if fr_err:
+                return None, fr_err
+            stored = _merge_admin_payload(current, incoming)
+            # Старый PUT не должен затирать записи, уже обновлённые точечным API.
+            stored = protect_wt_records_on_put(current, stored, incoming)
+            stored = _fr_lists_put_apply(stored, fr_plans)
+            # Изменения через PUT поднимают record_v — иначе op не увидит конфликт.
+            return sync_record_versions_after_put(current, stored, user), None
+        if _staff_put_forbidden(current, incoming, user):
+            return None, "forbidden"
+        fr_plans, fr_err = _fr_lists_put_plans(
+            current, incoming, user_has_perm(user, "financeRec", "edit"), False
+        )
         if fr_err:
             return None, fr_err
-        stored = _merge_admin_payload(current, incoming)
-        # Старый PUT не должен затирать записи, уже обновлённые точечным API.
+        stored = _apply_staff_writes(current, incoming, user)
+        # Staff PUT обычно не шлёт counters — сохраняем серверные после reserve.
+        if isinstance(stored, dict) and "employeeIdCounters" not in incoming:
+            if isinstance(current.get("employeeIdCounters"), dict):
+                stored["employeeIdCounters"] = _clone(current.get("employeeIdCounters"))
         stored = protect_wt_records_on_put(current, stored, incoming)
         stored = _fr_lists_put_apply(stored, fr_plans)
-        # Изменения через PUT поднимают record_v — иначе op не увидит конфликт.
-        return sync_record_versions_after_put(current, stored, user), None
-    if _staff_put_forbidden(current, incoming, user):
-        return None, "forbidden"
-    fr_plans, fr_err = _fr_lists_put_plans(
-        current, incoming, user_has_perm(user, "financeRec", "edit"), False
-    )
-    if fr_err:
-        return None, fr_err
-    stored = _apply_staff_writes(current, incoming, user)
-    # Staff PUT обычно не шлёт counters — сохраняем серверные после reserve.
-    if isinstance(stored, dict) and "employeeIdCounters" not in incoming:
-        if isinstance(current.get("employeeIdCounters"), dict):
-            stored["employeeIdCounters"] = _clone(current.get("employeeIdCounters"))
-    stored = protect_wt_records_on_put(current, stored, incoming)
-    stored = _fr_lists_put_apply(stored, fr_plans)
-    stored = sync_record_versions_after_put(current, stored, user)
-    return stored, None
+        stored = sync_record_versions_after_put(current, stored, user)
+        return stored, None
+    except OverlayListKeyAmbiguous as amb:
+        return None, "overlay_ambiguous:%s:%s" % (amb.key_name, amb.key_value)
+    except KpiListMergeError as kpi_err:
+        err = str((kpi_err.body or {}).get("error") or "kpi_merge_failed")
+        detail = str((kpi_err.body or {}).get("id") or (kpi_err.body or {}).get("kpi_id") or "")
+        msg = str((kpi_err.body or {}).get("message") or "")
+        return None, "kpi_merge:%s:%s:%s" % (err, detail, msg)
 
 
 def payload_for_client(user: dict | None, payload: dict) -> dict:
@@ -6432,6 +6869,48 @@ def handle_put_state(environ):
             {"error": "duplicate employee id", "message": "Этот ID сотрудника уже используется."},
             "400 Bad Request",
         )
+    if denied and str(denied).startswith("metric_id_conflict:"):
+        mid = str(denied).split(":", 1)[1]
+        return json_bytes(
+            {
+                "error": "metric_id_conflict",
+                "metric_id": mid,
+                "message": (
+                    "Нельзя создать метрику с id «%s»: такая запись уже есть. "
+                    "Сохранение отклонено без замены."
+                ) % mid,
+            },
+            "409 Conflict",
+        )
+    if denied and str(denied).startswith("overlay_ambiguous:"):
+        parts = str(denied).split(":", 2)
+        key_name = parts[1] if len(parts) > 1 else ""
+        key_value = parts[2] if len(parts) > 2 else ""
+        return json_bytes(
+            {
+                "error": "overlay_ambiguous",
+                "key": key_name,
+                "value": key_value,
+                "message": (
+                    "В данных повторяется ключ «%s» = «%s». "
+                    "Сохранение отклонено без автоматического выбора записи."
+                ) % (key_name, key_value),
+            },
+            "400 Bad Request",
+        )
+    if denied and str(denied).startswith("kpi_merge:"):
+        # kpi_merge:<error>:<id_or_kpi_id>:<message...>
+        rest = str(denied)[len("kpi_merge:"):]
+        parts = rest.split(":", 2)
+        err_code = parts[0] if parts else "kpi_merge_failed"
+        detail = parts[1] if len(parts) > 1 else ""
+        msg = parts[2] if len(parts) > 2 else "Сохранение KPI отклонено."
+        body = {"error": err_code, "message": msg}
+        if err_code == "kpi_id_conflict":
+            body["kpi_id"] = detail
+        elif detail:
+            body["id"] = detail
+        return json_bytes(body, "400 Bad Request")
     if denied == "employee_has_history":
         return json_bytes(
             {

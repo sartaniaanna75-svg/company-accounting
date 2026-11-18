@@ -12896,5 +12896,1461 @@ class WtSpuFormulaEffectiveFromMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_formula_effective_from_harness: OK", proc.stdout)
 
 
+class WtMetricCatalogItemsOpsMergeTests(unittest.TestCase):
+    """Пакет А: OPS shopMetricCatalog.items — merge-by-id без silent prune (D1)."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["shopMetricCatalog"] = {
+            "items": [
+                {"id": "m_a", "name": "Метрика A", "department_id": "shop", "active": True},
+                {"id": "m_b", "name": "Метрика B", "department_id": "warehouse", "active": True},
+            ]
+        }
+        payload["deptMetrics"] = {
+            "warehouse": {"facts": {"2026-11": {"e_wh": {"5": {"m_a": 18}}}}},
+        }
+        payload["management"] = {
+            "indicators": [{
+                "indicator_id": "mind_wh_checks",
+                "name": "Количество чеков Склад",
+                "source_type": "worktime_metric",
+                "source_metric_id": "m_a",
+            }]
+        }
+        self.store = {
+            "payload": payload,
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": "user_admin", "pin": "5555"})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_merge_helper_keeps_missing_server_ids(self):
+        cur = [{"id": "m_a", "name": "A"}, {"id": "m_b", "name": "B"}]
+        inc = [{"id": "m_b", "name": "B2"}, {"id": "m_c", "name": "C"}]
+        merged, err = wt_api._merge_metric_catalog_items_ops(cur, inc)
+        self.assertIsNone(err)
+        by_id = {row["id"]: row for row in merged}
+        self.assertIn("m_a", by_id)
+        self.assertEqual(by_id["m_b"]["name"], "B2")
+        self.assertEqual(by_id["m_c"]["name"], "C")
+
+    def test_merge_helper_rejects_duplicate_incoming_ids(self):
+        cur = [{"id": "m_a", "name": "A"}]
+        inc = [{"id": "m_x", "name": "X1"}, {"id": "m_x", "name": "X2"}]
+        merged, err = wt_api._merge_metric_catalog_items_ops(cur, inc)
+        self.assertIsNone(merged)
+        self.assertEqual(err.get("error"), "duplicate_metric_id")
+
+    def test_merge_helper_explicit_remove_ids(self):
+        cur = [{"id": "m_a", "name": "A"}, {"id": "m_b", "name": "B"}]
+        inc = [{"id": "m_b", "name": "B"}]
+        merged, err = wt_api._merge_metric_catalog_items_ops(cur, inc, remove_ids=["m_a"])
+        self.assertIsNone(err)
+        ids = [row["id"] for row in merged]
+        self.assertNotIn("m_a", ids)
+        self.assertIn("m_b", ids)
+
+    def test_ops_concurrent_create_two_metrics(self):
+        """Два create: после 409 повтор с устаревшим списком (без чужой m_x) не стирает m_x."""
+        cookie, _ = self.login()
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "cat_create_x",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": [
+                        {"id": "m_a", "name": "Метрика A", "department_id": "shop", "active": True},
+                        {"id": "m_b", "name": "Метрика B", "department_id": "warehouse", "active": True},
+                        {"id": "m_x", "name": "Метрика X", "department_id": "office", "active": True},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), (st1, d1))
+        # Устаревший expected_v → conflict (как у второго клиента)
+        st_c, d_c, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "cat_create_y_stale",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": [
+                        {"id": "m_a", "name": "Метрика A", "department_id": "shop", "active": True},
+                        {"id": "m_b", "name": "Метрика B", "department_id": "warehouse", "active": True},
+                        {"id": "m_y", "name": "Метрика Y", "department_id": "drivers", "active": True},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st_c.startswith("409"), (st_c, d_c))
+        server_v = int((d_c or {}).get("server_v") or 1)
+        # Повтор с актуальной версией, но локальный список всё ещё без m_x
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "cat_create_y_retry",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": server_v,
+                    "value": [
+                        {"id": "m_a", "name": "Метрика A", "department_id": "shop", "active": True},
+                        {"id": "m_b", "name": "Метрика B", "department_id": "warehouse", "active": True},
+                        {"id": "m_y", "name": "Метрика Y", "department_id": "drivers", "active": True},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), (st2, d2))
+        ids = {row["id"] for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertTrue({"m_a", "m_b", "m_x", "m_y"}.issubset(ids))
+
+    def test_ops_stale_list_does_not_wipe_sibling(self):
+        """Сценарий A: устаревший список без m_a не удаляет m_a на сервере."""
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "cat_stale_1",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": [
+                        {"id": "m_b", "name": "Метрика B обновлена", "department_id": "warehouse", "active": True},
+                        {"id": "m_c", "name": "Метрика C", "department_id": "office", "active": True},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_a", by_id)
+        self.assertEqual(by_id["m_b"]["name"], "Метрика B обновлена")
+        self.assertIn("m_c", by_id)
+        # Связанные факты/СПУ не трогаем
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"]["facts"]["2026-11"]["e_wh"]["5"]["m_a"],
+            18,
+        )
+        self.assertEqual(
+            self.store["payload"]["management"]["indicators"][0]["source_metric_id"],
+            "m_a",
+        )
+
+    def test_ops_duplicate_ids_rejected(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "cat_dup_1",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": [
+                        {"id": "m_dup", "name": "One", "department_id": "shop", "active": True},
+                        {"id": "m_dup", "name": "Two", "department_id": "shop", "active": True},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("4"), (st, data))
+        self.assertEqual((data or {}).get("error"), "duplicate_metric_id")
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_a", by_id)
+        self.assertIn("m_b", by_id)
+
+    def test_ops_remove_ids_deletes_intentionally(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "cat_rm_1",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": {
+                        "__wt_metric_catalog_items__": True,
+                        "items": [
+                            {"id": "m_b", "name": "Метрика B", "department_id": "warehouse", "active": True},
+                        ],
+                        "remove_ids": ["m_a"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        ids = [row["id"] for row in self.store["payload"]["shopMetricCatalog"]["items"]]
+        self.assertNotIn("m_a", ids)
+        self.assertIn("m_b", ids)
+
+    def test_ops_active_false_preserves_siblings(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "cat_act_1",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": [
+                        {"id": "m_a", "name": "Метрика A", "department_id": "shop", "active": False},
+                        {"id": "m_b", "name": "Метрика B", "department_id": "warehouse", "active": True},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertFalse(by_id["m_a"].get("active"))
+        self.assertTrue(by_id["m_b"].get("active"))
+
+    def test_put_narrow_catalog_still_merges_without_prune(self):
+        """Регресс узкого PUT каталога: отсутствующий id не удаляется."""
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {
+                        "items": [
+                            {
+                                "id": "m_b",
+                                "name": "Метрика B put",
+                                "department_id": "warehouse",
+                                "active": True,
+                            }
+                        ]
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_a", by_id)
+        self.assertEqual(by_id["m_b"]["name"], "Метрика B put")
+        self.assertEqual(
+            self.store["payload"]["deptMetrics"]["warehouse"]["facts"]["2026-11"]["e_wh"]["5"]["m_a"],
+            18,
+        )
+
+    def test_client_markers_package_a(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn('"shopMetricCatalog.items": "id"', src)
+        self.assertIn("function wtMetricCatalogListSaveFeedback(", src)
+        self.assertIn("__wt_metric_catalog_items__", src)
+        self.assertIn("wtKeyedListMerge3(", src[src.find("function wtSoftMergePreferServer("):src.find("function wtSoftMergePreferServer(") + 2500])
+        # D18: list handlers используют строгую проверку
+        self.assertIn("wtMetricCatalogListSaveFeedback(ok,", src)
+        self.assertIn("wtSaveOutcomeOk(ok)", src[src.find("function wtPersistMetricCatalogListChange("):src.find("function wtPersistMetricCatalogListChange(") + 900])
+
+    def test_harness_metric_catalog_softsync_keyed(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_metric_catalog_items_ops_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness catalog items ops")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_metric_catalog_items_ops_harness: OK", proc.stdout)
+
+
+class WtPackageBIdIntegrityTests(unittest.TestCase):
+    """Пакет Б: D3 create-id conflict, D13 overlay keys, маркеры D8/unique id."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["shopMetricCatalog"] = {
+            "items": [
+                {"id": "m_a", "name": "Метрика A", "department_id": "shop", "active": True},
+            ]
+        }
+        payload["management"] = {
+            "indicators": [
+                {
+                    "indicator_id": "mind_one",
+                    "name": "One",
+                    "source_type": "worktime_metric",
+                    "source_metric_id": "m_a",
+                    "source_versions": [
+                        {"version_id": "sver_1", "effectiveFrom": "2026-01-01", "formula": "a"},
+                    ],
+                },
+                {
+                    "indicator_id": "mind_two",
+                    "name": "Two",
+                    "source_type": "manual",
+                    "source_versions": [
+                        {"version_id": "sver_2", "effectiveFrom": "2026-02-01", "formula": "b"},
+                    ],
+                },
+            ]
+        }
+        payload["positionCatalog"] = {
+            "items": [
+                {"position_id": "pos_a", "name": "Кассир", "department_id": "shop"},
+                {"position_id": "pos_b", "name": "Кладовщик", "department_id": "warehouse"},
+            ]
+        }
+        self.store = {
+            "payload": payload,
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": "user_admin", "pin": "5555"})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_list_item_key_recognizes_stable_ids(self):
+        self.assertEqual(wt_api._list_item_key({"indicator_id": "mind_x"}), "indicator_id")
+        self.assertEqual(wt_api._list_item_key({"position_id": "pos_x"}), "position_id")
+        self.assertEqual(wt_api._list_item_key({"version_id": "sver_x"}), "version_id")
+        self.assertEqual(wt_api._list_item_key({"id": "m_1", "indicator_id": "mind"}), "id")
+
+    def test_overlay_indicators_order_independent(self):
+        cur = self.store["payload"]["management"]
+        incoming = {
+            "indicators": [
+                {"indicator_id": "mind_two", "name": "Two renamed"},
+                {"indicator_id": "mind_one", "name": "One renamed"},
+            ]
+        }
+        merged = wt_api._overlay_open(cur, incoming, False)
+        by_id = {row["indicator_id"]: row for row in merged["indicators"]}
+        self.assertEqual(by_id["mind_one"]["name"], "One renamed")
+        self.assertEqual(by_id["mind_two"]["name"], "Two renamed")
+        self.assertEqual(by_id["mind_one"]["source_metric_id"], "m_a")
+        self.assertEqual(by_id["mind_one"]["source_versions"][0]["version_id"], "sver_1")
+        self.assertEqual(by_id["mind_two"]["source_versions"][0]["formula"], "b")
+
+    def test_overlay_positions_order_independent(self):
+        cur = self.store["payload"]["positionCatalog"]
+        incoming = {
+            "items": [
+                {"position_id": "pos_b", "name": "Кладовщик+"},
+                {"position_id": "pos_a", "name": "Кассир+"},
+            ]
+        }
+        merged = wt_api._overlay_open(cur, incoming, False)
+        by_id = {row["position_id"]: row for row in merged["items"]}
+        self.assertEqual(by_id["pos_a"]["name"], "Кассир+")
+        self.assertEqual(by_id["pos_b"]["name"], "Кладовщик+")
+        self.assertEqual(by_id["pos_a"]["department_id"], "shop")
+
+    def test_overlay_rejects_duplicate_keys(self):
+        cur = {"indicators": [
+            {"indicator_id": "mind_dup", "name": "A"},
+            {"indicator_id": "mind_dup", "name": "B"},
+        ]}
+        incoming = {"indicators": [{"indicator_id": "mind_dup", "name": "C"}]}
+        with self.assertRaises(wt_api.OverlayListKeyAmbiguous):
+            wt_api._overlay_open(cur, incoming, False)
+
+    def test_overlay_version_id_nested(self):
+        cur = self.store["payload"]["management"]
+        incoming = {
+            "indicators": [{
+                "indicator_id": "mind_one",
+                "source_versions": [
+                    {"version_id": "sver_1", "formula": "a2"},
+                    {"version_id": "sver_new", "effectiveFrom": "2026-03-01", "formula": "c"},
+                ],
+            }]
+        }
+        merged = wt_api._overlay_open(cur, incoming, False)
+        one = next(r for r in merged["indicators"] if r["indicator_id"] == "mind_one")
+        by_v = {row["version_id"]: row for row in one["source_versions"]}
+        self.assertEqual(by_v["sver_1"]["formula"], "a2")
+        self.assertEqual(by_v["sver_1"]["effectiveFrom"], "2026-01-01")
+        self.assertEqual(by_v["sver_new"]["formula"], "c")
+        two = next(r for r in merged["indicators"] if r["indicator_id"] == "mind_two")
+        self.assertEqual(two["source_versions"][0]["version_id"], "sver_2")
+
+    def test_ops_create_ids_conflict_rejected(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "pkgb_create_conflict",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": {
+                        "__wt_metric_catalog_items__": True,
+                        "items": [
+                            {"id": "m_a", "name": "Hijack", "department_id": "shop", "active": True},
+                        ],
+                        "create_ids": ["m_a"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("4"), (st, data))
+        self.assertEqual((data or {}).get("error"), "metric_id_conflict")
+        self.assertEqual(
+            self.store["payload"]["shopMetricCatalog"]["items"][0]["name"],
+            "Метрика A",
+        )
+
+    def test_ops_create_ids_new_ok_and_edit_still_works(self):
+        cookie, _ = self.login()
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "pkgb_create_ok",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": 0,
+                    "value": {
+                        "__wt_metric_catalog_items__": True,
+                        "items": [
+                            {"id": "m_a", "name": "Метрика A", "department_id": "shop", "active": True},
+                            {"id": "m_new_1", "name": "Новая", "department_id": "office", "active": True},
+                        ],
+                        "create_ids": ["m_new_1"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), (st1, d1))
+        ids = {row["id"] for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_new_1", ids)
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "pkgb_edit_ok",
+                "op": {
+                    "path": "shopMetricCatalog.items",
+                    "expected_v": int(d1.get("record_v") or 1),
+                    "value": [
+                        {"id": "m_a", "name": "Метрика A*", "department_id": "shop", "active": True},
+                        {"id": "m_new_1", "name": "Новая", "department_id": "office", "active": True},
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), (st2, d2))
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertEqual(by_id["m_a"]["name"], "Метрика A*")
+
+    def test_put_create_flag_conflict_rejected(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {
+                        "items": [{
+                            "id": "m_a",
+                            "name": "Hijack put",
+                            "department_id": "shop",
+                            "active": True,
+                            "__wt_create__": True,
+                        }]
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("4"), (st, data))
+        self.assertIn("conflict", str((data or {}).get("error") or "").lower())
+        self.assertEqual(
+            self.store["payload"]["shopMetricCatalog"]["items"][0]["name"],
+            "Метрика A",
+        )
+
+    def test_put_create_flag_new_ok_strips_marker(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopMetricCatalog": {
+                        "items": [{
+                            "id": "m_brand_new",
+                            "name": "Brand",
+                            "department_id": "shop",
+                            "active": True,
+                            "__wt_create__": True,
+                        }]
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        by_id = {row["id"]: row for row in self.store["payload"]["shopMetricCatalog"]["items"]}
+        self.assertIn("m_a", by_id)
+        self.assertEqual(by_id["m_brand_new"]["name"], "Brand")
+        self.assertNotIn("__wt_create__", by_id["m_brand_new"])
+
+    def test_client_markers_package_b(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn('return nextPrefixedUniqueId("metric_custom"', src)
+        self.assertIn('return nextPrefixedUniqueId("sms"', src)
+        self.assertIn('return nextPrefixedUniqueId("kpi"', src)
+        self.assertIn('return nextPrefixedUniqueId("kpa"', src)
+        self.assertIn('return nextPrefixedUniqueId("usr"', src)
+        self.assertIn('return nextPrefixedUniqueId("mas"', src)
+        self.assertIn("createIds", src)
+        self.assertIn("__wt_create__", src)
+        self.assertIn("больше не в каталоге", src)
+        self.assertIn("function spuIndSrcMetricPickerHtml(", src)
+
+    def test_harness_package_b(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_package_b_id_integrity_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness package B")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_package_b_id_integrity_harness: OK", proc.stdout)
+
+
+def _kpi_fixture_bonus_total(payload, employee_id, month):
+    """
+    Синтетический read-only расчёт премии по фикстуре (не копия JS-формул).
+    Сумма amount активных defs, на которые есть активное assignment сотрудника в month.
+    Используется только для parity до/после merge — формулы приложения не меняем.
+    """
+    pay = (payload or {}).get("shopPayroll") or {}
+    defs = pay.get("kpiDefs") if isinstance(pay.get("kpiDefs"), list) else []
+    assigns = pay.get("assignments") if isinstance(pay.get("assignments"), list) else []
+    active_kpi = set()
+    for a in assigns:
+        if not isinstance(a, dict):
+            continue
+        if str(a.get("employee_id") or "") != str(employee_id):
+            continue
+        if a.get("is_active") is False:
+            continue
+        vf = str(a.get("validFrom") or a.get("valid_from") or "")
+        vt = a.get("validTo") if a.get("validTo") is not None else a.get("valid_to")
+        if vf and vf > month:
+            continue
+        if vt not in (None, "") and str(vt) < month:
+            continue
+        kid = str(a.get("kpi_id") or "")
+        if kid:
+            active_kpi.add(kid)
+    total = 0.0
+    for d in defs:
+        if not isinstance(d, dict):
+            continue
+        kid = str(d.get("kpi_id") or "")
+        if kid not in active_kpi:
+            continue
+        vf = str(d.get("validFrom") or d.get("valid_from") or "")
+        vt = d.get("validTo") if d.get("validTo") is not None else d.get("valid_to")
+        if vf and vf > month:
+            continue
+        if vt not in (None, "") and str(vt) < month:
+            continue
+        try:
+            total += float(d.get("amount") or d.get("budget") or 0)
+        except (TypeError, ValueError):
+            pass
+    return total
+
+
+class WtKpiSafeSaveTests(unittest.TestCase):
+    """Защита сохранения KPI: merge-by-id, create conflict, admin PUT, calc parity."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["shopPayroll"] = {
+            "kpiDefs": [
+                {
+                    "id": "kpv_a",
+                    "kpi_id": "kpi_a",
+                    "name": "Правило A",
+                    "amount": 100,
+                    "budget": 1000,
+                    "plan": 50,
+                    "validFrom": "2026-11",
+                    "validTo": None,
+                    "metric_id": "m_a",
+                },
+                {
+                    "id": "kpv_b",
+                    "kpi_id": "kpi_b",
+                    "name": "Правило B",
+                    "amount": 200,
+                    "budget": 2000,
+                    "plan": 80,
+                    "validFrom": "2026-11",
+                    "validTo": None,
+                    "metric_id": "m_b",
+                },
+            ],
+            "assignments": [
+                {
+                    "id": "kpa_a1",
+                    "kpi_id": "kpi_a",
+                    "employee_id": "e_shop",
+                    "validFrom": "2026-11",
+                    "validTo": None,
+                    "is_active": True,
+                },
+                {
+                    "id": "kpa_b1",
+                    "kpi_id": "kpi_b",
+                    "employee_id": "e_shop",
+                    "validFrom": "2026-11",
+                    "validTo": None,
+                    "is_active": True,
+                },
+            ],
+            "salaries": [{"employee_id": "e_shop", "rate": 1500}],
+        }
+        self.store = {
+            "payload": payload,
+            "version": 3,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._bonus_before = _kpi_fixture_bonus_total(payload, "e_shop", "2026-11")
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": "user_admin", "pin": "5555"})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def test_merge_helper_keeps_sibling(self):
+        cur = self.store["payload"]["shopPayroll"]["kpiDefs"]
+        inc = [{"id": "kpv_b", "kpi_id": "kpi_b", "amount": 250, "validFrom": "2026-11"}]
+        merged, err = wt_api._merge_kpi_list_ops(cur, inc)
+        self.assertIsNone(err)
+        by_id = {row["id"]: row for row in merged}
+        self.assertIn("kpv_a", by_id)
+        self.assertEqual(by_id["kpv_b"]["amount"], 250)
+
+    def test_merge_helper_create_row_conflict(self):
+        cur = self.store["payload"]["shopPayroll"]["kpiDefs"]
+        inc = [{"id": "kpv_a", "kpi_id": "kpi_hijack", "amount": 1}]
+        merged, err = wt_api._merge_kpi_list_ops(cur, inc, create_ids=["kpv_a"])
+        self.assertIsNone(merged)
+        self.assertEqual(err.get("error"), "kpi_row_id_conflict")
+
+    def test_merge_helper_create_kpi_id_conflict(self):
+        cur = self.store["payload"]["shopPayroll"]["kpiDefs"]
+        inc = list(cur) + [{"id": "kpv_new", "kpi_id": "kpi_a", "amount": 9}]
+        merged, err = wt_api._merge_kpi_list_ops(cur, inc, create_ids=["kpv_new"], create_kpi_ids=["kpi_a"])
+        self.assertIsNone(merged)
+        self.assertEqual(err.get("error"), "kpi_id_conflict")
+
+    def test_ops_stale_list_does_not_wipe_sibling(self):
+        cookie, _ = self.login()
+        before = _kpi_fixture_bonus_total(self.store["payload"], "e_shop", "2026-11")
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_stale_1",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [
+                        {
+                            "id": "kpv_b",
+                            "kpi_id": "kpi_b",
+                            "name": "Правило B*",
+                            "amount": 200,
+                            "validFrom": "2026-11",
+                        }
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        ids = {row["id"] for row in self.store["payload"]["shopPayroll"]["kpiDefs"]}
+        self.assertIn("kpv_a", ids)
+        self.assertIn("kpv_b", ids)
+        after = _kpi_fixture_bonus_total(self.store["payload"], "e_shop", "2026-11")
+        self.assertEqual(before, after)
+
+    def test_ops_two_admins_create_different_kpi(self):
+        cookie, _ = self.login()
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_c1",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": {
+                        "__wt_kpi_list__": True,
+                        "items": self.store["payload"]["shopPayroll"]["kpiDefs"]
+                        + [{"id": "kpv_x", "kpi_id": "kpi_x", "amount": 10, "validFrom": "2026-11"}],
+                        "create_ids": ["kpv_x"],
+                        "create_kpi_ids": ["kpi_x"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), (st1, d1))
+        # Устаревший expected_v → 409; повтор с server_v без kpv_x но с kpv_y — merge сохранит оба
+        st_c, d_c, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_c2_stale",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": {
+                        "__wt_kpi_list__": True,
+                        "items": [
+                            {"id": "kpv_a", "kpi_id": "kpi_a", "amount": 100, "validFrom": "2026-11"},
+                            {"id": "kpv_b", "kpi_id": "kpi_b", "amount": 200, "validFrom": "2026-11"},
+                            {"id": "kpv_y", "kpi_id": "kpi_y", "amount": 11, "validFrom": "2026-11"},
+                        ],
+                        "create_ids": ["kpv_y"],
+                        "create_kpi_ids": ["kpi_y"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st_c.startswith("409"), (st_c, d_c))
+        server_v = int((d_c or {}).get("server_v") or 1)
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_c2_retry",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": server_v,
+                    "value": {
+                        "__wt_kpi_list__": True,
+                        "items": [
+                            {"id": "kpv_a", "kpi_id": "kpi_a", "amount": 100, "validFrom": "2026-11"},
+                            {"id": "kpv_b", "kpi_id": "kpi_b", "amount": 200, "validFrom": "2026-11"},
+                            {"id": "kpv_y", "kpi_id": "kpi_y", "amount": 11, "validFrom": "2026-11"},
+                        ],
+                        "create_ids": ["kpv_y"],
+                        "create_kpi_ids": ["kpi_y"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), (st2, d2))
+        ids = {row["id"] for row in self.store["payload"]["shopPayroll"]["kpiDefs"]}
+        self.assertTrue({"kpv_a", "kpv_b", "kpv_x", "kpv_y"}.issubset(ids))
+
+    def test_ops_create_id_conflict_rejected(self):
+        cookie, _ = self.login()
+        before = json.loads(json.dumps(self.store["payload"]["shopPayroll"]["kpiDefs"]))
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_id_conflict",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": {
+                        "__wt_kpi_list__": True,
+                        "items": [{"id": "kpv_a", "kpi_id": "kpi_z", "amount": 1}],
+                        "create_ids": ["kpv_a"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("4"), (st, data))
+        self.assertEqual((data or {}).get("error"), "kpi_row_id_conflict")
+        self.assertNotEqual((data or {}).get("error"), "conflict")
+        self.assertEqual(self.store["payload"]["shopPayroll"]["kpiDefs"], before)
+
+    def test_ops_edit_and_version_ok(self):
+        cookie, _ = self.login()
+        st1, d1, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_edit",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [
+                        {
+                            "id": "kpv_a",
+                            "kpi_id": "kpi_a",
+                            "amount": 150,
+                            "plan": 60,
+                            "budget": 1100,
+                            "validFrom": "2026-11",
+                        },
+                        {
+                            "id": "kpv_b",
+                            "kpi_id": "kpi_b",
+                            "amount": 200,
+                            "validFrom": "2026-11",
+                        },
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st1.startswith("200"), (st1, d1))
+        by_id = {row["id"]: row for row in self.store["payload"]["shopPayroll"]["kpiDefs"]}
+        self.assertEqual(by_id["kpv_a"]["amount"], 150)
+        # Новая версия того же kpi_id
+        st2, d2, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_ver",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": int(d1.get("record_v") or 1),
+                    "value": {
+                        "__wt_kpi_list__": True,
+                        "items": [
+                            {
+                                "id": "kpv_a",
+                                "kpi_id": "kpi_a",
+                                "amount": 150,
+                                "validFrom": "2026-10",
+                                "validTo": "2026-10",
+                            },
+                            {
+                                "id": "kpv_a2",
+                                "kpi_id": "kpi_a",
+                                "amount": 160,
+                                "validFrom": "2026-11",
+                            },
+                            {
+                                "id": "kpv_b",
+                                "kpi_id": "kpi_b",
+                                "amount": 200,
+                                "validFrom": "2026-11",
+                            },
+                        ],
+                        "create_ids": ["kpv_a2"],
+                    },
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st2.startswith("200"), (st2, d2))
+        kids = [row["kpi_id"] for row in self.store["payload"]["shopPayroll"]["kpiDefs"] if row["id"] in ("kpv_a", "kpv_a2")]
+        self.assertEqual(kids.count("kpi_a"), 2)
+
+    def test_ops_assignments_preserve_sibling(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_asg",
+                "op": {
+                    "path": "shopPayroll.assignments",
+                    "expected_v": 0,
+                    "value": [
+                        {
+                            "id": "kpa_a1",
+                            "kpi_id": "kpi_a",
+                            "employee_id": "e_shop",
+                            "validFrom": "2026-11",
+                            "is_active": False,
+                        }
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        ids = {row["id"] for row in self.store["payload"]["shopPayroll"]["assignments"]}
+        self.assertIn("kpa_b1", ids)
+        self.assertFalse(
+            next(r for r in self.store["payload"]["shopPayroll"]["assignments"] if r["id"] == "kpa_a1")["is_active"]
+        )
+
+    def test_admin_put_does_not_wipe_kpi(self):
+        cookie, _ = self.login()
+        before_bonus = _kpi_fixture_bonus_total(self.store["payload"], "e_shop", "2026-11")
+        st, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopPayroll": {
+                        "kpiDefs": [
+                            {
+                                "id": "kpv_b",
+                                "kpi_id": "kpi_b",
+                                "amount": 200,
+                                "validFrom": "2026-11",
+                            }
+                        ],
+                        "assignments": [
+                            {
+                                "id": "kpa_b1",
+                                "kpi_id": "kpi_b",
+                                "employee_id": "e_shop",
+                                "validFrom": "2026-11",
+                                "is_active": True,
+                            }
+                        ],
+                        "salaries": [{"employee_id": "e_shop", "rate": 1500}],
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        ids = {row["id"] for row in self.store["payload"]["shopPayroll"]["kpiDefs"]}
+        self.assertIn("kpv_a", ids)
+        asg = {row["id"] for row in self.store["payload"]["shopPayroll"]["assignments"]}
+        self.assertIn("kpa_a1", asg)
+        after_bonus = _kpi_fixture_bonus_total(self.store["payload"], "e_shop", "2026-11")
+        self.assertEqual(before_bonus, after_bonus)
+
+    def test_admin_put_create_flag_conflict(self):
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopPayroll": {
+                        "kpiDefs": [
+                            {
+                                "id": "kpv_a",
+                                "kpi_id": "kpi_hijack",
+                                "amount": 1,
+                                "__wt_create__": True,
+                            }
+                        ]
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("4"), (st, data))
+        self.assertEqual((data or {}).get("error"), "kpi_row_id_conflict")
+        self.assertEqual(
+            self.store["payload"]["shopPayroll"]["kpiDefs"][0]["kpi_id"],
+            "kpi_a",
+        )
+
+    def test_calc_parity_after_ops_and_put(self):
+        self.assertEqual(self._bonus_before, 300.0)
+        cookie, _ = self.login()
+        call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_parity_ops",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [
+                        {
+                            "id": "kpv_a",
+                            "kpi_id": "kpi_a",
+                            "amount": 100,
+                            "validFrom": "2026-11",
+                        },
+                        {
+                            "id": "kpv_b",
+                            "kpi_id": "kpi_b",
+                            "amount": 200,
+                            "validFrom": "2026-11",
+                        },
+                        {
+                            "id": "kpv_extra",
+                            "kpi_id": "kpi_extra",
+                            "amount": 5,
+                            "validFrom": "2026-11",
+                        },
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        # extra без assignment не меняет bonus e_shop
+        self.assertEqual(
+            _kpi_fixture_bonus_total(self.store["payload"], "e_shop", "2026-11"),
+            self._bonus_before,
+        )
+        # calc functions not rewritten
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function shopEmployeeBonusTotal(", src)
+        self.assertIn("function calculateEmployee(", src)
+
+    def test_client_markers_kpi_safe_save(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn('"shopPayroll.kpiDefs": "id"', src)
+        self.assertIn('"shopPayroll.assignments": "id"', src)
+        self.assertIn("function wtKpiListCreateMarkers(", src)
+        self.assertIn("__wt_kpi_list__", src)
+        self.assertIn("function wtKpiSaveOutcomeMessage(", src)
+        # DomainWriter сохраняет обёртки
+        self.assertIn("__wt_kpi_list__ === true", src)
+        # формулы не трогали в этом пакете — маркеры существования
+        bonus = src[src.find("function shopEmployeeBonusTotal("):src.find("function shopEmployeeBonusTotal(") + 400]
+        self.assertIn("shopEmployeeBonusLines", bonus)
+
+    def test_harness_kpi_safe_save(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_kpi_safe_save_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness kpi safe save")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_kpi_safe_save_harness: OK", proc.stdout)
+
+
+def _kpi_real_bonus_total(payload, employee_id, month, facts):
+    """
+    Реальный shopEmployeeBonusTotal из app.html через wt_kpi_accrual_control_harness.js.
+    Синтетические facts; формулы не дублируются в Python.
+    """
+    harness = Path(__file__).resolve().parent.joinpath("wt_kpi_accrual_control_harness.js")
+    if not harness.is_file():
+        raise FileNotFoundError(str(harness))
+    node = os.environ.get("WT_NODE") or "node"
+    env = os.environ.copy()
+    env["WT_KPI_MODE"] = "bonus"
+    env["WT_KPI_PAYLOAD"] = json.dumps(payload, ensure_ascii=False)
+    env["WT_KPI_EMP"] = str(employee_id)
+    env["WT_KPI_MONTH"] = str(month)
+    env["WT_KPI_FACTS"] = json.dumps(facts, ensure_ascii=False)
+    try:
+        proc = subprocess.run(
+            [node, str(harness)],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+            env=env,
+        )
+    except FileNotFoundError as exc:
+        raise unittest.SkipTest("node недоступен для KPI accrual harness") from exc
+    if proc.returncode != 0:
+        raise AssertionError("bonus harness failed:\n" + proc.stdout + "\n" + proc.stderr)
+    # последняя JSON-строка с amount
+    amount = None
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "amount" in row:
+            amount = float(row["amount"])
+    if amount is None:
+        raise AssertionError("bonus harness: no amount in output:\n" + proc.stdout)
+    return amount
+
+
+_KPI_ACCRUAL_CTRL_FACTS = {
+    "e1|metric_sales_plan_ctrl": {"fact": 10000},
+    "e1|metric_sales_plan_ctrl2": {"fact": 5000},
+}
+
+
+def _kpi_accrual_ctrl_payroll():
+    """Синтетический shopPayroll: два индивидуальных KPI, 100% плана → 2000+1000=3000."""
+    metric_a = "metric_sales_plan_ctrl"
+    metric_b = "metric_sales_plan_ctrl2"
+    return {
+        "kpiDefs": [
+            {
+                "id": "kpv_ctrl",
+                "kpi_id": "kpi_ctrl",
+                "metric_id": metric_a,
+                "metricId": metric_a,
+                "name": "Контроль A",
+                "calcType": "budget_ratio",
+                "type": "plan",
+                "budget": 2000,
+                "amount": 2000,
+                "plan": 10000,
+                "maxCoefPercent": 100,
+                "validFrom": "2026-11",
+                "validTo": None,
+                "active": True,
+            },
+            {
+                "id": "kpv_sib",
+                "kpi_id": "kpi_sib",
+                "metric_id": metric_b,
+                "metricId": metric_b,
+                "name": "Контроль B",
+                "calcType": "budget_ratio",
+                "type": "plan",
+                "budget": 1000,
+                "amount": 1000,
+                "plan": 5000,
+                "maxCoefPercent": 100,
+                "validFrom": "2026-11",
+                "validTo": None,
+                "active": True,
+            },
+        ],
+        "assignments": [
+            {
+                "id": "kpa_ctrl",
+                "kpi_id": "kpi_ctrl",
+                "employee_id": "e1",
+                "validFrom": "2026-11",
+                "validTo": None,
+                "is_active": True,
+            },
+            {
+                "id": "kpa_sib",
+                "kpi_id": "kpi_sib",
+                "employee_id": "e1",
+                "validFrom": "2026-11",
+                "validTo": None,
+                "is_active": True,
+            },
+        ],
+        "salaries": [],
+        "receivingShared": False,
+        "sharedBudgets": {},
+    }
+
+
+class WtKpiAccrualControlTests(unittest.TestCase):
+    """
+    Контрольные начисления KPI (синтетика).
+    Сценарии 1–10: реальные функции app.html в Node vm.
+    Сценарии 11–12: FakeConn OPS/PUT + тот же реальный bonusTotal.
+    Производственные формулы/данные не меняются.
+    """
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ["WT_OPS_ENABLED"] = "1"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        payload = json.loads(json.dumps(SAMPLE_APP))
+        payload["shopPayroll"] = _kpi_accrual_ctrl_payroll()
+        # сотрудник e1 в shop workspace для getEmployee stubs на сервере не нужен —
+        # bonus считается в Node; e1 только в assignments.
+        self.store = {
+            "payload": payload,
+            "version": 5,
+            "updated_at": datetime.now(timezone.utc),
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+        wt_api.LOGIN_FAILS.clear()
+
+    def login(self):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": "user_admin", "pin": "5555"})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def _bonus(self, payload=None):
+        p = payload if payload is not None else self.store["payload"]
+        return _kpi_real_bonus_total(p, "e1", "2026-11", _KPI_ACCRUAL_CTRL_FACTS)
+
+    def test_01_to_10_harness_scenarios(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_kpi_accrual_control_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        env = os.environ.copy()
+        env.pop("WT_KPI_MODE", None)
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                check=False,
+                env=env,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для KPI accrual harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_kpi_accrual_control_harness: OK", proc.stdout)
+        self.assertIn('"engine": "real_app_html_functions"', proc.stdout)
+
+    def test_11_ops_preserves_accrual(self):
+        before = self._bonus()
+        self.assertEqual(before, 3000.0)
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "POST",
+            "/api/state/op",
+            {
+                "idempotency_key": "kpi_accrual_ops_11",
+                "op": {
+                    "path": "shopPayroll.kpiDefs",
+                    "expected_v": 0,
+                    "value": [
+                        {
+                            "id": "kpv_ctrl",
+                            "kpi_id": "kpi_ctrl",
+                            "metric_id": "metric_sales_plan_ctrl",
+                            "metricId": "metric_sales_plan_ctrl",
+                            "name": "Контроль A (OPS)",
+                            "calcType": "budget_ratio",
+                            "type": "plan",
+                            "budget": 2000,
+                            "amount": 2000,
+                            "plan": 10000,
+                            "maxCoefPercent": 100,
+                            "validFrom": "2026-11",
+                            "validTo": None,
+                            "active": True,
+                        }
+                    ],
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        ids = {row["id"] for row in self.store["payload"]["shopPayroll"]["kpiDefs"]}
+        self.assertIn("kpv_ctrl", ids)
+        self.assertIn("kpv_sib", ids, "sibling KPI wiped by OPS replace — accrual broken")
+        after = self._bonus()
+        self.assertEqual(
+            before,
+            after,
+            "scenario 11 FAIL: expected=%s actual=%s" % (before, after),
+        )
+
+    def test_12_admin_put_preserves_accrual(self):
+        before = self._bonus()
+        self.assertEqual(before, 3000.0)
+        cookie, _ = self.login()
+        st, data, *_ = call(
+            "PUT",
+            "/api/state",
+            {
+                "version": int(self.store["version"]),
+                "payload": {
+                    "shopPayroll": {
+                        "kpiDefs": [
+                            {
+                                "id": "kpv_ctrl",
+                                "kpi_id": "kpi_ctrl",
+                                "metric_id": "metric_sales_plan_ctrl",
+                                "metricId": "metric_sales_plan_ctrl",
+                                "name": "Контроль A (PUT)",
+                                "calcType": "budget_ratio",
+                                "type": "plan",
+                                "budget": 2000,
+                                "amount": 2000,
+                                "plan": 10000,
+                                "maxCoefPercent": 100,
+                                "validFrom": "2026-11",
+                                "validTo": None,
+                                "active": True,
+                            }
+                        ],
+                        "assignments": [
+                            {
+                                "id": "kpa_ctrl",
+                                "kpi_id": "kpi_ctrl",
+                                "employee_id": "e1",
+                                "validFrom": "2026-11",
+                                "validTo": None,
+                                "is_active": True,
+                            }
+                        ],
+                        "salaries": [],
+                    }
+                },
+            },
+            cookie=cookie,
+        )
+        self.assertTrue(st.startswith("200"), (st, data))
+        ids = {row["id"] for row in self.store["payload"]["shopPayroll"]["kpiDefs"]}
+        self.assertIn("kpv_sib", ids, "sibling KPI wiped by admin PUT — accrual broken")
+        asg = {row["id"] for row in self.store["payload"]["shopPayroll"]["assignments"]}
+        self.assertIn("kpa_sib", asg, "sibling assignment wiped by admin PUT")
+        after = self._bonus()
+        self.assertEqual(
+            before,
+            after,
+            "scenario 12 FAIL: expected=%s actual=%s" % (before, after),
+        )
+
+
+class WtPackageVSaveContractTests(unittest.TestCase):
+    """Пакет В: D19 timeout, SoftSync both_changed notify, тексты 409 — маркеры + harness."""
+
+    def test_client_markers_package_v(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function wtSoftNotifyBothChanged(", src)
+        self.assertIn("wtSoftBothChangedWarned", src)
+        self.assertIn("Сохранение не подтверждено", src)
+        dw = src[src.find("function wtDomainWriterSave("):src.find("const WT_OPS_FETCH_TIMEOUT_MS")]
+        self.assertNotIn("сохранение будет повторено.", dw)
+        self.assertIn("проверьте данные и повторите сохранение только после проверки", dw)
+        self.assertIn('return "timeout"', dw)
+        self.assertIn("другим администратором", src)
+        self.assertIn("ничего не записывать на сервер", src)
+        self.assertIn("unresolvedAfterReview", src)
+        soft = src[src.find("function wtSoftMergePreferServer("):src.find("function wtSoftMergePreferServer(") + 2200]
+        self.assertIn('"mine"', soft)
+        self.assertIn("wtSoftNotifyBothChanged(path, merged.conflicts)", soft)
+        self.assertIn("function shopKpiPayout(", src)
+        self.assertIn("function shopEmployeeBonusTotal(", src)
+        self.assertIn("function calculateEmployee(", src)
+
+    def test_harness_package_v(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_package_v_save_contract_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для package V harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_package_v_save_contract_harness: OK", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
