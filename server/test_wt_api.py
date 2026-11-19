@@ -12638,8 +12638,53 @@ class WtSpuMetricGroupFactMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_metric_group_fact_harness: OK", proc.stdout)
 
 
+class WtSpuDeptSeriesStorageE1MarkerTests(unittest.TestCase):
+    """E1: trips-first только для territory_category=drivers; sales_opt → day-facts."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def _collect_fn(self):
+        src = self._src()
+        start = src.find("function collectDeptMetricPeriodSeries(")
+        self.assertGreater(start, 0)
+        end = src.find("function driverMetricEntriesMonth(", start)
+        self.assertGreater(end, start)
+        return src[start:end]
+
+    def test_trips_guard_by_territory_category_drivers(self):
+        fn = self._collect_fn()
+        self.assertIn('territoryCat === "drivers"', fn)
+        self.assertIn("driverMetricEntriesMonth(", fn)
+        self.assertIn("deptMetricFactsMonth(", fn)
+        self.assertIn("metricFactStorageKey(", fn)
+        # Без спец-условий по названиям показателей
+        self.assertNotIn("Продажи ОПТ", fn)
+        self.assertNotIn("sales_opt\" ===", fn)
+        self.assertNotIn('=== "sales_opt"', fn)
+
+    def test_harness_nine_checks(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_dept_series_storage_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness spu dept series storage")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_dept_series_storage_harness: OK", proc.stdout)
+
+
 class WtSpuSourceGroupUxMarkerTests(unittest.TestCase):
-    """Маркеры: UX авто group_total только при смене метрики; legacy не мигрируется при open."""
+    """Маркеры: UX авто metric_overall при смене метрики; legacy/group не мигрируются при open."""
 
     def _src(self):
         return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
@@ -12650,20 +12695,13 @@ class WtSpuSourceGroupUxMarkerTests(unittest.TestCase):
         self.assertIn("function spuIndWorktimeSourceUiMode(", src)
         self.assertIn("function spuIndWorktimeResultHtml(", src)
         self.assertIn("function spuIndWorktimeSourcesMissingGroup(", src)
-        self.assertIn(
-            "Для выбранной метрики не определена рабочая группа. Проверьте назначения метрики",
-            src,
-        )
+        self.assertIn("Итого метрики — все участники", src)
         autofill_fn = src[
             src.find("function spuIndApplyWorktimeGroupAutofill(")
             : src.find("function spuIndWorktimeSourcesMissingGroup(")
         ]
-        # 0 групп не должны тихо становиться department_total после выбора метрики
-        self.assertIn('s.source_result = "group_total"', autofill_fn)
-        self.assertNotIn(
-            "0 групп — не выдумывать group_total",
-            autofill_fn,
-        )
+        self.assertIn('s.source_result = "metric_overall"', autofill_fn)
+        self.assertNotIn('s.source_result = "group_total"', autofill_fn)
         on_metric = src[
             src.find("function spuIndOnMetricChange()")
             : src.find("function renderSpuIndSourcesBox()")
@@ -12681,12 +12719,13 @@ class WtSpuSourceGroupUxMarkerTests(unittest.TestCase):
         ]
         self.assertIn("spuIndWorktimeResultHtml(", render_fn)
         self.assertNotIn("spuIndApplyWorktimeGroupAutofill(", render_fn)
-        # расчёт 9c29a44 не трогали этим UX-блоком
         fact_fn = src[
             src.find("function mgmtMetricFact(")
             : src.find("function mgmtSalesPlanFact(")
         ]
         self.assertIn("mgmtCollectAssignedWorktimeMetricSeries(", fact_fn)
+        self.assertIn("mgmtCollectMetricOverallSeries(", fact_fn)
+        self.assertIn('srcResult === "metric_overall"', fact_fn)
 
     def test_harness_source_group_ux(self):
         harness = Path(__file__).resolve().parent.joinpath("wt_spu_source_group_ux_harness.js")
@@ -12704,6 +12743,60 @@ class WtSpuSourceGroupUxMarkerTests(unittest.TestCase):
             self.skipTest("node недоступен для harness spu source group ux")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_source_group_ux_harness: OK", proc.stdout)
+
+
+class WtSpuMetricOverallMarkerTests(unittest.TestCase):
+    """Маркеры: metric_overall = общий итог участников; legacy metric_total не мигрируется."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_overall_helpers_and_compat(self):
+        src = self._src()
+        self.assertIn("function mgmtMetricOverallPeople(", src)
+        self.assertIn("function mgmtCollectMetricOverallSeries(", src)
+        self.assertIn("function autoCalcPeoplePeriodTotal(", src)
+        people_fn = src[
+            src.find("function mgmtMetricOverallPeople(")
+            : src.find("function autoCalcPeoplePeriodTotal(")
+        ]
+        self.assertIn("workMetricPeopleForTab(", people_fn)
+        self.assertIn("shopMetricParticipantPeople(", people_fn)
+        # Territory overall: assignments, не hub/workAccess
+        self.assertNotIn("territoryHubPeople(", people_fn)
+        fact_fn = src[
+            src.find("function mgmtMetricFact(")
+            : src.find("function mgmtSalesPlanFact(")
+        ]
+        self.assertIn('srcResult === "metric_overall"', fact_fn)
+        self.assertIn("mgmtCollectMetricOverallSeries(", fact_fn)
+        # E1 guard сохранён
+        collect = src[
+            src.find("function collectDeptMetricPeriodSeries(")
+            : src.find("function driverMetricEntriesMonth(")
+        ]
+        self.assertIn('territoryCat === "drivers"', collect)
+        # legacy metric_total не переведён в overall-ветку как alias
+        self.assertNotIn('srcResult === "metric_total"', fact_fn)
+
+    def test_harness_fourteen_checks(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_metric_overall_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness spu metric overall")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_metric_overall_harness: OK", proc.stdout)
 
 
 class WtSpuWorktimePlanFormulaMarkerTests(unittest.TestCase):

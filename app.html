@@ -7469,7 +7469,8 @@ function applyMetricResultRoute(item) {
         if (!ind) return;
         ind.source_type = "worktime_metric";
         ind.source_metric_id = item.id;
-        ind.source_result = route.source === "group_total" ? "group_total" : "department_total";
+        ind.source_result = route.source === "group_total" ? "group_total"
+            : (route.source === "metric_overall" ? "metric_overall" : "department_total");
         ind.source_work_tab_id = route.source_work_tab_id || "";
         ind.target_org_node_id = route.target_org_node_id || "";
         ind.department_id = metricDepartmentId(item);
@@ -21971,6 +21972,12 @@ function dayMatchesFactDays(day, month, days) {
     });
 }
 
+/**
+ * Дневные факты отдела за дни периода СПУ.
+ * Рейсы (entries) — только для метрик категории territory «drivers».
+ * sales_opt и прочие day-fact категории читают deptMetrics.*.facts по metric_id
+ * (E1: не подменять таблицу ОПТ значениями из рейсов с тем же id).
+ */
 function collectDeptMetricPeriodSeries(deptCode, metricId, subId, days, employeeIds) {
     const mid = canonicalMetricId(metricId);
     const series = [];
@@ -21979,7 +21986,11 @@ function collectDeptMetricPeriodSeries(deptCode, metricId, subId, days, employee
     if (catalogItem && catalogItem.fill_type === "vehicle") return series;
     const allow = employeeIds && employeeIds.length ? employeeIds : null;
     const empOk = function (id) { return !allow || allow.indexOf(id) !== -1; };
-    if (deptCode === "drivers" && !subId) {
+    const territoryCat = catalogItem && typeof metricTerritoryCategory === "function"
+        ? metricTerritoryCategory(catalogItem)
+        : (catalogItem && catalogItem.territory_category) || "";
+    // Trips-first только для водительских метрик; sales_opt/складские вкладки — day-facts.
+    if (deptCode === "drivers" && !subId && territoryCat === "drivers") {
         const months = {};
         (days || []).forEach(function (d) { months[d.month || selectedMonth] = true; });
         let fromTrips = false;
@@ -49013,8 +49024,9 @@ function spuIndSyncDraftFromDom() {
         if (resultRaw.indexOf("group:") === 0) {
             sourceResult = "group_total";
             workTab = resultRaw.slice(6);
-        } else if (resultRaw === "fact") sourceResult = "fact";
+        }         else if (resultRaw === "fact") sourceResult = "fact";
         else if (resultRaw === "metric_total") sourceResult = "metric_total";
+        else if (resultRaw === "metric_overall") sourceResult = "metric_overall";
         next.push(spuNewSourceRow({
             source_id: row.getAttribute("data-source-id") || ("ssrc_" + i),
             source_type: type,
@@ -49066,14 +49078,18 @@ function spuIndRemoveSource(sourceId) {
     renderSpuIndFormulaBox();
 }
 
-/* UI режима источника worktime: legacy = fact|department_total|metric_total (сохранённые),
- * simple = group_total, pending = метрика ещё не выбрана. Autofill только при смене метрики. */
+/* UI режима источника worktime:
+ * overall = metric_overall (новый общий итог всех участников);
+ * simple = сохранённый group_total;
+ * legacy = fact|department_total|metric_total (старые, без авто-миграции);
+ * pending = метрика ещё не выбрана. Autofill только при смене метрики. */
 function spuIndWorktimeSourceUiMode(s) {
     if (!s) return "pending";
     const type = s.source_type || "worktime_metric";
     if (type !== "worktime_metric") return "other";
     if (!s.source_metric_id) return "pending";
     const r = String(s.source_result || "department_total");
+    if (r === "metric_overall") return "overall";
     if (r === "group_total") return "simple";
     if (r === "fact" || r === "department_total" || r === "metric_total") return "legacy";
     return "legacy";
@@ -49087,21 +49103,8 @@ function spuIndApplyWorktimeGroupAutofill(s) {
         s.source_work_tab_id = "";
         return;
     }
-    const item = typeof shopMetricCatalogById === "function" ? shopMetricCatalogById(s.source_metric_id) : null;
-    const tabs = (item && typeof metricWorkTabIds === "function") ? metricWorkTabIds(item) : [];
-    if (tabs.length === 1) {
-        s.source_result = "group_total";
-        s.source_work_tab_id = tabs[0];
-        return;
-    }
-    if (tabs.length > 1) {
-        const cur = String(s.source_work_tab_id || "");
-        s.source_result = "group_total";
-        s.source_work_tab_id = tabs.indexOf(cur) !== -1 ? cur : "";
-        return;
-    }
-    /* 0 групп: не подставлять department_total; ждём назначений / явного legacy. */
-    s.source_result = "group_total";
+    /* Новый выбор метрики → общий итог всех участников (без группы/отдела). */
+    s.source_result = "metric_overall";
     s.source_work_tab_id = "";
 }
 
@@ -49123,12 +49126,22 @@ function spuIndWorktimeResultHtml(s, item) {
     const tabs = typeof metricWorkTabIds === "function" ? metricWorkTabIds(item) : [];
     const dept = (typeof metricRollupDeptCode === "function" ? metricRollupDeptCode(item) : "")
         || (typeof metricDepartmentId === "function" ? metricDepartmentId(item) : "");
+    if (mode === "overall") {
+        return '<div class="form-group"><label>Результат</label>'
+            + '<div class="note">Итого метрики — все участники</div>'
+            + '<select class="spu-src-result" style="display:none" aria-hidden="true">'
+            + '<option value="metric_overall" selected>Итого метрики — все участники</option>'
+            + "</select></div>";
+    }
     if (mode === "legacy") {
         let html = '<div class="form-group"><label>Результат</label><select class="spu-src-result">';
         html += '<option value="fact"' + (s.source_result === "fact" ? " selected" : "") + ">Факт</option>";
         html += '<option value="department_total"'
             + (!s.source_result || s.source_result === "department_total" || s.source_result === "metric_total" ? " selected" : "")
             + ">Итого подразделения / Итого метрики</option>";
+        html += '<option value="metric_overall"'
+            + (s.source_result === "metric_overall" ? " selected" : "")
+            + ">Итого метрики — все участники</option>";
         tabs.forEach(function (tabId) {
             html += '<option value="group:' + escapeAttribute(tabId) + '"'
                 + (s.source_result === "group_total" && s.source_work_tab_id === tabId ? " selected" : "") + ">Итого группы: "
@@ -49797,7 +49810,9 @@ function saveSpuOrgIndicator() {
             const m = shopMetricCatalogById(s.source_metric_id);
             if (!m) return;
             if (!Array.isArray(m.result_routes)) m.result_routes = [];
-            const srcKind = s.source_result === "group_total" ? "group_total" : (s.source_result === "fact" ? "fact" : "department_total");
+            const srcKind = s.source_result === "group_total" ? "group_total"
+                : (s.source_result === "fact" ? "fact"
+                    : (s.source_result === "metric_overall" ? "metric_overall" : "department_total"));
             const routeDup = m.result_routes.some(function (r) {
                 return r && r.spu_indicator_id === it.indicator_id
                     && String(r.target_org_node_id || "") === String(target)
@@ -50504,6 +50519,8 @@ function spuSourceShortLabel(s) {
     let t = m ? m.name : (s.source_metric_id || "Метрика");
     if (s.source_result === "group_total" && s.source_work_tab_id && m) {
         t += " · " + metricTabLabel(metricRollupDeptCode(m) || metricDepartmentId(m), s.source_work_tab_id);
+    } else if (s.source_result === "metric_overall") {
+        t += " · все участники";
     }
     return t;
 }
@@ -52158,6 +52175,157 @@ function mgmtDeptMetricFactIsPresent(deptCode, employeeId, day, metricId, month,
 }
 
 /**
+ * Участники «общего итога метрики» (metric_overall):
+ * shop → shopMetricParticipantPeople (без изменений);
+ * Территория → union workMetricPeopleForTab по назначениям (assignments)
+ * и/или metricWorkTabIds: specific / должности / extra_employee_ids.
+ * Без territoryHubPeople и без включения только по workAccess.
+ * Без привязки к department_id показателя СПУ.
+ */
+function mgmtMetricOverallPeople(catalogItem) {
+    if (!catalogItem) return [];
+    const mid = canonicalMetricId(catalogItem.id);
+    if (!mid) return [];
+    if (metricDepartmentId(catalogItem) === "shop") {
+        return typeof shopMetricParticipantPeople === "function"
+            ? (shopMetricParticipantPeople(mid) || [])
+            : [];
+    }
+    if (typeof workMetricPeopleForTab !== "function") return [];
+    const seen = {};
+    const list = [];
+    function addPeople(arr) {
+        (arr || []).forEach(function (e) {
+            if (!e || !e.id || seen[e.id]) return;
+            seen[e.id] = true;
+            list.push(e);
+        });
+    }
+    const asgPairs = {};
+    (catalogItem.assignments || []).forEach(function (row) {
+        if (!row || !row.department_id || !row.work_tab_id) return;
+        if (row.department_id === "shop") return;
+        const key = String(row.department_id) + "|" + String(row.work_tab_id);
+        if (asgPairs[key]) return;
+        asgPairs[key] = true;
+        addPeople(workMetricPeopleForTab(row.department_id, mid, row.work_tab_id));
+    });
+    if (list.length) return list;
+    const host = metricDepartmentId(catalogItem) || "";
+    const tabs = typeof metricWorkTabIds === "function" ? metricWorkTabIds(catalogItem) : [];
+    if (!host) return list;
+    (tabs || []).forEach(function (tab) {
+        if (!tab) return;
+        addPeople(workMetricPeopleForTab(host, mid, tab));
+    });
+    return list;
+}
+
+/**
+ * Итог auto_calc по участникам за дни периода СПУ (как столбец Итого таблицы).
+ * pct — не аппроксимируем (null). div — Σчислителей/Σзнаменателей за дни периода.
+ */
+function autoCalcPeoplePeriodTotal(people, metricId, days) {
+    const mid = canonicalMetricId(metricId);
+    const it = shopMetricCatalogById(mid);
+    if (!it || it.fill_type !== "auto_calc" || !it.formula) return null;
+    const op = normalizeCatalogAutoCalcOp(it.formula.op);
+    if (op === "pct") return null;
+    const dayList = days || [];
+    if (op === "div") {
+        const uniq = uniqueMetricPeople(people);
+        let sumL = 0;
+        let sumR = 0;
+        let any = false;
+        dayList.forEach(function (d) {
+            const month = d.month || selectedMonth;
+            const dayNum = d.day;
+            uniq.forEach(function (e) {
+                if (!e || !e.id) return;
+                const leftSnap = shopCatalogOperandSnapshot(e.id, dayNum, it.formula.left, month);
+                const rightSnap = shopCatalogOperandSnapshot(e.id, dayNum, it.formula.right, month);
+                if (!leftSnap.present || !rightSnap.present) return;
+                const a = Number(leftSnap.value);
+                const b = Number(rightSnap.value);
+                if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+                sumL += a;
+                sumR += b;
+                any = true;
+            });
+        });
+        if (!any || sumR === 0) return null;
+        return sumL / sumR;
+    }
+    if (op !== "add" && op !== "sub" && op !== "mul") return null;
+    let tot = 0;
+    let any = false;
+    dayList.forEach(function (d) {
+        const v = autoCalcPeopleDayTotal(people, d.day, mid, d.month || selectedMonth);
+        if (v == null || !Number.isFinite(Number(v))) return;
+        tot += Number(v);
+        any = true;
+    });
+    return any ? tot : null;
+}
+
+/**
+ * Общий итог метрики за дни СПУ по всем участникам таблицы WT.
+ * Режим source_result = metric_overall (новый; legacy metric_total не трогаем).
+ * Day-facts / auto_calc; без entries/рейсов; без department_id показателя.
+ */
+function mgmtCollectMetricOverallSeries(metricId, subId, days) {
+    const mid = canonicalMetricId(metricId);
+    const out = { present: false, series: [], mode: "empty", value: null };
+    if (!mid) return out;
+    const item = shopMetricCatalogById(mid);
+    if (!item) {
+        out.mode = "no_catalog";
+        return out;
+    }
+    if (item.fill_type === "vehicle") {
+        out.mode = "vehicle";
+        return out;
+    }
+    const people = mgmtMetricOverallPeople(item);
+    if (item.fill_type === "auto_calc") {
+        out.mode = "auto_calc";
+        const v = autoCalcPeoplePeriodTotal(people, mid, days);
+        if (v == null || !Number.isFinite(Number(v))) return out;
+        out.present = true;
+        out.value = Number(v);
+        out.series = [Number(v)];
+        return out;
+    }
+    const hostFallback = metricDepartmentId(item) || "office";
+    const isShop = metricDepartmentId(item) === "shop";
+    (days || []).forEach(function (d) {
+        const month = d.month || selectedMonth;
+        const dayNum = d.day;
+        people.forEach(function (e) {
+            if (!e || !e.id) return;
+            if (isShop) {
+                const raw = typeof shopMetricStoredFact === "function"
+                    ? shopMetricStoredFact(e.id, dayNum, mid, month, subId)
+                    : null;
+                if (raw == null || raw === "") return;
+                const n = Number(raw);
+                if (!Number.isFinite(n)) return;
+                out.series.push(n);
+                return;
+            }
+            const factDept = typeof metricFactDeptForEmployee === "function"
+                ? metricFactDeptForEmployee(e.id, hostFallback)
+                : hostFallback;
+            if (!mgmtDeptMetricFactIsPresent(factDept, e.id, dayNum, mid, month, subId)) return;
+            out.series.push(Number(getDeptMetricStored(factDept, e.id, dayNum, mid, month, subId) || 0));
+        });
+    });
+    out.present = out.series.length > 0;
+    out.mode = "day_facts";
+    return out;
+}
+
+/**
  * Ряд дневных фактов только у сотрудников назначений выбранной рабочей группы.
  * Store = home (metricFactDeptForEmployee). Без entries / без чужих групп.
  * present=false → за период нет ни одной записи выбранного metric_id.
@@ -52204,6 +52372,14 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
          * Rollup-пилот склада — прежняя ветка ниже, без изменений. */
         const rollupPilot = !!(catalogItem && metricRollupEnabled(catalogItem)
             && metricDepartmentId(catalogItem) !== "shop");
+        /* metric_overall: общий итог всех участников таблицы WT; dept показателя игнорируется.
+         * Legacy metric_total остаётся на codes-пути (department_total) — без авто-миграции. */
+        if (!rollupPilot && srcResult === "metric_overall") {
+            const overall = mgmtCollectMetricOverallSeries(mid, subId, dayList);
+            if (!overall.present) return null;
+            if (overall.mode === "auto_calc" && overall.value != null) return Number(overall.value);
+            return aggregateMetricNumbers(overall.series, "sum");
+        }
         if (!rollupPilot && srcResult === "group_total" && workTab) {
             const host = String(deptCode || (catalogItem && metricDepartmentId(catalogItem)) || "");
             const collected = mgmtCollectAssignedWorktimeMetricSeries(host, mid, subId, dayList, workTab);
