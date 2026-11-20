@@ -48488,6 +48488,73 @@ function spuIndFormulaChipsHtml(which, inds) {
     return html;
 }
 
+/** Подсказка о действующей версии источника WorkTime (без мутации history). */
+function spuIndWorktimeEffectiveVersionNoteHtml() {
+    const iid = ((document.getElementById("spuIndId") || {}).value || "");
+    const it = iid
+        ? (((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === iid;
+        }) || null)
+        : null;
+    if (!it || !Array.isArray(it.source_versions) || !it.source_versions.length) {
+        return '<div class="note">После сохранения настройка действует с выбранной недели и всех последующих, '
+            + "пока не будет сохранено следующее изменение с новой датой.</div>";
+    }
+    let iso = "";
+    try {
+        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+        iso = r.to || r.from || (typeof todayIsoDate === "function" ? todayIsoDate() : "");
+    } catch (errN) {
+        iso = typeof todayIsoDate === "function" ? todayIsoDate() : "";
+    }
+    const v = typeof spuVersionAt === "function" ? spuVersionAt(it, iso) : null;
+    if (!v) {
+        return '<div class="note">На текущую отчётную неделю нет покрывающей версии источника.</div>';
+    }
+    const fromRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(v.effective_from) : String(v.effective_from || "");
+    const toTxt = v.effective_to
+        ? (" по " + (typeof mgmtFmtRu === "function" ? mgmtFmtRu(v.effective_to) : v.effective_to))
+        : " и далее (бессрочно)";
+    return '<div class="note">Сейчас на просматриваемой неделе действует версия с <b>'
+        + escapeHtml(fromRu) + "</b>" + escapeHtml(toTxt) + ".</div>";
+}
+
+/** Неделя начала действия источника для обычных показателей «Из Work Time». */
+function renderSpuIndWorktimeSourceEffectiveBox(box) {
+    if (!box) return;
+    if (!spuIndFormFormulaEffectiveFrom) {
+        spuIndFormFormulaEffectiveFrom = typeof spuIndDefaultEffectiveFromIso === "function"
+            ? spuIndDefaultEffectiveFromIso()
+            : "2026-11-05";
+    }
+    let html = '<div class="spu-fx-box"><h4>Начало действия источника</h4>'
+        + '<div class="note">Выберите учётную неделю (чт–ср), с которой применяется текущая настройка источников. '
+        + "Она действует на эту и все следующие недели, пока не сохраните новое изменение. "
+        + "Отдельные настройки на каждую неделю не нужны. Прошлые недели остаются на прежней версии.</div>"
+        + '<div class="form-group">'
+        + '<label>Неделя начала действия изменений</label>'
+        + '<select id="spuIndFormulaEffectiveFrom" onchange="spuIndOnWorktimeEffectiveWeekChange(this)">'
+        + spuIndFormulaWeekOptionsHtml(spuIndFormFormulaEffectiveFrom)
+        + "</select></div>"
+        + spuIndWorktimeEffectiveVersionNoteHtml()
+        + "</div>";
+    box.innerHTML = html;
+}
+
+function spuIndOnWorktimeEffectiveWeekChange(el) {
+    const raw = el && el.value != null ? el.value : spuIndFormFormulaEffectiveFrom;
+    const norm = typeof spuIndNormalizeEffectiveFromInput === "function"
+        ? spuIndNormalizeEffectiveFromInput(raw)
+        : { ok: true, iso: String(raw || "").trim(), normalized: false };
+    if (!norm.ok || !norm.iso) {
+        toast((norm && norm.message) || "Некорректная неделя.", "error");
+        return;
+    }
+    spuIndFormFormulaEffectiveFrom = norm.iso;
+    if (el) el.value = norm.iso;
+    if (norm.normalized) toast(norm.message, "info");
+}
+
 function renderSpuIndFormulaBox() {
     const box = document.getElementById("spuIndFormulaBox");
     if (!box) return;
@@ -48495,7 +48562,11 @@ function renderSpuIndFormulaBox() {
     const calc = aggEl ? aggEl.value : spuIndFormCalc;
     const isCalcKind = spuIndFormKind === "calculated";
     if (!isCalcKind && calc !== "formula") {
-        box.innerHTML = "";
+        if (spuIndFormKind === "worktime") {
+            renderSpuIndWorktimeSourceEffectiveBox(box);
+        } else {
+            box.innerHTML = "";
+        }
         if (typeof renderSpuIndWorktimePlanFormulaBox === "function") renderSpuIndWorktimePlanFormulaBox();
         return;
     }
@@ -49576,7 +49647,7 @@ function saveSpuOrgIndicator() {
             it.department_id = srcDeptRaw || it.department_id || "";
         }
     }
-    const formulaFieldRollback = (kind === "calculated" || calc === "formula")
+    const formulaFieldRollback = (kind === "calculated" || calc === "formula" || kind === "worktime")
         ? {
             formula_expr: Array.isArray(it.formula_expr) ? JSON.parse(JSON.stringify(it.formula_expr)) : [],
             plan_formula_expr: Array.isArray(it.plan_formula_expr) ? JSON.parse(JSON.stringify(it.plan_formula_expr)) : [],
@@ -49820,6 +49891,75 @@ function saveSpuOrgIndicator() {
                 }
                 spuIndPropagateSideToLater(it, effFrom, "plan", pre2p);
             }
+        }
+    } else if (kind === "worktime") {
+        /* Обычный Work Time: та же version-engine, неделя начала действия — как у формул. */
+        const effElWt = document.getElementById("spuIndFormulaEffectiveFrom");
+        if (effElWt && effElWt.value) spuIndFormFormulaEffectiveFrom = effElWt.value;
+        if (!spuIndFormFormulaEffectiveFrom && typeof spuIndDefaultEffectiveFromIso === "function") {
+            spuIndFormFormulaEffectiveFrom = spuIndDefaultEffectiveFromIso();
+        }
+        const normEffWt = typeof spuIndNormalizeEffectiveFromInput === "function"
+            ? spuIndNormalizeEffectiveFromInput(spuIndFormFormulaEffectiveFrom)
+            : { ok: true, iso: String(spuIndFormFormulaEffectiveFrom || "").trim(), normalized: false };
+        if (!normEffWt.ok || !normEffWt.iso) {
+            spuIndRestoreFormulaFields();
+            toast((normEffWt && normEffWt.message) || "Укажите неделю начала действия источника.", "error");
+            return;
+        }
+        if (normEffWt.normalized) {
+            spuIndFormFormulaEffectiveFrom = normEffWt.iso;
+            if (effElWt) effElWt.value = normEffWt.iso;
+            toast(normEffWt.message, "info");
+        }
+        const effFromWt = normEffWt.iso;
+        let commitOptsWt = {
+            effectiveFrom: effFromWt,
+            planFormula: it.plan_formula_expr || [],
+            planCalcMode: it.plan_calc_mode || "manual",
+            confirm: false
+        };
+        let commitResWt = spuCommitSourceVersion(
+            it,
+            it.sources,
+            it.aggregation_type,
+            it.formula_expr,
+            it.calc_mode,
+            commitOptsWt
+        );
+        if (commitResWt && commitResWt.blocked) {
+            spuIndRestoreFormulaFields();
+            toast(commitResWt.message || "Сохранение источника заблокировано из‑за истории версий.", "error");
+            return;
+        }
+        if (commitResWt && commitResWt.needsConfirm && commitResWt.plan) {
+            const msgWt = (commitResWt.plan.message || "Подтвердите изменение истории версий источника.")
+                + "\n\n"
+                + ((commitResWt.plan.lines || []).join("\n"))
+                + "\n\nПредыдущие версии не удаляются. Продолжить сохранение?";
+            if (!window.confirm(msgWt)) {
+                spuIndRestoreFormulaFields();
+                toast("Сохранение отменено.", "error");
+                return;
+            }
+            commitOptsWt.confirm = true;
+            commitResWt = spuCommitSourceVersion(
+                it,
+                it.sources,
+                it.aggregation_type,
+                it.formula_expr,
+                it.calc_mode,
+                commitOptsWt
+            );
+            if (!commitResWt || !commitResWt.ok) {
+                spuIndRestoreFormulaFields();
+                toast((commitResWt && commitResWt.message) || "Не удалось сохранить версии источника.", "error");
+                return;
+            }
+        } else if (commitResWt && !commitResWt.ok) {
+            spuIndRestoreFormulaFields();
+            toast(commitResWt.message || "Не удалось сохранить версии источника.", "error");
+            return;
         }
     } else {
         spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, {

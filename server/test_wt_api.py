@@ -12813,6 +12813,52 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_metric_overall_harness: OK", proc.stdout)
 
 
+class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):
+    """Маркеры: неделя начала действия источника для обычных WorkTime."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_worktime_effective_ui_and_save(self):
+        src = self._src()
+        self.assertIn("function renderSpuIndWorktimeSourceEffectiveBox(", src)
+        self.assertIn("function spuIndOnWorktimeEffectiveWeekChange(", src)
+        self.assertIn("function spuIndWorktimeEffectiveVersionNoteHtml(", src)
+        self.assertIn("Неделя начала действия изменений", src)
+        formula_box = src[
+            src.find("function renderSpuIndFormulaBox(")
+            : src.find("function spuIndFormulaWeekOptionsHtml(")
+        ]
+        self.assertIn('spuIndFormKind === "worktime"', formula_box)
+        self.assertIn("renderSpuIndWorktimeSourceEffectiveBox(", formula_box)
+        save_fn = src[
+            src.find("function saveSpuOrgIndicator()")
+            : src.find("function saveSpuOrgIndicator()") + 28000
+        ]
+        self.assertIn('kind === "worktime"', save_fn)
+        self.assertIn("effectiveFrom: effFromWt", save_fn)
+        self.assertIn("spuCommitSourceVersion(", save_fn)
+
+    def test_harness_worktime_source_effective(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_worktime_source_effective_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness worktime source effective")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_worktime_source_effective_harness: OK", proc.stdout)
+
+
 class WtSpuWorktimePlanFormulaMarkerTests(unittest.TestCase):
     """Маркеры: worktime может сохранять plan_formula без смены kind; UI-галочка в блоке План."""
 
