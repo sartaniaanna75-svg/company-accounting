@@ -12824,13 +12824,23 @@ class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):
         self.assertIn("function renderSpuIndWorktimeSourceEffectiveBox(", src)
         self.assertIn("function spuIndOnWorktimeEffectiveWeekChange(", src)
         self.assertIn("function spuIndWorktimeEffectiveVersionNoteHtml(", src)
+        self.assertIn("function spuIndSavedEffectiveFromIso(", src)
+        self.assertIn("function spuIndWorktimeLegacyEffectiveFromIso(", src)
         self.assertIn("Неделя начала действия изменений", src)
+        self.assertIn('return "2026-11-05"', src)
+        self.assertIn("extend_back", src)
         formula_box = src[
             src.find("function renderSpuIndFormulaBox(")
             : src.find("function spuIndFormulaWeekOptionsHtml(")
         ]
         self.assertIn('spuIndFormKind === "worktime"', formula_box)
         self.assertIn("renderSpuIndWorktimeSourceEffectiveBox(", formula_box)
+        open_fn = src[
+            src.find("function openSpuOrgIndicatorForm(")
+            : src.find("function openSpuOrgIndicatorForm(") + 5500
+        ]
+        self.assertIn('kind === "worktime"', open_fn)
+        self.assertIn("spuIndSavedEffectiveFromIso(", open_fn)
         save_fn = src[
             src.find("function saveSpuOrgIndicator()")
             : src.find("function saveSpuOrgIndicator()") + 28000

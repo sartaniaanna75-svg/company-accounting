@@ -56,7 +56,24 @@ function accountingWeekStart(iso) {
     + String(d.getDate()).padStart(2, "0");
 }
 
-/** Упрощённый commit с effectiveFrom (create / split_tail / inplace / noop). */
+const LEGACY_FROM = "2026-11-05";
+
+/** Зеркало spuIndSavedEffectiveFromIso для WorkTime. */
+function savedEffectiveFromIso(it) {
+  const vers = (it && Array.isArray(it.source_versions)) ? it.source_versions.filter(Boolean) : [];
+  if (vers.length) {
+    const open = vers.filter(function (v) { return !v.effective_to; }).slice().sort(function (a, b) {
+      return String(a.effective_from || "").localeCompare(String(b.effective_from || ""));
+    });
+    const pick = open.length ? open[open.length - 1] : vers[0];
+    let iso = pick && pick.effective_from ? String(pick.effective_from) : "";
+    if (iso && iso < LEGACY_FROM) iso = LEGACY_FROM;
+    return iso || LEGACY_FROM;
+  }
+  return LEGACY_FROM;
+}
+
+/** Упрощённый commit с effectiveFrom (create / split_tail / inplace / noop / extend_back). */
 function commitWithEffectiveFrom(it, sources, from, confirm) {
   const payload = {
     sources: sources,
@@ -93,15 +110,28 @@ function commitWithEffectiveFrom(it, sources, from, confirm) {
   }
 
   const covering = it.source_versions.filter(function (v) { return spuVersionCoversDay(v, from); });
+  if (!covering.length) {
+    const sorted = it.source_versions.slice().sort(function (a, b) {
+      return String((a && a.effective_from) || "").localeCompare(String((b && b.effective_from) || ""));
+    });
+    const earliest = sorted[0];
+    if (earliest && String(earliest.effective_from || "") > from) {
+      if (!confirm) return { ok: false, needsConfirm: true, mode: "extend_back" };
+      earliest.effective_from = from;
+      earliest.sources = JSON.parse(JSON.stringify(sources));
+      earliest.aggregation_type = "sum";
+      return { ok: true, mode: "extend_back" };
+    }
+    throw new Error("gap not extendable at " + from);
+  }
   assert(covering.length === 1, "one covering at " + from);
   const V = covering[0];
+  if (fingerprint(V) === bodyFp) return { ok: true, mode: "noop" };
   const later = it.source_versions.filter(function (v) {
     return v && String(v.effective_from || "") > from;
   });
   if (!later.length) {
-    if (!confirm && fingerprint(V) !== bodyFp) {
-      /* split_tail needsConfirm in real engine */
-    }
+    if (!confirm) return { ok: false, needsConfirm: true, mode: "split_tail" };
     V.effective_to = isoAddDays(from, -1);
     it.source_versions.push({
       version_id: "sver_" + (it.source_versions.length + 1),
@@ -229,6 +259,80 @@ const srcGroup = [{
   };
   assert(spuVersionAt(it, "2026-11-20") !== null, "7: mid-week covered");
   assert(spuVersionAt(it, "2026-11-20").sources[0].source_result === "metric_overall", "7: overall mid-week");
+}
+
+// 8) Save предыдущей недели → reopen показывает сохранённую, не «текущую»
+{
+  const it = { indicator_id: "ind_reopen", source_versions: [] };
+  const chosen = "2026-11-12";
+  const currentUi = "2026-11-19";
+  const r = commitWithEffectiveFrom(it, srcOverall, chosen, true);
+  assert(r.mode === "create", "8: create");
+  const shown = savedEffectiveFromIso(it);
+  assert(shown === chosen, "8: reopen shows saved " + shown);
+  assert(shown !== currentUi, "8: not replaced by current week");
+}
+
+// 9) Существующие без versions → baseline 05.11; недели 05/12/19 покрыты fallback-логикой чтения
+{
+  const it = { sources: JSON.parse(JSON.stringify(srcOverall)), source_versions: [] };
+  assert(savedEffectiveFromIso(it) === LEGACY_FROM, "9: baseline 05.11");
+  assert(spuVersionAt(it, "2026-11-05") === null, "9: no version yet");
+  // После первого save с baseline — покрытие 05–11, 12–18, 19–25
+  const r = commitWithEffectiveFrom(it, srcOverall, LEGACY_FROM, true);
+  assert(r.mode === "create", "9: create baseline");
+  ["2026-11-05", "2026-11-11", "2026-11-12", "2026-11-18", "2026-11-19", "2026-11-25", "2026-12-02"].forEach(function (d) {
+    assert(spuVersionAt(it, d) && spuVersionAt(it, d).sources[0].source_result === "metric_overall", "9: cover " + d);
+  });
+}
+
+// 10) Sentinel 2000-01-01 → UI baseline 05.11; данные не трогаем без save
+{
+  const it = {
+    source_versions: [{
+      version_id: "sver_legacy",
+      effective_from: "2000-01-01",
+      effective_to: "",
+      sources: JSON.parse(JSON.stringify(srcGroup))
+    }]
+  };
+  assert(savedEffectiveFromIso(it) === LEGACY_FROM, "10: display baseline");
+  assert(it.source_versions[0].effective_from === "2000-01-01", "10: stored untouched");
+}
+
+// 11) Повторный save с той же неделей/источниками → noop, без дубля
+{
+  const it = {
+    source_versions: [{
+      version_id: "sver_1",
+      effective_from: "2026-11-12",
+      effective_to: "",
+      sources: JSON.parse(JSON.stringify(srcOverall)),
+      aggregation_type: "sum"
+    }]
+  };
+  const r = commitWithEffectiveFrom(it, srcOverall, "2026-11-19", true);
+  assert(r.mode === "noop", "11: same content covering → noop");
+  assert(it.source_versions.length === 1, "11: no duplicate version");
+}
+
+// 12) Выбор более ранней недели при разрыве слева → extend_back
+{
+  const it = {
+    source_versions: [{
+      version_id: "sver_1",
+      effective_from: "2026-11-19",
+      effective_to: "",
+      sources: JSON.parse(JSON.stringify(srcGroup)),
+      aggregation_type: "sum"
+    }]
+  };
+  const r = commitWithEffectiveFrom(it, srcOverall, LEGACY_FROM, true);
+  assert(r.mode === "extend_back", "12: extend_back");
+  assert(it.source_versions.length === 1, "12: no duplicate");
+  assert(it.source_versions[0].effective_from === LEGACY_FROM, "12: from 05.11");
+  assert(it.source_versions[0].sources[0].source_result === "metric_overall", "12: body updated");
+  assert(spuVersionAt(it, "2026-11-05").sources[0].source_result === "metric_overall", "12: week 05–11");
 }
 
 console.log("wt_spu_worktime_source_effective_harness: OK");

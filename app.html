@@ -45980,6 +45980,57 @@ function spuIndDefaultEffectiveFromIso() {
     return spuIndAccountingWeekStartIso();
 }
 
+/**
+ * Базовая неделя действия существующих показателей «Из Work Time» (чт 05.11.2026).
+ * Не мутирует БД; используется для UI и мягкого чтения без массовой перезаписи версий.
+ */
+function spuIndWorktimeLegacyEffectiveFromIso() {
+    return "2026-11-05";
+}
+
+/**
+ * Фактически сохранённая неделя начала действия источника (для повторного открытия формы).
+ * Не подставляет «текущую» неделю поверх истории. Для WorkTime без версий — baseline 05.11.2026.
+ */
+function spuIndSavedEffectiveFromIso(it, kind) {
+    const k = kind || (it && typeof spuIndicatorUiKind === "function" ? spuIndicatorUiKind(it) : "");
+    const baseline = spuIndWorktimeLegacyEffectiveFromIso();
+    const vers = (it && Array.isArray(it.source_versions))
+        ? it.source_versions.filter(function (v) { return !!v; })
+        : [];
+    if (vers.length) {
+        const open = vers.filter(function (v) { return !v.effective_to; }).slice().sort(function (a, b) {
+            return String(a.effective_from || "").localeCompare(String(b.effective_from || ""));
+        });
+        let pick = open.length ? open[open.length - 1] : null;
+        if (!pick) {
+            const defCur = typeof spuIndDefaultEffectiveFromIso === "function"
+                ? spuIndDefaultEffectiveFromIso()
+                : baseline;
+            pick = typeof spuVersionAt === "function" ? spuVersionAt(it, defCur) : null;
+        }
+        if (!pick) {
+            pick = vers.slice().sort(function (a, b) {
+                return String(a.effective_from || "").localeCompare(String(b.effective_from || ""));
+            })[0];
+        }
+        const raw = pick && pick.effective_from ? String(pick.effective_from) : "";
+        if (raw) {
+            const norm = typeof spuIndNormalizeEffectiveFromInput === "function"
+                ? spuIndNormalizeEffectiveFromInput(raw)
+                : { ok: true, iso: raw };
+            let iso = (norm && norm.ok && norm.iso) ? norm.iso : raw;
+            // Sentinel create_legacy (2000-01-01) → показывать бизнес-baseline 05.11.2026.
+            if (k === "worktime" && iso && iso < baseline) iso = baseline;
+            return iso;
+        }
+    }
+    if (k === "worktime") return baseline;
+    return typeof spuIndDefaultEffectiveFromIso === "function"
+        ? spuIndDefaultEffectiveFromIso()
+        : baseline;
+}
+
 function spuIndNormalizeEffectiveFromInput(rawIso) {
     const raw = String(rawIso || "").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
@@ -46381,7 +46432,7 @@ function spuFormulaVersionPlan(it, fromIso, payload) {
             from: from,
             today: today,
             payload: body,
-            needsConfirm: mode === "insert_segment" || mode === "split_tail"
+            needsConfirm: mode === "insert_segment" || mode === "split_tail" || mode === "extend_back"
         }, extra || {});
     }
     if (!spuIsoDateOk(from)) {
@@ -46414,12 +46465,34 @@ function spuFormulaVersionPlan(it, fromIso, payload) {
     const covering = vers.filter(function (v) { return spuVersionCoversDay(v, from); });
     if (covering.length !== 1) {
         if (!covering.length) {
+            // Разрыв слева от самой ранней версии: безопасно сдвинуть её effective_from назад
+            // (без удаления истории), если пользователь явно выбрал более раннюю неделю.
+            const sorted = vers.slice().sort(function (a, b) {
+                return String((a && a.effective_from) || "").localeCompare(String((b && b.effective_from) || ""));
+            });
+            const earliest = sorted[0];
+            const earliestFrom = earliest ? String(earliest.effective_from || "") : "";
+            if (earliest && earliestFrom && earliestFrom > from) {
+                lines.push("Самая ранняя версия начинается с " + earliestFrom + ".");
+                lines.push("Начало действия будет сдвинуто на " + from + " без удаления версий и без смены поздней истории.");
+                return pack("extend_back", true, "Сдвинуть начало действия самой ранней версии на " + from + ".", {
+                    needsConfirm: true,
+                    target: earliest,
+                    createFrom: from
+                });
+            }
             return pack("block", false,
                 "Дата " + from + " не покрыта ни одной версией (разрыв истории). Выберите дату внутри существующего интервала.");
         }
         return pack("block", false, "Дата " + from + " покрыта несколькими версиями (пересечение). Сохранение заблокировано.");
     }
     const V = covering[0];
+    // Те же источники уже покрывают выбранную неделю — не плодить дубликат версии.
+    if (spuSourceVersionFingerprint(V) === spuSourceVersionFingerprint(body)) {
+        return pack("noop", true, "Источники уже действуют на " + from + " (" + spuVersionLabel(V) + ").", {
+            needsConfirm: false
+        });
+    }
     if (!(String(V.effective_from || "") < from)) {
         return pack("block", false, "Некорректный разрез version " + spuVersionLabel(V) + ".");
     }
@@ -46475,6 +46548,13 @@ function spuApplyFormulaVersionPlan(it, plan) {
         };
         spuVersionRecordWrite(rec, body);
         it.source_versions.push(rec);
+        return true;
+    }
+    if (plan.mode === "extend_back") {
+        const cur = plan.target;
+        if (!cur) return false;
+        cur.effective_from = plan.createFrom || plan.from;
+        spuVersionRecordWrite(cur, body);
         return true;
     }
     if (plan.mode === "inplace") {
@@ -48010,11 +48090,20 @@ function openSpuOrgIndicatorForm(nodeId, indicatorId, metricId, focus) {
         : ((it && Array.isArray(it.plan_formula_expr)) ? it.plan_formula_expr.slice() : []);
     spuIndFormPlanCalcOn = !!(cfg && cfg.plan_calc_mode === "formula")
         || !!(it && it.plan_calc_mode === "formula");
-    // Дата нового изменения ≠ дата просмотра: дефолт = четверг текущей учётной недели.
+    // WorkTime: показать фактически сохранённую неделю начала действия (не текущую «поверх» истории).
+    // Расчётные: дата НОВОГО изменения = текущая учётная неделя (как раньше).
     // Открытие само по себе source_versions не мутирует.
-    spuIndFormFormulaEffectiveFrom = typeof spuIndDefaultEffectiveFromIso === "function"
-        ? spuIndDefaultEffectiveFromIso()
-        : (typeof todayIsoDate === "function" ? todayIsoDate() : "2026-11-05");
+    if (kind === "worktime") {
+        spuIndFormFormulaEffectiveFrom = typeof spuIndSavedEffectiveFromIso === "function"
+            ? spuIndSavedEffectiveFromIso(it, "worktime")
+            : (typeof spuIndWorktimeLegacyEffectiveFromIso === "function"
+                ? spuIndWorktimeLegacyEffectiveFromIso()
+                : "2026-11-05");
+    } else {
+        spuIndFormFormulaEffectiveFrom = typeof spuIndDefaultEffectiveFromIso === "function"
+            ? spuIndDefaultEffectiveFromIso()
+            : (typeof todayIsoDate === "function" ? todayIsoDate() : "2026-11-05");
+    }
     spuIndFormCheckWeekFrom = spuIndFormFormulaEffectiveFrom;
     spuIndFormSources = sources.length ? sources : (kind === "manual" || kind === "one_c" ? [] : [spuNewSourceRow({ source_metric_id: (presetMetric && presetMetric.id) || "" })]);
     spuIndFormOpenedCfg = typeof spuIndSnapshotOpenedCfg === "function"
@@ -48496,9 +48585,17 @@ function spuIndWorktimeEffectiveVersionNoteHtml() {
             return x && x.indicator_id === iid;
         }) || null)
         : null;
+    const savedIso = typeof spuIndSavedEffectiveFromIso === "function"
+        ? spuIndSavedEffectiveFromIso(it, "worktime")
+        : (typeof spuIndWorktimeLegacyEffectiveFromIso === "function"
+            ? spuIndWorktimeLegacyEffectiveFromIso()
+            : "2026-11-05");
+    const savedRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(savedIso) : savedIso;
     if (!it || !Array.isArray(it.source_versions) || !it.source_versions.length) {
-        return '<div class="note">После сохранения настройка действует с выбранной недели и всех последующих, '
-            + "пока не будет сохранено следующее изменение с новой датой.</div>";
+        return '<div class="note">Сохранённая неделя начала действия: <b>' + escapeHtml(savedRu)
+            + "</b> (базовая для существующих «Из Work Time»). Источники уже читаются с этой недели и далее "
+            + "через текущие настройки; версия в истории зафиксируется при сохранении. "
+            + "Отдельные настройки на каждую неделю не нужны.</div>";
     }
     let iso = "";
     try {
@@ -48509,13 +48606,17 @@ function spuIndWorktimeEffectiveVersionNoteHtml() {
     }
     const v = typeof spuVersionAt === "function" ? spuVersionAt(it, iso) : null;
     if (!v) {
-        return '<div class="note">На текущую отчётную неделю нет покрывающей версии источника.</div>';
+        return '<div class="note">Сохранённая неделя начала: <b>' + escapeHtml(savedRu)
+            + "</b>. На просматриваемой неделе нет покрывающей версии — используется текущая настройка источников "
+            + "(без подмены метрик).</div>";
     }
-    const fromRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(v.effective_from) : String(v.effective_from || "");
+    const fromDisp = (v.effective_from && String(v.effective_from) < savedIso) ? savedIso : String(v.effective_from || savedIso);
+    const fromRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(fromDisp) : fromDisp;
     const toTxt = v.effective_to
         ? (" по " + (typeof mgmtFmtRu === "function" ? mgmtFmtRu(v.effective_to) : v.effective_to))
         : " и далее (бессрочно)";
-    return '<div class="note">Сейчас на просматриваемой неделе действует версия с <b>'
+    return '<div class="note">Сохранённая неделя начала действия: <b>' + escapeHtml(savedRu)
+        + "</b>. На просматриваемой неделе действует версия с <b>"
         + escapeHtml(fromRu) + "</b>" + escapeHtml(toTxt) + ".</div>";
 }
 
