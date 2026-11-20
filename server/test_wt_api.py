@@ -12764,6 +12764,20 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertIn("shopMetricParticipantPeople(", people_fn)
         # Territory overall: assignments, не hub/workAccess
         self.assertNotIn("territoryHubPeople(", people_fn)
+        overall_fn = src[
+            src.find("function mgmtCollectMetricOverallSeries(")
+            : src.find("function mgmtCollectAssignedWorktimeMetricSeries(")
+        ]
+        # Presence-aware shop/store reader, не слепой shopMetricStoredFact
+        self.assertIn("shopCatalogOperandSnapshot(", overall_fn)
+        self.assertIn("month_money_unsupported", overall_fn)
+        self.assertIn("STORE_METRIC_VISITORS", overall_fn)
+        self.assertNotIn("shopMetricStoredFact(", overall_fn)
+        snap_fn = src[
+            src.find("function shopCatalogOperandSnapshot(")
+            : src.find("function shopCatalogOperandValue(")
+        ]
+        self.assertIn("metricFactDeptForEmployee(", snap_fn)
         fact_fn = src[
             src.find("function mgmtMetricFact(")
             : src.find("function mgmtSalesPlanFact(")

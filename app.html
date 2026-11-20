@@ -23362,7 +23362,12 @@ function catalogFormulaWouldCycle(selfId, leftId, rightId) {
     return false;
 }
 
-function shopCatalogOperandSnapshot(employeeId, day, metricId, month, stack) {
+/**
+ * Presence-aware снимок значения метрики за день (как таблица WT / операнды auto_calc).
+ * submetricId — опционально для facts-ключей id::sub.
+ * Территория: факты из home сотрудника (metricFactDeptForEmployee), не только host catalog.
+ */
+function shopCatalogOperandSnapshot(employeeId, day, metricId, month, stack, submetricId) {
     const mid = canonicalMetricId(metricId);
     if (!mid) return { present: false, value: null };
     const catalogItem = shopMetricCatalogById(mid);
@@ -23371,9 +23376,12 @@ function shopCatalogOperandSnapshot(employeeId, day, metricId, month, stack) {
         if (v == null || !Number.isFinite(Number(v))) return { present: false, value: null };
         return { present: true, value: Number(v) };
     }
-    const dept = metricDepartmentId(catalogItem);
-    if (isGenericMetricsDept(dept)) {
-        const key = metricFactStorageKey(mid);
+    const hostDept = metricDepartmentId(catalogItem);
+    if (isGenericMetricsDept(hostDept)) {
+        const dept = (employeeId && typeof metricFactDeptForEmployee === "function")
+            ? metricFactDeptForEmployee(employeeId, hostDept)
+            : hostDept;
+        const key = metricFactStorageKey(mid, submetricId);
         const facts = deptMetricFactsMonth(dept, month || selectedMonth);
         const rec = facts[employeeId] && facts[employeeId][String(day)];
         if (!rec || rec[key] == null || rec[key] === "") {
@@ -23394,11 +23402,14 @@ function shopCatalogOperandSnapshot(employeeId, day, metricId, month, stack) {
         return { present: true, value: Number(rec[fieldKey] || 0) };
     }
     if (shopMetricUsesFacts(mid) || SHOP_QTY_FACT_METRIC_IDS[mid]) {
-        const key = metricFactStorageKey(mid);
+        const key = metricFactStorageKey(mid, submetricId);
         const emp = shopMetricFactsMonth(month || selectedMonth)[employeeId];
         const rec = emp && emp[String(day)];
         if (rec && rec[key] != null && rec[key] !== "") {
             return { present: true, value: Number(rec[key] || 0) };
+        }
+        if (rec && (rec[key + "Mark"] === "done" || rec[key + "Mark"] === "fail")) {
+            return { present: true, value: rec[key + "Mark"] === "done" ? 1 : 0 };
         }
         return { present: false, value: null };
     }
@@ -23407,7 +23418,23 @@ function shopCatalogOperandSnapshot(employeeId, day, metricId, month, stack) {
     const key = (it && it.key) || mid;
     const store = shopMetricMonthStore(section, month || selectedMonth);
     const rec = store[employeeId] && store[employeeId][String(day)];
-    if (!rec || rec[key] == null || rec[key] === "") {
+    if (!rec) return { present: false, value: null };
+    const fill = it && it.fill_type;
+    if (fill === "check" || fill === "done_not_done" || fill === "boolean") {
+        const mark = rec[key + "Mark"];
+        if (mark === "done" || mark === "fail") {
+            return { present: true, value: mark === "done" ? 1 : 0 };
+        }
+        if (key === "walks" && rec.walks != null && rec.walks !== "") {
+            return { present: true, value: Number(rec.walks) > 0 ? 1 : 0 };
+        }
+        if (typeof METRIC_SHELF_LABELS_FIELD !== "undefined" && key === METRIC_SHELF_LABELS_FIELD
+            && rec[METRIC_SHELF_LABELS_FIELD] != null && rec[METRIC_SHELF_LABELS_FIELD] !== "") {
+            return { present: true, value: Number(rec[METRIC_SHELF_LABELS_FIELD]) > 0 ? 1 : 0 };
+        }
+        return { present: false, value: null };
+    }
+    if (rec[key] == null || rec[key] === "") {
         return { present: false, value: null };
     }
     return { present: true, value: Number(rec[key] || 0) };
@@ -52176,20 +52203,29 @@ function mgmtDeptMetricFactIsPresent(deptCode, employeeId, day, metricId, month,
 
 /**
  * Участники «общего итога метрики» (metric_overall):
- * shop → shopMetricParticipantPeople (без изменений);
+ * shop → shopMetricParticipantPeople (union по месяцам периода, если переданы);
  * Территория → union workMetricPeopleForTab по назначениям (assignments)
  * и/или metricWorkTabIds: specific / должности / extra_employee_ids.
  * Без territoryHubPeople и без включения только по workAccess.
  * Без привязки к department_id показателя СПУ.
  */
-function mgmtMetricOverallPeople(catalogItem) {
+function mgmtMetricOverallPeople(catalogItem, months) {
     if (!catalogItem) return [];
     const mid = canonicalMetricId(catalogItem.id);
     if (!mid) return [];
     if (metricDepartmentId(catalogItem) === "shop") {
-        return typeof shopMetricParticipantPeople === "function"
-            ? (shopMetricParticipantPeople(mid) || [])
-            : [];
+        if (typeof shopMetricParticipantPeople !== "function") return [];
+        const monthList = (months && months.length) ? months : [selectedMonth];
+        const seen = {};
+        const list = [];
+        monthList.forEach(function (m) {
+            (shopMetricParticipantPeople(mid, m) || []).forEach(function (e) {
+                if (!e || !e.id || seen[e.id]) return;
+                seen[e.id] = true;
+                list.push(e);
+            });
+        });
+        return list;
     }
     if (typeof workMetricPeopleForTab !== "function") return [];
     const seen = {};
@@ -52271,22 +52307,50 @@ function autoCalcPeoplePeriodTotal(people, metricId, days) {
 /**
  * Общий итог метрики за дни СПУ по всем участникам таблицы WT.
  * Режим source_result = metric_overall (новый; legacy metric_total не трогаем).
- * Day-facts / auto_calc; без entries/рейсов; без department_id показателя.
+ * Shop/territory: presence-aware через shopCatalogOperandSnapshot / dept present;
+ * store visitors — как collectShopMetricPeriodSeries; без entries/рейсов.
+ * month_money / vehicle / pct — не аппроксимируются нулём.
  */
 function mgmtCollectMetricOverallSeries(metricId, subId, days) {
     const mid = canonicalMetricId(metricId);
     const out = { present: false, series: [], mode: "empty", value: null };
     if (!mid) return out;
     const item = shopMetricCatalogById(mid);
-    if (!item) {
+    if (!item && mid !== STORE_METRIC_VISITORS && mid !== "store_metric_visitors") {
         out.mode = "no_catalog";
         return out;
     }
-    if (item.fill_type === "vehicle") {
+    if (item && item.fill_type === "vehicle") {
         out.mode = "vehicle";
         return out;
     }
-    const people = mgmtMetricOverallPeople(item);
+    if (item && (item.fill_type === "month_money"
+        || mid === (typeof METRIC_WRITEOFF_LOSSES_ID !== "undefined" ? METRIC_WRITEOFF_LOSSES_ID : ""))) {
+        out.mode = "month_money_unsupported";
+        return out;
+    }
+    const monthList = [];
+    (days || []).forEach(function (d) {
+        const m = d.month || selectedMonth;
+        if (monthList.indexOf(m) === -1) monthList.push(m);
+    });
+    /* Store-level: один итог на день магазина, не per-employee. */
+    if (mid === STORE_METRIC_VISITORS || mid === "store_metric_visitors") {
+        out.mode = "store";
+        (days || []).forEach(function (d) {
+            const month = d.month || selectedMonth;
+            const rec = typeof shopStoreMonth === "function"
+                ? (shopStoreMonth(month)[String(d.day)] || null)
+                : null;
+            if (!rec || rec.visitors == null || rec.visitors === "") return;
+            const n = Number(rec.visitors || 0);
+            if (!Number.isFinite(n)) return;
+            out.series.push(n);
+        });
+        out.present = out.series.length > 0;
+        return out;
+    }
+    const people = mgmtMetricOverallPeople(item, monthList);
     if (item.fill_type === "auto_calc") {
         out.mode = "auto_calc";
         const v = autoCalcPeoplePeriodTotal(people, mid, days);
@@ -52296,28 +52360,19 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
         out.series = [Number(v)];
         return out;
     }
-    const hostFallback = metricDepartmentId(item) || "office";
-    const isShop = metricDepartmentId(item) === "shop";
     (days || []).forEach(function (d) {
         const month = d.month || selectedMonth;
         const dayNum = d.day;
         people.forEach(function (e) {
             if (!e || !e.id) return;
-            if (isShop) {
-                const raw = typeof shopMetricStoredFact === "function"
-                    ? shopMetricStoredFact(e.id, dayNum, mid, month, subId)
-                    : null;
-                if (raw == null || raw === "") return;
-                const n = Number(raw);
-                if (!Number.isFinite(n)) return;
-                out.series.push(n);
-                return;
-            }
-            const factDept = typeof metricFactDeptForEmployee === "function"
-                ? metricFactDeptForEmployee(e.id, hostFallback)
-                : hostFallback;
-            if (!mgmtDeptMetricFactIsPresent(factDept, e.id, dayNum, mid, month, subId)) return;
-            out.series.push(Number(getDeptMetricStored(factDept, e.id, dayNum, mid, month, subId) || 0));
+            /* Единый presence-aware reader (shop category/facts/check + territory home facts). */
+            const snap = typeof shopCatalogOperandSnapshot === "function"
+                ? shopCatalogOperandSnapshot(e.id, dayNum, mid, month, null, subId)
+                : { present: false, value: null };
+            if (!snap || !snap.present || snap.value == null) return;
+            const n = Number(snap.value);
+            if (!Number.isFinite(n)) return;
+            out.series.push(n);
         });
     });
     out.present = out.series.length > 0;
