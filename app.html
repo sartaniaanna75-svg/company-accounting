@@ -45888,6 +45888,41 @@ function spuSourceFingerprint(it) {
     }).sort().join(";;");
 }
 
+/** Глобальная дата начала отчётности СПУ (чт учётной недели). Без миграции БД. */
+var SPU_REPORTING_START_ISO = "2026-11-05";
+
+function spuReportingStartIso() {
+    return SPU_REPORTING_START_ISO;
+}
+
+function spuIndicatorHasExplicitReportingFrom(it) {
+    return !!(it && /^\d{4}-\d{2}-\d{2}$/.test(String(it.reporting_from || "").trim()));
+}
+
+/** Legacy без reporting_from → глобальный старт; новые → свой reporting_from (чт). */
+function spuIndicatorReportingFrom(it) {
+    const raw = it && String(it.reporting_from || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+        if (typeof spuIndNormalizeEffectiveFromInput === "function") {
+            const n = spuIndNormalizeEffectiveFromInput(raw);
+            if (n && n.ok && n.iso) return n.iso;
+        }
+        return raw;
+    }
+    return spuReportingStartIso();
+}
+
+function spuIndicatorIsLegacyReporting(it) {
+    return !spuIndicatorHasExplicitReportingFrom(it);
+}
+
+function spuIndicatorIsReportingActiveOnDay(it, day) {
+    const d = String(day || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return true;
+    if (d < spuReportingStartIso()) return false;
+    return d >= String(spuIndicatorReportingFrom(it) || spuReportingStartIso());
+}
+
 function spuVersionAt(it, iso) {
     const vers = (it && Array.isArray(it.source_versions)) ? it.source_versions : [];
     if (!vers.length) return null;
@@ -45902,10 +45937,22 @@ function spuVersionAt(it, iso) {
     return hit;
 }
 
-function spuActiveConfig(it) {
-    const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
-    const iso = r.to || r.from || todayIsoDate();
-    const v = spuVersionAt(it, iso);
+/** Ближайшая версия с effective_from > day (для legacy gap-fill). */
+function spuVersionNextAtOrAfter(it, day) {
+    const vers = (it && Array.isArray(it.source_versions))
+        ? it.source_versions.filter(function (v) { return !!v; })
+        : [];
+    const d = String(day || "");
+    let best = null;
+    vers.forEach(function (v) {
+        const f = String(v.effective_from || "");
+        if (!f || f <= d) return;
+        if (!best || f < String(best.effective_from || "")) best = v;
+    });
+    return best;
+}
+
+function spuConfigRecordFromVersion(it, v) {
     if (v) {
         return {
             sources: (v.sources || []).map(function (s) { return spuNewSourceRow(s); }),
@@ -45915,17 +45962,46 @@ function spuActiveConfig(it) {
                 ? v.plan_formula_expr
                 : (Array.isArray(it.plan_formula_expr) ? it.plan_formula_expr : []),
             plan_calc_mode: (v.plan_calc_mode === "formula" || it.plan_calc_mode === "formula") ? "formula" : "manual",
-            calc_mode: v.calc_mode || it.calc_mode || it.aggregation_type || "sum"
+            calc_mode: v.calc_mode || it.calc_mode || it.aggregation_type || "sum",
+            inactive: false
         };
     }
     return {
-        sources: spuNormalizeSources(it),
+        sources: typeof spuNormalizeSources === "function" ? spuNormalizeSources(it) : (it.sources || []),
         aggregation_type: it.aggregation_type || "sum",
         formula_expr: it.formula_expr || [],
         plan_formula_expr: Array.isArray(it.plan_formula_expr) ? it.plan_formula_expr : [],
         plan_calc_mode: it.plan_calc_mode === "formula" ? "formula" : "manual",
-        calc_mode: it.calc_mode || it.aggregation_type || "sum"
+        calc_mode: it.calc_mode || it.aggregation_type || "sum",
+        inactive: false
     };
+}
+
+function spuActiveConfig(it) {
+    const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+    const iso = r.to || r.from || todayIsoDate();
+    if (it && typeof spuIndicatorIsReportingActiveOnDay === "function"
+        && !spuIndicatorIsReportingActiveOnDay(it, iso)) {
+        return {
+            sources: [],
+            aggregation_type: "sum",
+            formula_expr: [],
+            plan_formula_expr: [],
+            plan_calc_mode: "manual",
+            calc_mode: "sum",
+            inactive: true,
+            inactive_reason: "before_reporting_from"
+        };
+    }
+    const v = spuVersionAt(it, iso);
+    if (v) return spuConfigRecordFromVersion(it, v);
+    // Legacy: разрыв до open — взять ближайшую следующую версию или top-level sources.
+    // Не подменять covering с иным fingerprint (covering уже обработан выше).
+    if (it && typeof spuIndicatorIsLegacyReporting === "function" && spuIndicatorIsLegacyReporting(it)) {
+        const next = spuVersionNextAtOrAfter(it, iso);
+        if (next) return spuConfigRecordFromVersion(it, next);
+    }
+    return spuConfigRecordFromVersion(it, null);
 }
 
 function spuIsoDateOk(iso) {
@@ -45985,7 +46061,110 @@ function spuIndDefaultEffectiveFromIso() {
  * Не мутирует БД; используется для UI и мягкого чтения без массовой перезаписи версий.
  */
 function spuIndWorktimeLegacyEffectiveFromIso() {
-    return "2026-11-05";
+    return typeof spuReportingStartIso === "function" ? spuReportingStartIso() : SPU_REPORTING_START_ISO;
+}
+
+/**
+ * Read-only классификация WorkTime к глобальному старту отчётности.
+ * Категории: ok_from_0511 | merge_safe | needs_confirm | blocked.
+ * Не пишет в БД и не меняет source_versions.
+ */
+function spuClassifyWorktimeReportingBaseline(indicators) {
+    const start = spuReportingStartIso();
+    const out = [];
+    (indicators || []).forEach(function (it) {
+        if (!it || it.is_deleted) return;
+        const kind = typeof spuIndicatorUiKind === "function" ? spuIndicatorUiKind(it) : "";
+        if (kind !== "worktime") return;
+        const row = {
+            indicator_id: it.indicator_id,
+            name: it.name || "",
+            category: "ok_from_0511",
+            open_from: "",
+            reporting_from: spuIndicatorReportingFrom(it),
+            note: ""
+        };
+        if (spuIndicatorHasExplicitReportingFrom(it)) {
+            row.category = "ok_from_0511";
+            row.note = "new reporting_from=" + it.reporting_from;
+            out.push(row);
+            return;
+        }
+        const vers = Array.isArray(it.source_versions) ? it.source_versions.filter(Boolean) : [];
+        if (!vers.length) {
+            row.note = "no versions; top-level / gap-fill";
+            out.push(row);
+            return;
+        }
+        const openList = vers.filter(function (v) { return !v.effective_to; }).slice().sort(function (a, b) {
+            return String(a.effective_from || "").localeCompare(String(b.effective_from || ""));
+        });
+        const open = openList.length ? openList[openList.length - 1] : null;
+        const openFrom = open ? String(open.effective_from || "") : "";
+        row.open_from = openFrom;
+        if (openFrom && openFrom <= start) {
+            row.note = "open already at/before reporting start";
+            out.push(row);
+            return;
+        }
+        const openFp = open ? spuSourceVersionFingerprint(open) : spuSourceVersionFingerprint({
+            sources: typeof spuNormalizeSources === "function" ? spuNormalizeSources(it) : (it.sources || []),
+            aggregation_type: it.aggregation_type,
+            calc_mode: it.calc_mode,
+            formula_expr: it.formula_expr,
+            plan_formula_expr: it.plan_formula_expr,
+            plan_calc_mode: it.plan_calc_mode
+        });
+        const endExcl = openFrom || "9999-12-31";
+        const mid = vers.filter(function (v) {
+            const f = String(v.effective_from || "");
+            const t = v.effective_to ? String(v.effective_to) : "";
+            if (!f) return false;
+            if (f >= endExcl) return false;
+            if (t && t < start) return false;
+            if (f > endExcl) return false;
+            // пересекает [start, endExcl)
+            if (t && t < start) return false;
+            return f < endExcl && (!t || t >= start);
+        });
+        let overlap = false;
+        const sorted = mid.slice().sort(function (a, b) {
+            return String(a.effective_from || "").localeCompare(String(b.effective_from || ""));
+        });
+        for (let i = 0; i < sorted.length - 1; i++) {
+            const a = sorted[i];
+            const b = sorted[i + 1];
+            const aTo = a.effective_to ? String(a.effective_to) : "9999-12-31";
+            if (aTo >= String(b.effective_from || "")) {
+                overlap = true;
+                break;
+            }
+        }
+        if (overlap) {
+            row.category = "blocked";
+            row.note = "overlapping versions in baseline window";
+            out.push(row);
+            return;
+        }
+        if (!mid.length) {
+            row.category = "ok_from_0511";
+            row.note = "gap before open; read-path gap-fill";
+            out.push(row);
+            return;
+        }
+        const differ = mid.some(function (v) {
+            return spuSourceVersionFingerprint(v) !== openFp;
+        });
+        if (differ) {
+            row.category = "needs_confirm";
+            row.note = "historic covering differs from open in [" + start + ", " + endExcl + ")";
+        } else {
+            row.category = "merge_safe";
+            row.note = "identical segments before open; optional merge not required for read-path";
+        }
+        out.push(row);
+    });
+    return out;
 }
 
 /**
@@ -47148,6 +47327,15 @@ function mgmtReadSourcePlan(src, parent) {
 
 function mgmtReadFromSources(it, stack) {
     const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : { sources: spuNormalizeSources(it), aggregation_type: it.aggregation_type || "sum", formula_expr: it.formula_expr, calc_mode: it.aggregation_type };
+    if (cfg && cfg.inactive) {
+        return {
+            value: null,
+            status: "missing",
+            message: cfg.inactive_reason === "before_reporting_from"
+                ? "Показатель ещё не участвует в отчётности на эту неделю."
+                : (cfg.inactive_reason || "inactive")
+        };
+    }
     const sources = cfg.sources || [];
     if ((cfg.calc_mode === "formula" || cfg.aggregation_type === "formula") && (cfg.formula_expr || []).length) {
         if (typeof spuFormulaFactPeriodConflict === "function") {
@@ -48628,10 +48816,31 @@ function renderSpuIndWorktimeSourceEffectiveBox(box) {
             ? spuIndDefaultEffectiveFromIso()
             : "2026-11-05";
     }
+    const iidBox = ((document.getElementById("spuIndId") || {}).value || "");
+    const it = iidBox
+        ? (((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === iidBox;
+        }) || null)
+        : null;
+    const repStart = typeof spuReportingStartIso === "function" ? spuReportingStartIso() : "2026-11-05";
+    const repStartRu = typeof mgmtFmtRu === "function" ? mgmtFmtRu(repStart) : repStart;
+    const isLegacyCard = iidBox
+        ? (typeof spuIndicatorIsLegacyReporting === "function"
+            ? spuIndicatorIsLegacyReporting(it)
+            : !(it && it.reporting_from))
+        : false;
     let html = '<div class="spu-fx-box"><h4>Начало действия источника</h4>'
-        + '<div class="note">Выберите учётную неделю (чт–ср), с которой применяется текущая настройка источников. '
-        + "Она действует на эту и все следующие недели, пока не сохраните новое изменение. "
-        + "Отдельные настройки на каждую неделю не нужны. Прошлые недели остаются на прежней версии.</div>"
+        + '<div class="note">Отчётность СПУ начинается с <b>' + escapeHtml(repStartRu)
+        + "</b>. "
+        + (isLegacyCard
+            ? "Существующие показатели читают сохранённые источники с этой даты (разрыв до версии заполняется без перезаписи истории)."
+            : ("Новый показатель участвует в расчётах с недели начала действия"
+                + (it && it.reporting_from
+                    ? (" <b>" + escapeHtml(typeof mgmtFmtRu === "function" ? mgmtFmtRu(it.reporting_from) : it.reporting_from) + "</b>")
+                    : "")
+                + "."))
+        + " Выберите учётную неделю (чт–ср) для изменения настройки источников; она действует на эту и следующие недели. "
+        + "Отдельные настройки на каждую неделю не нужны.</div>"
         + '<div class="form-group">'
         + '<label>Неделя начала действия изменений</label>'
         + '<select id="spuIndFormulaEffectiveFrom" onchange="spuIndOnWorktimeEffectiveWeekChange(this)">'
@@ -49614,6 +49823,7 @@ function saveSpuOrgIndicator() {
         }
     }
 
+    const creatingNew = !editId;
     let it = editId ? ((appData.management.indicators || []).find(function (x) { return x && x.indicator_id === editId; }) || null) : null;
     if (!it) {
         it = { indicator_id: nextPrefixedId("mind", appData.management.indicators.map(function (x) { return x && x.indicator_id; })) };
@@ -50102,6 +50312,20 @@ function saveSpuOrgIndicator() {
     }
     it.indicator_id = keepId;
     it.spu_indicator_id = keepId;
+    // Новые показатели: индивидуальная дата начала отчётности (чт). Legacy без поля не трогаем.
+    if (creatingNew && !spuIndicatorHasExplicitReportingFrom(it)) {
+        let rfRaw = String(spuIndFormFormulaEffectiveFrom || "").trim();
+        if (!rfRaw && typeof spuIndDefaultEffectiveFromIso === "function") {
+            rfRaw = spuIndDefaultEffectiveFromIso();
+        }
+        if (!rfRaw && typeof spuReportingStartIso === "function") rfRaw = spuReportingStartIso();
+        const rfNorm = typeof spuIndNormalizeEffectiveFromInput === "function"
+            ? spuIndNormalizeEffectiveFromInput(rfRaw)
+            : { ok: true, iso: rfRaw };
+        it.reporting_from = (rfNorm && rfNorm.ok && rfNorm.iso)
+            ? rfNorm.iso
+            : (typeof spuReportingStartIso === "function" ? spuReportingStartIso() : "2026-11-05");
+    }
     // Work Time / Табель / метрики / calculated / staff_directory:
     // узкий OPS: сначала management.indicators, затем management.plans (ветка целиком).
     // Не saveApp/DomainWriter-collect: иначе collect спускается в ключи периода с «:»

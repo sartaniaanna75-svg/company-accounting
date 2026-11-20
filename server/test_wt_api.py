@@ -12869,6 +12869,60 @@ class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_worktime_source_effective_harness: OK", proc.stdout)
 
 
+class WtSpuReportingStartMarkerTests(unittest.TestCase):
+    """Маркеры: глобальный старт отчётности СПУ 05.11.2026 + reporting_from."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_reporting_start_readpath_markers(self):
+        src = self._src()
+        self.assertIn('SPU_REPORTING_START_ISO = "2026-11-05"', src)
+        self.assertIn("function spuReportingStartIso(", src)
+        self.assertIn("function spuIndicatorReportingFrom(", src)
+        self.assertIn("function spuIndicatorIsReportingActiveOnDay(", src)
+        self.assertIn("function spuVersionNextAtOrAfter(", src)
+        self.assertIn("function spuClassifyWorktimeReportingBaseline(", src)
+        self.assertIn("before_reporting_from", src)
+        active = src[
+            src.find("function spuActiveConfig(")
+            : src.find("function spuActiveConfig(") + 2500
+        ]
+        self.assertIn("spuIndicatorIsReportingActiveOnDay(", active)
+        self.assertIn("spuVersionNextAtOrAfter(", active)
+        self.assertIn("spuIndicatorIsLegacyReporting(", active)
+        read_fn = src[
+            src.find("function mgmtReadFromSources(")
+            : src.find("function mgmtReadFromSources(") + 1200
+        ]
+        self.assertIn("cfg.inactive", read_fn)
+        save_fn = src[
+            src.find("function saveSpuOrgIndicator()")
+            : src.find("function saveSpuOrgIndicator()") + 32000
+        ]
+        self.assertIn("creatingNew", save_fn)
+        self.assertIn("reporting_from", save_fn)
+
+    def test_harness_reporting_start(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_reporting_start_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness reporting start")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_reporting_start_harness: OK", proc.stdout)
+
+
 class WtSpuWorktimePlanFormulaMarkerTests(unittest.TestCase):
     """Маркеры: worktime может сохранять plan_formula без смены kind; UI-галочка в блоке План."""
 
