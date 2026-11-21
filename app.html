@@ -47596,9 +47596,16 @@ function spuIsShopBuiltinTotalMetric(metricId) {
 /**
  * Мягко держать встроенные итоги магазина/склада доступными в «Из Work Time».
  * Не пишет в БД само; не трогает строки СПУ (mind_*). Только каталог в памяти.
+ * Отсутствующий store_metric_inventory_result восстанавливает из seed (тот же id);
+ * намеренно отключённую (active=false) запись не включает заново.
  */
 function spuEnsureShopBuiltinTotalsForSpu() {
-    const list = (appData && appData.shopMetricCatalog && appData.shopMetricCatalog.items) || [];
+    if (!appData || typeof appData !== "object") return;
+    if (!appData.shopMetricCatalog || typeof appData.shopMetricCatalog !== "object") {
+        appData.shopMetricCatalog = { items: [] };
+    }
+    if (!Array.isArray(appData.shopMetricCatalog.items)) appData.shopMetricCatalog.items = [];
+    const list = appData.shopMetricCatalog.items;
     const specs = [
         { id: "metric_sales", dept: "shop" },
         { id: "metric_checks", dept: "shop" },
@@ -47607,10 +47614,38 @@ function spuEnsureShopBuiltinTotalsForSpu() {
         { id: WAREHOUSE_METRIC_INVENTORY_RESULT, dept: "warehouse" }
     ];
     specs.forEach(function (spec) {
-        const it = list.find(function (x) { return x && canonicalMetricId(x.id) === canonicalMetricId(spec.id); });
+        let it = list.find(function (x) { return x && canonicalMetricId(x.id) === canonicalMetricId(spec.id); });
+        /* Только отсутствующая системная запись итога инвентаризации магазина — из seed. */
+        if (!it && (spec.id === STORE_METRIC_INVENTORY_RESULT
+            || spec.id === "store_metric_inventory_result")) {
+            const seed = (typeof shopMetricCatalogSeed === "function" ? shopMetricCatalogSeed() : [])
+                .find(function (s) {
+                    return s && canonicalMetricId(s.id) === canonicalMetricId(STORE_METRIC_INVENTORY_RESULT);
+                });
+            if (!seed) return;
+            it = {
+                id: STORE_METRIC_INVENTORY_RESULT,
+                key: seed.key || "inventoryResult",
+                name: seed.name || "Итог инвентаризации магазина",
+                section_id: seed.section_id || "managers",
+                fill_type: seed.fill_type || "money",
+                sort_order: seed.sort_order != null ? seed.sort_order : 3,
+                active: true,
+                assignable: seed.assignable !== false,
+                core_column: !!seed.core_column,
+                show_column: seed.show_column !== false,
+                use_in_spu: seed.use_in_spu === true,
+                builtin: true,
+                department_id: seed.department_id || spec.dept || "shop",
+                position_titles: [],
+                formula: seed.formula || null
+            };
+            list.push(it);
+        }
         if (!it) return;
         it.use_in_spu = true;
-        it.active = it.active !== false;
+        /* Не форсируем active=true: если запись есть и отключена — оставляем. */
+        if (it.active == null) it.active = true;
         if (it.assignable == null) it.assignable = false;
         if (it.show_column == null && (spec.id === STORE_METRIC_INVENTORY_RESULT
             || spec.id === WAREHOUSE_METRIC_INVENTORY_RESULT
@@ -47699,6 +47734,12 @@ function spuWorkMetricsCatalog() {
 }
 
 function spuParticipatingWorkMetrics(keepIds) {
+    try {
+        if (typeof ensureShopMetricCatalog === "function") ensureShopMetricCatalog();
+    } catch (errEnsCat) { console.error(errEnsCat); }
+    try {
+        if (typeof spuEnsureShopBuiltinTotalsForSpu === "function") spuEnsureShopBuiltinTotalsForSpu();
+    } catch (errEnsTot) { console.error(errEnsTot); }
     const keep = {};
     (keepIds || []).forEach(function (id) {
         const mid = canonicalMetricId(id);

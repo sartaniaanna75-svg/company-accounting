@@ -844,6 +844,93 @@ const day12 = [{ day: 12, month: NOV }];
   assert(aggregateSum(whO.series) === 750, "G: warehouse series 750");
 }
 
+// ========== H: восстановление отсутствующего store_metric_inventory_result из seed ==========
+{
+  const STORE_METRIC_INVENTORY_RESULT = "store_metric_inventory_result";
+  function shopMetricCatalogSeed() {
+    return [
+      {
+        id: STORE_METRIC_INVENTORY_RESULT,
+        key: "inventoryResult",
+        name: "Итог инвентаризации магазина",
+        section_id: "managers",
+        fill_type: "money",
+        sort_order: 3,
+        assignable: false,
+        core_column: false,
+        show_column: false,
+        use_in_spu: true,
+        department_id: "shop"
+      }
+    ];
+  }
+  function spuEnsureShopBuiltinTotalsForSpu(appData) {
+    if (!appData.shopMetricCatalog) appData.shopMetricCatalog = { items: [] };
+    if (!Array.isArray(appData.shopMetricCatalog.items)) appData.shopMetricCatalog.items = [];
+    const list = appData.shopMetricCatalog.items;
+    const specs = [{ id: STORE_METRIC_INVENTORY_RESULT, dept: "shop" }];
+    specs.forEach(function (spec) {
+      let it = list.find(function (x) { return x && x.id === spec.id; });
+      if (!it && spec.id === STORE_METRIC_INVENTORY_RESULT) {
+        const seed = shopMetricCatalogSeed().find(function (s) { return s && s.id === STORE_METRIC_INVENTORY_RESULT; });
+        if (!seed) return;
+        it = {
+          id: STORE_METRIC_INVENTORY_RESULT,
+          key: seed.key,
+          name: seed.name,
+          section_id: seed.section_id,
+          fill_type: seed.fill_type,
+          sort_order: seed.sort_order,
+          active: true,
+          assignable: seed.assignable !== false,
+          core_column: !!seed.core_column,
+          show_column: seed.show_column !== false,
+          use_in_spu: seed.use_in_spu === true,
+          builtin: true,
+          department_id: seed.department_id || spec.dept
+        };
+        list.push(it);
+      }
+      if (!it) return;
+      it.use_in_spu = true;
+      if (it.active == null) it.active = true;
+      if (spec.dept) it.department_id = spec.dept;
+    });
+  }
+  function spuParticipatingWorkMetrics(appData) {
+    spuEnsureShopBuiltinTotalsForSpu(appData);
+    return (appData.shopMetricCatalog.items || []).filter(function (m) {
+      return m && m.id && m.active !== false
+        && (m.id === STORE_METRIC_INVENTORY_RESULT || m.use_in_spu === true);
+    });
+  }
+
+  /* После «серверной» загрузки без строки — restore + picker */
+  const wiped = { shopMetricCatalog: { items: [{ id: "metric_sales", use_in_spu: true, active: true }] } };
+  const pick1 = spuParticipatingWorkMetrics(wiped).map(function (m) { return m.id; });
+  assert(pick1.indexOf(STORE_METRIC_INVENTORY_RESULT) !== -1, "H: restore missing inventory into picker");
+  const restored = wiped.shopMetricCatalog.items.find(function (m) { return m.id === STORE_METRIC_INVENTORY_RESULT; });
+  assert(restored && restored.name === "Итог инвентаризации магазина", "H: name from seed");
+  assert(restored.builtin === true && restored.use_in_spu === true, "H: builtin use_in_spu");
+
+  /* Намеренно отключённую не включать */
+  const disabled = {
+    shopMetricCatalog: {
+      items: [{
+        id: STORE_METRIC_INVENTORY_RESULT,
+        name: "Итог инвентаризации магазина",
+        active: false,
+        use_in_spu: true
+      }]
+    }
+  };
+  spuEnsureShopBuiltinTotalsForSpu(disabled);
+  const still = disabled.shopMetricCatalog.items.find(function (m) { return m.id === STORE_METRIC_INVENTORY_RESULT; });
+  assert(still && still.active === false, "H: keep intentional active=false");
+  const pickOff = spuParticipatingWorkMetrics(disabled).map(function (m) { return m.id; });
+  assert(pickOff.indexOf(STORE_METRIC_INVENTORY_RESULT) === -1, "H: disabled stays out of picker");
+}
+
 console.log("wt_spu_shop_planfact_e2e_harness: OK");
 console.log("  A sales/checks/avg: 100000 / 200 / 500");
 console.log("  B visitors/conv: 250 / 80%");
@@ -852,3 +939,4 @@ console.log("  D weeks 12–18 filled, 19–25 empty→null, legacy department_t
 console.log("  E sources empty metric_id inherits parent");
 console.log("  F mind_091/092/017 manual→worktime + calculated + picker builtins");
 console.log("  G inventory shop/warehouse signed weeks, zero, empty→null, cross-month, rebind");
+console.log("  H restore missing store_metric_inventory_result; keep active=false");

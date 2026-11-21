@@ -12864,11 +12864,20 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         ]
         self.assertIn("STORE_METRIC_INVENTORY_RESULT", builtin_fn)
         self.assertIn("WAREHOUSE_METRIC_INVENTORY_RESULT", builtin_fn)
+        ensure_tot = src[
+            src.find("function spuEnsureShopBuiltinTotalsForSpu(")
+            : src.find("function spuWorkMetricPickerLabel(")
+        ]
+        self.assertIn("shopMetricCatalogSeed", ensure_tot)
+        self.assertIn("Итог инвентаризации магазина", ensure_tot)
+        self.assertIn("if (it.active == null) it.active = true", ensure_tot)
         part = src[
             src.find("function spuParticipatingWorkMetrics(")
-            : src.find("function spuParticipatingWorkMetrics(") + 900
+            : src.find("function spuParticipatingWorkMetrics(") + 1200
         ]
         self.assertIn("spuIsShopBuiltinTotalMetric(", part)
+        self.assertIn("spuEnsureShopBuiltinTotalsForSpu()", part)
+        self.assertIn("ensureShopMetricCatalog()", part)
         src_as = src[
             src.find("function mgmtSourceAsIndicator(")
             : src.find("function mgmtSourceAsIndicator(") + 900
@@ -12882,6 +12891,8 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertIn("store_metric_inventory_result", harness_txt)
         self.assertIn("warehouse_metric_inventory_result", harness_txt)
         self.assertIn("G: shop week signed", harness_txt)
+        self.assertIn("H: restore missing inventory into picker", harness_txt)
+        self.assertIn("H: keep intentional active=false", harness_txt)
         node = os.environ.get("WT_NODE") or "node"
         try:
             proc = subprocess.run(
