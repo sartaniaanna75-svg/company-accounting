@@ -473,9 +473,164 @@ const day12 = [{ day: 12, month: NOV }];
     || mgmtMetricFact(bare, "", day12, dataAB) === 0, "E: empty mid fails without inherit");
 }
 
+// ========== F: реальные mind_091/092/017 (manual) → после UI-перепривязки WorkTime ==========
+{
+  function spuIsShopBuiltinTotalMetric(metricId) {
+    const id = String(metricId || "");
+    return id === "metric_sales" || id === "metric_checks"
+      || id === "store_metric_visitors";
+  }
+  function spuParticipatingWorkMetrics(catalog) {
+    return (catalog || []).filter(function (m) {
+      if (!m || !m.id || m.active === false) return false;
+      if (spuIsShopBuiltinTotalMetric(m.id)) return true;
+      return m.use_in_spu === true;
+    });
+  }
+  /* Как в live: manual без metric_id → факт null (не overall). */
+  function mgmtReadIndicatorLive(it, byId, days, data) {
+    if (!it) return { value: null, status: "missing" };
+    if (it.source_type === "manual") {
+      return { value: null, status: "manual" }; /* нет ручного факта */
+    }
+    return mgmtReadIndicator(it, byId, days, data);
+  }
+
+  const catalog = [
+    { id: "metric_sales", use_in_spu: false, active: true, assignable: false },
+    { id: "metric_checks", use_in_spu: false, active: true, assignable: false },
+    { id: "store_metric_visitors", use_in_spu: false, active: true, assignable: false },
+    { id: "metric_display_positions", use_in_spu: true, active: true },
+    { id: "metric_writeoff_losses", use_in_spu: true, active: true }
+  ];
+  const pick = spuParticipatingWorkMetrics(catalog).map(function (m) { return m.id; });
+  assert(pick.indexOf("metric_sales") !== -1, "F: sales in picker");
+  assert(pick.indexOf("metric_checks") !== -1, "F: checks in picker");
+  assert(pick.indexOf("store_metric_visitors") !== -1, "F: visitors in picker");
+
+  const mind091 = {
+    indicator_id: "mind_091",
+    name: "Количество покупателей Магазин",
+    source_type: "manual",
+    source_metric_id: "",
+    source_result: "",
+    show_in_planfact: true,
+    sources: [{ source_type: "worktime_metric", source_metric_id: "", source_result: "department_total" }]
+  };
+  const mind092 = {
+    indicator_id: "mind_092",
+    name: "Количество чеков Магазин",
+    source_type: "manual",
+    source_metric_id: "",
+    source_result: "",
+    show_in_planfact: true,
+    sources: [{ source_type: "worktime_metric", source_metric_id: "", source_result: "department_total" }]
+  };
+  const mind017 = {
+    indicator_id: "mind_017",
+    name: "Выручка/сумма отгруженного товара Магазин",
+    spu_code: "shop_sales",
+    source_type: "manual",
+    source_metric_id: "",
+    source_result: "",
+    show_in_planfact: true,
+    sources: [{ source_type: "worktime_metric", source_metric_id: "", source_result: "department_total" }]
+  };
+  const mind093 = {
+    indicator_id: "mind_093",
+    name: "Конверсия покупатели → чеки Магазин",
+    source_type: "calculated",
+    calc_op: "percent",
+    calc_left_id: "mind_092",
+    calc_right_id: "mind_091",
+    show_in_planfact: true
+  };
+  const mind094 = {
+    indicator_id: "mind_094",
+    name: "Средний чек",
+    source_type: "calculated",
+    calc_op: "ratio",
+    calc_left_id: "mind_017",
+    calc_right_id: "mind_092",
+    show_in_planfact: true
+  };
+  const byMind = {
+    mind_091: mind091, mind_092: mind092, mind_017: mind017,
+    mind_093: mind093, mind_094: mind094
+  };
+  assert(mgmtReadIndicatorLive(mind017, byMind, day12, dataAB).value === null, "F: manual sales → null");
+  assert(mgmtReadIndicatorLive(mind092, byMind, day12, dataAB).value === null, "F: manual checks → null");
+  assert(mgmtReadIndicatorLive(mind091, byMind, day12, dataAB).value === null, "F: manual visitors → null");
+  assert(mgmtReadIndicatorLive(mind094, byMind, day12, dataAB).value === null, "F: avg depends on empty");
+  assert(mgmtReadIndicatorLive(mind093, byMind, day12, dataAB).value === null, "F: conv depends on empty");
+
+  /* После явного сохранения пользователем «Из WorkTime» + metric_overall с 12.11 */
+  function rebindWorktime(it, metricId) {
+    it.source_type = "worktime_metric";
+    it.source_metric_id = metricId;
+    it.source_result = "metric_overall";
+    it.sources = [{
+      source_type: "worktime_metric",
+      source_metric_id: metricId,
+      source_result: "metric_overall"
+    }];
+    it.source_versions = [{
+      version_id: "v_from_12",
+      effective_from: "2026-11-12",
+      effective_to: "",
+      sources: [{
+        source_type: "worktime_metric",
+        source_metric_id: metricId,
+        source_result: "metric_overall"
+      }],
+      aggregation_type: "sum"
+    }];
+  }
+  rebindWorktime(mind091, "store_metric_visitors");
+  rebindWorktime(mind092, "metric_checks");
+  rebindWorktime(mind017, "metric_sales");
+
+  function activeSources(it, asOf) {
+    const vers = it.source_versions || [];
+    let hit = null;
+    vers.forEach(function (v) {
+      if (v.effective_from && String(v.effective_from) > asOf) return;
+      if (v.effective_to && String(v.effective_to) < asOf) return;
+      hit = v;
+    });
+    return hit ? hit.sources : it.sources;
+  }
+  assert(activeSources(mind017, "2026-11-18")[0].source_metric_id === "metric_sales", "F: version covers 12–18");
+  assert(activeSources(mind017, "2026-11-18")[0].source_result === "metric_overall", "F: overall on week");
+
+  const cellSales = planFactCell(mind017, byMind, days1218, dataAB, "12–18");
+  const cellChecks = planFactCell(mind092, byMind, days1218, dataAB, "12–18");
+  const cellVis = planFactCell(mind091, byMind, days1218, dataAB, "12–18");
+  const cellAvg = planFactCell(mind094, byMind, days1218, dataAB, "12–18");
+  const cellConv = planFactCell(mind093, byMind, days1218, dataAB, "12–18");
+  assert(cellSales.value === 100000, "F: mind_017 sales 100000 got " + cellSales.value);
+  assert(cellChecks.value === 200, "F: mind_092 checks 200");
+  assert(cellVis.value === 250, "F: mind_091 visitors 250");
+  assert(cellAvg.value === 500, "F: mind_094 avg 500");
+  assert(cellConv.value === 80, "F: mind_093 conv 80%");
+
+  /* Пустая неделя 19–25 */
+  assert(planFactCell(mind017, byMind, days1925, dataAB, "19–25").value === null, "F: empty week null");
+  /* Только КСО */
+  const ksoOnly = {
+    slotIds: [],
+    cashiers: { [NOV]: {} },
+    channelValues: { [NOV]: { self_checkout: { "12": { sales: 10000, receipts: 20 } } } },
+    store: { [NOV]: { "12": { visitors: 50 } } }
+  };
+  assert(planFactCell(mind017, byMind, day12, ksoOnly, "12").value === 10000, "F: KSO-only sales");
+  assert(planFactCell(mind092, byMind, day12, ksoOnly, "12").value === 20, "F: KSO-only checks");
+}
+
 console.log("wt_spu_shop_planfact_e2e_harness: OK");
 console.log("  A sales/checks/avg: 100000 / 200 / 500");
 console.log("  B visitors/conv: 250 / 80%");
 console.log("  C two slots: 50000 / 100");
 console.log("  D weeks 12–18 filled, 19–25 empty→null, legacy department_total works");
 console.log("  E sources empty metric_id inherits parent");
+console.log("  F mind_091/092/017 manual→worktime + calculated + picker builtins");

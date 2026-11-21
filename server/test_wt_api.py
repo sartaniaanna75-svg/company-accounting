@@ -12838,6 +12838,18 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         src = self._src()
         self.assertIn("function mgmtShopBuiltinUsesOverallCompat(", src)
         self.assertIn("function wtDiagSpuShopPlanFact(", src)
+        self.assertIn("function spuIsShopBuiltinTotalMetric(", src)
+        self.assertIn("function spuEnsureShopBuiltinTotalsForSpu(", src)
+        self.assertIn("function spuWorkMetricPickerLabel(", src)
+        self.assertIn("STORE_METRIC_VISITORS", src[
+            src.find("function shopMetricCatalogSeed(")
+            : src.find("function shopMetricCatalogSeed(") + 2500
+        ])
+        part = src[
+            src.find("function spuParticipatingWorkMetrics(")
+            : src.find("function spuParticipatingWorkMetrics(") + 900
+        ]
+        self.assertIn("spuIsShopBuiltinTotalMetric(", part)
         src_as = src[
             src.find("function mgmtSourceAsIndicator(")
             : src.find("function mgmtSourceAsIndicator(") + 900

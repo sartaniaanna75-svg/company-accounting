@@ -8103,9 +8103,10 @@ function shopMetricCatalogSeed() {
         { id: "metric_sugar_packing", key: "sugar", name: "Фасовка сахара", section_id: "pickers", fill_type: "number", sort_order: 40, assignable: true, core_column: true },
         { id: "metric_aisles", key: "walks", name: "Проходы", section_id: "pickers", fill_type: "check", sort_order: 50, assignable: true, core_column: true },
         { id: METRIC_SHELF_LABELS_ID, key: "shelfLabels", name: METRIC_SHELF_LABELS_NAME, section_id: "pickers", fill_type: "check", sort_order: 60, assignable: true, core_column: true },
-        { id: "metric_sales", key: "sales", name: "Сумма продаж", section_id: "cashiers", fill_type: "money", sort_order: 10, assignable: false, core_column: true },
-        { id: "metric_checks", key: "receipts", name: "Количество чеков", section_id: "cashiers", fill_type: "number", sort_order: 20, assignable: false, core_column: true },
-        { id: "metric_average_check", key: "avgCheck", name: "Средний чек", section_id: "cashiers", fill_type: "auto_calc", sort_order: 30, assignable: false, core_column: true, formula: { op: "div", left: "metric_sales", right: "metric_checks" } },
+        { id: "metric_sales", key: "sales", name: "Сумма продаж", section_id: "cashiers", fill_type: "money", sort_order: 10, assignable: false, core_column: true, use_in_spu: true },
+        { id: "metric_checks", key: "receipts", name: "Количество чеков", section_id: "cashiers", fill_type: "number", sort_order: 20, assignable: false, core_column: true, use_in_spu: true },
+        { id: STORE_METRIC_VISITORS, key: "visitors", name: "Количество покупателей", section_id: "cashiers", fill_type: "number", sort_order: 5, assignable: false, core_column: false, show_column: false, use_in_spu: true },
+        { id: "metric_average_check", key: "avgCheck", name: "Средний чек", section_id: "cashiers", fill_type: "auto_calc", sort_order: 30, assignable: false, core_column: true },
         { id: "metric_supplier_orders", key: "supplierOrders", name: "Кол-во заказов поставщикам", section_id: "managers", fill_type: "number", sort_order: 10, assignable: true, core_column: true },
         { id: "metric_order_positions", key: "orderPositions", name: "Кол-во позиций в заказе", section_id: "managers", fill_type: "number", sort_order: 20, assignable: true, core_column: true },
         { id: "metric_receiving", key: "receiving", name: "Количество принятого товара", section_id: "managers", fill_type: "number", sort_order: 30, assignable: true, core_column: true },
@@ -20015,6 +20016,7 @@ function ensureShopMetricCatalog() {
                 assignable: seed.assignable !== false,
                 core_column: !!seed.core_column,
                 show_column: seed.show_column !== false,
+                use_in_spu: seed.use_in_spu === true,
                 builtin: true,
                 department_id: "shop",
                 position_titles: [],
@@ -20036,10 +20038,13 @@ function ensureShopMetricCatalog() {
         if (!Array.isArray(found.position_titles)) found.position_titles = [];
         if (!found.formula && seed.formula) found.formula = seed.formula;
         if (!found.name) found.name = seed.name;
+        /* Встроенные итоги магазина для СПУ — мягко включить участие (без массовой миграции строк СПУ). */
+        if (seed.use_in_spu === true) found.use_in_spu = true;
     });
     list.forEach(function (it) {
         try { normalizeMetricCatalogItemTabs(it); } catch (err) { console.error(err); }
     });
+    try { spuEnsureShopBuiltinTotalsForSpu(); } catch (errSpuTot) { console.error(errSpuTot); }
     try { seedReturnsCountMetric(); } catch (err) { console.error(err); }
     try { seedTerritoryRecountResponsibleMetric(); } catch (err) { console.error(err); }
     try { migrateTerritoryMetricCategories(); } catch (err) { console.error(err); }
@@ -47457,6 +47462,41 @@ function metricUseInSpu(item) {
     return !!(item && item.use_in_spu === true);
 }
 
+/** Встроенные итоги магазина (не assignable): продажи, чеки, покупатели — для picker СПУ. */
+function spuIsShopBuiltinTotalMetric(metricId) {
+    const id = canonicalMetricId(metricId);
+    if (!id) return false;
+    if (id === "metric_sales" || id === "metric_checks") return true;
+    if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") return true;
+    return false;
+}
+
+/**
+ * Мягко держать встроенные итоги магазина доступными в «Из Work Time».
+ * Не пишет в БД само; не трогает строки СПУ (mind_*). Только каталог в памяти.
+ */
+function spuEnsureShopBuiltinTotalsForSpu() {
+    const list = (appData && appData.shopMetricCatalog && appData.shopMetricCatalog.items) || [];
+    const ids = ["metric_sales", "metric_checks", STORE_METRIC_VISITORS];
+    ids.forEach(function (id) {
+        const it = list.find(function (x) { return x && canonicalMetricId(x.id) === canonicalMetricId(id); });
+        if (!it) return;
+        it.use_in_spu = true;
+        it.active = it.active !== false;
+        if (it.assignable == null) it.assignable = false;
+    });
+}
+
+function spuWorkMetricPickerLabel(m) {
+    const id = canonicalMetricId(m && m.id);
+    if (id === "metric_sales") return "Сумма продаж / выручка магазина (кассиры + КСО)";
+    if (id === "metric_checks") return "Количество чеков магазина (кассиры + КСО)";
+    if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") {
+        return "Количество покупателей магазина";
+    }
+    return (m && m.name) || id || "";
+}
+
 /** Блок «Участвует в СПУ» в карточке метрики WT — то же поле use_in_spu, без дублей. */
 function metricCatalogSpuLinkedCount(itemOrId) {
     const id = itemOrId && itemOrId.id ? itemOrId.id : itemOrId;
@@ -47526,10 +47566,12 @@ function spuParticipatingWorkMetrics(keepIds) {
     });
     // Новые подключения — только use_in_spu === true.
     // keepIds: уже привязанные к открытому показателю метрики (даже без галочки) остаются видимыми, связи не рвём.
+    // Встроенные итоги магазина (sales/checks/visitors) всегда доступны для выбора в СПУ.
     return spuWorkMetricsCatalog().filter(function (m) {
         if (!m || !m.id) return false;
         const mid = canonicalMetricId(m.id);
         if (keep[mid]) return true;
+        if (typeof spuIsShopBuiltinTotalMetric === "function" && spuIsShopBuiltinTotalMetric(mid)) return true;
         return metricUseInSpu(m);
     });
 }
@@ -47731,8 +47773,9 @@ function spuIndSrcMetricPickerHtml(s, allMetrics) {
         }
     }
     filtered.forEach(function (m) {
+        const label = typeof spuWorkMetricPickerLabel === "function" ? spuWorkMetricPickerLabel(m) : (m.name || m.id);
         html += '<option value="' + escapeAttribute(m.id) + '"' + (s.source_metric_id === m.id ? " selected" : "") + ">"
-            + escapeHtml(m.name) + "</option>";
+            + escapeHtml(label) + "</option>";
     });
     if (orphanMissing) {
         html += '<option value="' + escapeAttribute(orphanMetricId) + '" selected>'
@@ -47746,7 +47789,8 @@ function spuIndSrcMetricPickerHtml(s, allMetrics) {
         html += '<div class="note" style="margin:4px 0 0">Нет метрик с отметкой «Участвует в СПУ». Откройте справочник метрик WorkTime и включите участие у нужной метрики.</div>';
     } else {
         html += '<div class="note" style="margin:4px 0 0">Показано ' + filtered.length + " из " + (allMetrics || []).length
-            + ". Фильтр только для выбора источника — metric_id и данные метрики не меняются.</div>";
+            + ". Фильтр только для выбора источника — metric_id и данные метрики не меняются. "
+            + "Итоги магазина (продажи, чеки, покупатели) доступны как встроенные источники карточек кассиров.</div>";
     }
     html += "</div>";
     return html;
