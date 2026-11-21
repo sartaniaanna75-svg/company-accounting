@@ -123,6 +123,37 @@ function mgmtCollectMetricOverallSeries(opts) {
     return out;
   }
 
+  /* Cashiers shop total: slots (peopleByMetric as slot ids) + channel self_checkout once. */
+  if (mid === "metric_sales" || mid === "metric_checks") {
+    out.mode = "cashiers_shop";
+    const fieldKey = mid === "metric_sales" ? "sales" : "receipts";
+    const slots = mgmtMetricOverallPeople(item, opts.peopleByMetric);
+    (opts.days || []).forEach(function (d) {
+      let daySum = 0;
+      let any = false;
+      slots.forEach(function (e) {
+        if (!e || !e.id || e.id === "self_checkout") return;
+        const snap = shopCatalogOperandSnapshot(Object.assign({}, opts, {
+          employeeId: e.id, day: d.day, month: d.month, metricId: mid
+        }));
+        if (!snap.present || snap.value == null) return;
+        daySum += Number(snap.value);
+        any = true;
+      });
+      const chRec = opts.channelValues
+        && opts.channelValues[d.month]
+        && opts.channelValues[d.month].self_checkout
+        && opts.channelValues[d.month].self_checkout[String(d.day)];
+      if (chRec && chRec[fieldKey] != null && chRec[fieldKey] !== "") {
+        daySum += Number(chRec[fieldKey] || 0);
+        any = true;
+      }
+      if (any) out.series.push(daySum);
+    });
+    out.present = out.series.length > 0;
+    return out;
+  }
+
   const people = mgmtMetricOverallPeople(item, opts.peopleByMetric);
 
   if (item.fill_type === "auto_calc") {
@@ -211,6 +242,7 @@ const catalogById = {
     key: "walks", fill_type: "check", builtin: true
   },
   metric_sales: { id: "metric_sales", department_id: "shop", section_id: "cashiers", key: "sales", fill_type: "money", builtin: true },
+  metric_checks: { id: "metric_checks", department_id: "shop", section_id: "cashiers", key: "receipts", fill_type: "number", builtin: true },
   metric_custom_qty: { id: "metric_custom_qty", department_id: "shop", fill_type: "number", usesFacts: true },
   metric_avg: {
     id: "metric_avg", department_id: "shop", fill_type: "auto_calc",
@@ -239,7 +271,8 @@ const catalogById = {
 const peopleByMetric = {
   metric_display_positions: ["e_a", "e_b"],
   metric_aisles: ["e_a"],
-  metric_sales: ["c1"],
+  metric_sales: ["c1", "c2"],
+  metric_checks: ["c1", "c2"],
   metric_custom_qty: ["e_a"],
   metric_avg: ["c1"],
   metric_pct: ["c1"],
@@ -282,7 +315,18 @@ category.pickers["2026-11"].e_b["13"] = {}; // missing — skip
 
 const cashiers = {
   "2026-11": {
-    c1: { "20": { sales: 1500, receipts: 10 }, "21": { sales: 500, receipts: 5 } }
+    /* Два слота; один actual может работать на обоих — суммируем слоты. */
+    c1: { "20": { sales: 1000, receipts: 8 }, "21": { sales: 400, receipts: 4 } },
+    c2: { "20": { sales: 500, receipts: 2 }, "21": { sales: 100, receipts: 1 } }
+  }
+};
+
+const channelValues = {
+  "2026-11": {
+    self_checkout: {
+      "20": { sales: 200, receipts: 5 },
+      "21": { sales: 50, receipts: 1 }
+    }
   }
 };
 
@@ -333,6 +377,7 @@ const base = {
   homeDept: homeDept,
   category: category,
   cashiers: cashiers,
+  channelValues: channelValues,
   shopFacts: shopFacts,
   store: store,
   factsRoot: factsRoot,
@@ -370,13 +415,33 @@ const days0511 = daysBetween("2026-11-05", "2026-11-11");
   assert(v === 1, "3: check done → 1");
 }
 
-// 4) Cashiers sales
+// 4) Cashiers sales = slots c1+c2 + KSO once (как ИТОГО ПО МАГАЗИНУ)
 {
   const v = overall(Object.assign({}, base, {
     metricId: "metric_sales",
     days: [{ day: 20, month: NOV }, { day: 21, month: NOV }]
   }));
-  assert(v === 1500 + 500, "4: cashiers sales");
+  /* day20: 1000+500+200=1700; day21: 400+100+50=550; week=2250 */
+  assert(v === 1700 + 550, "4: cashiers sales slots+KSO got " + v);
+  const checks = overall(Object.assign({}, base, {
+    metricId: "metric_checks",
+    days: [{ day: 20, month: NOV }, { day: 21, month: NOV }]
+  }));
+  /* day20: 8+2+5=15; day21: 4+1+1=6; week=21 */
+  assert(checks === 15 + 6, "4: cashiers checks slots+KSO got " + checks);
+  const avg = (1700 + 550) / (15 + 6);
+  assert(Math.abs(avg - 2250 / 21) < 1e-9, "4: shop_avg from fixed sales/checks");
+  const emptyCash = overall(Object.assign({}, base, {
+    metricId: "metric_sales",
+    days: [{ day: 1, month: NOV }]
+  }));
+  assert(emptyCash === null, "4: empty cashiers week → null");
+  const ksoOnly = overall(Object.assign({}, base, {
+    metricId: "metric_sales",
+    days: [{ day: 20, month: NOV }],
+    peopleByMetric: Object.assign({}, peopleByMetric, { metric_sales: [] })
+  }));
+  assert(ksoOnly === 200, "4: KSO alone once got " + ksoOnly);
 }
 
 // 5) Visitors store

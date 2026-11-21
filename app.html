@@ -23630,6 +23630,19 @@ function getShopChannelValue(channelId, day, field, month) {
     return rec && rec[field] != null ? Number(rec[field] || 0) : 0;
 }
 
+/** Presence-aware чтение channelValues (КСО) для СПУ overall — пустой день ≠ 0. */
+function shopChannelOperandSnapshot(channelId, day, field, month) {
+    const rec = typeof shopChannelMonth === "function"
+        ? (shopChannelMonth(channelId, month || selectedMonth)[String(day)] || null)
+        : null;
+    if (!rec || rec[field] == null || rec[field] === "") {
+        return { present: false, value: null };
+    }
+    const n = Number(rec[field] || 0);
+    if (!Number.isFinite(n)) return { present: false, value: null };
+    return { present: true, value: n };
+}
+
 function setShopChannelValue(channelId, day, field, raw) {
     if (!canSaveShopMetricFactsFor()) return;
     const n = parseShopMetricNumber(raw);
@@ -26299,6 +26312,25 @@ function shopCashierShopTotalFields() {
         { key: "receipts", label: "Чеки", type: "number" },
         { key: "avgCheck", label: "Ср. чек", type: "avgCheck" }
     ];
+}
+
+/**
+ * Кассовые слоты для ИТОГО / СПУ overall — тот же перечень, что shopCashierShopDayTotals
+ * (без КСО; КСО добавляется отдельно один раз). Не workAccess / не participantPeople.
+ */
+function shopCashierOverallSlotPeople(month) {
+    const prev = selectedMonth;
+    const m = month || selectedMonth;
+    try {
+        if (m && m !== selectedMonth) selectedMonth = m;
+        const category = typeof shopMetricCategoryById === "function"
+            ? shopMetricCategoryById("cashiers")
+            : null;
+        if (!category || typeof shopMetricEmployees !== "function") return [];
+        return shopMetricEmployees(category) || [];
+    } finally {
+        if (selectedMonth !== prev) selectedMonth = prev;
+    }
 }
 
 /** Дневные итоги магазина: все кассовые места таблицы + самообслуживание (без двойного учёта). */
@@ -52679,10 +52711,23 @@ function mgmtMetricOverallPeople(catalogItem, months) {
     const mid = canonicalMetricId(catalogItem.id);
     if (!mid) return [];
     if (metricDepartmentId(catalogItem) === "shop") {
-        if (typeof shopMetricParticipantPeople !== "function") return [];
         const monthList = (months && months.length) ? months : [selectedMonth];
         const seen = {};
         const list = [];
+        /* metric_sales / metric_checks: слоты как shopCashierShopDayTotals, не workAccess. */
+        if ((mid === "metric_sales" || mid === "metric_checks")
+            && typeof shopCashierOverallSlotPeople === "function") {
+            monthList.forEach(function (m) {
+                (shopCashierOverallSlotPeople(m) || []).forEach(function (e) {
+                    if (!e || !e.id || seen[e.id]) return;
+                    if (e.id === SHOP_SELF_CHECKOUT_ID) return;
+                    seen[e.id] = true;
+                    list.push(e);
+                });
+            });
+            return list;
+        }
+        if (typeof shopMetricParticipantPeople !== "function") return [];
         monthList.forEach(function (m) {
             (shopMetricParticipantPeople(mid, m) || []).forEach(function (e) {
                 if (!e || !e.id || seen[e.id]) return;
@@ -52811,6 +52856,44 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
             const n = Number(rec.visitors || 0);
             if (!Number.isFinite(n)) return;
             out.series.push(n);
+        });
+        out.present = out.series.length > 0;
+        return out;
+    }
+    /* Кассиры: слоты как shopCashierShopDayTotals + КСО один раз; пустая неделя → null. */
+    if (mid === "metric_sales" || mid === "metric_checks") {
+        out.mode = "cashiers_shop";
+        const fieldKey = mid === "metric_sales" ? "sales" : "receipts";
+        (days || []).forEach(function (d) {
+            const month = d.month || selectedMonth;
+            const dayNum = d.day;
+            let daySum = 0;
+            let any = false;
+            const slots = typeof shopCashierOverallSlotPeople === "function"
+                ? (shopCashierOverallSlotPeople(month) || [])
+                : [];
+            slots.forEach(function (e) {
+                if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
+                const snap = typeof shopCatalogOperandSnapshot === "function"
+                    ? shopCatalogOperandSnapshot(e.id, dayNum, mid, month, null, subId)
+                    : { present: false, value: null };
+                if (!snap || !snap.present || snap.value == null) return;
+                const n = Number(snap.value);
+                if (!Number.isFinite(n)) return;
+                daySum += n;
+                any = true;
+            });
+            const ch = typeof shopChannelOperandSnapshot === "function"
+                ? shopChannelOperandSnapshot(SHOP_SELF_CHECKOUT_ID, dayNum, fieldKey, month)
+                : { present: false, value: null };
+            if (ch && ch.present && ch.value != null) {
+                const cn = Number(ch.value);
+                if (Number.isFinite(cn)) {
+                    daySum += cn;
+                    any = true;
+                }
+            }
+            if (any) out.series.push(daySum);
         });
         out.present = out.series.length > 0;
         return out;

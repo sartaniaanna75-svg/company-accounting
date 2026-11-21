@@ -12762,6 +12762,8 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         ]
         self.assertIn("workMetricPeopleForTab(", people_fn)
         self.assertIn("shopMetricParticipantPeople(", people_fn)
+        self.assertIn("shopCashierOverallSlotPeople(", people_fn)
+        self.assertIn('mid === "metric_sales"', people_fn)
         # Territory overall: assignments, не hub/workAccess
         self.assertNotIn("territoryHubPeople(", people_fn)
         overall_fn = src[
@@ -12772,7 +12774,12 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertIn("shopCatalogOperandSnapshot(", overall_fn)
         self.assertIn("month_money_unsupported", overall_fn)
         self.assertIn("STORE_METRIC_VISITORS", overall_fn)
+        self.assertIn('mode = "cashiers_shop"', overall_fn)
+        self.assertIn("shopChannelOperandSnapshot(", overall_fn)
+        self.assertIn("SHOP_SELF_CHECKOUT_ID", overall_fn)
         self.assertNotIn("shopMetricStoredFact(", overall_fn)
+        self.assertIn("function shopCashierOverallSlotPeople(", src)
+        self.assertIn("function shopChannelOperandSnapshot(", src)
         snap_fn = src[
             src.find("function shopCatalogOperandSnapshot(")
             : src.find("function shopCatalogOperandValue(")
