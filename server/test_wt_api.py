@@ -12924,8 +12924,9 @@ class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):
         self.assertIn("function spuIndWorktimeLegacyEffectiveFromIso(", src)
         self.assertIn("function spuIndWorktimeCfgAtEffectiveFrom(", src)
         self.assertIn("function spuIndLaterVersionsWithDivergentSources(", src)
-        self.assertIn("function spuIndAskWorktimeLaterSourcesAction(", src)
         self.assertIn("function spuIndPropagateWorktimeSourcesToLater(", src)
+        self.assertIn("function spuIndVerifyWorktimeSourcesCommitted(", src)
+        self.assertNotIn("function spuIndAskWorktimeLaterSourcesAction(", src)
         self.assertIn("Неделя начала действия изменений", src)
         self.assertIn('SPU_REPORTING_START_ISO = "2026-11-05"', src)
         self.assertIn("extend_back", src)
@@ -12948,16 +12949,20 @@ class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):
         ]
         self.assertIn("spuIndWorktimeCfgAtEffectiveFrom(", week_fn)
         self.assertIn("renderSpuIndSourcesBox(", week_fn)
-        save_fn = src[
-            src.find("function saveSpuOrgIndicator()")
-            : src.find("function saveSpuOrgIndicator()") + 32000
-        ]
+        save_start = src.find("function saveSpuOrgIndicator()")
+        save_end = src.find("function spuIndicatorDependents(", save_start)
+        if save_end < 0:
+            save_end = save_start + 45000
+        save_fn = src[save_start:save_end]
         self.assertIn('kind === "worktime"', save_fn)
         self.assertIn("effectiveFrom: effFromWt", save_fn)
         self.assertIn("spuCommitSourceVersion(", save_fn)
-        self.assertIn("spuIndLaterVersionsWithDivergentSources(", save_fn)
-        self.assertIn("spuIndAskWorktimeLaterSourcesAction(", save_fn)
         self.assertIn("spuIndPropagateWorktimeSourcesToLater(", save_fn)
+        self.assertIn("spuIndVerifyWorktimeSourcesCommitted(", save_fn)
+        self.assertIn("worktimeSaveVerify", save_fn)
+        self.assertIn("spuOrgIndicatorVerifyAfterServerOk(", save_fn)
+        self.assertNotIn("spuIndAskWorktimeLaterSourcesAction(", save_fn)
+        self.assertNotIn('laterSourcesAction === "until_next"', save_fn)
 
     def test_worktime_source_save_reopen_harness(self):
         harness = Path(__file__).resolve().parent.joinpath(
@@ -12977,7 +12982,10 @@ class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):
             self.skipTest("node недоступен для harness worktime source save reopen")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_worktime_source_save_reopen_harness: OK", proc.stdout)
-        self.assertIn("B propagate", proc.stdout)
+        self.assertIn("B always-propagate", proc.stdout)
+        self.assertIn("E reload confirmed server state keeps inventory", proc.stdout)
+        self.assertIn("F server/verify fail", proc.stdout)
+        self.assertIn("G other indicator untouched", proc.stdout)
 
     def test_harness_worktime_source_effective(self):
         harness = Path(__file__).resolve().parent.joinpath(

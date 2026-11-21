@@ -46328,34 +46328,6 @@ function spuIndLaterVersionsWithDivergentSources(it, fromIso, draftSources) {
     });
 }
 
-/**
- * Спросить, распространять ли новый источник WorkTime на поздние версии.
- * 1 = propagate (с выбранной недели и далее), 2 = только до следующей, 3 = отмена.
- */
-function spuIndAskWorktimeLaterSourcesAction(laterList, fromIso) {
-    const lines = (laterList || []).map(function (v) {
-        const s0 = v && v.sources && v.sources[0] ? v.sources[0] : null;
-        const mid = s0 && s0.source_metric_id ? String(s0.source_metric_id) : "—";
-        return "- " + spuIndVersionLabelShort(v) + " → " + mid;
-    });
-    const raw = window.prompt(
-        "С " + fromIso + " есть более поздние версии источника с другой метрикой:\n"
-        + lines.join("\n")
-        + "\n\nЕсли сохранить только до следующей версии, при повторном открытии карточки"
-        + " снова отобразится поздняя (прежняя) метрика, а новые недели продолжат её использовать."
-        + "\n\nВведите число действия:\n"
-        + "1 — Применить выбранную метрику ко всем последующим версиям"
-        + " (с " + fromIso + " и далее; даты версий сохраняются)\n"
-        + "2 — Изменить только до следующей версии (поздние метрики без изменений)\n"
-        + "3 — Отменить сохранение\n",
-        "1"
-    );
-    const n = String(raw == null ? "3" : raw).trim();
-    if (n === "1") return "propagate";
-    if (n === "2") return "until_next";
-    return "cancel";
-}
-
 /** Записать sources/agg в поздние версии; формулы/план later не трогать. */
 function spuIndPropagateWorktimeSourcesToLater(it, fromIso, draftSources, aggregationType, calcMode) {
     const later = spuIndLaterVersionsAfter(it, fromIso);
@@ -46376,6 +46348,80 @@ function spuIndPropagateWorktimeSourcesToLater(it, fromIso, draftSources, aggreg
         });
     });
     return later.length;
+}
+
+/**
+ * Проверка: с выбранной недели и далее mid/источники совпадают с сохранённым выбором.
+ * Недели до fromIso не проверяет (их не должны были менять).
+ */
+function spuIndVerifyWorktimeSourcesCommitted(it, fromIso, expectedSources) {
+    const from = String(fromIso || "").trim();
+    const wantFp = typeof spuIndSourcesFingerprint === "function"
+        ? spuIndSourcesFingerprint(expectedSources)
+        : "";
+    const wantMid = expectedSources && expectedSources[0]
+        ? String(expectedSources[0].source_metric_id || "")
+        : "";
+    if (!it) {
+        return {
+            ok: false,
+            message: "Сохранение не подтверждено: показатель не найден. Значения в форме сохранены — повторите сохранение."
+        };
+    }
+    if (!from || !wantMid) {
+        return {
+            ok: false,
+            message: "Сохранение не подтверждено: не удалось сверить метрику и неделю. Значения в форме сохранены — повторите сохранение."
+        };
+    }
+    const asOf = typeof spuIndAccountingWeekEndIso === "function"
+        ? spuIndAccountingWeekEndIso(from)
+        : from;
+    let midAt = "";
+    let fpAt = "";
+    if (typeof spuVersionAt === "function" && Array.isArray(it.source_versions) && it.source_versions.length) {
+        const vAt = spuVersionAt(it, asOf);
+        if (vAt && Array.isArray(vAt.sources) && vAt.sources[0]) {
+            midAt = String(vAt.sources[0].source_metric_id || "");
+            fpAt = typeof spuIndSourcesFingerprint === "function"
+                ? spuIndSourcesFingerprint(vAt.sources)
+                : "";
+        }
+    }
+    if (!midAt) midAt = String(it.source_metric_id || "");
+    if (!fpAt && Array.isArray(it.sources)) {
+        fpAt = typeof spuIndSourcesFingerprint === "function"
+            ? spuIndSourcesFingerprint(it.sources)
+            : "";
+    }
+    if (midAt !== wantMid) {
+        return {
+            ok: false,
+            message: "Сохранение не подтверждено: на выбранной неделе записана другая метрика. Значения в форме сохранены — повторите сохранение."
+        };
+    }
+    if (wantFp && fpAt && fpAt !== wantFp) {
+        return {
+            ok: false,
+            message: "Сохранение не подтверждено: настройки источника на выбранной неделе не совпали с выбором. Значения в форме сохранены — повторите сохранение."
+        };
+    }
+    if (String(it.source_metric_id || "") && String(it.source_metric_id || "") !== wantMid) {
+        return {
+            ok: false,
+            message: "Сохранение не подтверждено: в карточке показателя осталась прежняя метрика. Значения в форме сохранены — повторите сохранение."
+        };
+    }
+    const laterDiv = typeof spuIndLaterVersionsWithDivergentSources === "function"
+        ? spuIndLaterVersionsWithDivergentSources(it, from, expectedSources)
+        : [];
+    if (laterDiv && laterDiv.length) {
+        return {
+            ok: false,
+            message: "Сохранение не подтверждено: на последующих неделях остался прежний источник. Значения в форме сохранены — повторите сохранение."
+        };
+    }
+    return { ok: true };
 }
 
 function spuIndOnFormulaEffectiveFromChange(el) {
@@ -50231,6 +50277,27 @@ function saveSpuOrgIndicator() {
         return;
     }
     const first = sources[0] || { source_type: "calculated" };
+    let worktimeSaveVerify = null;
+    const formulaFieldRollback = (kind === "calculated" || calc === "formula" || kind === "worktime")
+        ? {
+            formula_expr: Array.isArray(it.formula_expr) ? JSON.parse(JSON.stringify(it.formula_expr)) : [],
+            plan_formula_expr: Array.isArray(it.plan_formula_expr) ? JSON.parse(JSON.stringify(it.plan_formula_expr)) : [],
+            plan_calc_mode: it.plan_calc_mode === "formula" ? "formula" : "manual",
+            sources: Array.isArray(it.sources) ? JSON.parse(JSON.stringify(it.sources)) : [],
+            source_versions: Array.isArray(it.source_versions) ? JSON.parse(JSON.stringify(it.source_versions)) : [],
+            aggregation_type: it.aggregation_type,
+            calc_mode: it.calc_mode,
+            calc_left_id: it.calc_left_id,
+            calc_right_id: it.calc_right_id,
+            source_type: it.source_type,
+            indicator_kind: it.indicator_kind,
+            source_metric_id: it.source_metric_id,
+            source_result: it.source_result,
+            source_work_tab_id: it.source_work_tab_id,
+            source_submetric_id: it.source_submetric_id,
+            source_timesheet_agg: it.source_timesheet_agg
+        }
+        : null;
     it.source_future = "";
     it.source_type = (kind === "calculated" || sources.length > 1 || calc === "formula") ? "calculated" : (first.source_type || "worktime_metric");
     if (kind === "worktime" && it.source_type === "calculated" && sources.length === 1 && calc !== "formula") {
@@ -50254,21 +50321,6 @@ function saveSpuOrgIndicator() {
             it.department_id = srcDeptRaw || it.department_id || "";
         }
     }
-    const formulaFieldRollback = (kind === "calculated" || calc === "formula" || kind === "worktime")
-        ? {
-            formula_expr: Array.isArray(it.formula_expr) ? JSON.parse(JSON.stringify(it.formula_expr)) : [],
-            plan_formula_expr: Array.isArray(it.plan_formula_expr) ? JSON.parse(JSON.stringify(it.plan_formula_expr)) : [],
-            plan_calc_mode: it.plan_calc_mode === "formula" ? "formula" : "manual",
-            sources: Array.isArray(it.sources) ? JSON.parse(JSON.stringify(it.sources)) : [],
-            source_versions: Array.isArray(it.source_versions) ? JSON.parse(JSON.stringify(it.source_versions)) : [],
-            aggregation_type: it.aggregation_type,
-            calc_mode: it.calc_mode,
-            calc_left_id: it.calc_left_id,
-            calc_right_id: it.calc_right_id,
-            source_type: it.source_type,
-            indicator_kind: it.indicator_kind
-        }
-        : null;
     function spuIndRestoreFormulaFields() {
         if (!formulaFieldRollback || !it) return;
         it.formula_expr = formulaFieldRollback.formula_expr;
@@ -50282,6 +50334,11 @@ function saveSpuOrgIndicator() {
         it.calc_right_id = formulaFieldRollback.calc_right_id;
         it.source_type = formulaFieldRollback.source_type;
         it.indicator_kind = formulaFieldRollback.indicator_kind;
+        it.source_metric_id = formulaFieldRollback.source_metric_id || "";
+        it.source_result = formulaFieldRollback.source_result || it.source_result;
+        it.source_work_tab_id = formulaFieldRollback.source_work_tab_id || "";
+        it.source_submetric_id = formulaFieldRollback.source_submetric_id || "";
+        it.source_timesheet_agg = formulaFieldRollback.source_timesheet_agg || "";
     }
     it.sources = sources.map(function (s, i) { return spuNewSourceRow(Object.assign({}, s, { source_id: s.source_id || ("ssrc_" + i) })); });
     it.aggregation_type = calc === "formula" ? "formula" : calc;
@@ -50500,9 +50557,8 @@ function saveSpuOrgIndicator() {
             }
         }
     } else if (kind === "worktime") {
-        /* Обычный Work Time: та же version-engine, неделя начала действия — как у формул.
-         * Если есть поздние версии с другой метрикой — явно спросить propagate, иначе
-         * insert_segment сохраняет только сегмент, а reopen снова показывает late open. */
+        /* Обычный Work Time: version-engine + обязательный propagate на последующие недели.
+         * «Только до следующей версии» недопустимо: reopen берёт late open и возвращает старый mid. */
         const effElWt = document.getElementById("spuIndFormulaEffectiveFrom");
         if (effElWt && effElWt.value) spuIndFormFormulaEffectiveFrom = effElWt.value;
         if (!spuIndFormFormulaEffectiveFrom && typeof spuIndDefaultEffectiveFromIso === "function") {
@@ -50522,37 +50578,7 @@ function saveSpuOrgIndicator() {
             toast(normEffWt.message, "info");
         }
         const effFromWt = normEffWt.iso;
-        let laterSourcesAction = "until_next";
-        const divergentLater = typeof spuIndLaterVersionsWithDivergentSources === "function"
-            ? spuIndLaterVersionsWithDivergentSources(it, effFromWt, it.sources)
-            : [];
-        /* Спрашивать только если engine реально вставит сегмент до поздней версии
-         * (insert_segment). extend_back/split_tail сами открывают хвост с новой метрикой. */
-        let prePlanWt = null;
-        try {
-            if (typeof spuFormulaVersionPlan === "function" && typeof spuVersionPayloadPack === "function") {
-                prePlanWt = spuFormulaVersionPlan(it, effFromWt, spuVersionPayloadPack({
-                    sources: it.sources,
-                    aggregation_type: it.aggregation_type,
-                    formula_expr: it.formula_expr,
-                    calc_mode: it.calc_mode,
-                    plan_formula_expr: it.plan_formula_expr || [],
-                    plan_calc_mode: it.plan_calc_mode || "manual"
-                }));
-            }
-        } catch (errPrePlan) {
-            prePlanWt = null;
-        }
-        if (divergentLater.length && prePlanWt && prePlanWt.ok && prePlanWt.mode === "insert_segment") {
-            laterSourcesAction = typeof spuIndAskWorktimeLaterSourcesAction === "function"
-                ? spuIndAskWorktimeLaterSourcesAction(divergentLater, effFromWt)
-                : "cancel";
-            if (laterSourcesAction === "cancel") {
-                spuIndRestoreFormulaFields();
-                toast("Сохранение отменено.", "error");
-                return;
-            }
-        }
+        const draftSourcesWt = (it.sources || []).map(function (s) { return spuNewSourceRow(s); });
         let commitOptsWt = {
             effectiveFrom: effFromWt,
             planFormula: it.plan_formula_expr || [],
@@ -50601,36 +50627,30 @@ function saveSpuOrgIndicator() {
             toast(commitResWt.message || "Не удалось сохранить версии источника.", "error");
             return;
         }
-        const didInsertSeg = (commitResWt && commitResWt.plan && commitResWt.plan.mode === "insert_segment")
-            || (prePlanWt && prePlanWt.mode === "insert_segment");
-        if (laterSourcesAction === "propagate" && typeof spuIndPropagateWorktimeSourcesToLater === "function") {
-            const nProp = spuIndPropagateWorktimeSourcesToLater(
+        /* С выбранной недели и далее — тот же источник, пока пользователь явно не сохранит другой. */
+        if (typeof spuIndPropagateWorktimeSourcesToLater === "function") {
+            spuIndPropagateWorktimeSourcesToLater(
                 it,
                 effFromWt,
-                it.sources,
+                draftSourcesWt,
                 it.aggregation_type,
                 it.calc_mode
             );
-            if (nProp > 0) {
-                toast("Выбранная метрика применена также к " + nProp
-                    + " последующим версиям (с " + effFromWt + " и далее).", "info");
-            }
-        } else if (laterSourcesAction === "until_next" && didInsertSeg && divergentLater.length) {
-            const nextFrom = divergentLater[0] && divergentLater[0].effective_from
-                ? String(divergentLater[0].effective_from)
-                : "";
-            const untilRu = nextFrom && typeof isoAddDays === "function"
-                ? (typeof mgmtFmtRu === "function" ? mgmtFmtRu(isoAddDays(nextFrom, -1)) : isoAddDays(nextFrom, -1))
-                : "";
-            const nextRu = nextFrom && typeof mgmtFmtRu === "function" ? mgmtFmtRu(nextFrom) : nextFrom;
-            toast(
-                "Источник сохранён"
-                + (untilRu ? (" до " + untilRu) : " для выбранного сегмента")
-                + (nextRu ? (". С " + nextRu + " остаётся прежняя метрика поздней версии.") : ".")
-                + " При повторном открытии карточки отобразится поздняя версия.",
-                "info"
-            );
         }
+        const verifyLocalWt = typeof spuIndVerifyWorktimeSourcesCommitted === "function"
+            ? spuIndVerifyWorktimeSourcesCommitted(it, effFromWt, draftSourcesWt)
+            : { ok: true };
+        if (!verifyLocalWt.ok) {
+            spuIndRestoreFormulaFields();
+            toast(verifyLocalWt.message
+                || "Сохранение не подтверждено: источник на неделях не совпал с выбором.", "error");
+            return;
+        }
+        worktimeSaveVerify = {
+            indicatorId: keepId,
+            fromIso: effFromWt,
+            sources: draftSourcesWt.map(function (s) { return spuNewSourceRow(s); })
+        };
     } else {
         spuCommitSourceVersion(it, it.sources, it.aggregation_type, it.formula_expr, it.calc_mode, {
             planFormula: it.plan_formula_expr || [],
@@ -50696,12 +50716,32 @@ function saveSpuOrgIndicator() {
         if (mgmtTab === "structure") spuStructureTab = "indicators";
         renderManagement();
     }
+    function spuOrgIndicatorVerifyAfterServerOk() {
+        if (!worktimeSaveVerify) return { ok: true };
+        const live = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === worktimeSaveVerify.indicatorId;
+        }) || null;
+        if (typeof spuIndVerifyWorktimeSourcesCommitted !== "function") {
+            return { ok: !!live };
+        }
+        return spuIndVerifyWorktimeSourcesCommitted(
+            live,
+            worktimeSaveVerify.fromIso,
+            worktimeSaveVerify.sources
+        );
+    }
     Promise.resolve(wtPersistMgmtBranches({ indicators: true }, {
         indicatorIds: [keepId],
         okToast: ""
     })).then(function (okInd) {
         if (!okInd) {
             // Форма и appData не сбрасываем; ошибку уже показал wtSpuPersistRecordOp.
+            return false;
+        }
+        const verifySrv = spuOrgIndicatorVerifyAfterServerOk();
+        if (!verifySrv.ok) {
+            toast((verifySrv && verifySrv.message)
+                || "Сервер подтвердил запись, но сохранённый источник не совпал с выбором. Форма не закрыта — повторите сохранение.", "error");
             return false;
         }
         if (!planVal) {
@@ -50716,6 +50756,12 @@ function saveSpuOrgIndicator() {
             if (!okPlan) {
                 // Карточка на сервере могла сохраниться; план — нет. Общий успех не показываем.
                 toast("Карточка записана, но план не подтверждён сервером. Значение плана на экране — сохраните снова.", "error");
+                return false;
+            }
+            const verifySrv2 = spuOrgIndicatorVerifyAfterServerOk();
+            if (!verifySrv2.ok) {
+                toast((verifySrv2 && verifySrv2.message)
+                    || "Сервер подтвердил запись, но сохранённый источник не совпал с выбором. Форма не закрыта — повторите сохранение.", "error");
                 return false;
             }
             toast("Показатель сохранён.", "success");

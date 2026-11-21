@@ -1,5 +1,5 @@
 /**
- * WorkTime source save/reopen: multi-version insert_segment + propagate.
+ * WorkTime source save/reopen: insert_segment + always-propagate + verify.
  * Зеркало логики app.html без DOM. Без БД.
  */
 "use strict";
@@ -74,10 +74,6 @@ function spuVersionRecordWrite(target, body) {
   target.plan_calc_mode = body.plan_calc_mode === "formula" ? "formula" : "manual";
 }
 
-function fingerprint(cfg) {
-  return spuIndSourcesFingerprint(cfg && cfg.sources);
-}
-
 function insertSegment(it, from, mid) {
   const body = {
     sources: [spuNewSourceRow({ source_metric_id: mid, source_result: "metric_overall" })],
@@ -104,6 +100,8 @@ function insertSegment(it, from, mid) {
   it.source_versions.sort(function (a, b) {
     return String(a.effective_from).localeCompare(String(b.effective_from));
   });
+  it.source_metric_id = mid;
+  it.sources = body.sources.slice();
   return { mode: "insert_segment", rec: rec, next: next };
 }
 
@@ -119,6 +117,37 @@ function propagate(it, from, mid) {
       plan_calc_mode: v.plan_calc_mode || "manual"
     });
   });
+}
+
+/** Как saveSpuOrgIndicator worktime: commit сегмента + всегда propagate. */
+function saveWorktimeFrom(it, from, mid) {
+  const draft = [spuNewSourceRow({ source_metric_id: mid, source_result: "metric_overall" })];
+  insertSegment(it, from, mid);
+  propagate(it, from, mid);
+  return draft;
+}
+
+function spuIndVerifyWorktimeSourcesCommitted(it, fromIso, expectedSources) {
+  const from = String(fromIso || "").trim();
+  const wantFp = spuIndSourcesFingerprint(expectedSources);
+  const wantMid = expectedSources && expectedSources[0]
+    ? String(expectedSources[0].source_metric_id || "")
+    : "";
+  if (!it || !from || !wantMid) return { ok: false, message: "missing" };
+  const asOf = isoAddDays(from, 6);
+  const vAt = spuVersionAt(it, asOf);
+  const midAt = vAt && vAt.sources && vAt.sources[0]
+    ? String(vAt.sources[0].source_metric_id || "")
+    : String(it.source_metric_id || "");
+  if (midAt !== wantMid) return { ok: false, message: "mid week mismatch" };
+  if (wantFp && spuIndSourcesFingerprint(vAt && vAt.sources) !== wantFp) {
+    return { ok: false, message: "fp mismatch" };
+  }
+  if (String(it.source_metric_id || "") !== wantMid) return { ok: false, message: "top mid" };
+  if (spuIndLaterVersionsWithDivergentSources(it, from, expectedSources).length) {
+    return { ok: false, message: "later divergent" };
+  }
+  return { ok: true };
 }
 
 function savedOpenFrom(it) {
@@ -142,10 +171,10 @@ function overallMode(mid) {
   return "other";
 }
 
-// --- A: bug path until_next: save@12 inventory, open@19 writeoff remains ---
-{
-  const it = {
+function baseMind097() {
+  return {
     indicator_id: "mind_097",
+    source_metric_id: "metric_writeoff_losses",
     source_versions: [
       {
         version_id: "v_cover",
@@ -167,6 +196,11 @@ function overallMode(mid) {
       }
     ]
   };
+}
+
+// --- A: bug path until_next (документация): без propagate W2 = writeoff ---
+{
+  const it = baseMind097();
   const draft = [spuNewSourceRow({
     source_metric_id: "store_metric_inventory_result",
     source_result: "metric_overall"
@@ -178,46 +212,28 @@ function overallMode(mid) {
   assert(formMidAt(it, "2026-11-19") === "metric_writeoff_losses", "A: W2 still writeoff without propagate");
   assert(savedOpenFrom(it) === "2026-11-19", "A: reopen date = last open 19");
   assert(overallMode(formMidAt(it, "2026-11-19")) === "month_money_unsupported", "A: W2 empty fact path");
+  assert(!spuIndVerifyWorktimeSourcesCommitted(it, "2026-11-12", draft).ok, "A: verify fails without propagate");
 }
 
-// --- B: propagate fixes reopen + both weeks ---
+// --- B: production path = insert + always propagate ---
 {
-  const it = {
-    indicator_id: "mind_097",
-    source_versions: [
-      {
-        version_id: "v_cover",
-        effective_from: "2026-11-05",
-        effective_to: "",
-        sources: [spuNewSourceRow({
-          source_metric_id: "metric_writeoff_losses",
-          source_result: "department_total"
-        })]
-      },
-      {
-        version_id: "v_open19",
-        effective_from: "2026-11-19",
-        effective_to: "",
-        sources: [spuNewSourceRow({
-          source_metric_id: "metric_writeoff_losses",
-          source_result: "department_total"
-        })]
-      }
-    ]
-  };
-  insertSegment(it, "2026-11-12", "store_metric_inventory_result");
-  propagate(it, "2026-11-12", "store_metric_inventory_result");
+  const it = baseMind097();
+  const draft = saveWorktimeFrom(it, "2026-11-12", "store_metric_inventory_result");
+  assert(formMidAt(it, "2026-11-05") === "metric_writeoff_losses", "B: week before 12 unchanged");
   assert(formMidAt(it, "2026-11-12") === "store_metric_inventory_result", "B: W1 inventory");
   assert(formMidAt(it, "2026-11-19") === "store_metric_inventory_result", "B: W2 inventory after propagate");
   assert(overallMode(formMidAt(it, "2026-11-19")) === "inventory_shop", "B: W2 overall inventory");
-  /* reopen date still last open 19, but mid matches saved inventory */
   assert(savedOpenFrom(it) === "2026-11-19", "B: open from still 19");
   assert(formMidAt(it, savedOpenFrom(it)) === "store_metric_inventory_result", "B: reopen mid inventory");
+  const v = spuIndVerifyWorktimeSourcesCommitted(it, "2026-11-12", draft);
+  assert(v.ok, "B: verify ok after propagate");
 }
 
 // --- C: visitors single open — no divergent later ---
 {
   const it = {
+    indicator_id: "mind_visitors",
+    source_metric_id: "store_metric_visitors",
     source_versions: [{
       version_id: "v",
       effective_from: "2026-11-12",
@@ -235,6 +251,7 @@ function overallMode(mid) {
   assert(spuIndLaterVersionsWithDivergentSources(it, "2026-11-12", draft).length === 0, "C: no divergent");
   assert(formMidAt(it, "2026-11-12") === "store_metric_visitors", "C: W1 visitors");
   assert(formMidAt(it, "2026-11-19") === "store_metric_visitors", "C: W2 visitors");
+  assert(spuIndVerifyWorktimeSourcesCommitted(it, "2026-11-12", draft).ok, "C: verify visitors");
 }
 
 // --- D: week-aligned form cfg (asOf = Wed) ---
@@ -243,8 +260,70 @@ function overallMode(mid) {
   assert(isoAddDays("2026-11-19", 6) === "2026-11-25", "D: week end 25");
 }
 
+// --- E: имитация подтверждённого серверного состояния (reload snapshot) ---
+{
+  const it = baseMind097();
+  const draft = saveWorktimeFrom(it, "2026-11-12", "store_metric_inventory_result");
+  const serverPayload = JSON.parse(JSON.stringify(it));
+  const reloaded = JSON.parse(JSON.stringify(serverPayload));
+  assert(formMidAt(reloaded, "2026-11-12") === "store_metric_inventory_result", "E: reload W1");
+  assert(formMidAt(reloaded, "2026-11-19") === "store_metric_inventory_result", "E: reload W2");
+  assert(formMidAt(reloaded, "2026-11-05") === "metric_writeoff_losses", "E: reload before unchanged");
+  assert(spuIndVerifyWorktimeSourcesCommitted(reloaded, "2026-11-12", draft).ok, "E: verify after reload");
+}
+
+// --- F: отказ серверного сохранения → нет зелёного toast ---
+{
+  function persistThenToast(serverOk, verifyOk) {
+    const toasts = [];
+    if (!serverOk) {
+      toasts.push({ text: "Изменения СПУ не записаны", type: "error" });
+      return { ok: false, toasts: toasts, closed: false };
+    }
+    if (!verifyOk) {
+      toasts.push({ text: "Сохранение не подтверждено", type: "error" });
+      return { ok: false, toasts: toasts, closed: false };
+    }
+    toasts.push({ text: "Показатель сохранён.", type: "success" });
+    return { ok: true, toasts: toasts, closed: true };
+  }
+  const failSrv = persistThenToast(false, true);
+  assert(!failSrv.ok && !failSrv.closed, "F: server fail no close");
+  assert(!failSrv.toasts.some(function (t) { return t.type === "success"; }), "F: no green on server fail");
+  const failVerify = persistThenToast(true, false);
+  assert(!failVerify.ok && !failVerify.closed, "F: verify fail no close");
+  assert(!failVerify.toasts.some(function (t) { return t.type === "success"; }), "F: no green on verify fail");
+  const ok = persistThenToast(true, true);
+  assert(ok.ok && ok.closed && ok.toasts.some(function (t) { return t.type === "success"; }), "F: green only when both ok");
+}
+
+// --- G: другой показатель не затрагивается ---
+{
+  const mind097 = baseMind097();
+  const mindVis = {
+    indicator_id: "mind_091",
+    source_metric_id: "store_metric_visitors",
+    source_versions: [{
+      version_id: "v",
+      effective_from: "2026-11-05",
+      effective_to: "",
+      sources: [spuNewSourceRow({
+        source_metric_id: "store_metric_visitors",
+        source_result: "metric_overall"
+      })]
+    }]
+  };
+  const snapVis = JSON.stringify(mindVis);
+  saveWorktimeFrom(mind097, "2026-11-12", "store_metric_inventory_result");
+  assert(JSON.stringify(mindVis) === snapVis, "G: other indicator untouched");
+  assert(formMidAt(mindVis, "2026-11-12") === "store_metric_visitors", "G: visitors mid intact");
+}
+
 console.log("wt_spu_worktime_source_save_reopen_harness: OK");
 console.log("  A until_next leaves writeoff@19 (bug path documented)");
-console.log("  B propagate → inventory on W1 and W2; reopen mid matches");
+console.log("  B always-propagate → inventory on W1 and W2; reopen mid matches");
 console.log("  C visitors single open unchanged");
 console.log("  D week-end asOf mapping");
+console.log("  E reload confirmed server state keeps inventory");
+console.log("  F server/verify fail → no green toast");
+console.log("  G other indicator untouched");
