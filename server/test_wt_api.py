@@ -12856,20 +12856,30 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertIn("STORE_METRIC_VISITORS", seed_chunk)
         self.assertIn("STORE_METRIC_INVENTORY_RESULT", seed_chunk)
         self.assertIn("WAREHOUSE_METRIC_INVENTORY_RESULT", seed_chunk)
+        self.assertIn("FINREC_METRIC_OPT_TOTAL", seed_chunk)
+        self.assertIn("FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL", seed_chunk)
         self.assertIn("store_metric_inventory_result", src)
         self.assertIn("warehouse_metric_inventory_result", src)
+        self.assertIn("finrec_metric_opt_total", src)
+        self.assertIn("finrec_metric_retail_warehouse_total", src)
+        self.assertIn("spuFrTerritoryRevenueByDay", src)
+        self.assertIn('mode = "finrec_territory_revenue"', src)
         builtin_fn = src[
             src.find("function spuIsShopBuiltinTotalMetric(")
             : src.find("function spuEnsureShopBuiltinTotalsForSpu(")
         ]
         self.assertIn("STORE_METRIC_INVENTORY_RESULT", builtin_fn)
         self.assertIn("WAREHOUSE_METRIC_INVENTORY_RESULT", builtin_fn)
+        self.assertIn("FINREC_METRIC_OPT_TOTAL", builtin_fn)
+        self.assertIn("FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL", builtin_fn)
         ensure_tot = src[
             src.find("function spuEnsureShopBuiltinTotalsForSpu(")
             : src.find("function spuWorkMetricPickerLabel(")
         ]
         self.assertIn("shopMetricCatalogSeed", ensure_tot)
-        self.assertIn("Итог инвентаризации магазина", ensure_tot)
+        self.assertIn("STORE_METRIC_INVENTORY_RESULT", ensure_tot)
+        self.assertIn("FINREC_METRIC_OPT_TOTAL", ensure_tot)
+        self.assertIn("FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL", ensure_tot)
         self.assertIn("if (it.active == null) it.active = true", ensure_tot)
         part = src[
             src.find("function spuParticipatingWorkMetrics(")
@@ -14705,6 +14715,192 @@ class WtPackageVSaveContractTests(unittest.TestCase):
             self.skipTest("node недоступен для package V harness")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_package_v_save_contract_harness: OK", proc.stdout)
+
+
+class WtSpuFinrecRevenueSliceTests(unittest.TestCase):
+    """GET-only агрегат сверки Территории для СПУ без raw financeRec."""
+
+    def _payload(self):
+        return {
+            "financeRec": {
+                "sources": [
+                    {
+                        "finance_source_id": "fs_opt",
+                        "finance_area_id": "farea_territory",
+                        "revenue_direction": "opt",
+                    },
+                    {
+                        "finance_source_id": "fs_ret",
+                        "finance_area_id": "farea_territory",
+                        "revenue_direction": "retail",
+                    },
+                    {
+                        "finance_source_id": "fs_wh",
+                        "finance_area_id": "farea_territory",
+                        "revenue_direction": "warehouse",
+                    },
+                    {
+                        "finance_source_id": "fs_shop",
+                        "finance_area_id": "farea_shop",
+                        "revenue_direction": "none",
+                    },
+                ],
+                "operations": [
+                    {
+                        "finance_operation_id": "fop1",
+                        "object_id": "farea_territory",
+                        "account_id": "fs_opt",
+                        "date": "2026-11-12",
+                        "op_type": "income",
+                        "entry_role": "revenue_grid",
+                        "grid_cell": True,
+                        "amount": 100,
+                        "is_deleted": False,
+                    },
+                    {
+                        "finance_operation_id": "fop2",
+                        "object_id": "farea_territory",
+                        "account_id": "fs_ret",
+                        "date": "2026-11-12",
+                        "op_type": "income",
+                        "entry_role": "revenue_grid",
+                        "grid_cell": True,
+                        "amount": 30,
+                        "is_deleted": False,
+                    },
+                    {
+                        "finance_operation_id": "fop3",
+                        "object_id": "farea_territory",
+                        "account_id": "fs_wh",
+                        "date": "2026-11-12",
+                        "op_type": "income",
+                        "entry_role": "revenue_grid",
+                        "grid_cell": True,
+                        "amount": 20,
+                        "is_deleted": False,
+                    },
+                    {
+                        "finance_operation_id": "fop4",
+                        "object_id": "farea_territory",
+                        "account_id": "fs_opt",
+                        "date": "2026-11-13",
+                        "op_type": "income",
+                        "amount": 15,
+                        "is_deleted": False,
+                    },
+                    {
+                        "finance_operation_id": "fop_exp",
+                        "object_id": "farea_territory",
+                        "account_id": "fs_opt",
+                        "date": "2026-11-12",
+                        "op_type": "expense",
+                        "amount": 999,
+                        "is_deleted": False,
+                    },
+                    {
+                        "finance_operation_id": "fop_del",
+                        "object_id": "farea_territory",
+                        "account_id": "fs_opt",
+                        "date": "2026-11-12",
+                        "op_type": "income",
+                        "entry_role": "revenue_grid",
+                        "amount": 500,
+                        "is_deleted": True,
+                    },
+                    {
+                        "finance_operation_id": "fop_shop",
+                        "object_id": "farea_shop",
+                        "account_id": "fs_shop",
+                        "date": "2026-11-12",
+                        "op_type": "income",
+                        "amount": 77,
+                        "is_deleted": False,
+                    },
+                ],
+            },
+            "management": {"indicators": []},
+        }
+
+    def test_helper_sums_opt_and_retail_warehouse(self):
+        out = wt_api.spu_fr_territory_revenue_by_day(self._payload())
+        self.assertIsNotNone(out)
+        self.assertEqual(out["2026-11-12"]["opt"], 100)
+        self.assertEqual(out["2026-11-12"]["retail_warehouse"], 50)
+        self.assertEqual(out["2026-11-13"]["opt"], 15)
+        self.assertNotIn("retail_warehouse", out["2026-11-13"])
+
+    def test_helper_ignores_expense_deleted_and_shop(self):
+        out = wt_api.spu_fr_territory_revenue_by_day(self._payload())
+        self.assertNotEqual(out["2026-11-12"]["opt"], 100 + 999)
+        self.assertNotEqual(out["2026-11-12"]["opt"], 100 + 500)
+
+    def test_filter_spu_without_finance_gets_slice_not_finance_rec(self):
+        user = {
+            "user_id": "u_spu",
+            "role": "user",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {"managementIndicators": "view", "financeRec": "none"},
+        }
+        payload = self._payload()
+        filtered = wt_api.filter_state_payload(payload, user)
+        self.assertIn("spuFrTerritoryRevenueByDay", filtered)
+        self.assertEqual(filtered["spuFrTerritoryRevenueByDay"]["2026-11-12"]["opt"], 100)
+        self.assertNotIn("financeRec", filtered)
+
+    def test_filter_admin_with_finance_keeps_finance_and_slice(self):
+        user = {
+            "user_id": "u_admin",
+            "role": "admin",
+            "is_active": True,
+            "departments": ["summary"],
+            "permissions": {"financeRec": "view", "managementIndicators": "view"},
+        }
+        # is_app_admin may depend on role; ensure perms cover both.
+        filtered = wt_api.filter_state_payload(self._payload(), user)
+        self.assertIn("spuFrTerritoryRevenueByDay", filtered)
+        # financeRec only if allow_finance — view is enough
+        self.assertIn("financeRec", filtered)
+        self.assertNotIn("operations", filtered.get("spuFrTerritoryRevenueByDay", {}))
+
+    def test_filter_no_spu_no_slice(self):
+        user = {
+            "user_id": "u_shop",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"metrics": "view", "financeRec": "none", "managementIndicators": "none"},
+        }
+        filtered = wt_api.filter_state_payload(self._payload(), user)
+        self.assertNotIn("spuFrTerritoryRevenueByDay", filtered)
+        self.assertNotIn("financeRec", filtered)
+
+    def test_correction_past_day_updates_slice(self):
+        payload = self._payload()
+        before = wt_api.spu_fr_territory_revenue_by_day(payload)
+        self.assertEqual(before["2026-11-12"]["opt"], 100)
+        for op in payload["financeRec"]["operations"]:
+            if op.get("finance_operation_id") == "fop1":
+                op["amount"] = 120
+        after = wt_api.spu_fr_territory_revenue_by_day(payload)
+        self.assertEqual(after["2026-11-12"]["opt"], 120)
+
+    def test_harness_finrec_revenue(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_spu_finrec_revenue_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для finrec revenue harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_finrec_revenue_harness: OK", proc.stdout)
 
 
 if __name__ == "__main__":

@@ -5236,6 +5236,139 @@ def vacation_plan_salary_facts(payload: dict) -> dict | None:
     return out or None
 
 
+def _fr_norm_date(value: Any) -> str:
+    s = str(value or "").strip()
+    if len(s) >= 10 and s[4:5] == "-" and s[7:8] == "-":
+        return s[:10]
+    return ""
+
+
+def _fr_op_kind(op: dict) -> str:
+    if op.get("op_type") == "transfer" or op.get("movement_kind") == "transfer" or op.get("type") == "transfer":
+        return "transfer"
+    if op.get("op_type") == "dividend" or op.get("movement_kind") == "dividend":
+        return "dividend"
+    if op.get("op_type") == "expense_refund" or op.get("movement_kind") == "expense_refund":
+        return "expense_refund"
+    if op.get("op_type") in ("income", "non_income", "expense"):
+        return str(op.get("op_type"))
+    if op.get("movement_kind") in ("income", "non_income", "expense"):
+        return str(op.get("movement_kind"))
+    return "income" if op.get("type") == "in" else "expense"
+
+
+def _fr_op_account_id(op: dict) -> str:
+    return str(op.get("account_id") or op.get("finance_source_id") or op.get("source_id") or "").strip()
+
+
+def _fr_is_revenue_grid_op(op: dict) -> bool:
+    if op.get("entry_role") == "revenue_grid":
+        return True
+    if op.get("grid_cell") is True and _fr_op_kind(op) == "income":
+        return True
+    return False
+
+
+def _fr_money(value: Any) -> float:
+    try:
+        if isinstance(value, (int, float)):
+            n = float(value)
+        else:
+            n = float(str(value or "").replace(" ", "").replace(",", ".") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if n != n:  # NaN
+        return 0.0
+    return round(n * 100.0) / 100.0
+
+
+def spu_fr_territory_revenue_by_day(payload: dict) -> dict | None:
+    """
+    Узкий GET-only срез для зрителей СПУ без financeRec:view.
+    Дневные суммы сверки Территории, эквивалент frBlockDayTotal:
+      opt → ИТОГО ОПТ
+      retail_warehouse → ИТОГО РОЗНИЦА + ИТОГО СКЛАД
+    Не включает ops/счета/полный financeRec. Не для SoftSync/OPS.
+    """
+    fr = payload.get("financeRec") if isinstance(payload, dict) else None
+    if not isinstance(fr, dict):
+        return None
+    dir_by_src: dict[str, str] = {}
+    sources = fr.get("sources")
+    if isinstance(sources, list):
+        for src in sources:
+            if not isinstance(src, dict):
+                continue
+            area = str(src.get("finance_area_id") or src.get("object_id") or "")
+            if area != "farea_territory":
+                continue
+            sid = str(src.get("finance_source_id") or src.get("account_id") or "").strip()
+            if not sid:
+                continue
+            direction = str(src.get("revenue_direction") or "none")
+            if direction in ("opt", "retail", "warehouse"):
+                dir_by_src[sid] = direction
+    if not dir_by_src:
+        return None
+
+    # (date, source_id) → grid amount OR sum of non-grid income (как frGetGridCellAmount).
+    grid_amt: dict[tuple[str, str], float] = {}
+    sum_amt: dict[tuple[str, str], float] = {}
+    ops = fr.get("operations")
+    if not isinstance(ops, list):
+        return None
+    for op in ops:
+        if not isinstance(op, dict) or op.get("is_deleted"):
+            continue
+        area = str(op.get("object_id") or op.get("finance_area_id") or "")
+        if area != "farea_territory":
+            continue
+        if _fr_op_kind(op) != "income":
+            continue
+        sid = _fr_op_account_id(op)
+        if not sid or sid not in dir_by_src:
+            continue
+        day = _fr_norm_date(op.get("date"))
+        if not day:
+            continue
+        key = (day, sid)
+        amt = _fr_money(op.get("amount"))
+        if _fr_is_revenue_grid_op(op):
+            # Как frFindGridOp: одна grid-ячейка; последняя встреченная побеждает.
+            grid_amt[key] = amt
+        else:
+            sum_amt[key] = _fr_money(sum_amt.get(key, 0.0) + amt)
+
+    # day → {opt/retail/warehouse: sum}; отдельно какие направления реально имели ячейки.
+    by_day: dict[str, dict[str, float]] = {}
+    had_dir: dict[str, set[str]] = {}
+    all_keys = set(grid_amt.keys()) | set(sum_amt.keys())
+    for day, sid in all_keys:
+        direction = dir_by_src.get(sid)
+        if direction not in ("opt", "retail", "warehouse"):
+            continue
+        cell = grid_amt[(day, sid)] if (day, sid) in grid_amt else sum_amt.get((day, sid), 0.0)
+        bucket = by_day.setdefault(day, {"opt": 0.0, "retail": 0.0, "warehouse": 0.0})
+        bucket[direction] = _fr_money(bucket[direction] + cell)
+        had_dir.setdefault(day, set()).add(direction)
+
+    # Только направления с фактом; retail_warehouse = retail + warehouse.
+    # День без ненулевых значений, но с явной нулевой grid-ячейкой — сохраняем 0.
+    out: dict[str, dict[str, float]] = {}
+    for day, bucket in by_day.items():
+        dirs = had_dir.get(day) or set()
+        row: dict[str, float] = {}
+        if "opt" in dirs:
+            row["opt"] = _fr_money(bucket.get("opt"))
+        if "retail" in dirs or "warehouse" in dirs:
+            row["retail_warehouse"] = _fr_money(
+                float(bucket.get("retail") or 0.0) + float(bucket.get("warehouse") or 0.0)
+            )
+        if row:
+            out[day] = row
+    return out or None
+
+
 def ops_public_value(path: str, value: Any) -> Any:
     """Ответ OPS не должен отдавать pin/pin_hash (как GET /api/state)."""
     p = str(path or "")
@@ -5946,6 +6079,11 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
         out["financeRec"] = drop_closed_fields(payload.get("financeRec"), allow_salary, True)
     if user_can_open_management(user) and "management" in payload:
         out["management"] = drop_closed_fields(payload.get("management"), allow_salary, allow_finance)
+    # GET-only агрегаты сверки Территории для СПУ (без raw financeRec). Не SoftSync/OPS.
+    if user_can_open_management(user):
+        fr_rev = spu_fr_territory_revenue_by_day(payload)
+        if fr_rev:
+            out["spuFrTerritoryRevenueByDay"] = fr_rev
     if user_has_perm(user, "orgStructure", "view") and "orgStructure" in payload:
         out["orgStructure"] = drop_closed_fields(payload.get("orgStructure"), allow_salary, allow_finance)
     if user_has_perm(user, "customerReturns", "view") and "customerReturns" in payload:

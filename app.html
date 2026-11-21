@@ -6877,6 +6877,9 @@ const STORE_METRIC_VISITORS = "store_metric_visitors";
 /** Встроенные store-level итоги инвентаризации для СПУ (не assignable). */
 const STORE_METRIC_INVENTORY_RESULT = "store_metric_inventory_result";
 const WAREHOUSE_METRIC_INVENTORY_RESULT = "warehouse_metric_inventory_result";
+/** Builtin money-итоги сверки Финконтроля (Территория) для СПУ — читают GET-срез, не raw financeRec. */
+const FINREC_METRIC_OPT_TOTAL = "finrec_metric_opt_total";
+const FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL = "finrec_metric_retail_warehouse_total";
 const METRIC_ID_ALIASES = {
     early730: "metric_arrival_730",
     display: "metric_display_positions",
@@ -8111,6 +8114,8 @@ function shopMetricCatalogSeed() {
         { id: STORE_METRIC_VISITORS, key: "visitors", name: "Количество покупателей", section_id: "cashiers", fill_type: "number", sort_order: 5, assignable: false, core_column: false, show_column: false, use_in_spu: true },
         { id: STORE_METRIC_INVENTORY_RESULT, key: "inventoryResult", name: "Итог инвентаризации магазина", section_id: "managers", fill_type: "money", sort_order: 3, assignable: false, core_column: false, show_column: false, use_in_spu: true, department_id: "shop" },
         { id: WAREHOUSE_METRIC_INVENTORY_RESULT, key: "inventoryResultWh", name: "Итог инвентаризации склада", section_id: "managers", fill_type: "money", sort_order: 3, assignable: false, core_column: false, show_column: false, use_in_spu: true, department_id: "warehouse" },
+        { id: FINREC_METRIC_OPT_TOTAL, key: "finrecOptTotal", name: "Деньги — итого ОПТ", section_id: "managers", fill_type: "money", sort_order: 4, assignable: false, core_column: false, show_column: false, use_in_spu: true, department_id: "office" },
+        { id: FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL, key: "finrecRetailWhTotal", name: "Деньги — итого Розница/Склад", section_id: "managers", fill_type: "money", sort_order: 5, assignable: false, core_column: false, show_column: false, use_in_spu: true, department_id: "office" },
         { id: "metric_average_check", key: "avgCheck", name: "Средний чек", section_id: "cashiers", fill_type: "auto_calc", sort_order: 30, assignable: false, core_column: true },
         { id: "metric_supplier_orders", key: "supplierOrders", name: "Кол-во заказов поставщикам", section_id: "managers", fill_type: "number", sort_order: 10, assignable: true, core_column: true },
         { id: "metric_order_positions", key: "orderPositions", name: "Кол-во позиций в заказе", section_id: "managers", fill_type: "number", sort_order: 20, assignable: true, core_column: true },
@@ -47636,6 +47641,8 @@ function spuIsShopBuiltinTotalMetric(metricId) {
     if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") return true;
     if (id === STORE_METRIC_INVENTORY_RESULT || id === "store_metric_inventory_result") return true;
     if (id === WAREHOUSE_METRIC_INVENTORY_RESULT || id === "warehouse_metric_inventory_result") return true;
+    if (id === FINREC_METRIC_OPT_TOTAL || id === "finrec_metric_opt_total") return true;
+    if (id === FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL || id === "finrec_metric_retail_warehouse_total") return true;
     return false;
 }
 
@@ -47657,22 +47664,27 @@ function spuEnsureShopBuiltinTotalsForSpu() {
         { id: "metric_checks", dept: "shop" },
         { id: STORE_METRIC_VISITORS, dept: "shop" },
         { id: STORE_METRIC_INVENTORY_RESULT, dept: "shop" },
-        { id: WAREHOUSE_METRIC_INVENTORY_RESULT, dept: "warehouse" }
+        { id: WAREHOUSE_METRIC_INVENTORY_RESULT, dept: "warehouse" },
+        { id: FINREC_METRIC_OPT_TOTAL, dept: "office" },
+        { id: FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL, dept: "office" }
     ];
+    const restoreIds = {};
+    restoreIds[STORE_METRIC_INVENTORY_RESULT] = true;
+    restoreIds[FINREC_METRIC_OPT_TOTAL] = true;
+    restoreIds[FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL] = true;
     specs.forEach(function (spec) {
         let it = list.find(function (x) { return x && canonicalMetricId(x.id) === canonicalMetricId(spec.id); });
-        /* Только отсутствующая системная запись итога инвентаризации магазина — из seed. */
-        if (!it && (spec.id === STORE_METRIC_INVENTORY_RESULT
-            || spec.id === "store_metric_inventory_result")) {
+        /* Отсутствующие системные builtin (инвентаризация магазина / деньги FR) — из seed. */
+        if (!it && restoreIds[spec.id]) {
             const seed = (typeof shopMetricCatalogSeed === "function" ? shopMetricCatalogSeed() : [])
                 .find(function (s) {
-                    return s && canonicalMetricId(s.id) === canonicalMetricId(STORE_METRIC_INVENTORY_RESULT);
+                    return s && canonicalMetricId(s.id) === canonicalMetricId(spec.id);
                 });
             if (!seed) return;
             it = {
-                id: STORE_METRIC_INVENTORY_RESULT,
-                key: seed.key || "inventoryResult",
-                name: seed.name || "Итог инвентаризации магазина",
+                id: spec.id,
+                key: seed.key || spec.id,
+                name: seed.name || spec.id,
                 section_id: seed.section_id || "managers",
                 fill_type: seed.fill_type || "money",
                 sort_order: seed.sort_order != null ? seed.sort_order : 3,
@@ -47695,7 +47707,9 @@ function spuEnsureShopBuiltinTotalsForSpu() {
         if (it.assignable == null) it.assignable = false;
         if (it.show_column == null && (spec.id === STORE_METRIC_INVENTORY_RESULT
             || spec.id === WAREHOUSE_METRIC_INVENTORY_RESULT
-            || spec.id === STORE_METRIC_VISITORS)) {
+            || spec.id === STORE_METRIC_VISITORS
+            || spec.id === FINREC_METRIC_OPT_TOTAL
+            || spec.id === FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL)) {
             it.show_column = false;
         }
         if (spec.dept) it.department_id = spec.dept;
@@ -47714,6 +47728,12 @@ function spuWorkMetricPickerLabel(m) {
     }
     if (id === WAREHOUSE_METRIC_INVENTORY_RESULT || id === "warehouse_metric_inventory_result") {
         return "Итог инвентаризации склада";
+    }
+    if (id === FINREC_METRIC_OPT_TOTAL || id === "finrec_metric_opt_total") {
+        return "Деньги — итого ОПТ";
+    }
+    if (id === FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL || id === "finrec_metric_retail_warehouse_total") {
+        return "Деньги — итого Розница/Склад";
     }
     return (m && m.name) || id || "";
 }
@@ -53209,7 +53229,9 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
     const item = shopMetricCatalogById(mid);
     const allowNoCatalog = mid === STORE_METRIC_VISITORS || mid === "store_metric_visitors"
         || mid === STORE_METRIC_INVENTORY_RESULT || mid === "store_metric_inventory_result"
-        || mid === WAREHOUSE_METRIC_INVENTORY_RESULT || mid === "warehouse_metric_inventory_result";
+        || mid === WAREHOUSE_METRIC_INVENTORY_RESULT || mid === "warehouse_metric_inventory_result"
+        || mid === FINREC_METRIC_OPT_TOTAL || mid === "finrec_metric_opt_total"
+        || mid === FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL || mid === "finrec_metric_retail_warehouse_total";
     if (!item && !allowNoCatalog) {
         out.mode = "no_catalog";
         return out;
@@ -53267,6 +53289,29 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
             if (!deptInventoryDayHasValues("warehouse", d.day, month)) return;
             const rec = getDeptInventoryDay("warehouse", d.day, month);
             const n = Number(rec && rec.result);
+            if (!Number.isFinite(n)) return;
+            out.series.push(n);
+        });
+        out.present = out.series.length > 0;
+        return out;
+    }
+    /* Деньги Финконтроля (Территория): GET-срез spuFrTerritoryRevenueByDay, не raw financeRec. */
+    if (mid === FINREC_METRIC_OPT_TOTAL || mid === "finrec_metric_opt_total"
+        || mid === FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL || mid === "finrec_metric_retail_warehouse_total") {
+        out.mode = "finrec_territory_revenue";
+        const field = (mid === FINREC_METRIC_OPT_TOTAL || mid === "finrec_metric_opt_total")
+            ? "opt"
+            : "retail_warehouse";
+        const root = (appData && appData.spuFrTerritoryRevenueByDay
+            && typeof appData.spuFrTerritoryRevenueByDay === "object")
+            ? appData.spuFrTerritoryRevenueByDay
+            : null;
+        (days || []).forEach(function (d) {
+            const iso = d && d.iso ? String(d.iso).slice(0, 10) : "";
+            if (!iso || !root) return;
+            const cell = root[iso];
+            if (!cell || typeof cell !== "object" || !Object.prototype.hasOwnProperty.call(cell, field)) return;
+            const n = Number(cell[field]);
             if (!Number.isFinite(n)) return;
             out.series.push(n);
         });
@@ -53392,6 +53437,8 @@ function mgmtShopBuiltinUsesOverallCompat(mid, srcResult) {
     if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") return true;
     if (id === STORE_METRIC_INVENTORY_RESULT || id === "store_metric_inventory_result") return true;
     if (id === WAREHOUSE_METRIC_INVENTORY_RESULT || id === "warehouse_metric_inventory_result") return true;
+    if (id === FINREC_METRIC_OPT_TOTAL || id === "finrec_metric_opt_total") return true;
+    if (id === FINREC_METRIC_RETAIL_WAREHOUSE_TOTAL || id === "finrec_metric_retail_warehouse_total") return true;
     return false;
 }
 
