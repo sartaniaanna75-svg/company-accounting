@@ -444,8 +444,38 @@ const day12 = [{ day: 12, month: NOV }];
   assert(mgmtMetricFact(indSales, "metric_sales", [{ day: 15, month: NOV }], dataZ) === null, "Z: missing → null");
 }
 
+// ========== E: sources без metric_id — наследование с родителя (mgmtSourceAsIndicator) ==========
+{
+  function mgmtSourceAsIndicator(src, parent) {
+    const mid = (src && src.source_metric_id) || (parent && parent.source_metric_id) || "";
+    let result = src && src.source_result;
+    if (result == null || result === "") {
+      result = (parent && parent.source_result) || "department_total";
+    }
+    return { source_metric_id: mid, source_result: result, source_type: "worktime_metric" };
+  }
+  const parent = {
+    indicator_id: "ind_orphan_src",
+    source_type: "worktime_metric",
+    source_metric_id: "metric_sales",
+    source_result: "department_total",
+    sources: [{ source_id: "s1", source_type: "worktime_metric", source_metric_id: "", source_result: "department_total" }]
+  };
+  const fake = mgmtSourceAsIndicator(parent.sources[0], parent);
+  assert(fake.source_metric_id === "metric_sales", "E: inherit metric_id from parent");
+  assert(fake.source_result === "department_total", "E: inherit/keep result");
+  const v = mgmtMetricFact(fake, fake.source_metric_id, day12, dataAB);
+  assert(v === 100000, "E: fact via inherited metric_id got " + v);
+  /* Без наследования mid="" → 0/пусто */
+  const bare = { source_metric_id: "", source_result: "department_total" };
+  assert(mgmtMetricFact(bare, bare.source_metric_id, day12, dataAB) === 0
+    || mgmtMetricFact(bare, "", day12, dataAB) == null
+    || mgmtMetricFact(bare, "", day12, dataAB) === 0, "E: empty mid fails without inherit");
+}
+
 console.log("wt_spu_shop_planfact_e2e_harness: OK");
 console.log("  A sales/checks/avg: 100000 / 200 / 500");
 console.log("  B visitors/conv: 250 / 80%");
 console.log("  C two slots: 50000 / 100");
 console.log("  D weeks 12–18 filled, 19–25 empty→null, legacy department_total works");
+console.log("  E sources empty metric_id inherits parent");

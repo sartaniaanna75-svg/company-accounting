@@ -47217,14 +47217,21 @@ function mgmtKpiPlanForMetric(metricId, subId, month) {
 }
 
 function mgmtSourceAsIndicator(src, parent) {
+    /* Sources-строка может быть без metric_id при старых сохранениях — брать с родителя. */
+    const mid = (src && src.source_metric_id) || (parent && parent.source_metric_id) || "";
+    const sub = (src && src.source_submetric_id) || (parent && parent.source_submetric_id) || "";
+    let result = src && src.source_result;
+    if (result == null || result === "") {
+        result = (parent && parent.source_result) || "department_total";
+    }
     return {
-        indicator_id: (parent && parent.indicator_id) + ":" + (src.source_id || src.source_metric_id || src.source_indicator_id || "src"),
+        indicator_id: (parent && parent.indicator_id) + ":" + (src.source_id || mid || src.source_indicator_id || "src"),
         department_id: src.source_department_id || (parent && parent.department_id),
-        source_type: src.source_type || "worktime_metric",
-        source_metric_id: src.source_metric_id || "",
-        source_result: src.source_result || "department_total",
-        source_work_tab_id: src.source_work_tab_id || "",
-        source_submetric_id: src.source_submetric_id || "",
+        source_type: src.source_type || (parent && parent.source_type) || "worktime_metric",
+        source_metric_id: mid,
+        source_result: result,
+        source_work_tab_id: (src && src.source_work_tab_id) || (parent && parent.source_work_tab_id) || "",
+        source_submetric_id: sub,
         source_sales_plan_view: src.source_sales_plan_view || "",
         source_sales_plan_field: src.source_sales_plan_field || "fact",
         source_timesheet_agg: src.source_timesheet_agg || "",
@@ -58296,6 +58303,113 @@ function saveSpuKeyBlock() {
     toast("Блок сохранён.");
 }
 
+/**
+ * Read-only диагностика магазин→СПУ (консоль): реальные indicator_id, sources, факт.
+ * Пример: wtDiagSpuShopPlanFact("2026-11-12")
+ * Не пишет в БД / SoftSync.
+ */
+function wtDiagSpuShopPlanFact(weekFromIso) {
+    const weekIso = String(weekFromIso || "2026-11-12");
+    const month = String(weekIso).slice(0, 7);
+    const out = {
+        week: weekIso,
+        hasCompat: typeof mgmtShopBuiltinUsesOverallCompat === "function",
+        shopMetricsPresent: !!(appData && appData.shopMetrics),
+        cashiersSlotIds: Object.keys(
+            (appData && appData.shopMetrics && appData.shopMetrics.cashiers
+                && appData.shopMetrics.cashiers[month]) || {}
+        ),
+        ksoDays: Object.keys(
+            (appData && appData.shopMetrics && appData.shopMetrics.channelValues
+                && appData.shopMetrics.channelValues[month]
+                && appData.shopMetrics.channelValues[month].self_checkout) || {}
+        ),
+        storeVisitorDays: Object.keys(
+            (appData && appData.shopMetrics && appData.shopMetrics.store
+                && appData.shopMetrics.store[month]) || {}
+        ).filter(function (d) {
+            const rec = appData.shopMetrics.store[month][d];
+            return rec && rec.visitors != null && rec.visitors !== "";
+        }),
+        rows: []
+    };
+    let n = 0;
+    function walk(nodeId) {
+        spuOrgChildren(nodeId, false).forEach(function (node) {
+            if (!node || node.is_active === false) return;
+            const items = spuOrgIndicatorsForNode(node.org_node_id).filter(spuOrgShowInPlanFact);
+            items.forEach(function (it) {
+                n += 1;
+                const name = String(it.name || "");
+                const code = String(it.spu_code || "");
+                const hit = n >= 40 && n <= 55
+                    || /shop_sales|shop_checks|shop_visitors|shop_avg|shop_conversion/.test(code)
+                    || /покупател|чек|выруч|конверс|средн|отгруж/i.test(name);
+                if (!hit) return;
+                const pack = typeof mgmtPfRead === "function"
+                    ? mgmtPfRead(it, weekIso)
+                    : { fact: null, read: { status: "n/a" } };
+                const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : null;
+                const src0 = cfg && cfg.sources && cfg.sources[0] ? cfg.sources[0] : null;
+                const mid = (src0 && src0.source_metric_id) || it.source_metric_id || "";
+                const sres = (src0 && src0.source_result) || it.source_result || "";
+                let overall = null;
+                try {
+                    if (typeof mgmtCollectMetricOverallSeries === "function" && mid) {
+                        overall = mgmtRunInThuWeek(weekIso, function () {
+                            return mgmtCollectMetricOverallSeries(
+                                mid, it.source_submetric_id, mgmtDaysInPeriod()
+                            );
+                        });
+                    }
+                } catch (errO) {
+                    overall = { error: String(errO && errO.message || errO) };
+                }
+                out.rows.push({
+                    pfNo: n,
+                    indicator_id: it.indicator_id,
+                    name: name,
+                    spu_code: code,
+                    show_in_planfact: it.show_in_planfact === true,
+                    source_type: it.source_type,
+                    source_metric_id: it.source_metric_id || "",
+                    source_result: it.source_result || "",
+                    sources0_metric: src0 ? (src0.source_metric_id || "") : "",
+                    sources0_result: src0 ? (src0.source_result || "") : "",
+                    versions: (it.source_versions || []).length,
+                    inactive: !!(cfg && cfg.inactive),
+                    compat: typeof mgmtShopBuiltinUsesOverallCompat === "function"
+                        ? mgmtShopBuiltinUsesOverallCompat(mid, sres)
+                        : false,
+                    overall_present: overall && overall.present,
+                    overall_mode: overall && overall.mode,
+                    overall_sum: overall && overall.present
+                        ? (overall.mode === "auto_calc" && overall.value != null
+                            ? overall.value
+                            : (typeof aggregateMetricNumbers === "function"
+                                ? aggregateMetricNumbers(overall.series, "sum")
+                                : null))
+                        : null,
+                    fact: pack.fact,
+                    status: pack.read && pack.read.status,
+                    calc_left_id: it.calc_left_id || "",
+                    calc_right_id: it.calc_right_id || ""
+                });
+            });
+            walk(node.org_node_id);
+        });
+    }
+    try {
+        walk("");
+    } catch (errW) {
+        out.walkError = String(errW && errW.message || errW);
+    }
+    try {
+        console.log("wtDiagSpuShopPlanFact", out);
+    } catch (errC) {}
+    return out;
+}
+
 function openSpuIndicatorDataOrigin(indicatorId) {
     const it = spuFindIndicator(indicatorId);
     if (!it) return;
@@ -58339,6 +58453,29 @@ function openSpuIndicatorDataOrigin(indicatorId) {
     } catch (err2) {
         html += "<p><b>Получено:</b> —</p>";
     }
+    /* Техническая сводка для диагностики пустых фактов (без записи). */
+    try {
+        const cfgT = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : null;
+        const s0 = cfgT && cfgT.sources && cfgT.sources[0] ? cfgT.sources[0] : null;
+        html += '<div class="note" style="margin-top:8px;font-size:12px">'
+            + "<div><b>indicator_id:</b> " + escapeHtml(String(it.indicator_id || "")) + "</div>"
+            + "<div><b>source_type / result / metric:</b> "
+            + escapeHtml(String(it.source_type || "")) + " / "
+            + escapeHtml(String((s0 && s0.source_result) || it.source_result || "")) + " / "
+            + escapeHtml(String((s0 && s0.source_metric_id) || it.source_metric_id || "")) + "</div>"
+            + "<div><b>show_in_planfact:</b> " + (it.show_in_planfact === true ? "да" : "нет") + "</div>"
+            + "<div><b>compat:</b> "
+            + (typeof mgmtShopBuiltinUsesOverallCompat === "function"
+                ? String(!!mgmtShopBuiltinUsesOverallCompat(
+                    (s0 && s0.source_metric_id) || it.source_metric_id || "",
+                    (s0 && s0.source_result) || it.source_result || ""
+                ))
+                : "нет функции")
+            + "</div>"
+            + (cfgT && cfgT.inactive ? "<div><b>inactive:</b> " + escapeHtml(String(cfgT.inactive_reason || "yes")) + "</div>" : "")
+            + '<div class="note" style="margin-top:4px">Консоль: <code>wtDiagSpuShopPlanFact("2026-11-12")</code></div>'
+            + "</div>";
+    } catch (errTech) {}
     html += '<div class="toolbar"><button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Закрыть</button></div>';
     openMgmtModal(html);
 }

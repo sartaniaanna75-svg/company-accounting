@@ -12837,6 +12837,12 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertTrue(harness.is_file(), harness)
         src = self._src()
         self.assertIn("function mgmtShopBuiltinUsesOverallCompat(", src)
+        self.assertIn("function wtDiagSpuShopPlanFact(", src)
+        src_as = src[
+            src.find("function mgmtSourceAsIndicator(")
+            : src.find("function mgmtSourceAsIndicator(") + 900
+        ]
+        self.assertIn("parent.source_metric_id", src_as)
         self.assertIn('show_in_planfact: true', src[
             src.find('spu_code: "shop_checks"')
             : src.find('spu_code: "shop_avg"')
