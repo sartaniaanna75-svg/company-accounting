@@ -6874,6 +6874,9 @@ const SHOP_SELF_CHECKOUT = {
     isSalesChannel: true
 };
 const STORE_METRIC_VISITORS = "store_metric_visitors";
+/** Встроенные store-level итоги инвентаризации для СПУ (не assignable). */
+const STORE_METRIC_INVENTORY_RESULT = "store_metric_inventory_result";
+const WAREHOUSE_METRIC_INVENTORY_RESULT = "warehouse_metric_inventory_result";
 const METRIC_ID_ALIASES = {
     early730: "metric_arrival_730",
     display: "metric_display_positions",
@@ -8106,6 +8109,8 @@ function shopMetricCatalogSeed() {
         { id: "metric_sales", key: "sales", name: "Сумма продаж", section_id: "cashiers", fill_type: "money", sort_order: 10, assignable: false, core_column: true, use_in_spu: true },
         { id: "metric_checks", key: "receipts", name: "Количество чеков", section_id: "cashiers", fill_type: "number", sort_order: 20, assignable: false, core_column: true, use_in_spu: true },
         { id: STORE_METRIC_VISITORS, key: "visitors", name: "Количество покупателей", section_id: "cashiers", fill_type: "number", sort_order: 5, assignable: false, core_column: false, show_column: false, use_in_spu: true },
+        { id: STORE_METRIC_INVENTORY_RESULT, key: "inventoryResult", name: "Итог инвентаризации магазина", section_id: "managers", fill_type: "money", sort_order: 3, assignable: false, core_column: false, show_column: false, use_in_spu: true, department_id: "shop" },
+        { id: WAREHOUSE_METRIC_INVENTORY_RESULT, key: "inventoryResultWh", name: "Итог инвентаризации склада", section_id: "managers", fill_type: "money", sort_order: 3, assignable: false, core_column: false, show_column: false, use_in_spu: true, department_id: "warehouse" },
         { id: "metric_average_check", key: "avgCheck", name: "Средний чек", section_id: "cashiers", fill_type: "auto_calc", sort_order: 30, assignable: false, core_column: true },
         { id: "metric_supplier_orders", key: "supplierOrders", name: "Кол-во заказов поставщикам", section_id: "managers", fill_type: "number", sort_order: 10, assignable: true, core_column: true },
         { id: "metric_order_positions", key: "orderPositions", name: "Кол-во позиций в заказе", section_id: "managers", fill_type: "number", sort_order: 20, assignable: true, core_column: true },
@@ -20018,7 +20023,7 @@ function ensureShopMetricCatalog() {
                 show_column: seed.show_column !== false,
                 use_in_spu: seed.use_in_spu === true,
                 builtin: true,
-                department_id: "shop",
+                department_id: seed.department_id || "shop",
                 position_titles: [],
                 formula: seed.formula || null
             });
@@ -20034,11 +20039,15 @@ function ensureShopMetricCatalog() {
         if (!found.fill_type) found.fill_type = seed.fill_type;
         if (found.sort_order == null) found.sort_order = seed.sort_order;
         if (found.active == null) found.active = true;
-        if (!found.department_id) found.department_id = "shop";
+        if (!found.department_id) found.department_id = seed.department_id || "shop";
+        if (seed.department_id && (found.id === STORE_METRIC_INVENTORY_RESULT
+            || found.id === WAREHOUSE_METRIC_INVENTORY_RESULT)) {
+            found.department_id = seed.department_id;
+        }
         if (!Array.isArray(found.position_titles)) found.position_titles = [];
         if (!found.formula && seed.formula) found.formula = seed.formula;
         if (!found.name) found.name = seed.name;
-        /* Встроенные итоги магазина для СПУ — мягко включить участие (без массовой миграции строк СПУ). */
+        /* Встроенные итоги магазина/склада для СПУ — мягко включить участие (без массовой миграции строк СПУ). */
         if (seed.use_in_spu === true) found.use_in_spu = true;
     });
     list.forEach(function (it) {
@@ -47462,28 +47471,42 @@ function metricUseInSpu(item) {
     return !!(item && item.use_in_spu === true);
 }
 
-/** Встроенные итоги магазина (не assignable): продажи, чеки, покупатели — для picker СПУ. */
+/** Встроенные итоги магазина/склада (не assignable): sales/checks/visitors/inventory — для picker СПУ. */
 function spuIsShopBuiltinTotalMetric(metricId) {
     const id = canonicalMetricId(metricId);
     if (!id) return false;
     if (id === "metric_sales" || id === "metric_checks") return true;
     if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") return true;
+    if (id === STORE_METRIC_INVENTORY_RESULT || id === "store_metric_inventory_result") return true;
+    if (id === WAREHOUSE_METRIC_INVENTORY_RESULT || id === "warehouse_metric_inventory_result") return true;
     return false;
 }
 
 /**
- * Мягко держать встроенные итоги магазина доступными в «Из Work Time».
+ * Мягко держать встроенные итоги магазина/склада доступными в «Из Work Time».
  * Не пишет в БД само; не трогает строки СПУ (mind_*). Только каталог в памяти.
  */
 function spuEnsureShopBuiltinTotalsForSpu() {
     const list = (appData && appData.shopMetricCatalog && appData.shopMetricCatalog.items) || [];
-    const ids = ["metric_sales", "metric_checks", STORE_METRIC_VISITORS];
-    ids.forEach(function (id) {
-        const it = list.find(function (x) { return x && canonicalMetricId(x.id) === canonicalMetricId(id); });
+    const specs = [
+        { id: "metric_sales", dept: "shop" },
+        { id: "metric_checks", dept: "shop" },
+        { id: STORE_METRIC_VISITORS, dept: "shop" },
+        { id: STORE_METRIC_INVENTORY_RESULT, dept: "shop" },
+        { id: WAREHOUSE_METRIC_INVENTORY_RESULT, dept: "warehouse" }
+    ];
+    specs.forEach(function (spec) {
+        const it = list.find(function (x) { return x && canonicalMetricId(x.id) === canonicalMetricId(spec.id); });
         if (!it) return;
         it.use_in_spu = true;
         it.active = it.active !== false;
         if (it.assignable == null) it.assignable = false;
+        if (it.show_column == null && (spec.id === STORE_METRIC_INVENTORY_RESULT
+            || spec.id === WAREHOUSE_METRIC_INVENTORY_RESULT
+            || spec.id === STORE_METRIC_VISITORS)) {
+            it.show_column = false;
+        }
+        if (spec.dept) it.department_id = spec.dept;
     });
 }
 
@@ -47493,6 +47516,12 @@ function spuWorkMetricPickerLabel(m) {
     if (id === "metric_checks") return "Количество чеков магазина (кассиры + КСО)";
     if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") {
         return "Количество покупателей магазина";
+    }
+    if (id === STORE_METRIC_INVENTORY_RESULT || id === "store_metric_inventory_result") {
+        return "Итог инвентаризации магазина";
+    }
+    if (id === WAREHOUSE_METRIC_INVENTORY_RESULT || id === "warehouse_metric_inventory_result") {
+        return "Итог инвентаризации склада";
     }
     return (m && m.name) || id || "";
 }
@@ -47790,7 +47819,8 @@ function spuIndSrcMetricPickerHtml(s, allMetrics) {
     } else {
         html += '<div class="note" style="margin:4px 0 0">Показано ' + filtered.length + " из " + (allMetrics || []).length
             + ". Фильтр только для выбора источника — metric_id и данные метрики не меняются. "
-            + "Итоги магазина (продажи, чеки, покупатели) доступны как встроенные источники карточек кассиров.</div>";
+            + "Итоги магазина (продажи, чеки, покупатели, инвентаризация) и склада (инвентаризация) "
+            + "доступны как встроенные источники.</div>";
     }
     html += "</div>";
     return html;
@@ -52885,7 +52915,10 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
     const out = { present: false, series: [], mode: "empty", value: null };
     if (!mid) return out;
     const item = shopMetricCatalogById(mid);
-    if (!item && mid !== STORE_METRIC_VISITORS && mid !== "store_metric_visitors") {
+    const allowNoCatalog = mid === STORE_METRIC_VISITORS || mid === "store_metric_visitors"
+        || mid === STORE_METRIC_INVENTORY_RESULT || mid === "store_metric_inventory_result"
+        || mid === WAREHOUSE_METRIC_INVENTORY_RESULT || mid === "warehouse_metric_inventory_result";
+    if (!item && !allowNoCatalog) {
         out.mode = "no_catalog";
         return out;
     }
@@ -52913,6 +52946,35 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
                 : null;
             if (!rec || rec.visitors == null || rec.visitors === "") return;
             const n = Number(rec.visitors || 0);
+            if (!Number.isFinite(n)) return;
+            out.series.push(n);
+        });
+        out.present = out.series.length > 0;
+        return out;
+    }
+    /* Итог инвентаризации магазина: shopInventoryDayResult, знак сохраняется; пустая неделя → null. */
+    if (mid === STORE_METRIC_INVENTORY_RESULT || mid === "store_metric_inventory_result") {
+        out.mode = "inventory_shop";
+        (days || []).forEach(function (d) {
+            const month = d.month || selectedMonth;
+            if (typeof shopInventoryDayResult !== "function") return;
+            const v = shopInventoryDayResult(d.day, month);
+            if (v == null || !Number.isFinite(Number(v))) return;
+            out.series.push(Number(v));
+        });
+        out.present = out.series.length > 0;
+        return out;
+    }
+    /* Итог инвентаризации склада: один день — один итог warehouse; не смешивать с магазином. */
+    if (mid === WAREHOUSE_METRIC_INVENTORY_RESULT || mid === "warehouse_metric_inventory_result") {
+        out.mode = "inventory_warehouse";
+        (days || []).forEach(function (d) {
+            const month = d.month || selectedMonth;
+            if (typeof deptInventoryDayHasValues !== "function"
+                || typeof getDeptInventoryDay !== "function") return;
+            if (!deptInventoryDayHasValues("warehouse", d.day, month)) return;
+            const rec = getDeptInventoryDay("warehouse", d.day, month);
+            const n = Number(rec && rec.result);
             if (!Number.isFinite(n)) return;
             out.series.push(n);
         });
@@ -53022,8 +53084,8 @@ function mgmtCollectAssignedWorktimeMetricSeries(hostDept, metricId, subId, days
  * без копирования фактов; агрегация — из настройки Показателя / period_agg метрики.
  */
 /**
- * Магазин: sales/checks/visitors на legacy department_total|metric_total|fact
- * читаем тем же overall-путём (слоты+КСО / store), без миграции source_result в БД.
+ * Builtin shop/warehouse totals на legacy department_total|metric_total|fact
+ * читаем тем же overall-путём, без миграции source_result в БД.
  * group_total не трогаем.
  */
 function mgmtShopBuiltinUsesOverallCompat(mid, srcResult) {
@@ -53036,6 +53098,8 @@ function mgmtShopBuiltinUsesOverallCompat(mid, srcResult) {
     if (!legacy) return false;
     if (id === "metric_sales" || id === "metric_checks") return true;
     if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") return true;
+    if (id === STORE_METRIC_INVENTORY_RESULT || id === "store_metric_inventory_result") return true;
+    if (id === WAREHOUSE_METRIC_INVENTORY_RESULT || id === "warehouse_metric_inventory_result") return true;
     return false;
 }
 
@@ -58348,6 +58412,196 @@ function saveSpuKeyBlock() {
 }
 
 /**
+ * Read-only диагностика инвентаризация магазин/склад → СПУ (консоль).
+ * Пример: wtDiagSpuInventory("2026-11-12")
+ * Не пишет в БД / SoftSync / факты.
+ */
+function wtDiagSpuInventory(weekFromIso) {
+    const weekIso = String(weekFromIso || "2026-11-12");
+    const out = {
+        week: weekIso,
+        shopBuiltin: STORE_METRIC_INVENTORY_RESULT,
+        warehouseBuiltin: WAREHOUSE_METRIC_INVENTORY_RESULT,
+        shopCatalog: !!(typeof shopMetricCatalogById === "function"
+            && shopMetricCatalogById(STORE_METRIC_INVENTORY_RESULT)),
+        warehouseCatalog: !!(typeof shopMetricCatalogById === "function"
+            && shopMetricCatalogById(WAREHOUSE_METRIC_INVENTORY_RESULT)),
+        shopMetricsInventoryMonths: Object.keys(
+            (appData && appData.shopMetrics && appData.shopMetrics.inventoryResults) || {}
+        ),
+        warehouseInventoryMonths: Object.keys(
+            (appData && appData.deptMetrics && appData.deptMetrics.warehouse
+                && appData.deptMetrics.warehouse.inventoryResults) || {}
+        ),
+        rows: [],
+        daily: { shop: [], warehouse: [] },
+        totals: { shop: null, warehouse: null },
+        reasons: []
+    };
+    let days = [];
+    try {
+        days = typeof mgmtRunInThuWeek === "function"
+            ? mgmtRunInThuWeek(weekIso, function () {
+                return typeof mgmtDaysInPeriod === "function" ? mgmtDaysInPeriod() : [];
+            })
+            : [];
+    } catch (errDays) {
+        out.reasons.push("days: " + String(errDays && errDays.message || errDays));
+    }
+    out.days = (days || []).map(function (d) {
+        return { day: d.day, month: d.month };
+    });
+    function pushDaily(kind, mid) {
+        (days || []).forEach(function (d) {
+            const month = d.month || String(weekIso).slice(0, 7);
+            let present = false;
+            let value = null;
+            if (kind === "shop" && typeof shopInventoryDayResult === "function") {
+                const v = shopInventoryDayResult(d.day, month);
+                if (v != null && Number.isFinite(Number(v))) {
+                    present = true;
+                    value = Number(v);
+                }
+            } else if (kind === "warehouse"
+                && typeof deptInventoryDayHasValues === "function"
+                && typeof getDeptInventoryDay === "function") {
+                if (deptInventoryDayHasValues("warehouse", d.day, month)) {
+                    const n = Number(getDeptInventoryDay("warehouse", d.day, month).result);
+                    if (Number.isFinite(n)) {
+                        present = true;
+                        value = n;
+                    }
+                }
+            }
+            out.daily[kind].push({
+                day: d.day, month: month, present: present, value: value, metric: mid
+            });
+        });
+    }
+    pushDaily("shop", STORE_METRIC_INVENTORY_RESULT);
+    pushDaily("warehouse", WAREHOUSE_METRIC_INVENTORY_RESULT);
+    function sumDaily(kind) {
+        const series = (out.daily[kind] || []).filter(function (r) { return r.present; })
+            .map(function (r) { return r.value; });
+        if (!series.length) return null;
+        return series.reduce(function (a, b) { return a + Number(b); }, 0);
+    }
+    out.totals.shop = sumDaily("shop");
+    out.totals.warehouse = sumDaily("warehouse");
+    function overallFor(mid) {
+        try {
+            if (typeof mgmtCollectMetricOverallSeries !== "function") return null;
+            return mgmtRunInThuWeek(weekIso, function () {
+                return mgmtCollectMetricOverallSeries(mid, "", mgmtDaysInPeriod());
+            });
+        } catch (errO) {
+            return { error: String(errO && errO.message || errO) };
+        }
+    }
+    out.overallShop = overallFor(STORE_METRIC_INVENTORY_RESULT);
+    out.overallWarehouse = overallFor(WAREHOUSE_METRIC_INVENTORY_RESULT);
+    if (out.totals.shop == null) out.reasons.push("shop: нет дневных итогов за неделю → fact null");
+    if (out.totals.warehouse == null) out.reasons.push("warehouse: нет дневных итогов за неделю → fact null");
+    let n = 0;
+    function walk(nodeId) {
+        spuOrgChildren(nodeId, false).forEach(function (node) {
+            if (!node || node.is_active === false) return;
+            const items = spuOrgIndicatorsForNode(node.org_node_id).filter(function (it) {
+                return it && it.is_deleted !== true;
+            });
+            items.forEach(function (it) {
+                n += 1;
+                const name = String(it.name || "");
+                const code = String(it.spu_code || "");
+                const cfg = typeof spuActiveConfig === "function" ? spuActiveConfig(it) : null;
+                const src0 = cfg && cfg.sources && cfg.sources[0] ? cfg.sources[0] : null;
+                const mid = (src0 && src0.source_metric_id) || it.source_metric_id || "";
+                const sres = (src0 && src0.source_result) || it.source_result || "";
+                const midCan = typeof canonicalMetricId === "function" ? canonicalMetricId(mid) : mid;
+                const hit = /инвентар/i.test(name) || /inv/i.test(code)
+                    || midCan === STORE_METRIC_INVENTORY_RESULT
+                    || midCan === WAREHOUSE_METRIC_INVENTORY_RESULT
+                    || midCan === "store_metric_inventory_result"
+                    || midCan === "warehouse_metric_inventory_result"
+                    || code === "wh_inv";
+                if (!hit) return;
+                const pack = typeof mgmtPfRead === "function"
+                    ? mgmtPfRead(it, weekIso)
+                    : { fact: null, read: { status: "n/a" } };
+                let overall = null;
+                try {
+                    if (mid && typeof mgmtCollectMetricOverallSeries === "function") {
+                        overall = mgmtRunInThuWeek(weekIso, function () {
+                            return mgmtCollectMetricOverallSeries(
+                                mid, it.source_submetric_id, mgmtDaysInPeriod()
+                            );
+                        });
+                    }
+                } catch (errRow) {
+                    overall = { error: String(errRow && errRow.message || errRow) };
+                }
+                let whyEmpty = "";
+                if (it.source_type === "manual") whyEmpty = "source_type=manual";
+                else if (!mid) whyEmpty = "нет source_metric_id";
+                else if (!(midCan === STORE_METRIC_INVENTORY_RESULT
+                    || midCan === WAREHOUSE_METRIC_INVENTORY_RESULT
+                    || midCan === "store_metric_inventory_result"
+                    || midCan === "warehouse_metric_inventory_result")) {
+                    whyEmpty = "метрика не inventory builtin (" + mid + ")";
+                } else if (!(sres === "metric_overall"
+                    || (typeof mgmtShopBuiltinUsesOverallCompat === "function"
+                        && mgmtShopBuiltinUsesOverallCompat(mid, sres)))) {
+                    whyEmpty = "source_result не overall/compat (" + sres + ")";
+                } else if (!(overall && overall.present)) {
+                    whyEmpty = "нет дневных данных overall";
+                }
+                out.rows.push({
+                    pfNo: n,
+                    indicator_id: it.indicator_id,
+                    name: name,
+                    spu_code: code,
+                    show_in_planfact: it.show_in_planfact === true,
+                    source_type: it.source_type,
+                    source_metric_id: it.source_metric_id || "",
+                    source_result: it.source_result || "",
+                    sources0_metric: src0 ? (src0.source_metric_id || "") : "",
+                    sources0_result: src0 ? (src0.source_result || "") : "",
+                    versions: (it.source_versions || []).length,
+                    inactive: !!(cfg && cfg.inactive),
+                    compat: typeof mgmtShopBuiltinUsesOverallCompat === "function"
+                        ? mgmtShopBuiltinUsesOverallCompat(mid, sres)
+                        : false,
+                    overall_present: overall && overall.present,
+                    overall_mode: overall && overall.mode,
+                    overall_series: overall && overall.series ? overall.series.slice() : [],
+                    overall_sum: overall && overall.present
+                        ? (typeof aggregateMetricNumbers === "function"
+                            ? aggregateMetricNumbers(overall.series, "sum")
+                            : null)
+                        : null,
+                    fact: pack.fact,
+                    status: pack.read && pack.read.status,
+                    why_empty: whyEmpty
+                });
+            });
+            walk(node.org_node_id);
+        });
+    }
+    try {
+        walk("");
+    } catch (errW) {
+        out.walkError = String(errW && errW.message || errW);
+    }
+    if (!out.rows.length) {
+        out.reasons.push("в дереве СПУ не найдены показатели с «инвентар» / wh_inv / inventory builtin");
+    }
+    try {
+        console.log("wtDiagSpuInventory", out);
+    } catch (errC) {}
+    return out;
+}
+
+/**
  * Read-only диагностика магазин→СПУ (консоль): реальные indicator_id, sources, факт.
  * Пример: wtDiagSpuShopPlanFact("2026-11-12")
  * Не пишет в БД / SoftSync.
@@ -58517,7 +58771,8 @@ function openSpuIndicatorDataOrigin(indicatorId) {
                 : "нет функции")
             + "</div>"
             + (cfgT && cfgT.inactive ? "<div><b>inactive:</b> " + escapeHtml(String(cfgT.inactive_reason || "yes")) + "</div>" : "")
-            + '<div class="note" style="margin-top:4px">Консоль: <code>wtDiagSpuShopPlanFact("2026-11-12")</code></div>'
+            + '<div class="note" style="margin-top:4px">Консоль: <code>wtDiagSpuShopPlanFact("2026-11-12")</code>'
+            + ' · <code>wtDiagSpuInventory("2026-11-12")</code></div>'
             + "</div>";
     } catch (errTech) {}
     html += '<div class="toolbar"><button type="button" class="btn btn-secondary" onclick="closeMgmtModal()">Закрыть</button></div>';

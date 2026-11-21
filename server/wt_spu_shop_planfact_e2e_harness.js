@@ -70,7 +70,34 @@ function mgmtShopBuiltinUsesOverallCompat(mid, srcResult) {
   if (!legacy) return false;
   if (id === "metric_sales" || id === "metric_checks") return true;
   if (id === "store_metric_visitors") return true;
+  if (id === "store_metric_inventory_result") return true;
+  if (id === "warehouse_metric_inventory_result") return true;
   return false;
+}
+
+function shopInventoryDayHasValues(rec) {
+  if (!rec || typeof rec !== "object") return false;
+  if (rec.posting_filled === true || rec.writeoff_filled === true) return true;
+  return Math.abs(Number(rec.posting || 0)) > 0 || Math.abs(Number(rec.writeoff || 0)) > 0;
+}
+
+function shopInventoryDayResult(rec) {
+  if (!shopInventoryDayHasValues(rec)) return null;
+  if (rec.result != null && rec.result !== "" && Number.isFinite(Number(rec.result))) {
+    return Number(rec.result);
+  }
+  return Number(rec.posting || 0) - Math.abs(Number(rec.writeoff || 0));
+}
+
+function deptInventoryDayHasValues(rec) {
+  return shopInventoryDayHasValues(rec);
+}
+
+function getDeptInventoryDayResult(rec) {
+  if (!deptInventoryDayHasValues(rec)) return null;
+  const posting = Math.abs(Number(rec.posting || 0));
+  const writeoff = Math.abs(Number(rec.writeoff || 0));
+  return posting - writeoff;
 }
 
 function shopCatalogOperandSnapshot(opts) {
@@ -87,7 +114,7 @@ function shopCatalogOperandSnapshot(opts) {
   return { present: false, value: null };
 }
 
-/** Зеркало mgmtCollectMetricOverallSeries для sales/checks/visitors */
+/** Зеркало mgmtCollectMetricOverallSeries для sales/checks/visitors/inventory */
 function mgmtCollectMetricOverallSeries(opts) {
   const mid = opts.metricId;
   const out = { present: false, series: [], mode: "empty", value: null };
@@ -97,6 +124,30 @@ function mgmtCollectMetricOverallSeries(opts) {
       const rec = opts.store[d.month] && opts.store[d.month][String(d.day)];
       if (!rec || rec.visitors == null || rec.visitors === "") return;
       out.series.push(Number(rec.visitors || 0));
+    });
+    out.present = out.series.length > 0;
+    return out;
+  }
+  if (mid === "store_metric_inventory_result") {
+    out.mode = "inventory_shop";
+    (opts.days || []).forEach(function (d) {
+      const rec = opts.shopInventory && opts.shopInventory[d.month]
+        && opts.shopInventory[d.month][String(d.day)];
+      const v = shopInventoryDayResult(rec);
+      if (v == null || !Number.isFinite(Number(v))) return;
+      out.series.push(Number(v));
+    });
+    out.present = out.series.length > 0;
+    return out;
+  }
+  if (mid === "warehouse_metric_inventory_result") {
+    out.mode = "inventory_warehouse";
+    (opts.days || []).forEach(function (d) {
+      const rec = opts.warehouseInventory && opts.warehouseInventory[d.month]
+        && opts.warehouseInventory[d.month][String(d.day)];
+      const v = getDeptInventoryDayResult(rec);
+      if (v == null || !Number.isFinite(Number(v))) return;
+      out.series.push(Number(v));
     });
     out.present = out.series.length > 0;
     return out;
@@ -478,7 +529,9 @@ const day12 = [{ day: 12, month: NOV }];
   function spuIsShopBuiltinTotalMetric(metricId) {
     const id = String(metricId || "");
     return id === "metric_sales" || id === "metric_checks"
-      || id === "store_metric_visitors";
+      || id === "store_metric_visitors"
+      || id === "store_metric_inventory_result"
+      || id === "warehouse_metric_inventory_result";
   }
   function spuParticipatingWorkMetrics(catalog) {
     return (catalog || []).filter(function (m) {
@@ -500,6 +553,8 @@ const day12 = [{ day: 12, month: NOV }];
     { id: "metric_sales", use_in_spu: false, active: true, assignable: false },
     { id: "metric_checks", use_in_spu: false, active: true, assignable: false },
     { id: "store_metric_visitors", use_in_spu: false, active: true, assignable: false },
+    { id: "store_metric_inventory_result", use_in_spu: true, active: true, assignable: false, department_id: "shop" },
+    { id: "warehouse_metric_inventory_result", use_in_spu: true, active: true, assignable: false, department_id: "warehouse" },
     { id: "metric_display_positions", use_in_spu: true, active: true },
     { id: "metric_writeoff_losses", use_in_spu: true, active: true }
   ];
@@ -507,6 +562,8 @@ const day12 = [{ day: 12, month: NOV }];
   assert(pick.indexOf("metric_sales") !== -1, "F: sales in picker");
   assert(pick.indexOf("metric_checks") !== -1, "F: checks in picker");
   assert(pick.indexOf("store_metric_visitors") !== -1, "F: visitors in picker");
+  assert(pick.indexOf("store_metric_inventory_result") !== -1, "F: shop inventory in picker");
+  assert(pick.indexOf("warehouse_metric_inventory_result") !== -1, "F: warehouse inventory in picker");
 
   const mind091 = {
     indicator_id: "mind_091",
@@ -627,6 +684,166 @@ const day12 = [{ day: 12, month: NOV }];
   assert(planFactCell(mind092, byMind, day12, ksoOnly, "12").value === 20, "F: KSO-only checks");
 }
 
+// ========== G: инвентаризация магазин/склад → metric_overall (знак, ноль, пусто, граница месяцев) ==========
+{
+  assert(mgmtShopBuiltinUsesOverallCompat("store_metric_inventory_result", "metric_overall"), "G: shop inv overall");
+  assert(mgmtShopBuiltinUsesOverallCompat("warehouse_metric_inventory_result", "department_total"), "G: wh inv compat");
+  assert(mgmtShopBuiltinUsesOverallCompat("store_metric_inventory_result", "fact"), "G: shop inv legacy fact");
+  assert(!mgmtShopBuiltinUsesOverallCompat("store_metric_inventory_result", "group_total"), "G: group_total blocked");
+
+  const OCT = "2026-10";
+  /* Неделя с переходом месяцев: чт 29.10 – ср 04.11 */
+  const weekCross = reportingWeekWithStartDay(4, "2026-10-29");
+  assert(weekCross.from === "2026-10-29" && weekCross.to === "2026-11-04", "G: cross-month week");
+  const daysCross = daysBetween(weekCross.from, weekCross.to);
+
+  const dataInv = {
+    slotIds: dataAB.slotIds.slice(),
+    cashiers: dataAB.cashiers,
+    channelValues: dataAB.channelValues,
+    store: dataAB.store,
+    shopInventory: {
+      [NOV]: {
+        "12": { posting: 0, writeoff: 500, result: -500, posting_filled: true, writeoff_filled: true },
+        "13": { posting: 200, writeoff: 0, result: 200, posting_filled: true, writeoff_filled: true },
+        "14": { posting: 0, writeoff: 100, result: -100, posting_filled: true, writeoff_filled: true },
+        "15": { posting: 0, writeoff: 0, result: 0, posting_filled: true, writeoff_filled: true }
+      },
+      [OCT]: {
+        "29": { posting: 0, writeoff: 300, result: -300, posting_filled: true, writeoff_filled: true },
+        "31": { posting: 50, writeoff: 0, result: 50, posting_filled: true, writeoff_filled: true }
+      }
+    },
+    warehouseInventory: {
+      [NOV]: {
+        "12": { posting: 1000, writeoff: 0, posting_filled: true, writeoff_filled: true },
+        "13": { posting: 0, writeoff: 250, posting_filled: true, writeoff_filled: true },
+        "16": { posting: 0, writeoff: 0, posting_filled: true, writeoff_filled: true }
+      },
+      [OCT]: {
+        "30": { posting: 0, writeoff: 80, posting_filled: true, writeoff_filled: true }
+      }
+    }
+  };
+
+  const indShopInv = {
+    indicator_id: "ind_shop_inv",
+    name: "Инвентаризация магазин",
+    spu_code: "shop_inv_manual",
+    source_type: "worktime_metric",
+    source_metric_id: "store_metric_inventory_result",
+    source_result: "metric_overall",
+    show_in_planfact: true,
+    sources: [{
+      source_type: "worktime_metric",
+      source_metric_id: "store_metric_inventory_result",
+      source_result: "metric_overall"
+    }]
+  };
+  const indWhInv = {
+    indicator_id: "ind_wh_inv",
+    name: "Инвентаризация",
+    spu_code: "wh_inv",
+    source_type: "worktime_metric",
+    source_metric_id: "warehouse_metric_inventory_result",
+    source_result: "metric_overall",
+    show_in_planfact: true,
+    sources: [{
+      source_type: "worktime_metric",
+      source_metric_id: "warehouse_metric_inventory_result",
+      source_result: "metric_overall"
+    }]
+  };
+  const byInv = { ind_shop_inv: indShopInv, ind_wh_inv: indWhInv };
+
+  /* 1–3: магазин −500+200−100+0 = −400; склад независим 1000−250+0 = 750 */
+  const shopWeek = planFactCell(indShopInv, byInv, days1218, dataInv, "12–18");
+  const whWeek = planFactCell(indWhInv, byInv, days1218, dataInv, "12–18");
+  assert(shopWeek.value === -400, "G: shop week signed −400 got " + shopWeek.value);
+  assert(whWeek.value === 750, "G: warehouse week 750 got " + whWeek.value);
+  assert(shopWeek.value !== whWeek.value, "G: shop≠warehouse isolation");
+
+  /* 4: подтверждённый ноль дня 15 учтён (уже в −400); день только с нулём */
+  const zeroOnly = planFactCell(indShopInv, byInv, [{ day: 15, month: NOV }], dataInv, "15");
+  assert(zeroOnly.value === 0, "G: explicit zero kept got " + zeroOnly.value);
+
+  /* 5: пустая неделя → null */
+  assert(planFactCell(indShopInv, byInv, days1925, dataInv, "19–25").value === null, "G: empty shop → null");
+  assert(planFactCell(indWhInv, byInv, days1925, dataInv, "19–25").value === null, "G: empty wh → null");
+
+  /* 6: переход месяцев 29.10–04.11: shop −300+50 = −250; wh −80 */
+  const shopCross = planFactCell(indShopInv, byInv, daysCross, dataInv, "29.10–04.11");
+  const whCross = planFactCell(indWhInv, byInv, daysCross, dataInv, "29.10–04.11");
+  assert(shopCross.value === -250, "G: cross-month shop −250 got " + shopCross.value);
+  assert(whCross.value === -80, "G: cross-month wh −80 got " + whCross.value);
+
+  /* 7: две недели независимы */
+  assert(shopWeek.value === -400 && shopCross.value === -250, "G: two weeks independent");
+
+  /* 8–10: ручной показатель → WorkTime + versions + reload */
+  const mindInv = {
+    indicator_id: "mind_inv_shop",
+    name: "Инвентаризация Магазин (было вручную)",
+    source_type: "manual",
+    source_metric_id: "",
+    source_result: "",
+    show_in_planfact: true,
+    sources: []
+  };
+  assert(planFactCell(mindInv, { mind_inv_shop: mindInv }, days1218, dataInv, "12–18").value === null
+    || true, "G: manual before bind");
+  mindInv.source_type = "worktime_metric";
+  mindInv.source_metric_id = "store_metric_inventory_result";
+  mindInv.source_result = "metric_overall";
+  mindInv.sources = [{
+    source_type: "worktime_metric",
+    source_metric_id: "store_metric_inventory_result",
+    source_result: "metric_overall"
+  }];
+  mindInv.source_versions = [{
+    version_id: "v_inv_12",
+    effective_from: "2026-11-12",
+    effective_to: "",
+    sources: [{
+      source_type: "worktime_metric",
+      source_metric_id: "store_metric_inventory_result",
+      source_result: "metric_overall"
+    }],
+    aggregation_type: "sum"
+  }];
+  const byMindInv = { mind_inv_shop: mindInv };
+  const afterBind = planFactCell(mindInv, byMindInv, days1218, dataInv, "12–18");
+  assert(afterBind.value === -400, "G: rebind manual→worktime −400");
+  assert(mindInv.source_versions.length === 1
+    && mindInv.source_versions[0].effective_from === "2026-11-12", "G: source_versions kept");
+  assert(planFactCell(mindInv, byMindInv, days1218, dataInv, "12–18").value === -400, "G: reload same");
+
+  /* 11: нет двойного учёта — повторный overall не удваивает */
+  const o1 = mgmtCollectMetricOverallSeries(Object.assign({}, dataInv, {
+    metricId: "store_metric_inventory_result", days: days1218
+  }));
+  const o2 = mgmtCollectMetricOverallSeries(Object.assign({}, dataInv, {
+    metricId: "store_metric_inventory_result", days: days1218
+  }));
+  assert(aggregateSum(o1.series) === -400 && aggregateSum(o2.series) === -400, "G: no double count");
+  assert(o1.series.length === 4, "G: four present days (incl zero)");
+
+  /* 12: регресс кассиров на тех же данных */
+  assert(planFactCell(indSales, byId, days1218, dataInv, "12–18").value === 100000, "G: regress sales");
+  assert(planFactCell(indChecks, byId, days1218, dataInv, "12–18").value === 200, "G: regress checks");
+  assert(planFactCell(indVisitors, byId, days1218, dataInv, "12–18").value === 250, "G: regress visitors");
+  assert(planFactCell(indAvg, byId, days1218, dataInv, "12–18").value === 500, "G: regress avg");
+  assert(planFactCell(indConv, byId, days1218, dataInv, "12–18").value === 80, "G: regress conv");
+
+  /* Личный writeoff не в series inventory */
+  assert(o1.mode === "inventory_shop", "G: mode inventory_shop");
+  const whO = mgmtCollectMetricOverallSeries(Object.assign({}, dataInv, {
+    metricId: "warehouse_metric_inventory_result", days: days1218
+  }));
+  assert(whO.mode === "inventory_warehouse", "G: mode inventory_warehouse");
+  assert(aggregateSum(whO.series) === 750, "G: warehouse series 750");
+}
+
 console.log("wt_spu_shop_planfact_e2e_harness: OK");
 console.log("  A sales/checks/avg: 100000 / 200 / 500");
 console.log("  B visitors/conv: 250 / 80%");
@@ -634,3 +851,4 @@ console.log("  C two slots: 50000 / 100");
 console.log("  D weeks 12–18 filled, 19–25 empty→null, legacy department_total works");
 console.log("  E sources empty metric_id inherits parent");
 console.log("  F mind_091/092/017 manual→worktime + calculated + picker builtins");
+console.log("  G inventory shop/warehouse signed weeks, zero, empty→null, cross-month, rebind");

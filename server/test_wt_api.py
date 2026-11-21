@@ -12808,8 +12808,15 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertIn('id === "metric_sales"', compat_fn)
         self.assertIn('id === "metric_checks"', compat_fn)
         self.assertIn("STORE_METRIC_VISITORS", compat_fn)
+        self.assertIn("STORE_METRIC_INVENTORY_RESULT", compat_fn)
+        self.assertIn("WAREHOUSE_METRIC_INVENTORY_RESULT", compat_fn)
         self.assertIn("department_total", compat_fn)
         self.assertIn('r === "group_total"', compat_fn)
+        self.assertIn('mode = "inventory_shop"', overall_fn)
+        self.assertIn('mode = "inventory_warehouse"', overall_fn)
+        self.assertIn("shopInventoryDayResult(", overall_fn)
+        self.assertIn("getDeptInventoryDay(", overall_fn)
+        self.assertIn("deptInventoryDayHasValues(", overall_fn)
 
     def test_harness_fourteen_checks(self):
         harness = Path(__file__).resolve().parent.joinpath(
@@ -12838,13 +12845,25 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         src = self._src()
         self.assertIn("function mgmtShopBuiltinUsesOverallCompat(", src)
         self.assertIn("function wtDiagSpuShopPlanFact(", src)
+        self.assertIn("function wtDiagSpuInventory(", src)
         self.assertIn("function spuIsShopBuiltinTotalMetric(", src)
         self.assertIn("function spuEnsureShopBuiltinTotalsForSpu(", src)
         self.assertIn("function spuWorkMetricPickerLabel(", src)
-        self.assertIn("STORE_METRIC_VISITORS", src[
+        seed_chunk = src[
             src.find("function shopMetricCatalogSeed(")
-            : src.find("function shopMetricCatalogSeed(") + 2500
-        ])
+            : src.find("function shopMetricCatalogSeed(") + 3500
+        ]
+        self.assertIn("STORE_METRIC_VISITORS", seed_chunk)
+        self.assertIn("STORE_METRIC_INVENTORY_RESULT", seed_chunk)
+        self.assertIn("WAREHOUSE_METRIC_INVENTORY_RESULT", seed_chunk)
+        self.assertIn("store_metric_inventory_result", src)
+        self.assertIn("warehouse_metric_inventory_result", src)
+        builtin_fn = src[
+            src.find("function spuIsShopBuiltinTotalMetric(")
+            : src.find("function spuEnsureShopBuiltinTotalsForSpu(")
+        ]
+        self.assertIn("STORE_METRIC_INVENTORY_RESULT", builtin_fn)
+        self.assertIn("WAREHOUSE_METRIC_INVENTORY_RESULT", builtin_fn)
         part = src[
             src.find("function spuParticipatingWorkMetrics(")
             : src.find("function spuParticipatingWorkMetrics(") + 900
@@ -12859,6 +12878,10 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
             src.find('spu_code: "shop_checks"')
             : src.find('spu_code: "shop_avg"')
         ])
+        harness_txt = harness.read_text(encoding="utf-8")
+        self.assertIn("store_metric_inventory_result", harness_txt)
+        self.assertIn("warehouse_metric_inventory_result", harness_txt)
+        self.assertIn("G: shop week signed", harness_txt)
         node = os.environ.get("WT_NODE") or "node"
         try:
             proc = subprocess.run(
@@ -12872,6 +12895,7 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
             self.skipTest("node недоступен для harness shop planfact e2e")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_shop_planfact_e2e_harness: OK", proc.stdout)
+        self.assertIn("G inventory shop/warehouse", proc.stdout)
 
 
 class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):
