@@ -12791,14 +12791,25 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         ]
         self.assertIn('srcResult === "metric_overall"', fact_fn)
         self.assertIn("mgmtCollectMetricOverallSeries(", fact_fn)
+        self.assertIn("mgmtShopBuiltinUsesOverallCompat(", fact_fn)
         # E1 guard сохранён
         collect = src[
             src.find("function collectDeptMetricPeriodSeries(")
             : src.find("function driverMetricEntriesMonth(")
         ]
         self.assertIn('territoryCat === "drivers"', collect)
-        # legacy metric_total не переведён в overall-ветку как alias
+        # legacy metric_total не как прямой alias в if — только через shop-compat helper
         self.assertNotIn('srcResult === "metric_total"', fact_fn)
+        self.assertIn("function mgmtShopBuiltinUsesOverallCompat(", src)
+        compat_fn = src[
+            src.find("function mgmtShopBuiltinUsesOverallCompat(")
+            : src.find("function mgmtMetricFact(")
+        ]
+        self.assertIn('id === "metric_sales"', compat_fn)
+        self.assertIn('id === "metric_checks"', compat_fn)
+        self.assertIn("STORE_METRIC_VISITORS", compat_fn)
+        self.assertIn("department_total", compat_fn)
+        self.assertIn('r === "group_total"', compat_fn)
 
     def test_harness_fourteen_checks(self):
         harness = Path(__file__).resolve().parent.joinpath(
@@ -12818,6 +12829,31 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
             self.skipTest("node недоступен для harness spu metric overall")
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_metric_overall_harness: OK", proc.stdout)
+
+    def test_shop_planfact_e2e_harness(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_shop_planfact_e2e_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        src = self._src()
+        self.assertIn("function mgmtShopBuiltinUsesOverallCompat(", src)
+        self.assertIn('show_in_planfact: true', src[
+            src.find('spu_code: "shop_checks"')
+            : src.find('spu_code: "shop_avg"')
+        ])
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness shop planfact e2e")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_shop_planfact_e2e_harness: OK", proc.stdout)
 
 
 class WtSpuWorktimeSourceEffectiveMarkerTests(unittest.TestCase):

@@ -51519,6 +51519,14 @@ function spuAdoptIndicator(spec) {
         if (spec.show_in_planfact === false && found.show_in_planfact == null) {
             found.show_in_planfact = false;
         }
+        /* Мягко включить в План–факт seed shop_* (чеки/покупатели ранее были false), без user_status_set. */
+        if (!found.user_status_set && spec.show_in_planfact === true
+            && (found.spu_code === "shop_checks" || found.spu_code === "shop_visitors"
+                || found.spu_code === "shop_sales" || found.spu_code === "shop_avg"
+                || found.spu_code === "shop_conversion")
+            && found.show_in_planfact !== true) {
+            found.show_in_planfact = true;
+        }
         if (spec.calc_left_code && !found.calc_left_id) {
             const left = (root.indicators || []).find(function (x) { return x && x.spu_code === spec.calc_left_code; });
             if (left) found.calc_left_id = left.indicator_id;
@@ -51609,10 +51617,10 @@ function ensureSpuDefaultIndicators() {
         });
     });
     specs.push(
-        { spu_code: "shop_sales", name: "Выручка", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopSales ? shopSales.id : "metric_sales", unit: "money", show_on_dashboard: true, sort_order: 210 },
-        { spu_code: "shop_checks", name: "Количество чеков", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopChecks ? shopChecks.id : "metric_checks", unit: "number", show_on_dashboard: true, show_in_planfact: false, sort_order: 220 },
-        { spu_code: "shop_avg", name: "Средний чек", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_sales", calc_right_code: "shop_checks", unit: "money", show_on_dashboard: true, sort_order: 230 },
-        { spu_code: "shop_visitors", name: "Количество покупателей", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopVisitors ? shopVisitors.id : STORE_METRIC_VISITORS, unit: "number", show_on_dashboard: true, show_in_planfact: false, sort_order: 240 },
+        { spu_code: "shop_sales", name: "Выручка", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopSales ? shopSales.id : "metric_sales", unit: "money", show_on_dashboard: true, show_in_planfact: true, sort_order: 210 },
+        { spu_code: "shop_checks", name: "Количество чеков", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopChecks ? shopChecks.id : "metric_checks", unit: "number", show_on_dashboard: true, show_in_planfact: true, sort_order: 220 },
+        { spu_code: "shop_avg", name: "Средний чек", department_id: "shop", source_type: "calculated", calc_op: "ratio", calc_left_code: "shop_sales", calc_right_code: "shop_checks", unit: "money", show_on_dashboard: true, show_in_planfact: true, sort_order: 230 },
+        { spu_code: "shop_visitors", name: "Количество покупателей", department_id: "shop", source_type: "worktime_metric", source_metric_id: shopVisitors ? shopVisitors.id : STORE_METRIC_VISITORS, unit: "number", show_on_dashboard: true, show_in_planfact: true, sort_order: 240 },
         { spu_code: "shop_conversion", name: "Конверсия покупатели → чеки", department_id: "shop", source_type: "calculated", calc_op: "percent", calc_left_code: "shop_checks", calc_right_code: "shop_visitors", unit: "percent", show_on_dashboard: true, show_in_planfact: true, sort_order: 245 },
         { spu_code: "shop_plan_fact", name: "Факт продаж", department_id: "shop", source_type: "sales_plan", source_sales_plan_view: "shop", source_sales_plan_field: "fact", unit: "money", show_on_dashboard: false, sort_order: 250 },
         { spu_code: "wh_assembled", name: "Количество собранных позиций", department_id: "warehouse", source_type: "worktime_metric", source_metric_id: whAssembled ? whAssembled.id : "", unit: "number", show_on_dashboard: true, sort_order: 310 },
@@ -52962,6 +52970,24 @@ function mgmtCollectAssignedWorktimeMetricSeries(hostDept, metricId, subId, days
  * только дни из days (mgmtDaysInPeriod), в т.ч. через границу месяцев;
  * без копирования фактов; агрегация — из настройки Показателя / period_agg метрики.
  */
+/**
+ * Магазин: sales/checks/visitors на legacy department_total|metric_total|fact
+ * читаем тем же overall-путём (слоты+КСО / store), без миграции source_result в БД.
+ * group_total не трогаем.
+ */
+function mgmtShopBuiltinUsesOverallCompat(mid, srcResult) {
+    const id = canonicalMetricId(mid);
+    if (!id) return false;
+    const r = String(srcResult || "department_total");
+    if (r === "metric_overall") return true;
+    if (r === "group_total") return false;
+    const legacy = (r === "department_total" || r === "metric_total" || r === "" || r === "fact");
+    if (!legacy) return false;
+    if (id === "metric_sales" || id === "metric_checks") return true;
+    if (id === STORE_METRIC_VISITORS || id === "store_metric_visitors") return true;
+    return false;
+}
+
 function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
     try {
         const mid = canonicalMetricId(metricId);
@@ -52975,9 +53001,10 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
          * Rollup-пилот склада — прежняя ветка ниже, без изменений. */
         const rollupPilot = !!(catalogItem && metricRollupEnabled(catalogItem)
             && metricDepartmentId(catalogItem) !== "shop");
-        /* metric_overall: общий итог всех участников таблицы WT; dept показателя игнорируется.
-         * Legacy metric_total остаётся на codes-пути (department_total) — без авто-миграции. */
-        if (!rollupPilot && srcResult === "metric_overall") {
+        /* metric_overall + совместимость legacy shop sales/checks/visitors (без записи в БД). */
+        if (!rollupPilot && (srcResult === "metric_overall"
+            || (typeof mgmtShopBuiltinUsesOverallCompat === "function"
+                && mgmtShopBuiltinUsesOverallCompat(mid, srcResult)))) {
             const overall = mgmtCollectMetricOverallSeries(mid, subId, dayList);
             if (!overall.present) return null;
             if (overall.mode === "auto_calc" && overall.value != null) return Number(overall.value);
