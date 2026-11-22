@@ -15091,5 +15091,52 @@ class WtSpuFinrecAdminGetStateTests(unittest.TestCase):
         )
 
 
+class WtSpuPlanUploadMarkerTests(unittest.TestCase):
+    """Маркеры раздела «Загрузка планов» + harness недель/пусто/конфликт."""
+
+    def _app(self):
+        root = Path(__file__).resolve().parents[1]
+        return (root / "app.html").read_text(encoding="utf-8")
+
+    def test_menu_and_helpers_markers(self):
+        src = self._app()
+        self.assertIn('data-section="management-planupload"', src)
+        self.assertIn("Загрузка планов", src)
+        self.assertIn("function renderSpuPlanUploadHtml(", src)
+        self.assertIn("function spuPlanUploadBuildPreview(", src)
+        self.assertIn("function spuPlanUploadApply(", src)
+        self.assertIn('origin: "plan_upload"', src)
+        self.assertIn("planUploadMapping", src)
+        self.assertIn("Конфликт с действующим механизмом плана", src)
+        # Приоритеты mgmtIndicatorPlan не переписывались под upload.
+        plan_fn = src[
+            src.find("function mgmtIndicatorPlan(")
+            : src.find("function mgmtSpuOrgOptionsHtml(")
+        ]
+        self.assertIn("spuComputedPeriodWeekPlan", plan_fn)
+        self.assertNotIn("plan_upload", plan_fn)
+
+    def test_server_mapping_perm(self):
+        api = Path(__file__).resolve().parent.joinpath("wt_api.py").read_text(encoding="utf-8")
+        self.assertIn('"planUploadMapping": "managementIndicators"', api)
+
+    def test_harness_plan_upload(self):
+        harness = Path(__file__).resolve().parent.joinpath("wt_spu_plan_upload_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для plan upload harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_plan_upload_harness: OK", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

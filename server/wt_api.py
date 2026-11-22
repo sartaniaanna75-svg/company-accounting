@@ -507,6 +507,8 @@ MGMT_KEY_PERMS = {
     # Планы управленческих периодов — та же зона, что plans/manualFacts (без новой роли).
     "period_plans": "managementIndicators",
     "mgmt_periods": "managementIndicators",
+    # Соответствие столбцов листа «Для СПУ» → indicator_id (раздел «Загрузка планов»).
+    "planUploadMapping": "managementIndicators",
     "spuOrgNodes": "managementStructure",
     "spuDepartments": "managementStructure",
     "tasks": "managementTasks",
