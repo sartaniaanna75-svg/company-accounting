@@ -52738,9 +52738,130 @@ function peekTimesheetDay(w, employeeId, day, month) {
     return rec || { status: "", hours: "", lateMinutes: 0 };
 }
 
+/** День недели 0=вс…6=сб для элемента mgmtDaysInPeriod. */
+function mgmtTimesheetDayWeekday(d) {
+    if (!d) return -1;
+    if (d.iso && typeof mgmtParseIso === "function") {
+        const dt = mgmtParseIso(String(d.iso).slice(0, 10));
+        if (dt && !isNaN(dt.getTime())) return dt.getDay();
+    }
+    if (d.month && d.day != null) {
+        const p = String(d.month).split("-").map(Number);
+        if (p.length >= 2 && p[0] && p[1]) {
+            return new Date(p[0], p[1] - 1, Number(d.day), 12, 0, 0).getDay();
+        }
+    }
+    return -1;
+}
+
+/**
+ * Выходной по графику: не в знаменателе FTE.
+ * — статус «В»;
+ * — для Территории (office/warehouse/drivers) — воскресенье.
+ * Магазин: только индивидуальные «В» (магазин без общих выходных).
+ */
+function mgmtTimesheetIsScheduleWeekend(deptCode, dayInfo, status) {
+    const st = String(status || "");
+    if (st === "В") return true;
+    if (typeof isTerritoryCode === "function" && isTerritoryCode(deptCode)
+        && mgmtTimesheetDayWeekday(dayInfo) === 0) {
+        return true;
+    }
+    return false;
+}
+
+function mgmtTimesheetIsWorkedStatus(status) {
+    const st = String(status || "");
+    return st === "Я" || st === "О";
+}
+
+/** Явка/отсутствие в табеле (не пусто и не «В»). */
+function mgmtTimesheetIsStaffMark(status) {
+    const st = String(status || "");
+    return st === "Я" || st === "О" || st === "ОТ" || st === "Б" || st === "Л" || st === "П";
+}
+
+/**
+ * Доля сотрудника за неделю: отработанные рабочие дни / рабочие дни по графику.
+ * null — нет рабочих дней в знаменателе (только выходные / после увольнения).
+ */
+function mgmtTimesheetEmployeeFteShare(w, employeeId, deptCode, days) {
+    const list = Array.isArray(days) ? days : [];
+    const fo = typeof employeeFiredOnIso === "function"
+        ? employeeFiredOnIso(typeof getEmployee === "function" ? getEmployee(employeeId) : null)
+        : "";
+    let sched = 0;
+    let worked = 0;
+    list.forEach(function (d) {
+        const iso = d && d.iso ? String(d.iso).slice(0, 10) : "";
+        if (fo && iso && iso >= fo) return;
+        const rec = peekTimesheetDay(w, employeeId, d.day, d.month);
+        const st = rec.status || "";
+        if (mgmtTimesheetIsScheduleWeekend(deptCode, d, st)) return;
+        sched += 1;
+        if (mgmtTimesheetIsWorkedStatus(st)) worked += 1;
+    });
+    if (sched <= 0) return null;
+    return worked / sched;
+}
+
+function mgmtTimesheetEmployeeHasStaffMarks(w, employeeId, days) {
+    const list = Array.isArray(days) ? days : [];
+    for (let i = 0; i < list.length; i++) {
+        const d = list[i];
+        const rec = peekTimesheetDay(w, employeeId, d.day, d.month);
+        if (mgmtTimesheetIsStaffMark(rec.status || "")) return true;
+    }
+    return false;
+}
+
+/**
+ * Эквивалентная численность (FTE) за дни отчётной недели СПУ.
+ * Округление только итога: Math.round(sum).
+ * Аутсорсинг Территории без табельных отметок → 1; без двойного учёта.
+ */
+function mgmtTimesheetHeadcountEquivalent(deptCode, days) {
+    const codes = deptCode
+        ? [String(deptCode)]
+        : ((typeof DEPT_DEFAULTS !== "undefined" ? DEPT_DEFAULTS : []).map(function (d) {
+            return d && d.code;
+        }).filter(Boolean));
+    const list = Array.isArray(days) ? days : [];
+    const weekEndIso = list.length && list[list.length - 1].iso
+        ? String(list[list.length - 1].iso).slice(0, 10)
+        : "";
+    const seen = {};
+    let sum = 0;
+    codes.forEach(function (code) {
+        const w = typeof findWorkspaceByCode === "function" ? findWorkspaceByCode(code) : null;
+        if (!w) return;
+        const territory = typeof isTerritoryCode === "function" && isTerritoryCode(code);
+        (w.employees || []).forEach(function (e) {
+            if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
+            seen[e.id] = true;
+            const outsrc = typeof isOutsourcingEmployee === "function" && isOutsourcingEmployee(e);
+            const hasMarks = mgmtTimesheetEmployeeHasStaffMarks(w, e.id, list);
+            /* Аутсорсинг Территории без явок/отсутствий: 1, только если действующий на конец среды. */
+            if (outsrc && territory && !hasMarks) {
+                const activeOut = typeof employeeCountsInStaffDirectoryOnDate === "function"
+                    ? employeeCountsInStaffDirectoryOnDate(e, weekEndIso)
+                    : (typeof isWorking === "function" ? isWorking(e) : true);
+                if (activeOut) sum += 1;
+                return;
+            }
+            /* Штатные / с табелем: доля по дням до fired_on (увольнение режет дни, не обнуляет неделю целиком). */
+            const share = mgmtTimesheetEmployeeFteShare(w, e.id, code, list);
+            if (share != null) sum += share;
+        });
+    });
+    return Math.round(sum);
+}
+
 function mgmtTimesheetFact(deptCode, agg, days) {
+    if (agg === "headcount") {
+        return mgmtTimesheetHeadcountEquivalent(deptCode, days);
+    }
     const codes = deptCode ? [deptCode] : DEPT_DEFAULTS.map(function (d) { return d.code; });
-    let headcount = 0;
     let ya = 0;
     let hours = 0;
     let late = 0;
@@ -52756,12 +52877,10 @@ function mgmtTimesheetFact(deptCode, agg, days) {
         ((w.employees || [])).forEach(function (e) {
             if (!e || !e.id || seen[e.id] || e.id === SHOP_SELF_CHECKOUT_ID) return;
             seen[e.id] = true;
-            let worked = false;
             days.forEach(function (d) {
                 const rec = peekTimesheetDay(w, e.id, d.day, d.month);
                 const st = rec.status || "";
                 if (st === "Я" || st === "О") {
-                    worked = true;
                     ya += 1;
                     hours += Number(rec.hours || 0);
                     if (st === "О") late += 1;
@@ -52772,10 +52891,8 @@ function mgmtTimesheetFact(deptCode, agg, days) {
                 if (st === "В") weekend += 1;
                 if (st === "Л") personal += 1;
             });
-            if (isWorking(e) || worked) headcount += 1;
         });
     });
-    if (agg === "headcount") return headcount;
     if (agg === "hours") return hours;
     if (agg === "ya") return ya;
     if (agg === "days") return ya;

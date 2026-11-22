@@ -15175,8 +15175,35 @@ class WtSpuHeadcountDisplayNameMarkerTests(unittest.TestCase):
         ]
         self.assertIn("SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code]", adopt)
         self.assertIn("found.name = SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code]", adopt)
-        # Алгоритм численности не трогали.
         self.assertIn("function mgmtTimesheetFact(", src)
+
+    def test_headcount_fte_helpers_and_harness(self):
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function mgmtTimesheetHeadcountEquivalent(", src)
+        self.assertIn("function mgmtTimesheetEmployeeFteShare(", src)
+        self.assertIn("mgmtTimesheetIsScheduleWeekend(", src)
+        fact = src[
+            src.find("function mgmtTimesheetFact(")
+            : src.find("function mgmtStaffDirectoryFact(")
+        ]
+        self.assertIn('if (agg === "headcount")', fact)
+        self.assertIn("mgmtTimesheetHeadcountEquivalent(", fact)
+        harness = root / "server" / "wt_spu_headcount_fte_harness.js"
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для headcount FTE harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_headcount_fte_harness: OK", proc.stdout)
 
 
 if __name__ == "__main__":
