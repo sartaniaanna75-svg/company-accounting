@@ -47310,13 +47310,71 @@ function spuFormulaFactPeriodConflict(it, tokens, anchorIso) {
         });
         return {
             ok: false,
-            message: "Конфликт фактических периодов в формуле (одинаковое смещение недели). "
-                + "Показатели с одним смещением должны использовать один интервал.\n"
+            message: "В формуле используются источники с разными периодами. Проверьте даты.\n"
                 + lines.join("\n"),
             rows: rows
         };
     }
     return { ok: true, rows: allRows };
+}
+
+/** Текст предупреждения: имя — даты (для save/check). */
+function spuFormulaPeriodMismatchLines(conflict) {
+    const rows = (conflict && conflict.rows) || [];
+    return rows.map(function (row) {
+        const name = row.name || row.id || "Источник";
+        const range = row.rangeRu || ((row.start || "") + "–" + (row.end || ""));
+        return name + " — " + range;
+    });
+}
+
+/**
+ * Подтверждение сохранения формулы с разными периодами операндов.
+ * onYes — продолжить save; onNo — закрыть без записи. Без новых полей в БД.
+ */
+function spuIndConfirmPeriodMismatch(conflict, onYes, onNo) {
+    const prev = document.getElementById("spuPeriodMismatchModal");
+    if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+    const lines = spuFormulaPeriodMismatchLines(conflict);
+    const wrap = document.createElement("div");
+    wrap.id = "spuPeriodMismatchModal";
+    wrap.setAttribute("role", "dialog");
+    wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10050;"
+        + "display:flex;align-items:center;justify-content:center;padding:16px;";
+    const card = document.createElement("div");
+    card.style.cssText = "background:#fff;border-radius:10px;max-width:480px;width:100%;"
+        + "padding:16px 18px;box-shadow:0 12px 40px rgba(0,0,0,.2);";
+    let body = "<div style=\"font-size:15px;font-weight:600;margin:0 0 10px\">"
+        + "В формуле используются источники с разными периодами. Проверьте даты.</div>";
+    body += "<ul style=\"margin:0 0 14px;padding-left:18px;line-height:1.45;font-size:13px\">";
+    lines.forEach(function (line) {
+        body += "<li>" + escapeHtml(line) + (/\.$/.test(line) ? "" : ".") + "</li>";
+    });
+    body += "</ul>";
+    body += '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end">'
+        + '<button type="button" class="btn btn-secondary" data-spu-period-no>Вернуться к формуле</button>'
+        + '<button type="button" class="btn btn-primary" data-spu-period-yes>Да, всё верно — сохранить</button>'
+        + "</div>";
+    card.innerHTML = body;
+    wrap.appendChild(card);
+    function close() {
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+    }
+    card.querySelector("[data-spu-period-no]").onclick = function () {
+        close();
+        if (typeof onNo === "function") onNo();
+    };
+    card.querySelector("[data-spu-period-yes]").onclick = function () {
+        close();
+        if (typeof onYes === "function") onYes();
+    };
+    wrap.addEventListener("click", function (ev) {
+        if (ev.target === wrap) {
+            close();
+            if (typeof onNo === "function") onNo();
+        }
+    });
+    document.body.appendChild(wrap);
 }
 
 function mgmtAggregateNumbers(values, type) {
@@ -47560,12 +47618,8 @@ function mgmtReadFromSources(it, stack) {
     }
     const sources = cfg.sources || [];
     if ((cfg.calc_mode === "formula" || cfg.aggregation_type === "formula") && (cfg.formula_expr || []).length) {
-        if (typeof spuFormulaFactPeriodConflict === "function") {
-            const conflict = spuFormulaFactPeriodConflict(it, cfg.formula_expr);
-            if (conflict && conflict.ok === false) {
-                return { value: null, status: "error", message: conflict.message || "Конфликт периодов формулы" };
-            }
-        }
+        /* Разные периоды операндов допустимы: каждый ind читается со своим окном.
+           Предупреждение — только при ручном сохранении формулы, не здесь. */
         const value = spuEvalFormula(it, cfg.formula_expr, stack, false);
         return { value: value, status: value == null ? "missing" : "auto" };
     }
@@ -49585,14 +49639,17 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom, which) {
         if (typeof spuFormulaFactPeriodConflict === "function") {
             const periodConflict = spuFormulaFactPeriodConflict(draft, tokens, weekFrom);
             if (periodConflict && periodConflict.ok === false) {
-                html += '<div style="color:#b45309;margin-top:8px">'
-                    + String(periodConflict.message || "").split("\n").map(function (line) {
-                        return escapeHtml(line);
-                    }).join("<br>")
-                    + "</div>";
-                box.style.display = "";
-                box.innerHTML = html;
-                return;
+                html += '<div style="color:#b45309;margin-top:8px"><b>'
+                    + escapeHtml("В формуле используются источники с разными периодами. Проверьте даты.")
+                    + "</b></div><ul style=\"margin:6px 0 0;padding-left:18px;color:#b45309\">";
+                (typeof spuFormulaPeriodMismatchLines === "function"
+                    ? spuFormulaPeriodMismatchLines(periodConflict)
+                    : []).forEach(function (line) {
+                    html += "<li>" + escapeHtml(line) + "</li>";
+                });
+                html += "</ul><div class=\"note\" style=\"margin-top:6px\">Проверка значений продолжается: "
+                    + "каждый источник считается за свой период.</div>";
+                /* Не прерываем: расчёт ниже идёт с индивидуальными окнами операндов. */
             }
         }
 
@@ -50082,7 +50139,8 @@ function refreshSpuOrgIndicatorFields(preset) {
     renderSpuIndSourcesBox();
 }
 
-function saveSpuOrgIndicator() {
+function saveSpuOrgIndicator(opts) {
+    opts = opts || {};
     if (!canEditSpuStructure() && !canEditMgmtIndicators()) return;
     ensureManagement();
     spuIndSyncDraftFromDom();
@@ -50131,7 +50189,7 @@ function saveSpuOrgIndicator() {
             toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
-        if (typeof spuFormulaFactPeriodConflict === "function") {
+        if (!opts.periodMismatchAcked && typeof spuFormulaFactPeriodConflict === "function") {
             const perSave = ((document.getElementById("spuIndPeriodicity") || {}).value || "week");
             const wsSave = Number(((document.getElementById("spuIndWeekStart") || {}).value || 4));
             const draftSelf = {
@@ -50142,7 +50200,9 @@ function saveSpuOrgIndicator() {
             };
             const periodConflict = spuFormulaFactPeriodConflict(draftSelf, tokens);
             if (periodConflict && periodConflict.ok === false) {
-                toast(periodConflict.message || "Конфликт периодов в формуле.", "error");
+                spuIndConfirmPeriodMismatch(periodConflict, function () {
+                    saveSpuOrgIndicator({ periodMismatchAcked: true });
+                });
                 return;
             }
         }
@@ -51890,6 +51950,15 @@ const SPU_HEADCOUNT_DISPLAY_NAMES = {
     drivers_headcount: "Количество сотрудников — Территория / Логистика и торговые"
 };
 
+/** Канонические подписи пяти timesheet-days (только name). */
+const SPU_DAYS_DISPLAY_NAMES = {
+    co_days: "Отработано дней — Компания",
+    shop_days: "Отработано дней — Магазин Володарского",
+    office_days: "Отработано дней — Территория / Офис",
+    warehouse_days: "Отработано дней — Территория / Склад",
+    drivers_days: "Отработано дней — Территория / Логистика и торговые"
+};
+
 function spuAdoptIndicator(spec) {
     const root = appData.management;
     if (spec && spec.spu_code && (root.retired_spu_codes || []).indexOf(spec.spu_code) !== -1) return null;
@@ -51904,9 +51973,12 @@ function spuAdoptIndicator(spec) {
     }
     if (found) {
         if (!found.spu_code) found.spu_code = spec.spu_code;
-        /* Узко: синхронизировать только отображаемое name пяти headcount у уже существующих записей. */
+        /* Узко: синхронизировать только отображаемое name пяти headcount / days у уже существующих записей. */
         if (!found.is_deleted && spec.spu_code && SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code]) {
             found.name = SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code];
+        }
+        if (!found.is_deleted && spec.spu_code && SPU_DAYS_DISPLAY_NAMES[spec.spu_code]) {
+            found.name = SPU_DAYS_DISPLAY_NAMES[spec.spu_code];
         }
         if (found.user_status_set || found.is_deleted || found.is_active === false) {
             return normalizeMgmtIndicator(found);
@@ -52008,7 +52080,7 @@ function ensureSpuDefaultIndicators() {
         { spu_code: "co_headcount", name: SPU_HEADCOUNT_DISPLAY_NAMES.co_headcount, department_id: "", source_type: "timesheet", source_timesheet_agg: "headcount", unit: "people", aggregation_type: "count", show_on_dashboard: true, sort_order: 50 },
         { spu_code: "co_margin_emp", name: "Прибыль/маржа на сотрудника", department_id: "", source_type: "calculated", calc_op: "ratio", calc_left_code: "co_margin", calc_right_code: "co_headcount", unit: "money", group: "finance", show_on_dashboard: true, sort_order: 60 },
         { spu_code: "co_plan_pct", name: "Выполнение плана", department_id: "", source_type: "sales_plan", source_sales_plan_view: "all", source_sales_plan_field: "rate", unit: "percent", show_on_dashboard: true, sort_order: 70 },
-        { spu_code: "co_days", name: "Отработано дней", department_id: "", source_type: "timesheet", source_timesheet_agg: "days", unit: "days", show_on_dashboard: false, sort_order: 80 }
+        { spu_code: "co_days", name: SPU_DAYS_DISPLAY_NAMES.co_days, department_id: "", source_type: "timesheet", source_timesheet_agg: "days", unit: "days", show_on_dashboard: false, sort_order: 80 }
     ];
     DEPT_DEFAULTS.forEach(function (d, i) {
         specs.push({
@@ -52024,7 +52096,7 @@ function ensureSpuDefaultIndicators() {
         });
         specs.push({
             spu_code: d.code + "_days",
-            name: "Отработано дней",
+            name: SPU_DAYS_DISPLAY_NAMES[d.code + "_days"] || ("Отработано дней — " + (d.name || d.code)),
             department_id: d.code,
             source_type: "timesheet",
             source_timesheet_agg: "days",

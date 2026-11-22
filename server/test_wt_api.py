@@ -15205,6 +15205,53 @@ class WtSpuHeadcountDisplayNameMarkerTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
         self.assertIn("wt_spu_headcount_fte_harness: OK", proc.stdout)
 
+    def test_days_display_names(self):
+        src = (Path(__file__).resolve().parents[1] / "app.html").read_text(encoding="utf-8")
+        self.assertIn("SPU_DAYS_DISPLAY_NAMES", src)
+        self.assertIn('co_days: "Отработано дней — Компания"', src)
+        self.assertIn('shop_days: "Отработано дней — Магазин Володарского"', src)
+        self.assertIn('office_days: "Отработано дней — Территория / Офис"', src)
+        self.assertIn('warehouse_days: "Отработано дней — Территория / Склад"', src)
+        self.assertIn(
+            'drivers_days: "Отработано дней — Территория / Логистика и торговые"',
+            src,
+        )
+        adopt = src[
+            src.find("function spuAdoptIndicator(")
+            : src.find("function ensureSpuDefaultIndicators(")
+        ]
+        self.assertIn("SPU_DAYS_DISPLAY_NAMES[spec.spu_code]", adopt)
+
+    def test_formula_period_confirm_markers_and_harness(self):
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function spuIndConfirmPeriodMismatch(", src)
+        self.assertIn("function spuFormulaPeriodMismatchLines(", src)
+        self.assertIn("Да, всё верно — сохранить", src)
+        self.assertIn("Вернуться к формуле", src)
+        self.assertIn("periodMismatchAcked", src)
+        read_src = src[
+            src.find("function mgmtReadFromSources(")
+            : src.find("function mgmtIndicatorPlan(")
+        ]
+        self.assertNotIn("Конфликт периодов формулы", read_src)
+        self.assertNotIn("spuFormulaFactPeriodConflict(it, cfg.formula_expr)", read_src)
+        harness = root / "server" / "wt_spu_formula_period_confirm_harness.js"
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для period confirm harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_formula_period_confirm_harness: OK", proc.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
