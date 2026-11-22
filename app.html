@@ -51881,6 +51881,15 @@ function spuFindCatalogMetric(dept, hints, fallbackId) {
     }
 }
 
+/** Канонические подписи пяти timesheet-headcount (только name; source/формулы не трогать). */
+const SPU_HEADCOUNT_DISPLAY_NAMES = {
+    co_headcount: "Количество сотрудников — Компания",
+    shop_headcount: "Количество сотрудников — Магазин Володарского",
+    office_headcount: "Количество сотрудников — Территория / Офис",
+    warehouse_headcount: "Количество сотрудников — Территория / Склад",
+    drivers_headcount: "Количество сотрудников — Территория / Логистика и торговые"
+};
+
 function spuAdoptIndicator(spec) {
     const root = appData.management;
     if (spec && spec.spu_code && (root.retired_spu_codes || []).indexOf(spec.spu_code) !== -1) return null;
@@ -51895,6 +51904,10 @@ function spuAdoptIndicator(spec) {
     }
     if (found) {
         if (!found.spu_code) found.spu_code = spec.spu_code;
+        /* Узко: синхронизировать только отображаемое name пяти headcount у уже существующих записей. */
+        if (!found.is_deleted && spec.spu_code && SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code]) {
+            found.name = SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code];
+        }
         if (found.user_status_set || found.is_deleted || found.is_active === false) {
             return normalizeMgmtIndicator(found);
         }
@@ -51992,7 +52005,7 @@ function ensureSpuDefaultIndicators() {
         { spu_code: "co_margin", name: "Маржинальная прибыль", department_id: "", source_type: "manual", source_future: "one_c", unit: "money", group: "finance", show_on_dashboard: true, sort_order: 20 },
         { spu_code: "co_cogs", name: "Себестоимость", department_id: "", source_type: "manual", source_future: "one_c", unit: "money", group: "finance", show_on_dashboard: false, sort_order: 30 },
         { spu_code: "co_rent", name: "Рентабельность", department_id: "", source_type: "calculated", calc_op: "percent", calc_left_code: "co_margin", calc_right_code: "co_revenue", unit: "percent", group: "finance", show_on_dashboard: true, sort_order: 40 },
-        { spu_code: "co_headcount", name: "Количество сотрудников", department_id: "", source_type: "timesheet", source_timesheet_agg: "headcount", unit: "people", aggregation_type: "count", show_on_dashboard: true, sort_order: 50 },
+        { spu_code: "co_headcount", name: SPU_HEADCOUNT_DISPLAY_NAMES.co_headcount, department_id: "", source_type: "timesheet", source_timesheet_agg: "headcount", unit: "people", aggregation_type: "count", show_on_dashboard: true, sort_order: 50 },
         { spu_code: "co_margin_emp", name: "Прибыль/маржа на сотрудника", department_id: "", source_type: "calculated", calc_op: "ratio", calc_left_code: "co_margin", calc_right_code: "co_headcount", unit: "money", group: "finance", show_on_dashboard: true, sort_order: 60 },
         { spu_code: "co_plan_pct", name: "Выполнение плана", department_id: "", source_type: "sales_plan", source_sales_plan_view: "all", source_sales_plan_field: "rate", unit: "percent", show_on_dashboard: true, sort_order: 70 },
         { spu_code: "co_days", name: "Отработано дней", department_id: "", source_type: "timesheet", source_timesheet_agg: "days", unit: "days", show_on_dashboard: false, sort_order: 80 }
@@ -52000,7 +52013,7 @@ function ensureSpuDefaultIndicators() {
     DEPT_DEFAULTS.forEach(function (d, i) {
         specs.push({
             spu_code: d.code + "_headcount",
-            name: "Количество сотрудников",
+            name: SPU_HEADCOUNT_DISPLAY_NAMES[d.code + "_headcount"] || ("Количество сотрудников — " + (d.name || d.code)),
             department_id: d.code,
             source_type: "timesheet",
             source_timesheet_agg: "headcount",

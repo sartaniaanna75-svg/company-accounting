@@ -15145,5 +15145,39 @@ class WtSpuPlanUploadMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_plan_upload_harness: OK", proc.stdout)
 
 
+class WtSpuHeadcountDisplayNameMarkerTests(unittest.TestCase):
+    """Только отображаемые name пяти timesheet-headcount; без смены source/формул."""
+
+    def test_canonical_headcount_display_names(self):
+        src = (Path(__file__).resolve().parents[1] / "app.html").read_text(encoding="utf-8")
+        self.assertIn("SPU_HEADCOUNT_DISPLAY_NAMES", src)
+        self.assertIn('co_headcount: "Количество сотрудников — Компания"', src)
+        self.assertIn(
+            'shop_headcount: "Количество сотрудников — Магазин Володарского"',
+            src,
+        )
+        self.assertIn(
+            'office_headcount: "Количество сотрудников — Территория / Офис"',
+            src,
+        )
+        self.assertIn(
+            'warehouse_headcount: "Количество сотрудников — Территория / Склад"',
+            src,
+        )
+        self.assertIn(
+            'drivers_headcount: "Количество сотрудников — Территория / Логистика и торговые"',
+            src,
+        )
+        # Синхронизация name у уже существующих записей в spuAdoptIndicator.
+        adopt = src[
+            src.find("function spuAdoptIndicator(")
+            : src.find("function ensureSpuDefaultIndicators(")
+        ]
+        self.assertIn("SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code]", adopt)
+        self.assertIn("found.name = SPU_HEADCOUNT_DISPLAY_NAMES[spec.spu_code]", adopt)
+        # Алгоритм численности не трогали.
+        self.assertIn("function mgmtTimesheetFact(", src)
+
+
 if __name__ == "__main__":
     unittest.main()
