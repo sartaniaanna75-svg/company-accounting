@@ -14903,5 +14903,193 @@ class WtSpuFinrecRevenueSliceTests(unittest.TestCase):
         self.assertIn("wt_spu_finrec_revenue_harness: OK", proc.stdout)
 
 
+class WtSpuFinrecAdminGetStateTests(unittest.TestCase):
+    """handle_get_state: админ получает spuFrTerritoryRevenueByDay (обход filter)."""
+
+    def setUp(self):
+        self._env_backup = dict(os.environ)
+        os.environ["DATABASE_URL"] = "postgresql://worktime:" + SECRET + "@127.0.0.1:5432/worktime"
+        os.environ["WT_PIN_PEPPER"] = "unit-pepper"
+        os.environ["WT_SCRYPT_N"] = "16"
+        os.environ.pop("WT_API_TOKEN", None)
+        os.environ.pop("WT_COOKIE_SECURE", None)
+        wt_api.LOGIN_FAILS.clear()
+        self.store = {
+            "payload": json.loads(json.dumps(SAMPLE_APP)),
+            "version": 0,
+            "updated_at": None,
+            "updated_by": "",
+            "fail": False,
+            "sessions": {},
+        }
+        self._patch = patch.object(wt_api, "connect", side_effect=lambda: FakeConn(self.store))
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        os.environ.clear()
+        os.environ.update(self._env_backup)
+
+    def login(self, user_id="user_admin", pin="5555"):
+        status, data, _, cookies = call("POST", "/api/login", {"user_id": user_id, "pin": pin})
+        self.assertTrue(status.startswith("200"), status)
+        return cookie_from(cookies), data
+
+    def add_user(self, user):
+        self.store["payload"]["users"].append(json.loads(json.dumps(user)))
+
+    def _fr_payload(self):
+        return WtSpuFinrecRevenueSliceTests()._payload()
+
+    def _merge_fr_into_store(self, extra_ops=None):
+        fr = self._fr_payload()["financeRec"]
+        if extra_ops:
+            fr["operations"] = list(fr["operations"]) + list(extra_ops)
+        self.store["payload"]["financeRec"] = fr
+        self.store["payload"]["management"] = {"indicators": []}
+
+    def test_admin_get_state_receives_revenue_slice(self):
+        self._merge_fr_into_store()
+        cookie, _ = self.login("user_admin", "5555")
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        payload = data.get("payload") or {}
+        self.assertIn("spuFrTerritoryRevenueByDay", payload)
+        slice_ = payload["spuFrTerritoryRevenueByDay"]
+        self.assertEqual(slice_["2026-11-12"]["opt"], 100)
+        self.assertEqual(slice_["2026-11-12"]["retail_warehouse"], 50)
+        self.assertIn("financeRec", payload)
+        self.assertNotIn("operations", slice_)
+
+    def test_spu_staff_get_state_slice_without_finance_ops(self):
+        self._merge_fr_into_store()
+        self.add_user({
+            "user_id": "usr_spu_fr",
+            "display_name": "СПУ",
+            "pin": "4444",
+            "role": "user",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {
+                "managementIndicators": "view",
+                "financeRec": "none",
+                "financeRecSetup": "none",
+            },
+        })
+        cookie, _ = self.login("usr_spu_fr", "4444")
+        status, data, raw, _ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        payload = data.get("payload") or {}
+        self.assertIn("spuFrTerritoryRevenueByDay", payload)
+        self.assertEqual(payload["spuFrTerritoryRevenueByDay"]["2026-11-12"]["opt"], 100)
+        self.assertEqual(
+            payload["spuFrTerritoryRevenueByDay"]["2026-11-12"]["retail_warehouse"], 50
+        )
+        self.assertNotIn("financeRec", payload)
+        self.assertNotIn("fop1", raw)
+
+    def test_no_management_user_no_slice(self):
+        self._merge_fr_into_store()
+        cookie, _ = self.login("usr_001", "1111")
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        payload = data.get("payload") or {}
+        self.assertNotIn("spuFrTerritoryRevenueByDay", payload)
+
+    def test_spu_staff_helper_not_called_twice(self):
+        self._merge_fr_into_store()
+        self.add_user({
+            "user_id": "usr_spu_once",
+            "display_name": "СПУ once",
+            "pin": "4445",
+            "role": "user",
+            "is_active": True,
+            "departments": ["spu"],
+            "permissions": {
+                "managementIndicators": "view",
+                "financeRec": "none",
+            },
+        })
+        cookie, _ = self.login("usr_spu_once", "4445")
+        with patch.object(
+            wt_api,
+            "spu_fr_territory_revenue_by_day",
+            wraps=wt_api.spu_fr_territory_revenue_by_day,
+        ) as mocked:
+            status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        self.assertIn("spuFrTerritoryRevenueByDay", (data.get("payload") or {}))
+        self.assertEqual(mocked.call_count, 1)
+
+    def test_two_weeks_opt_and_retail_warehouse(self):
+        extra = [
+            {
+                "finance_operation_id": "fop_w2_opt",
+                "object_id": "farea_territory",
+                "account_id": "fs_opt",
+                "date": "2026-11-19",
+                "op_type": "income",
+                "entry_role": "revenue_grid",
+                "grid_cell": True,
+                "amount": 200,
+                "is_deleted": False,
+            },
+            {
+                "finance_operation_id": "fop_w2_ret",
+                "object_id": "farea_territory",
+                "account_id": "fs_ret",
+                "date": "2026-11-20",
+                "op_type": "income",
+                "entry_role": "revenue_grid",
+                "grid_cell": True,
+                "amount": 40,
+                "is_deleted": False,
+            },
+            {
+                "finance_operation_id": "fop_w2_wh",
+                "object_id": "farea_territory",
+                "account_id": "fs_wh",
+                "date": "2026-11-20",
+                "op_type": "income",
+                "entry_role": "revenue_grid",
+                "grid_cell": True,
+                "amount": 10,
+                "is_deleted": False,
+            },
+        ]
+        self._merge_fr_into_store(extra_ops=extra)
+        cookie, _ = self.login("user_admin", "5555")
+        status, data, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status.startswith("200"), status)
+        slice_ = (data.get("payload") or {}).get("spuFrTerritoryRevenueByDay") or {}
+        # Неделя 12–18: opt 100+15, retail_warehouse 50
+        w1_opt = float(slice_.get("2026-11-12", {}).get("opt") or 0) + float(
+            slice_.get("2026-11-13", {}).get("opt") or 0
+        )
+        w1_rw = float(slice_.get("2026-11-12", {}).get("retail_warehouse") or 0)
+        self.assertEqual(w1_opt, 115)
+        self.assertEqual(w1_rw, 50)
+        # Неделя 19–25
+        self.assertEqual(slice_["2026-11-19"]["opt"], 200)
+        self.assertEqual(slice_["2026-11-20"]["retail_warehouse"], 50)
+
+    def test_correction_past_day_reflected_on_next_get(self):
+        self._merge_fr_into_store()
+        cookie, _ = self.login("user_admin", "5555")
+        status1, data1, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status1.startswith("200"), status1)
+        self.assertEqual(
+            data1["payload"]["spuFrTerritoryRevenueByDay"]["2026-11-12"]["opt"], 100
+        )
+        for op in self.store["payload"]["financeRec"]["operations"]:
+            if op.get("finance_operation_id") == "fop1":
+                op["amount"] = 120
+        status2, data2, *_ = call("GET", "/api/state", cookie=cookie)
+        self.assertTrue(status2.startswith("200"), status2)
+        self.assertEqual(
+            data2["payload"]["spuFrTerritoryRevenueByDay"]["2026-11-12"]["opt"], 120
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

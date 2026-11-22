@@ -6921,6 +6921,17 @@ def handle_get_state(environ):
         safe["payload"] = strip_secrets(payload)
     else:
         safe["payload"] = filter_state_payload(payload, user)
+    # Админ обходит filter_state_payload — GET-only срез для СПУ иначе не попадает в ответ.
+    # Если filter уже положил ключ (non-admin), повторно не считаем.
+    out_payload = safe.get("payload")
+    if (
+        isinstance(out_payload, dict)
+        and user_can_open_management(user)
+        and "spuFrTerritoryRevenueByDay" not in out_payload
+    ):
+        fr_rev = spu_fr_territory_revenue_by_day(payload)
+        if fr_rev:
+            out_payload["spuFrTerritoryRevenueByDay"] = fr_rev
     return json_bytes(safe)
 
 
