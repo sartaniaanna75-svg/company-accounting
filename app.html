@@ -54476,17 +54476,18 @@ function setMgmtPlanValue(indicatorId, value, meta, options) {
     });
 }
 /* ========== Загрузка недельных планов СПУ (paste / xlsx) ========== */
+const SPU_PLAN_UPLOAD_COL_A_LABEL = "Конец периода";
 const SPU_PLAN_UPLOAD_COLUMNS = [
-    { col: "B", label: "Количество заявок ОПТ" },
+    { col: "B", label: "Кол-во заявок" },
     { col: "C", label: "Выручка ОПТ" },
-    { col: "D", label: "Количество накладных склада" },
-    { col: "E", label: "Выручка склада" },
-    { col: "F", label: "Количество клиентов" },
-    { col: "G", label: "Поступления" },
-    { col: "H", label: "Выручка розницы" },
-    { col: "I", label: "Собранные деньги ОПТ" },
-    { col: "J", label: "Собранные деньги склада и розницы" },
-    { col: "K", label: "Собранные деньги склада" }
+    { col: "D", label: "Кол-во накладных СКЛАД" },
+    { col: "E", label: "Выручка СКЛАД" },
+    { col: "F", label: "Кол-во покупателей, чел" },
+    { col: "G", label: "Кол-во чеков, шт" },
+    { col: "H", label: "Выручка РОЗНИЦА" },
+    { col: "I", label: "Сумма поступлений /Собранных денег ОПТ" },
+    { col: "J", label: "Сумма поступлений /Собранных денег СКЛАД + РОЗНИЦА" },
+    { col: "K", label: "Сумма поступлений /Собранных денег СКЛАД" }
 ];
 let spuPlanUploadPreviewRows = [];
 let spuPlanUploadConfirmReplace = false;
@@ -54814,13 +54815,17 @@ function renderSpuPlanUploadHtml() {
     const map = spuPlanUploadEnsureMapping().columns || {};
     const inds = spuPlanUploadEligibleIndicators();
     let html = '<div class="spu-plan-upload">';
-    html += '<div class="note" style="margin:0 0 12px">Вставьте строки листа «Для СПУ» (столбец A — среда, конец недели чт–ср) или загрузите .xlsx. '
+    html += '<div class="note" style="margin:0 0 12px">Вставьте строки листа «Для СПУ» (столбец A — «'
+        + escapeHtml(SPU_PLAN_UPLOAD_COL_A_LABEL)
+        + '», среда / конец недели чт–ср) или загрузите .xlsx. '
         + "Записываются только ручные недельные планы существующих показателей. Факты, формулы и источники не меняются. "
         + "Если у показателя задан план управленческого периода, перекрывающий неделю — строка получит статус конфликта и <b>не будет записана</b> (приоритеты планирования не менялись).</div>";
 
     html += '<h3 style="margin:12px 0 8px;font-size:15px">1. Соответствие столбцов показателям</h3>';
     html += '<div class="table-wrapper" style="max-height:none;margin-bottom:12px"><table class="mgmt-table"><thead><tr>'
         + "<th>Столбец</th><th>Содержание листа</th><th>Показатель СПУ</th></tr></thead><tbody>";
+    html += "<tr><td><b>A</b></td><td>" + escapeHtml(SPU_PLAN_UPLOAD_COL_A_LABEL)
+        + "</td><td><span class=\"mgmt-src\">дата окончания недели (не привязывается к показателю)</span></td></tr>";
     SPU_PLAN_UPLOAD_COLUMNS.forEach(function (spec) {
         const cur = String(map[spec.col] || "");
         html += "<tr><td><b>" + escapeHtml(spec.col) + "</b></td><td>" + escapeHtml(spec.label) + "</td><td>";
