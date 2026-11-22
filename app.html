@@ -51531,10 +51531,9 @@ function ensureManagement() {
     if (!Array.isArray(root.mgmt_periods)) root.mgmt_periods = [];
     if (!Array.isArray(root.period_plans)) root.period_plans = [];
     if (!root.planUploadMapping || typeof root.planUploadMapping !== "object") {
-        root.planUploadMapping = { version: 1, columns: {} };
-    } else if (!root.planUploadMapping.columns || typeof root.planUploadMapping.columns !== "object") {
-        root.planUploadMapping.columns = {};
+        root.planUploadMapping = { version: 1, columns: {}, byHeader: {}, candidates: {} };
     }
+    try { spuPlanUploadMigrateMapping(root.planUploadMapping); } catch (errMapMig) { console.error(errMapMig); }
     if (root.reporting_week_start_day == null || root.reporting_week_start_day === "") {
         root.reporting_week_start_day = 4; /* Четверг → Среда по умолчанию */
     } else {
@@ -54476,6 +54475,7 @@ function setMgmtPlanValue(indicatorId, value, meta, options) {
     });
 }
 /* ========== Загрузка недельных планов СПУ (paste / xlsx) ========== */
+/** Legacy-подписи Территории (миграция columns B–K → byHeader). Не схема рантайма. */
 const SPU_PLAN_UPLOAD_COL_A_LABEL = "Конец периода";
 const SPU_PLAN_UPLOAD_COLUMNS = [
     { col: "B", label: "Кол-во заявок" },
@@ -54491,18 +54491,97 @@ const SPU_PLAN_UPLOAD_COLUMNS = [
 ];
 let spuPlanUploadPreviewRows = [];
 let spuPlanUploadConfirmReplace = false;
+let spuPlanUploadConfirmAmbiguous = false;
 let spuPlanUploadLastSource = "";
+let spuPlanUploadLastMatrix = null;
+let spuPlanUploadLayout = null;
+/** Черновик сопоставления текущей загрузки: headerKey → indicator_id */
+let spuPlanUploadDraftMap = {};
+let spuPlanUploadForcedDateCol = null;
+
+function spuPlanUploadNormHeader(raw) {
+    return String(raw == null ? "" : raw).replace(/[\u00A0\u202F]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function spuPlanUploadHeaderKey(raw) {
+    return spuPlanUploadNormHeader(raw).toLowerCase();
+}
+
+function spuPlanUploadMigrateMapping(root) {
+    if (!root || typeof root !== "object") return root;
+    if (!root.columns || typeof root.columns !== "object") root.columns = {};
+    if (!root.byHeader || typeof root.byHeader !== "object") root.byHeader = {};
+    if (!root.candidates || typeof root.candidates !== "object") root.candidates = {};
+    if (Number(root.version) >= 2) return root;
+    const nextBy = {};
+    const nextCand = {};
+    Object.keys(root.byHeader).forEach(function (k) {
+        nextBy[k] = root.byHeader[k];
+    });
+    Object.keys(root.candidates).forEach(function (k) {
+        nextCand[k] = (root.candidates[k] || []).slice();
+    });
+    SPU_PLAN_UPLOAD_COLUMNS.forEach(function (spec) {
+        const iid = String(root.columns[spec.col] || "").trim();
+        if (!iid) return;
+        const key = spuPlanUploadHeaderKey(spec.label);
+        if (!key) return;
+        if (!nextCand[key]) nextCand[key] = [];
+        if (nextCand[key].indexOf(iid) === -1) nextCand[key].push(iid);
+        if (nextBy[key] && String(nextBy[key]) !== iid) {
+            if (nextCand[key].indexOf(String(nextBy[key])) === -1) nextCand[key].push(String(nextBy[key]));
+            delete nextBy[key];
+        } else if (!nextBy[key]) {
+            nextBy[key] = iid;
+        }
+    });
+    Object.keys(nextCand).forEach(function (k) {
+        const uniq = [];
+        (nextCand[k] || []).forEach(function (id) {
+            const s = String(id || "").trim();
+            if (s && uniq.indexOf(s) === -1) uniq.push(s);
+        });
+        nextCand[k] = uniq;
+        if (uniq.length > 1) delete nextBy[k];
+    });
+    root.byHeader = nextBy;
+    root.candidates = nextCand;
+    root.version = 2;
+    return root;
+}
 
 function spuPlanUploadEnsureMapping() {
     ensureManagement();
     if (!appData.management.planUploadMapping || typeof appData.management.planUploadMapping !== "object") {
-        appData.management.planUploadMapping = { version: 1, columns: {} };
+        appData.management.planUploadMapping = { version: 1, columns: {}, byHeader: {}, candidates: {} };
     }
-    if (!appData.management.planUploadMapping.columns
-        || typeof appData.management.planUploadMapping.columns !== "object") {
-        appData.management.planUploadMapping.columns = {};
-    }
+    spuPlanUploadMigrateMapping(appData.management.planUploadMapping);
     return appData.management.planUploadMapping;
+}
+
+function spuPlanUploadCandidateIds(headerKey) {
+    const root = spuPlanUploadEnsureMapping();
+    const key = String(headerKey || "");
+    const list = [];
+    const fromCand = (root.candidates && root.candidates[key]) || [];
+    fromCand.forEach(function (id) {
+        const s = String(id || "").trim();
+        if (s && list.indexOf(s) === -1) list.push(s);
+    });
+    const one = root.byHeader && root.byHeader[key] ? String(root.byHeader[key]).trim() : "";
+    if (one && list.indexOf(one) === -1) list.push(one);
+    return list;
+}
+
+/** Автоподстановка только если ровно один известный indicator_id для заголовка. */
+function spuPlanUploadSuggestedId(headerKey) {
+    const ids = spuPlanUploadCandidateIds(headerKey);
+    if (ids.length === 1) return ids[0];
+    return "";
+}
+
+function spuPlanUploadIsAmbiguousHeader(headerKey) {
+    return spuPlanUploadCandidateIds(headerKey).length > 1;
 }
 
 function spuPlanUploadFindIndicator(id) {
@@ -54575,15 +54654,136 @@ function spuPlanUploadParseWeekEnd(raw) {
     return { error: "", endIso: iso, week: week };
 }
 
-function spuPlanUploadMatrixLooksLikeHeader(row) {
-    if (!row || !row.length) return false;
-    const a = String(row[0] == null ? "" : row[0]).trim().toLowerCase();
-    if (!a) return false;
-    if (/дата|week|недел|окончан|столбец/.test(a)) return true;
-    const parsed = spuPlanUploadParseWeekEnd(row[0]);
-    if (!parsed.error && parsed.week) return false;
-    /* Текст без цифр — заголовок; иначе оставляем строку как данные (ошибка даты в превью). */
-    return a && !/\d/.test(a);
+function spuPlanUploadDetectLayout(matrix, forcedDateCol) {
+    const rows = Array.isArray(matrix) ? matrix : [];
+    if (!rows.length) return { ok: false, error: "Пустая таблица" };
+    let maxCols = 0;
+    rows.forEach(function (r) {
+        maxCols = Math.max(maxCols, (r || []).length);
+    });
+    if (maxCols < 1) return { ok: false, error: "Пустая таблица" };
+
+    const colScores = [];
+    for (let c = 0; c < maxCols; c++) {
+        let hits = 0;
+        const hitRows = [];
+        for (let r = 0; r < rows.length; r++) {
+            const p = spuPlanUploadParseWeekEnd((rows[r] || [])[c]);
+            if (!p.error && p.week) {
+                hits += 1;
+                hitRows.push(r);
+            }
+        }
+        colScores.push({ c: c, hits: hits, hitRows: hitRows });
+    }
+    colScores.sort(function (a, b) { return b.hits - a.hits; });
+
+    let dateCol = forcedDateCol != null && forcedDateCol !== "" ? Number(forcedDateCol) : null;
+    if (dateCol != null && (!Number.isFinite(dateCol) || dateCol < 0 || dateCol >= maxCols)) {
+        return { ok: false, error: "Некорректный выбранный столбец даты" };
+    }
+    if (dateCol == null) {
+        if (!colScores[0] || colScores[0].hits < 1) {
+            return {
+                ok: false,
+                error: "Не найден столбец с датой окончания недели (среда). Выберите столбец даты вручную.",
+                needDateCol: true,
+                colScores: colScores,
+                maxCols: maxCols
+            };
+        }
+        if (colScores[1] && colScores[1].hits === colScores[0].hits && colScores[0].hits > 0) {
+            return {
+                ok: false,
+                error: "Несколько столбцов похожи на даты окончания недели. Выберите столбец даты вручную.",
+                needDateCol: true,
+                colScores: colScores.filter(function (x) { return x.hits === colScores[0].hits; }),
+                maxCols: maxCols
+            };
+        }
+        dateCol = colScores[0].c;
+    }
+
+    const dateScore = colScores.find(function (x) { return x.c === dateCol; }) || { hits: 0, hitRows: [] };
+    if (!dateScore.hitRows.length) {
+        return {
+            ok: false,
+            error: "В выбранном столбце нет ни одной валидной среды (конец недели).",
+            needDateCol: true,
+            colScores: colScores,
+            maxCols: maxCols
+        };
+    }
+    const firstDataRow = dateScore.hitRows[0];
+
+    let headerRow = -1;
+    for (let r = firstDataRow - 1; r >= 0; r--) {
+        const dateCell = spuPlanUploadParseWeekEnd((rows[r] || [])[dateCol]);
+        if (!dateCell.error && dateCell.week) continue;
+        let texts = 0;
+        for (let c = 0; c < maxCols; c++) {
+            if (c === dateCol) continue;
+            if (spuPlanUploadNormHeader((rows[r] || [])[c])) texts += 1;
+        }
+        const dateHdr = spuPlanUploadNormHeader((rows[r] || [])[dateCol]);
+        if (texts >= 1 || (dateHdr && !/\d{4}/.test(dateHdr) && dateHdr.length > 0)) {
+            headerRow = r;
+            break;
+        }
+    }
+    if (headerRow < 0) {
+        return {
+            ok: false,
+            error: "Не найдена строка заголовков над данными. Проверьте таблицу или выберите строку заголовков.",
+            needHeaderRow: true,
+            dateCol: dateCol,
+            firstDataRow: firstDataRow,
+            maxCols: maxCols
+        };
+    }
+
+    const headers = [];
+    const seenKeys = {};
+    for (let c = 0; c < maxCols; c++) {
+        if (c === dateCol) continue;
+        const display = spuPlanUploadNormHeader((rows[headerRow] || [])[c]);
+        if (!display) continue;
+        const key = spuPlanUploadHeaderKey(display);
+        if (seenKeys[key]) {
+            return {
+                ok: false,
+                error: "В строке заголовков повторяется название «" + display + "». Исправьте таблицу или объедините столбцы.",
+                dateCol: dateCol,
+                headerRow: headerRow
+            };
+        }
+        seenKeys[key] = true;
+        headers.push({ colIndex: c, display: display, key: key });
+    }
+    if (!headers.length) {
+        return { ok: false, error: "Не найдено ни одного столбца с плановыми значениями (пустые заголовки пропущены)." };
+    }
+
+    const dateHeader = spuPlanUploadNormHeader((rows[headerRow] || [])[dateCol]) || SPU_PLAN_UPLOAD_COL_A_LABEL;
+    return {
+        ok: true,
+        dateCol: dateCol,
+        dateHeader: dateHeader,
+        headerRow: headerRow,
+        firstDataRow: firstDataRow,
+        headers: headers,
+        maxCols: maxCols,
+        matrix: rows
+    };
+}
+
+function spuPlanUploadInitDraftFromLayout(layout) {
+    spuPlanUploadDraftMap = {};
+    if (!layout || !layout.headers) return;
+    layout.headers.forEach(function (h) {
+        const sug = spuPlanUploadSuggestedId(h.key);
+        if (sug) spuPlanUploadDraftMap[h.key] = sug;
+    });
 }
 
 function spuPlanUploadStoredWeekValue(indicatorId, weekStartIso) {
@@ -54615,17 +54815,25 @@ function spuPlanUploadHasPeriodConflict(indicatorId, weekStartIso) {
     return v != null && Number.isFinite(Number(v));
 }
 
-function spuPlanUploadBuildPreview(matrix) {
-    const map = spuPlanUploadEnsureMapping().columns || {};
+function spuPlanUploadBuildPreview(layout, draftMap) {
     const rows = [];
+    if (!layout || !layout.ok) return rows;
+    const matrix = layout.matrix || [];
     const weekSeen = {};
-    const list = Array.isArray(matrix) ? matrix.slice() : [];
-    if (list.length && spuPlanUploadMatrixLooksLikeHeader(list[0])) list.shift();
-    list.forEach(function (rawRow, idx) {
-        const row = rawRow || [];
-        const lineNo = idx + 1;
-        const dateRaw = row[0];
-        if (row.every(function (c) { return !String(c == null ? "" : c).trim(); })) return;
+    const draft = draftMap || spuPlanUploadDraftMap || {};
+    const usedIds = {};
+    Object.keys(draft).forEach(function (k) {
+        const id = String(draft[k] || "").trim();
+        if (!id) return;
+        if (usedIds[id]) usedIds[id].push(k);
+        else usedIds[id] = [k];
+    });
+
+    for (let r = layout.firstDataRow; r < matrix.length; r++) {
+        const row = matrix[r] || [];
+        const lineNo = r + 1;
+        if (row.every(function (c) { return !String(c == null ? "" : c).trim(); })) continue;
+        const dateRaw = row[layout.dateCol];
         const weekInfo = spuPlanUploadParseWeekEnd(dateRaw);
         if (weekInfo.error || !weekInfo.week) {
             rows.push({
@@ -54635,7 +54843,8 @@ function spuPlanUploadBuildPreview(matrix) {
                 weekStart: "",
                 weekEnd: "",
                 periodKey: "",
-                col: "A",
+                headerKey: "",
+                headerDisplay: layout.dateHeader || "Дата",
                 indicatorId: "",
                 indicatorName: "—",
                 currentPlan: null,
@@ -54643,7 +54852,7 @@ function spuPlanUploadBuildPreview(matrix) {
                 message: weekInfo.error || "Ошибка даты",
                 canApply: false
             });
-            return;
+            continue;
         }
         const wStart = weekInfo.week.start_date;
         const wEnd = weekInfo.week.end_date || weekInfo.week.to;
@@ -54656,7 +54865,8 @@ function spuPlanUploadBuildPreview(matrix) {
                 weekStart: wStart,
                 weekEnd: wEnd,
                 periodKey: pKey,
-                col: "A",
+                headerKey: "",
+                headerDisplay: layout.dateHeader || "Дата",
                 indicatorId: "",
                 indicatorName: "—",
                 currentPlan: null,
@@ -54664,15 +54874,17 @@ function spuPlanUploadBuildPreview(matrix) {
                 message: "Повторяющаяся неделя в загрузке (уже была строка " + weekSeen[wStart] + ")",
                 canApply: false
             });
-            return;
+            continue;
         }
         weekSeen[wStart] = lineNo;
-        SPU_PLAN_UPLOAD_COLUMNS.forEach(function (spec, colIdx) {
-            const cellRaw = row[colIdx + 1];
+
+        (layout.headers || []).forEach(function (h) {
+            const cellRaw = row[h.colIndex];
             const num = spuPlanUploadParseNumberCell(cellRaw);
             if (num.empty) return;
-            const iid = String(map[spec.col] || "").trim();
-            if (!iid) {
+            const iid = String(draft[h.key] || "").trim();
+            if (!iid) return; /* несопоставленный столбец — пропуск, не ошибка */
+            if (usedIds[iid] && usedIds[iid].length > 1) {
                 rows.push({
                     lineNo: lineNo,
                     status: "error",
@@ -54680,12 +54892,32 @@ function spuPlanUploadBuildPreview(matrix) {
                     weekStart: wStart,
                     weekEnd: wEnd,
                     periodKey: pKey,
-                    col: spec.col,
-                    indicatorId: "",
-                    indicatorName: spec.label,
+                    headerKey: h.key,
+                    headerDisplay: h.display,
+                    indicatorId: iid,
+                    indicatorName: h.display,
                     currentPlan: null,
-                    newPlan: num.error ? null : num.value,
-                    message: "Не выбран показатель для столбца " + spec.col,
+                    newPlan: num.value,
+                    message: "Один показатель СПУ назначен нескольким столбцам — исправьте сопоставление",
+                    canApply: false
+                });
+                return;
+            }
+            if (spuPlanUploadIsAmbiguousHeader(h.key) && !spuPlanUploadConfirmAmbiguous) {
+                rows.push({
+                    lineNo: lineNo,
+                    status: "ambiguous",
+                    weekLabel: spuIsoToRu(wStart) + "–" + spuIsoToRu(wEnd),
+                    weekStart: wStart,
+                    weekEnd: wEnd,
+                    periodKey: pKey,
+                    headerKey: h.key,
+                    headerDisplay: h.display,
+                    indicatorId: iid,
+                    indicatorName: h.display,
+                    currentPlan: null,
+                    newPlan: num.value,
+                    message: "Требуется подтверждение: заголовок ранее связывался с разными показателями",
                     canApply: false
                 });
                 return;
@@ -54699,9 +54931,10 @@ function spuPlanUploadBuildPreview(matrix) {
                     weekStart: wStart,
                     weekEnd: wEnd,
                     periodKey: pKey,
-                    col: spec.col,
+                    headerKey: h.key,
+                    headerDisplay: h.display,
                     indicatorId: iid,
-                    indicatorName: spec.label,
+                    indicatorName: h.display,
                     currentPlan: null,
                     newPlan: num.value,
                     message: "Показатель не найден",
@@ -54717,7 +54950,8 @@ function spuPlanUploadBuildPreview(matrix) {
                     weekStart: wStart,
                     weekEnd: wEnd,
                     periodKey: pKey,
-                    col: spec.col,
+                    headerKey: h.key,
+                    headerDisplay: h.display,
                     indicatorId: iid,
                     indicatorName: it.name || iid,
                     currentPlan: null,
@@ -54735,7 +54969,8 @@ function spuPlanUploadBuildPreview(matrix) {
                     weekStart: wStart,
                     weekEnd: wEnd,
                     periodKey: pKey,
-                    col: spec.col,
+                    headerKey: h.key,
+                    headerDisplay: h.display,
                     indicatorId: iid,
                     indicatorName: it.name || iid,
                     currentPlan: null,
@@ -54754,12 +54989,13 @@ function spuPlanUploadBuildPreview(matrix) {
                     weekStart: wStart,
                     weekEnd: wEnd,
                     periodKey: pKey,
-                    col: spec.col,
+                    headerKey: h.key,
+                    headerDisplay: h.display,
                     indicatorId: iid,
                     indicatorName: it.name || iid,
                     currentPlan: cur,
                     newPlan: num.value,
-                    message: "План управленческого периода перекрывает недельный план в План–факте. Запись пропущена (приоритеты не менялись).",
+                    message: "План управленческого периода перекрывает недельный план в План–факте. Запись пропущена.",
                     canApply: false
                 });
                 return;
@@ -54785,7 +55021,8 @@ function spuPlanUploadBuildPreview(matrix) {
                 weekStart: wStart,
                 weekEnd: wEnd,
                 periodKey: pKey,
-                col: spec.col,
+                headerKey: h.key,
+                headerDisplay: h.display,
                 indicatorId: iid,
                 indicatorName: it.name || iid,
                 currentPlan: currentShown != null ? currentShown : stored,
@@ -54794,7 +55031,7 @@ function spuPlanUploadBuildPreview(matrix) {
                 canApply: canApply
             });
         });
-    });
+    }
     return rows;
 }
 
@@ -54803,7 +55040,9 @@ function spuPlanUploadStatusLabel(st) {
     if (st === "unchanged") return "Без изменений";
     if (st === "replace") return "Будет заменён";
     if (st === "conflict") return "Конфликт с действующим механизмом плана";
+    if (st === "ambiguous") return "Требуется подтверждение";
     if (st === "error") return "Ошибка";
+    if (st === "skip") return "Пропуск";
     return st || "—";
 }
 
@@ -54812,67 +55051,123 @@ function renderSpuPlanUploadHtml() {
     if (!canEditMgmtIndicators() && !isAppAdmin()) {
         return '<div class="note">Нет права редактировать показатели СПУ (managementIndicators: edit).</div>';
     }
-    const map = spuPlanUploadEnsureMapping().columns || {};
+    spuPlanUploadEnsureMapping();
     const inds = spuPlanUploadEligibleIndicators();
+    const layout = spuPlanUploadLayout;
     let html = '<div class="spu-plan-upload">';
-    html += '<div class="note" style="margin:0 0 12px">Вставьте строки листа «Для СПУ» (столбец A — «'
-        + escapeHtml(SPU_PLAN_UPLOAD_COL_A_LABEL)
-        + '», среда / конец недели чт–ср) или загрузите .xlsx. '
-        + "Записываются только ручные недельные планы существующих показателей. Факты, формулы и источники не меняются. "
-        + "Если у показателя задан план управленческого периода, перекрывающий неделю — строка получит статус конфликта и <b>не будет записана</b> (приоритеты планирования не менялись).</div>";
+    html += '<div class="note" style="margin:0 0 12px">Только <b>ручные недельные планы</b> существующих показателей СПУ. '
+        + "Вставьте таблицу или загрузите .xlsx — программа сама найдёт столбец даты (среда) и заголовки. "
+        + "Факты, формулы, KPI и зарплата не загружаются. Несопоставленные столбцы пропускаются.</div>";
 
-    html += '<h3 style="margin:12px 0 8px;font-size:15px">1. Соответствие столбцов показателям</h3>';
-    html += '<div class="table-wrapper" style="max-height:none;margin-bottom:12px"><table class="mgmt-table"><thead><tr>'
-        + "<th>Столбец</th><th>Содержание листа</th><th>Показатель СПУ</th></tr></thead><tbody>";
-    html += "<tr><td><b>A</b></td><td>" + escapeHtml(SPU_PLAN_UPLOAD_COL_A_LABEL)
-        + "</td><td><span class=\"mgmt-src\">дата окончания недели (не привязывается к показателю)</span></td></tr>";
-    SPU_PLAN_UPLOAD_COLUMNS.forEach(function (spec) {
-        const cur = String(map[spec.col] || "");
-        html += "<tr><td><b>" + escapeHtml(spec.col) + "</b></td><td>" + escapeHtml(spec.label) + "</td><td>";
-        html += '<select data-spu-upload-col="' + escapeAttribute(spec.col) + '" onchange="spuPlanUploadOnMapChange(this)">';
-        html += '<option value="">— не выбран —</option>';
-        inds.forEach(function (it) {
-            html += '<option value="' + escapeAttribute(it.indicator_id) + '"'
-                + (cur === String(it.indicator_id) ? " selected" : "") + ">"
-                + escapeHtml(it.name || it.indicator_id) + "</option>";
-        });
-        html += "</select></td></tr>";
-    });
-    html += "</tbody></table></div>";
-    html += '<div class="toolbar" style="margin-bottom:14px">'
-        + '<button type="button" class="btn btn-secondary" onclick="spuPlanUploadSaveMapping()">Сохранить соответствия</button>'
-        + "</div>";
-
-    html += '<h3 style="margin:12px 0 8px;font-size:15px">2. Данные</h3>';
+    html += '<h3 style="margin:12px 0 8px;font-size:15px">1. Данные</h3>';
     html += '<div class="form-group"><label>Вставка из Google Таблицы (Ctrl+V)</label>'
         + '<textarea id="spuPlanUploadPaste" rows="8" style="width:100%;font-family:Consolas,monospace;font-size:12px" '
-        + 'placeholder="Скопируйте диапазон с листа «Для СПУ» и вставьте сюда"></textarea></div>';
+        + 'placeholder="Скопируйте диапазон с заголовками и датами недель"></textarea></div>';
     html += '<div class="form-group"><label>Или файл Excel (.xlsx)</label>'
         + '<input id="spuPlanUploadFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></div>';
     html += '<div class="toolbar" style="margin-bottom:14px;gap:8px;flex-wrap:wrap">'
-        + '<button type="button" class="btn btn-primary" onclick="spuPlanUploadRunPreview()">Проверить данные</button>'
-        + '<button type="button" class="btn btn-secondary" onclick="spuPlanUploadClearPreview()">Очистить превью</button>'
+        + '<button type="button" class="btn btn-primary" onclick="spuPlanUploadAnalyze()">Распознать таблицу</button>'
+        + '<button type="button" class="btn btn-secondary" onclick="spuPlanUploadClearPreview()">Очистить</button>'
         + "</div>";
     if (spuPlanUploadLastSource) {
-        html += '<div class="note">Источник превью: ' + escapeHtml(spuPlanUploadLastSource) + "</div>";
+        html += '<div class="note">Источник: ' + escapeHtml(spuPlanUploadLastSource) + "</div>";
+    }
+
+    if (layout && !layout.ok && layout.needDateCol) {
+        html += '<div class="note" style="color:#8a5a00;margin:8px 0">' + escapeHtml(layout.error || "") + "</div>";
+        html += '<div class="form-group"><label>Столбец даты (номер с 1)</label><select id="spuPlanUploadDateColSel" onchange="spuPlanUploadForcedDateCol=this.value===\'\'?null:Number(this.value)-1">';
+        html += '<option value="">— выберите —</option>';
+        const mc = layout.maxCols || 0;
+        for (let i = 0; i < mc; i++) {
+            html += '<option value="' + (i + 1) + '"'
+                + (spuPlanUploadForcedDateCol === i ? " selected" : "") + ">Столбец " + (i + 1) + "</option>";
+        }
+        html += "</select> <button type=\"button\" class=\"btn btn-secondary btn-small\" onclick=\"spuPlanUploadAnalyze()\">Повторить</button></div>";
+    } else if (layout && !layout.ok) {
+        html += '<div class="note" style="color:#b00020;margin:8px 0">' + escapeHtml(layout.error || "Ошибка распознавания") + "</div>";
+    }
+
+    html += '<h3 style="margin:12px 0 8px;font-size:15px">2. Соответствие заголовков показателям</h3>';
+    if (!layout || !layout.ok) {
+        html += '<div class="empty-row">Сначала распознайте таблицу — здесь появятся заголовки из файла.</div>';
+    } else {
+        const headers = layout.headers || [];
+        let nMapped = 0;
+        let nSkip = 0;
+        let nAmb = 0;
+        headers.forEach(function (h) {
+            const v = String(spuPlanUploadDraftMap[h.key] || "").trim();
+            if (!v) nSkip += 1;
+            else nMapped += 1;
+            if (spuPlanUploadIsAmbiguousHeader(h.key)) nAmb += 1;
+        });
+        html += '<div class="note" style="margin:0 0 8px">Столбцов: ' + headers.length
+            + " · сопоставлено: " + nMapped
+            + " · пропуск: " + nSkip
+            + " · неоднозначных: " + nAmb
+            + " · дата: «" + escapeHtml(layout.dateHeader || "") + "» (столбец " + (layout.dateCol + 1) + ")"
+            + " · заголовки: строка " + (layout.headerRow + 1)
+            + " · данные с строки " + (layout.firstDataRow + 1) + "</div>";
+        html += '<div class="table-wrapper" style="max-height:none;margin-bottom:12px"><table class="mgmt-table"><thead><tr>'
+            + "<th>Название столбца из файла</th><th>Показатель СПУ</th><th>Статус</th></tr></thead><tbody>";
+        headers.forEach(function (h) {
+            const cur = String(spuPlanUploadDraftMap[h.key] || "").trim();
+            const amb = spuPlanUploadIsAmbiguousHeader(h.key);
+            let st = "Не сопоставлен — будет пропущен";
+            if (amb && !cur) st = "Требуется подтверждение";
+            else if (amb && cur) st = "Требуется подтверждение (выбран вариант)";
+            else if (cur) st = "Сопоставлен";
+            html += "<tr><td class=\"wrap\"><b>" + escapeHtml(h.display) + "</b></td><td>";
+            html += '<select data-spu-upload-hk="' + escapeAttribute(h.key) + '" onchange="spuPlanUploadOnDraftMapChange(this)">';
+            html += '<option value="">— не выбран (пропуск) —</option>';
+            const prefer = spuPlanUploadCandidateIds(h.key);
+            const shown = {};
+            prefer.forEach(function (id) {
+                const it = spuPlanUploadFindIndicator(id);
+                if (!it) return;
+                shown[id] = true;
+                html += '<option value="' + escapeAttribute(id) + '"'
+                    + (cur === id ? " selected" : "") + ">"
+                    + escapeHtml(it.name || id) + " ★</option>";
+            });
+            inds.forEach(function (it) {
+                if (shown[it.indicator_id]) return;
+                html += '<option value="' + escapeAttribute(it.indicator_id) + '"'
+                    + (cur === String(it.indicator_id) ? " selected" : "") + ">"
+                    + escapeHtml(it.name || it.indicator_id) + "</option>";
+            });
+            html += "</select></td><td>" + escapeHtml(st) + "</td></tr>";
+        });
+        html += "</tbody></table></div>";
+        if (nAmb) {
+            html += '<label class="check" style="display:inline-flex;margin:0 0 8px">'
+                + '<input id="spuPlanUploadConfirmAmbiguous" type="checkbox"'
+                + (spuPlanUploadConfirmAmbiguous ? " checked" : "")
+                + ' onchange="spuPlanUploadConfirmAmbiguous=this.checked"> '
+                + "Подтверждаю выбранные соответствия для неоднозначных заголовков</label>";
+        }
+        html += '<div class="toolbar" style="margin-bottom:14px;gap:8px;flex-wrap:wrap">'
+            + '<button type="button" class="btn btn-secondary" onclick="spuPlanUploadSaveMapping()">Сохранить соответствия</button>'
+            + '<button type="button" class="btn btn-primary" onclick="spuPlanUploadBuildPreviewFromLayout()">Проверить данные</button>'
+            + "</div>";
     }
 
     html += '<h3 style="margin:12px 0 8px;font-size:15px">3. Предварительный просмотр</h3>';
     if (!spuPlanUploadPreviewRows.length) {
-        html += '<div class="empty-row">Превью пусто. Вставьте таблицу или выберите файл и нажмите «Проверить данные».</div>';
+        html += '<div class="empty-row">Превью пусто. Распознайте таблицу, сопоставьте столбцы и нажмите «Проверить данные».</div>';
     } else {
         const nNew = spuPlanUploadPreviewRows.filter(function (r) { return r.status === "new"; }).length;
         const nRep = spuPlanUploadPreviewRows.filter(function (r) { return r.status === "replace"; }).length;
         const nUn = spuPlanUploadPreviewRows.filter(function (r) { return r.status === "unchanged"; }).length;
         const nErr = spuPlanUploadPreviewRows.filter(function (r) { return r.status === "error"; }).length;
         const nConf = spuPlanUploadPreviewRows.filter(function (r) { return r.status === "conflict"; }).length;
-        html += '<div class="note" style="margin:0 0 8px">Строк: ' + spuPlanUploadPreviewRows.length
+        const nAmbR = spuPlanUploadPreviewRows.filter(function (r) { return r.status === "ambiguous"; }).length;
+        html += '<div class="note" style="margin:0 0 8px">Строк превью: ' + spuPlanUploadPreviewRows.length
             + " · новых " + nNew + " · замен " + nRep + " · без изменений " + nUn
-            + " · ошибок " + nErr + " · конфликтов " + nConf + "</div>";
+            + " · ошибок " + nErr + " · конфликтов " + nConf
+            + " · требуют подтверждения " + nAmbR + "</div>";
         if (nConf) {
-            html += '<div class="note" style="margin:0 0 8px;color:#8a5a00">Есть конфликты с планом управленческого периода. '
-                + "Эти значения <b>не будут записаны</b>. Чтобы они отображались в План–факте, нужно отдельно согласовать снятие period_plans "
-                + "или изменение приоритета чтения — сейчас приоритеты не менялись.</div>";
+            html += '<div class="note" style="margin:0 0 8px;color:#8a5a00">Конфликты с планом управленческого периода не записываются (приоритеты не менялись).</div>';
         }
         if (nRep) {
             html += '<label class="check" style="display:inline-flex;margin:0 0 8px">'
@@ -54882,14 +55177,14 @@ function renderSpuPlanUploadHtml() {
                 + "Подтверждаю замену уже сохранённых ручных планов</label>";
         }
         html += '<div class="table-wrapper" style="max-height:420px"><table class="mgmt-table"><thead><tr>'
-            + "<th>Стр.</th><th>Неделя</th><th>Стлб.</th><th>Показатель</th>"
+            + "<th>Стр.</th><th>Неделя</th><th>Заголовок</th><th>Показатель</th>"
             + "<th>Текущий план</th><th>Новый план</th><th>Статус</th><th>Комментарий</th>"
             + "</tr></thead><tbody>";
         spuPlanUploadPreviewRows.forEach(function (r) {
             html += "<tr>"
                 + "<td>" + r.lineNo + "</td>"
                 + "<td>" + escapeHtml(r.weekLabel || "—") + "</td>"
-                + "<td>" + escapeHtml(r.col || "") + "</td>"
+                + '<td class="wrap">' + escapeHtml(r.headerDisplay || "—") + "</td>"
                 + '<td class="wrap">' + escapeHtml(r.indicatorName || "—") + "</td>"
                 + "<td>" + (r.currentPlan == null ? "—" : escapeHtml(String(r.currentPlan))) + "</td>"
                 + "<td>" + (r.newPlan == null ? "—" : escapeHtml(String(r.newPlan))) + "</td>"
@@ -54909,66 +55204,101 @@ function renderSpuPlanUploadHtml() {
     return html;
 }
 
-function spuPlanUploadOnMapChange(sel) {
-    const col = sel && sel.getAttribute("data-spu-upload-col");
-    if (!col) return;
-    const map = spuPlanUploadEnsureMapping().columns;
+function spuPlanUploadOnDraftMapChange(sel) {
+    const key = sel && sel.getAttribute("data-spu-upload-hk");
+    if (!key) return;
     const val = String(sel.value || "").trim();
     if (!val) {
-        delete map[col];
+        delete spuPlanUploadDraftMap[key];
         return;
     }
-    let clash = "";
-    Object.keys(map).forEach(function (c) {
-        if (c !== col && String(map[c]) === val) clash = c;
+    let clashKey = "";
+    Object.keys(spuPlanUploadDraftMap).forEach(function (k) {
+        if (k !== key && String(spuPlanUploadDraftMap[k]) === val) clashKey = k;
     });
-    if (clash) {
-        toast("Показатель уже выбран для столбца " + clash + ". Сначала снимите его там.", "error");
-        sel.value = String(map[col] || "");
+    if (clashKey) {
+        toast("Этот показатель уже выбран для другого столбца. Сначала снимите его там.", "error");
+        sel.value = String(spuPlanUploadDraftMap[key] || "");
         return;
     }
-    map[col] = val;
+    spuPlanUploadDraftMap[key] = val;
 }
 
 function spuPlanUploadSaveMapping() {
     if (!canEditMgmtIndicators() && !isAppAdmin()) return;
-    const mapRoot = spuPlanUploadEnsureMapping();
-    const cols = {};
-    SPU_PLAN_UPLOAD_COLUMNS.forEach(function (spec) {
-        const el = document.querySelector('select[data-spu-upload-col="' + spec.col + '"]');
-        if (!el) return;
-        const v = String(el.value || "").trim();
-        if (!v) return;
-        if (Object.keys(cols).some(function (c) { return cols[c] === v; })) {
-            toast("Один показатель нельзя назначить двум столбцам", "error");
-            return;
-        }
-        cols[spec.col] = v;
+    if (!spuPlanUploadLayout || !spuPlanUploadLayout.ok) {
+        toast("Сначала распознайте таблицу", "error");
+        return;
+    }
+    const confEl = document.getElementById("spuPlanUploadConfirmAmbiguous");
+    if (confEl) spuPlanUploadConfirmAmbiguous = !!confEl.checked;
+
+    const root = spuPlanUploadEnsureMapping();
+    const nextBy = Object.assign({}, root.byHeader || {});
+    const nextCand = {};
+    Object.keys(root.candidates || {}).forEach(function (k) {
+        nextCand[k] = (root.candidates[k] || []).slice();
     });
-    /* rebuild if toast above partially filled — re-read cleanly */
-    const clean = {};
+
+    let badDup = false;
     const used = {};
-    let bad = false;
-    SPU_PLAN_UPLOAD_COLUMNS.forEach(function (spec) {
-        const el = document.querySelector('select[data-spu-upload-col="' + spec.col + '"]');
-        const v = el ? String(el.value || "").trim() : "";
+    (spuPlanUploadLayout.headers || []).forEach(function (h) {
+        const el = document.querySelector('select[data-spu-upload-hk="' + h.key.replace(/"/g, '\\"') + '"]');
+        /* attribute selector: use draft map as source of truth */
+        const v = String(spuPlanUploadDraftMap[h.key] || "").trim();
         if (!v) return;
-        if (used[v]) { bad = true; return; }
+        if (used[v]) badDup = true;
         used[v] = true;
-        clean[spec.col] = v;
     });
-    if (bad) {
+    if (badDup) {
         toast("Один показатель нельзя назначить двум столбцам", "error");
         return;
     }
-    mapRoot.version = 1;
-    mapRoot.columns = clean;
-    appData.management.planUploadMapping = mapRoot;
+
+    let blockedAmb = false;
+    (spuPlanUploadLayout.headers || []).forEach(function (h) {
+        const v = String(spuPlanUploadDraftMap[h.key] || "").trim();
+        if (!v) return;
+        if (!nextCand[h.key]) nextCand[h.key] = [];
+        if (nextCand[h.key].indexOf(v) === -1) nextCand[h.key].push(v);
+        const uniq = [];
+        nextCand[h.key].forEach(function (id) {
+            if (id && uniq.indexOf(id) === -1) uniq.push(id);
+        });
+        nextCand[h.key] = uniq;
+        const prev = nextBy[h.key] ? String(nextBy[h.key]) : "";
+        if (prev && prev !== v && !spuPlanUploadConfirmAmbiguous) {
+            blockedAmb = true;
+            if (uniq.indexOf(prev) === -1) uniq.push(prev);
+            nextCand[h.key] = uniq;
+            delete nextBy[h.key];
+            return;
+        }
+        if (uniq.length > 1 && !spuPlanUploadConfirmAmbiguous) {
+            blockedAmb = true;
+            delete nextBy[h.key];
+            return;
+        }
+        nextBy[h.key] = v;
+    });
+    if (blockedAmb && !spuPlanUploadConfirmAmbiguous) {
+        toast("Есть неоднозначные заголовки. Отметьте подтверждение или уточните выбор.", "error");
+        renderManagement();
+        return;
+    }
+
+    const payload = {
+        version: 2,
+        columns: root.columns && typeof root.columns === "object" ? root.columns : {},
+        byHeader: nextBy,
+        candidates: nextCand
+    };
+    appData.management.planUploadMapping = payload;
     return wtSpuPersistRecordOp("management.planUploadMapping", function () {
-        return wtSpuCloneJson(mapRoot);
+        return wtSpuCloneJson(payload);
     }, {
         paint: function () { renderManagement(); },
-        okToast: "Соответствия столбцов сохранены",
+        okToast: "Соответствия сохранены",
         conflictCellLabel: "соответствия загрузки планов"
     });
 }
@@ -54976,56 +55306,86 @@ function spuPlanUploadSaveMapping() {
 function spuPlanUploadClearPreview() {
     spuPlanUploadPreviewRows = [];
     spuPlanUploadLastSource = "";
+    spuPlanUploadLastMatrix = null;
+    spuPlanUploadLayout = null;
+    spuPlanUploadDraftMap = {};
     spuPlanUploadConfirmReplace = false;
+    spuPlanUploadConfirmAmbiguous = false;
+    spuPlanUploadForcedDateCol = null;
     renderManagement();
 }
 
-function spuPlanUploadSetPreviewFromMatrix(matrix, sourceLabel) {
-    spuPlanUploadPreviewRows = spuPlanUploadBuildPreview(matrix);
-    spuPlanUploadLastSource = sourceLabel || "";
-    spuPlanUploadConfirmReplace = false;
-    renderManagement();
-    const n = spuPlanUploadPreviewRows.length;
-    toast(n ? ("Превью: " + n + " строк") : "Нет данных для превью", n ? "info" : "error");
-}
-
-function spuPlanUploadRunPreview() {
-    if (!canEditMgmtIndicators() && !isAppAdmin()) return;
+function spuPlanUploadReadMatrixFromUi() {
     const paste = String(((document.getElementById("spuPlanUploadPaste") || {}).value) || "");
     const fileInput = document.getElementById("spuPlanUploadFile");
     const file = fileInput && fileInput.files && fileInput.files[0];
-    if (paste.trim()) {
-        const matrix = typeof frParsePasteMatrix === "function"
-            ? frParsePasteMatrix(paste)
-            : paste.replace(/\r\n/g, "\n").split("\n").map(function (l) { return l.split("\t"); });
-        spuPlanUploadSetPreviewFromMatrix(matrix, "Вставка из буфера");
+    return new Promise(function (resolve, reject) {
+        if (paste.trim()) {
+            const matrix = typeof frParsePasteMatrix === "function"
+                ? frParsePasteMatrix(paste)
+                : paste.replace(/\r\n/g, "\n").split("\n").map(function (l) { return l.split("\t"); });
+            resolve({ matrix: matrix, source: "Вставка из буфера" });
+            return;
+        }
+        if (!file) {
+            reject(new Error("Вставьте таблицу или выберите файл .xlsx"));
+            return;
+        }
+        const name = String(file.name || "").toLowerCase();
+        if (!name.endsWith(".xlsx")) {
+            reject(new Error("Поддерживается только .xlsx (или вставка Ctrl+V)"));
+            return;
+        }
+        if (typeof frXlsxArrayBufferToText !== "function") {
+            reject(new Error("Парсер Excel недоступен"));
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = function () {
+            frXlsxArrayBufferToText(reader.result).then(function (text) {
+                resolve({ matrix: frParsePasteMatrix(text), source: "Файл: " + (file.name || "xlsx") });
+            }).catch(reject);
+        };
+        reader.onerror = function () { reject(new Error("Ошибка чтения файла")); };
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+function spuPlanUploadAnalyze() {
+    if (!canEditMgmtIndicators() && !isAppAdmin()) return;
+    const dateSel = document.getElementById("spuPlanUploadDateColSel");
+    if (dateSel && dateSel.value) spuPlanUploadForcedDateCol = Number(dateSel.value) - 1;
+    spuPlanUploadReadMatrixFromUi().then(function (pack) {
+        spuPlanUploadLastMatrix = pack.matrix;
+        spuPlanUploadLastSource = pack.source;
+        spuPlanUploadPreviewRows = [];
+        const layout = spuPlanUploadDetectLayout(pack.matrix, spuPlanUploadForcedDateCol);
+        spuPlanUploadLayout = layout;
+        if (layout.ok) {
+            spuPlanUploadInitDraftFromLayout(layout);
+            toast("Распознано столбцов: " + layout.headers.length, "info");
+        } else {
+            spuPlanUploadDraftMap = {};
+            toast(layout.error || "Не удалось распознать таблицу", "error");
+        }
+        renderManagement();
+    }).catch(function (err) {
+        toast(err && err.message ? err.message : String(err), "error");
+    });
+}
+
+function spuPlanUploadBuildPreviewFromLayout() {
+    if (!spuPlanUploadLayout || !spuPlanUploadLayout.ok) {
+        toast("Сначала распознайте таблицу", "error");
         return;
     }
-    if (!file) {
-        toast("Вставьте таблицу или выберите файл .xlsx", "error");
-        return;
-    }
-    const name = String(file.name || "").toLowerCase();
-    if (!name.endsWith(".xlsx")) {
-        toast("Поддерживается только .xlsx (или вставка Ctrl+V)", "error");
-        return;
-    }
-    if (typeof frXlsxArrayBufferToText !== "function") {
-        toast("Парсер Excel недоступен", "error");
-        return;
-    }
-    const reader = new FileReader();
-    reader.onload = function () {
-        frXlsxArrayBufferToText(reader.result).then(function (text) {
-            const matrix = frParsePasteMatrix(text);
-            spuPlanUploadSetPreviewFromMatrix(matrix, "Файл: " + (file.name || "xlsx"));
-        }).catch(function (err) {
-            console.error(err);
-            toast("Не удалось прочитать .xlsx: " + (err && err.message ? err.message : "ошибка"), "error");
-        });
-    };
-    reader.onerror = function () { toast("Ошибка чтения файла", "error"); };
-    reader.readAsArrayBuffer(file);
+    const confEl = document.getElementById("spuPlanUploadConfirmAmbiguous");
+    if (confEl) spuPlanUploadConfirmAmbiguous = !!confEl.checked;
+    spuPlanUploadPreviewRows = spuPlanUploadBuildPreview(spuPlanUploadLayout, spuPlanUploadDraftMap);
+    renderManagement();
+    toast(spuPlanUploadPreviewRows.length
+        ? ("Превью: " + spuPlanUploadPreviewRows.length + " строк")
+        : "Нет строк для превью (проверьте сопоставления и данные)", "info");
 }
 
 function spuPlanUploadApply() {
@@ -55048,7 +55408,7 @@ function spuPlanUploadApply() {
         mgmtRunInThuWeek(r.weekStart, function () {
             setMgmtPlanValue(r.indicatorId, r.newPlan, {
                 origin: "plan_upload",
-                upload_col: r.col,
+                upload_header: r.headerDisplay || r.headerKey || "",
                 upload_week_end: r.weekEnd
             }, { persist: false });
         });
@@ -55062,7 +55422,6 @@ function spuPlanUploadApply() {
             + (conflicts ? (" · пропущено конфликтов: " + conflicts) : "")
     }).then(function (ok) {
         if (ok) {
-            /* обновить превью статусов из store */
             spuPlanUploadPreviewRows = spuPlanUploadPreviewRows.map(function (r) {
                 if (!r.canApply) return r;
                 if (r.status === "replace" && !spuPlanUploadConfirmReplace) return r;
