@@ -4377,40 +4377,45 @@
         .cr-lines th, .cr-lines td { padding: 4px 6px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
         .cr-lines th { background: #f8fafc; font-size: 11px; position: sticky; top: 0; }
         .cr-lines input, .cr-lines select { width: 100%; font-size: 12px; padding: 4px 6px; box-sizing: border-box; }
-        /* Черновик строк «Новый возврат»: 3 ряда, широкое имя товара (только эта форма). */
-        .cr-draft-list { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+        /* Черновик строк «Новый возврат»: 2 компактных ряда (только эта форма). */
+        .cr-draft-list { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
         .cr-draft-line {
-            border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; padding: 8px;
-            display: flex; flex-direction: column; gap: 6px;
+            border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; padding: 6px 8px;
+            display: flex; flex-direction: column; gap: 4px;
         }
         .cr-draft-line.cr-need { background: #fffbeb; border-color: #f59e0b; }
-        .cr-draft-head {
-            display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted);
-        }
-        .cr-draft-head .cr-draft-num { min-width: 1.5em; font-weight: 600; color: #334155; }
-        .cr-draft-head .btn { margin-left: auto; }
         .cr-draft-r1 {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) 72px 118px;
+            grid-template-columns: auto auto minmax(0, 1fr) 72px 110px auto;
             gap: 6px;
             align-items: end;
         }
+        .cr-draft-r1 .cr-draft-num {
+            align-self: end; padding-bottom: 6px; min-width: 1.25em;
+            font-weight: 600; font-size: 12px; color: #334155; text-align: right;
+        }
+        .cr-draft-r1 .cr-draft-sel {
+            align-self: end; padding-bottom: 8px; margin: 0;
+        }
+        .cr-draft-r1 .cr-draft-del { align-self: end; margin: 0; }
         .cr-draft-r2 {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
             gap: 6px;
             align-items: end;
         }
-        .cr-draft-r3 { display: grid; grid-template-columns: minmax(0, 1fr); }
-        .cr-draft-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-        .cr-draft-field > span { font-size: 10px; color: var(--muted); }
+        .cr-draft-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .cr-draft-field > span { font-size: 10px; color: var(--muted); line-height: 1.2; }
         .cr-draft-field input,
         .cr-draft-field select,
         .cr-draft-field textarea {
             width: 100%; font-size: 12px; padding: 4px 6px; box-sizing: border-box;
             border: 1px solid var(--border); border-radius: 6px;
+            min-height: 28px; line-height: 1.25;
         }
-        .cr-draft-field textarea { min-height: 36px; resize: vertical; }
+        .cr-draft-field textarea {
+            min-height: 28px; height: 28px; resize: vertical; overflow-y: auto;
+        }
         .cr-ln-name { overflow-x: auto; }
         .cr-ln-qty { text-align: right; }
         .cr-ln-amount { text-align: right; }
@@ -4459,8 +4464,12 @@
         tr.cr-hist { background: #f8fafc; }
         @media (max-width: 1000px) {
             .cr-stats, .cr-queues, .cr-ana, .cr-form { grid-template-columns: 1fr; }
-            .cr-draft-r1 { grid-template-columns: minmax(0, 1fr) 64px 100px; }
-            .cr-draft-r2 { grid-template-columns: 1fr; }
+            .cr-draft-r1 {
+                grid-template-columns: auto auto minmax(0, 1fr) 64px 96px auto;
+            }
+            .cr-draft-r2 {
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+            }
         }
 
         .fr-wrap { display: flex; flex-direction: column; gap: 12px; }
@@ -65630,12 +65639,10 @@ function crRenderDraftTable() {
         const qtyVal = line.qty ? crFormatPlainNumber(line.qty) : "";
         const amountVal = line.amount == null || line.amount === "" ? "" : crFormatPlainNumber(line.amount);
         body += '<div class="cr-draft-line' + (missReason ? " cr-need" : "") + '">'
-            + '<div class="cr-draft-head">'
-            + '<input type="checkbox" id="crLnSel' + i + '"' + (line.selected ? " checked" : "") + ">"
-            + '<span class="cr-draft-num">' + (i + 1) + "</span>"
-            + '<button type="button" class="btn btn-small" onclick="crRemoveDraftLine(' + i + ')">✕</button>'
-            + "</div>"
             + '<div class="cr-draft-r1">'
+            + '<input type="checkbox" class="cr-draft-sel" id="crLnSel' + i + '"'
+            + (line.selected ? " checked" : "") + ">"
+            + '<span class="cr-draft-num">' + (i + 1) + "</span>"
             + '<label class="cr-draft-field"><span>Товар</span>'
             + '<input class="cr-ln-name" id="crLnName' + i + '" value="' + escapeAttribute(nameVal) + '"'
             + ' title="' + escapeAttribute(nameVal) + '"></label>'
@@ -65645,6 +65652,7 @@ function crRenderDraftTable() {
             + '<label class="cr-draft-field"><span>Сумма</span>'
             + '<input class="cr-ln-amount" id="crLnAmount' + i + '" inputmode="decimal" value="'
             + escapeAttribute(amountVal) + '" onchange="crSyncReturnTotal()"></label>'
+            + '<button type="button" class="btn btn-small cr-draft-del" onclick="crRemoveDraftLine(' + i + ')">✕</button>'
             + "</div>"
             + '<div class="cr-draft-r2">'
             + '<label class="cr-draft-field' + (missReason ? " cr-need" : "") + '"><span>Причина возврата</span>'
@@ -65654,10 +65662,8 @@ function crRenderDraftTable() {
             + '<label class="cr-draft-field"><span>Товароразборщик</span>'
             + '<select id="crLnPicker' + i + '">' + crEmpOptions(line.picker_employee_id, "picker")
             + "</select></label>"
-            + "</div>"
-            + '<div class="cr-draft-r3">'
             + '<label class="cr-draft-field"><span>Комментарий к возврату</span>'
-            + '<textarea id="crLnComment' + i + '">' + escapeHtml(line.comment || "") + "</textarea></label>"
+            + '<textarea id="crLnComment' + i + '" rows="1">' + escapeHtml(line.comment || "") + "</textarea></label>"
             + "</div>"
             + "</div>";
     });
