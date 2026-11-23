@@ -4377,6 +4377,43 @@
         .cr-lines th, .cr-lines td { padding: 4px 6px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
         .cr-lines th { background: #f8fafc; font-size: 11px; position: sticky; top: 0; }
         .cr-lines input, .cr-lines select { width: 100%; font-size: 12px; padding: 4px 6px; box-sizing: border-box; }
+        /* Черновик строк «Новый возврат»: 3 ряда, широкое имя товара (только эта форма). */
+        .cr-draft-list { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+        .cr-draft-line {
+            border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; padding: 8px;
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .cr-draft-line.cr-need { background: #fffbeb; border-color: #f59e0b; }
+        .cr-draft-head {
+            display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted);
+        }
+        .cr-draft-head .cr-draft-num { min-width: 1.5em; font-weight: 600; color: #334155; }
+        .cr-draft-head .btn { margin-left: auto; }
+        .cr-draft-r1 {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 72px 118px;
+            gap: 6px;
+            align-items: end;
+        }
+        .cr-draft-r2 {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+            gap: 6px;
+            align-items: end;
+        }
+        .cr-draft-r3 { display: grid; grid-template-columns: minmax(0, 1fr); }
+        .cr-draft-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+        .cr-draft-field > span { font-size: 10px; color: var(--muted); }
+        .cr-draft-field input,
+        .cr-draft-field select,
+        .cr-draft-field textarea {
+            width: 100%; font-size: 12px; padding: 4px 6px; box-sizing: border-box;
+            border: 1px solid var(--border); border-radius: 6px;
+        }
+        .cr-draft-field textarea { min-height: 36px; resize: vertical; }
+        .cr-ln-name { overflow-x: auto; }
+        .cr-ln-qty { text-align: right; }
+        .cr-ln-amount { text-align: right; }
         .cr-need { background: #fef3c7 !important; }
         .cr-need input, .cr-need select { border-color: #f59e0b; background: #fffbeb; }
         .cr-need-hint { display: block; color: #b45309; font-size: 10px; margin-top: 2px; }
@@ -4422,6 +4459,8 @@
         tr.cr-hist { background: #f8fafc; }
         @media (max-width: 1000px) {
             .cr-stats, .cr-queues, .cr-ana, .cr-form { grid-template-columns: 1fr; }
+            .cr-draft-r1 { grid-template-columns: minmax(0, 1fr) 64px 100px; }
+            .cr-draft-r2 { grid-template-columns: 1fr; }
         }
 
         .fr-wrap { display: flex; flex-direction: column; gap: 12px; }
@@ -62932,7 +62971,9 @@ function crEmpFitsKind(e, kind) {
     if (!e || !isTerritoryEmployee(e)) return false;
     const home = employeeHomeDeptCode(e.id);
     if (kind === "cashier") {
-        return home === "warehouse" && employeeMatchesWorkTab(e, "warehouse", "cashiers");
+        return home === "warehouse"
+            && typeof employeeCardWorkGroupId === "function"
+            && employeeCardWorkGroupId(e, "warehouse") === "cashiers";
     }
     if (kind === "driver") {
         return home === "drivers" && employeeMatchesWorkTab(e, "drivers", "drivers");
@@ -62944,7 +62985,8 @@ function crEmpFitsKind(e, kind) {
             || employeeMatchesWorkTab(e, "warehouse", "managers");
     }
     if (kind === "author") {
-        return home === "drivers" && employeeMatchesWorkTab(e, "drivers", "sales");
+        if (home === "drivers" && employeeMatchesWorkTab(e, "drivers", "sales")) return true;
+        return e.can_cover_sales_reps === true;
     }
     return isTerritoryCode(home);
 }
@@ -62952,21 +62994,28 @@ function crEmpFitsKind(e, kind) {
 function crEmpOptions(selected, kind) {
     let html = '<option value="">' + (kind === "picker" ? "Не установлен" : "—") + "</option>";
     const seen = {};
-    function addEmp(e) {
-        if (!e || !e.id || seen[e.id] || !isTerritoryEmployee(e)) return;
+    function addEmp(e, force) {
+        if (!e || !e.id || seen[e.id]) return;
+        if (!force && !isTerritoryEmployee(e)) return;
         seen[e.id] = true;
-        const label = kind === "cashier" ? (e.name || e.id) : (e.name + (e.position ? " · " + e.position : ""));
+        let label = kind === "cashier" ? (e.name || e.id) : ((e.name || e.id) + (e.position ? " · " + e.position : ""));
+        if (force && !crEmpFitsKind(e, kind)) label += " (вне списка)";
         html += '<option value="' + escapeAttribute(e.id) + '"' + (e.id === selected ? " selected" : "") + ">"
             + escapeHtml(label) + "</option>";
     }
     crPeople().forEach(function (e) {
         if (e.jobStatus === "fired" && e.id !== selected) return;
         if (!crEmpFitsKind(e, kind)) return;
-        addEmp(e);
+        addEmp(e, false);
     });
     if (selected && !seen[selected]) {
         const extra = getEmployee(selected);
-        if (extra && crEmpFitsKind(extra, kind)) addEmp(extra);
+        if (extra) addEmp(extra, true);
+        else {
+            seen[selected] = true;
+            html += '<option value="' + escapeAttribute(selected) + '" selected>'
+                + escapeHtml(String(selected) + " (вне списка)") + "</option>";
+        }
     }
     return html;
 }
@@ -65345,6 +65394,21 @@ function crEmptyDraftLine() {
     };
 }
 
+/** Отображение qty/суммы без хвостовых нулей; хранение и crParseQty не меняет. */
+function crFormatPlainNumber(value) {
+    if (value == null || value === "") return "";
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value);
+    if (Object.is(n, -0) || n === 0) return "0";
+    let s;
+    if (Math.abs(n - Math.round(n)) < 1e-9) {
+        s = String(Math.round(n));
+    } else {
+        s = n.toFixed(6).replace(/\.?0+$/, "");
+    }
+    return s.replace(".", ",");
+}
+
 function crCollectDraftFromDom() {
     if (!crDraftLines.length) return;
     crDraftLines.forEach(function (line, i) {
@@ -65380,21 +65444,42 @@ function crRenderDraftTable() {
     let body = "";
     crDraftLines.forEach(function (line, i) {
         const missReason = !line.reason_id;
-        body += "<tr><td><input type=\"checkbox\" id=\"crLnSel" + i + "\"" + (line.selected ? " checked" : "") + "></td>"
-            + "<td>" + (i + 1) + "</td>"
-            + "<td><input id=\"crLnName" + i + "\" value=\"" + escapeAttribute(line.product_name) + "\"></td>"
-            + "<td><input id=\"crLnQty" + i + "\" inputmode=\"decimal\" value=\"" + escapeAttribute(line.qty ? String(line.qty) : "") + "\" onchange=\"crSyncReturnTotal()\"></td>"
-            + "<td><input id=\"crLnAmount" + i + "\" inputmode=\"decimal\" value=\"" + escapeAttribute(line.amount == null || line.amount === "" ? "" : String(line.amount)) + "\" onchange=\"crSyncReturnTotal()\"></td>"
-            + '<td class="' + (missReason ? "cr-need" : "") + '"><select id="crLnReason' + i + '">' + crReasonOptions(line.reason_id)
-            + "</select>" + (missReason ? '<span class="cr-need-hint">⚠ Укажите причину</span>' : "") + "</td>"
-            + '<td><select id="crLnPicker' + i + '">' + crEmpOptions(line.picker_employee_id, "picker")
-            + "</select></td>"
-            + "<td><input id=\"crLnComment" + i + "\" value=\"" + escapeAttribute(line.comment || "") + "\"></td>"
-            + '<td><button type="button" class="btn btn-small" onclick="crRemoveDraftLine(' + i + ')">✕</button></td></tr>';
+        const nameVal = line.product_name || "";
+        const qtyVal = line.qty ? crFormatPlainNumber(line.qty) : "";
+        const amountVal = line.amount == null || line.amount === "" ? "" : crFormatPlainNumber(line.amount);
+        body += '<div class="cr-draft-line' + (missReason ? " cr-need" : "") + '">'
+            + '<div class="cr-draft-head">'
+            + '<input type="checkbox" id="crLnSel' + i + '"' + (line.selected ? " checked" : "") + ">"
+            + '<span class="cr-draft-num">' + (i + 1) + "</span>"
+            + '<button type="button" class="btn btn-small" onclick="crRemoveDraftLine(' + i + ')">✕</button>'
+            + "</div>"
+            + '<div class="cr-draft-r1">'
+            + '<label class="cr-draft-field"><span>Товар</span>'
+            + '<input class="cr-ln-name" id="crLnName' + i + '" value="' + escapeAttribute(nameVal) + '"'
+            + ' title="' + escapeAttribute(nameVal) + '"></label>'
+            + '<label class="cr-draft-field"><span>Кол-во</span>'
+            + '<input class="cr-ln-qty" id="crLnQty' + i + '" inputmode="decimal" value="'
+            + escapeAttribute(qtyVal) + '" onchange="crSyncReturnTotal()"></label>'
+            + '<label class="cr-draft-field"><span>Сумма</span>'
+            + '<input class="cr-ln-amount" id="crLnAmount' + i + '" inputmode="decimal" value="'
+            + escapeAttribute(amountVal) + '" onchange="crSyncReturnTotal()"></label>'
+            + "</div>"
+            + '<div class="cr-draft-r2">'
+            + '<label class="cr-draft-field' + (missReason ? " cr-need" : "") + '"><span>Причина возврата</span>'
+            + '<select id="crLnReason' + i + '">' + crReasonOptions(line.reason_id) + "</select>"
+            + (missReason ? '<span class="cr-need-hint">⚠ Укажите причину</span>' : "")
+            + "</label>"
+            + '<label class="cr-draft-field"><span>Товароразборщик</span>'
+            + '<select id="crLnPicker' + i + '">' + crEmpOptions(line.picker_employee_id, "picker")
+            + "</select></label>"
+            + "</div>"
+            + '<div class="cr-draft-r3">'
+            + '<label class="cr-draft-field"><span>Комментарий к возврату</span>'
+            + '<textarea id="crLnComment' + i + '">' + escapeHtml(line.comment || "") + "</textarea></label>"
+            + "</div>"
+            + "</div>";
     });
-    host.innerHTML = '<div class="cr-lines-wrap"><table class="cr-lines"><thead><tr>'
-        + "<th></th><th>№</th><th>Товар</th><th>Количество</th><th>Сумма</th><th>Причина</th><th>Товароразборщик</th><th>Комментарий</th><th></th>"
-        + "</tr></thead><tbody>" + body + "</tbody></table></div>";
+    host.innerHTML = '<div class="cr-lines-wrap"><div class="cr-draft-list">' + body + "</div></div>";
 }
 
 function crAppendParsedRows(rows) {

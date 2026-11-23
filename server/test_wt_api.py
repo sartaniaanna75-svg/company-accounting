@@ -15297,5 +15297,55 @@ class WtSpuHeadcountDisplayNameMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_formula_period_confirm_harness: OK", proc.stdout)
 
 
+class WtCrFormDraftListsMarkerTests(unittest.TestCase):
+    """Локальная форма «Новый возврат»: layout черновика + author/cashier filters."""
+
+    def test_cr_form_draft_lists_markers_and_harness(self):
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "app.html").read_text(encoding="utf-8")
+        self.assertIn("function crFormatPlainNumber(", src)
+        self.assertIn("cr-draft-list", src)
+        self.assertIn("cr-draft-r1", src)
+        self.assertIn("cr-draft-r2", src)
+        self.assertIn("cr-draft-r3", src)
+        self.assertIn('id="crLnName\' + i + \'"', src)
+        self.assertIn('id="crLnQty\' + i + \'"', src)
+        self.assertIn('id="crLnAmount\' + i + \'"', src)
+        self.assertIn('id="crLnReason\' + i + \'"', src)
+        self.assertIn('id="crLnPicker\' + i + \'"', src)
+        self.assertIn('id="crLnComment\' + i + \'"', src)
+        fits = src[
+            src.find("function crEmpFitsKind(")
+            : src.find("function crEmpOptions(")
+        ]
+        self.assertIn('employeeCardWorkGroupId(e, "warehouse") === "cashiers"', fits)
+        self.assertIn("can_cover_sales_reps === true", fits)
+        self.assertNotIn(
+            'employeeMatchesWorkTab(e, "warehouse", "cashiers")',
+            fits,
+        )
+        opts = src[
+            src.find("function crEmpOptions(")
+            : src.find("function crVehicleOptions(")
+        ]
+        self.assertIn("вне списка", opts)
+        self.assertIn("addEmp(extra, true)", opts)
+        harness = root / "server" / "wt_cr_form_lists_harness.js"
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для cr form lists harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_cr_form_lists_harness: OK", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
