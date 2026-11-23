@@ -4377,7 +4377,7 @@
         .cr-lines th, .cr-lines td { padding: 4px 6px; border-bottom: 1px solid #eef2f7; vertical-align: top; }
         .cr-lines th { background: #f8fafc; font-size: 11px; position: sticky; top: 0; }
         .cr-lines input, .cr-lines select { width: 100%; font-size: 12px; padding: 4px 6px; box-sizing: border-box; }
-        /* Черновик строк «Новый возврат»: 2 компактных ряда (только эта форма). */
+        /* Черновик строк «Новый возврат»: 2 ряда; №/галочка/✕ на линии input (только эта форма). */
         .cr-draft-list { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
         .cr-draft-line {
             border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; padding: 6px 8px;
@@ -4386,18 +4386,24 @@
         .cr-draft-line.cr-need { background: #fffbeb; border-color: #f59e0b; }
         .cr-draft-r1 {
             display: grid;
-            grid-template-columns: auto auto minmax(0, 1fr) 72px 110px auto;
+            grid-template-columns: 22px 1.5em minmax(0, 1fr) 72px 110px auto;
             gap: 6px;
             align-items: end;
         }
         .cr-draft-r1 .cr-draft-num {
-            align-self: end; padding-bottom: 6px; min-width: 1.25em;
-            font-weight: 600; font-size: 12px; color: #334155; text-align: right;
+            box-sizing: border-box; height: 28px; min-width: 1.25em; margin: 0; padding: 0;
+            display: inline-flex; align-items: center; justify-content: flex-end;
+            font-weight: 600; font-size: 12px; line-height: 1; color: #334155;
         }
         .cr-draft-r1 .cr-draft-sel {
-            align-self: end; padding-bottom: 8px; margin: 0;
+            box-sizing: border-box; width: 16px; height: 28px; margin: 0 3px 0 0; padding: 0;
+            align-self: end;
         }
-        .cr-draft-r1 .cr-draft-del { align-self: end; margin: 0; }
+        .cr-draft-r1 .cr-draft-del {
+            box-sizing: border-box; height: 28px; min-height: 28px; margin: 0; padding: 0 8px;
+            display: inline-flex; align-items: center; justify-content: center;
+            line-height: 1;
+        }
         .cr-draft-r2 {
             display: grid;
             grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
@@ -4405,16 +4411,19 @@
             align-items: end;
         }
         .cr-draft-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-        .cr-draft-field > span { font-size: 10px; color: var(--muted); line-height: 1.2; }
+        .cr-draft-field > span {
+            font-size: 10px; color: var(--muted); line-height: 1.2;
+            min-height: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
         .cr-draft-field input,
         .cr-draft-field select,
         .cr-draft-field textarea {
             width: 100%; font-size: 12px; padding: 4px 6px; box-sizing: border-box;
             border: 1px solid var(--border); border-radius: 6px;
-            min-height: 28px; line-height: 1.25;
+            min-height: 28px; height: 28px; line-height: 1.25;
         }
         .cr-draft-field textarea {
-            min-height: 28px; height: 28px; resize: vertical; overflow-y: auto;
+            resize: vertical; overflow-y: auto;
         }
         .cr-ln-name { overflow-x: auto; }
         .cr-ln-qty { text-align: right; }
@@ -4465,11 +4474,19 @@
         @media (max-width: 1000px) {
             .cr-stats, .cr-queues, .cr-ana, .cr-form { grid-template-columns: 1fr; }
             .cr-draft-r1 {
-                grid-template-columns: auto auto minmax(0, 1fr) 64px 96px auto;
+                grid-template-columns: 22px 1.5em minmax(0, 1fr) 64px 96px auto;
             }
             .cr-draft-r2 {
-                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
             }
+            .cr-draft-r2 .cr-draft-field:last-child { grid-column: 1 / -1; }
+        }
+        @media (max-width: 640px) {
+            .cr-draft-r1 {
+                grid-template-columns: 22px 1.5em minmax(0, 1fr) 56px 80px auto;
+            }
+            .cr-draft-r2 { grid-template-columns: 1fr; }
+            .cr-draft-r2 .cr-draft-field:last-child { grid-column: auto; }
         }
 
         .fr-wrap { display: flex; flex-direction: column; gap: 12px; }
