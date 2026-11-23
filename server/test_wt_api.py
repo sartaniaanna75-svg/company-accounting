@@ -14904,6 +14904,316 @@ class WtSpuFinrecRevenueSliceTests(unittest.TestCase):
         self.assertIn("wt_spu_finrec_revenue_harness: OK", proc.stdout)
 
 
+class WtSpuWorktimeOverallProjectionTests(unittest.TestCase):
+    """GET-only проекция spuWorktimeOverallByDay: паритет shop/drivers, изоляция raw metrics."""
+
+    def _payload(self):
+        return {
+            "shopMetricCatalog": {
+                "items": [
+                    {"id": "metric_sales", "use_in_spu": True},
+                    {"id": "metric_checks", "use_in_spu": True},
+                    {"id": "metric_recount", "use_in_spu": True},
+                    {"id": "metric_opt_trips", "use_in_spu": True, "department_id": "drivers"},
+                ]
+            },
+            "management": {
+                "indicators": [
+                    {
+                        "indicator_id": "ind_sales",
+                        "source_type": "worktime_metric",
+                        "source_metric_id": "metric_sales",
+                        "source_result": "metric_overall",
+                        "show_in_planfact": True,
+                    },
+                    {
+                        "indicator_id": "ind_trips",
+                        "source_type": "worktime_metric",
+                        "source_metric_id": "metric_opt_trips",
+                        "source_result": "metric_overall",
+                        "department_id": "drivers",
+                        "show_in_planfact": True,
+                    },
+                ]
+            },
+            "shopMetrics": {
+                "cashiers": {
+                    "2026-11": {
+                        "e_c1": {"12": {"sales": 800, "receipts": 40}},
+                        "e_c2": {"12": {"sales": 200, "receipts": 10}},
+                    }
+                },
+                "channelValues": {
+                    "2026-11": {
+                        "self_checkout": {"12": {"sales": 50, "receipts": 5}},
+                        "extra_checkout": {"12": {"sales": 25, "receipts": 2}},
+                    }
+                },
+                "store": {"2026-11": {"12": {"visitors": 33}}},
+                "facts": {
+                    "2026-11": {
+                        "e_p1": {"12": {"metric_recount": 7}},
+                    }
+                },
+            },
+            "deptMetrics": {
+                "drivers": {
+                    "facts": {
+                        "2026-11": {
+                            "e_d1": {"12": {"metric_opt_trips": 4}},
+                            "e_d2": {"12": {"metric_opt_trips": 3}},
+                        }
+                    }
+                },
+                "office": {
+                    "facts": {
+                        "2026-11": {
+                            "e_o1": {"12": {"metric_opt_orders": 9}},
+                        }
+                    }
+                },
+            },
+            "workspaces": [
+                {
+                    "code": "shop",
+                    "employees": [
+                        {"id": "e_c1", "jobStatus": "working"},
+                        {"id": "e_c2", "jobStatus": "working"},
+                    ],
+                    "timesheet": {
+                        "2026-11": {
+                            # Неделя чт 12 — ср 18: полные явки → FTE 2
+                            "e_c1": {
+                                "12": {"status": "Я", "hours": 8},
+                                "13": {"status": "Я", "hours": 8},
+                                "14": {"status": "Я", "hours": 8},
+                                "15": {"status": "Я", "hours": 8},
+                                "16": {"status": "Я", "hours": 8},
+                                "17": {"status": "Я", "hours": 8},
+                                "18": {"status": "Я", "hours": 8},
+                            },
+                            "e_c2": {
+                                "12": {"status": "О", "hours": 7},
+                                "13": {"status": "Я", "hours": 8},
+                                "14": {"status": "Я", "hours": 8},
+                                "15": {"status": "Я", "hours": 8},
+                                "16": {"status": "Я", "hours": 8},
+                                "17": {"status": "Я", "hours": 8},
+                                "18": {"status": "Я", "hours": 8},
+                            },
+                        }
+                    },
+                },
+                {
+                    "code": "drivers",
+                    "employees": [
+                        {"id": "e_d1", "jobStatus": "working"},
+                        {"id": "e_d2", "jobStatus": "fired", "fired_on": "2026-11-01"},
+                    ],
+                    "timesheet": {
+                        "2026-11": {
+                            # Территория: вс 15 из знаменателя; 6/6 → FTE 1
+                            "e_d1": {
+                                "12": {"status": "Я", "hours": 9},
+                                "13": {"status": "Я", "hours": 9},
+                                "14": {"status": "Я", "hours": 9},
+                                "16": {"status": "Я", "hours": 9},
+                                "17": {"status": "Я", "hours": 9},
+                                "18": {"status": "Я", "hours": 9},
+                            },
+                        }
+                    },
+                },
+                {
+                    "code": "office",
+                    "employees": [
+                        {"id": "e_o1", "jobStatus": "working"},
+                        {
+                            "id": "e_o_out",
+                            "jobStatus": "working",
+                            "outsourcing": True,
+                        },
+                    ],
+                    "timesheet": {},
+                },
+            ],
+        }
+
+    def test_helper_shop_sales_and_channels(self):
+        out = wt_api.spu_worktime_overall_by_day(self._payload())
+        self.assertIsNotNone(out)
+        self.assertEqual(out["metrics"]["metric_sales"]["2026-11-12"], 1075)
+        self.assertEqual(out["metrics"]["metric_checks"]["2026-11-12"], 57)
+        self.assertEqual(out["metrics"]["store_metric_visitors"]["2026-11-12"], 33)
+        self.assertEqual(out["metrics"]["metric_recount"]["2026-11-12"], 7)
+
+    def test_helper_dept_drivers(self):
+        out = wt_api.spu_worktime_overall_by_day(self._payload())
+        self.assertEqual(out["deptMetrics"]["drivers"]["metric_opt_trips"]["2026-11-12"], 7)
+        self.assertNotIn("e_d1", json.dumps(out["deptMetrics"]["drivers"]))
+
+    def test_helper_timesheet_and_staff(self):
+        out = wt_api.spu_worktime_overall_by_day(self._payload())
+        self.assertEqual(out["timesheet"]["shop"]["2026-11-12"]["ya"], 2)
+        self.assertEqual(out["timesheet"]["shop"]["2026-11-12"]["late"], 1)
+        self.assertEqual(out["timesheet"]["shop"]["2026-11-12"]["hours"], 15)
+        self.assertEqual(out["staffDirectory"]["shop"]["2026-11-12"], 2)
+        self.assertEqual(out["staffDirectory"]["drivers"]["2026-11-12"], 1)
+
+    def test_helper_headcount_fte_week(self):
+        out = wt_api.spu_worktime_overall_by_day(self._payload())
+        self.assertIn("headcountFte", out)
+        # shop: 2 emp × 1.0; drivers: 1.0; office: outsourcing without marks → +1
+        self.assertAlmostEqual(out["headcountFte"]["shop"]["2026-11-18"], 2.0)
+        self.assertAlmostEqual(out["headcountFte"]["drivers"]["2026-11-18"], 1.0)
+        self.assertAlmostEqual(out["headcountFte"]["office"]["2026-11-18"], 1.0)
+        self.assertAlmostEqual(out["headcountFte"][""]["2026-11-18"], 4.0)
+        self.assertNotIn("e_c1", json.dumps(out["headcountFte"]))
+        # Граница месяцев: табель только октябрь → среда 4.11 всё равно в ключе
+        self.assertEqual(wt_api._spu_reporting_week_end("2026-11-02"), "2026-11-04")
+        oct_only = {"2026-10"}
+        ends = wt_api._spu_week_ends_for_months(oct_only)
+        self.assertIn("2026-11-04", ends)
+        self.assertIn("2026-10-28", ends)
+
+    def test_filter_larisa_shop_gets_projection_not_dept_raw(self):
+        user = {
+            "user_id": "u_larisa",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop", "spu"],
+            "permissions": {
+                "managementIndicators": "view",
+                "metrics": "view",
+                "metricsInput": "view",
+            },
+        }
+        filtered = wt_api.filter_state_payload(self._payload(), user)
+        self.assertIn("shopMetrics", filtered)
+        self.assertNotIn("deptMetrics", filtered)
+        self.assertIn("spuWorktimeOverallByDay", filtered)
+        proj = filtered["spuWorktimeOverallByDay"]
+        self.assertEqual(proj["metrics"]["metric_sales"]["2026-11-12"], 1075)
+        self.assertEqual(proj["deptMetrics"]["drivers"]["metric_opt_trips"]["2026-11-12"], 7)
+        self.assertIn("shopMetricCatalog", filtered)
+
+    def test_filter_ermak_drivers_gets_projection_not_shop_raw(self):
+        user = {
+            "user_id": "u_ermak",
+            "role": "user",
+            "is_active": True,
+            "departments": ["drivers", "spu"],
+            "permissions": {
+                "managementIndicators": "view",
+                "metrics": "view",
+                "metricsInput": "view",
+            },
+        }
+        filtered = wt_api.filter_state_payload(self._payload(), user)
+        self.assertNotIn("shopMetrics", filtered)
+        self.assertIn("deptMetrics", filtered)
+        self.assertIn("drivers", filtered["deptMetrics"])
+        self.assertNotIn("office", filtered.get("deptMetrics") or {})
+        self.assertIn("spuWorktimeOverallByDay", filtered)
+        self.assertEqual(
+            filtered["spuWorktimeOverallByDay"]["metrics"]["metric_sales"]["2026-11-12"],
+            1075,
+        )
+
+    def test_filter_no_spu_no_projection(self):
+        user = {
+            "user_id": "u_shop_only",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop"],
+            "permissions": {"metrics": "view", "managementIndicators": "none"},
+        }
+        filtered = wt_api.filter_state_payload(self._payload(), user)
+        self.assertNotIn("spuWorktimeOverallByDay", filtered)
+
+    def test_parity_shop_vs_drivers_projection_numbers(self):
+        payload = self._payload()
+        shop_user = {
+            "user_id": "u_shop",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop", "spu"],
+            "permissions": {"managementIndicators": "view", "metrics": "view"},
+        }
+        drv_user = {
+            "user_id": "u_drv",
+            "role": "user",
+            "is_active": True,
+            "departments": ["drivers", "spu"],
+            "permissions": {"managementIndicators": "view", "metrics": "view"},
+        }
+        a = wt_api.filter_state_payload(payload, shop_user)["spuWorktimeOverallByDay"]
+        b = wt_api.filter_state_payload(payload, drv_user)["spuWorktimeOverallByDay"]
+        self.assertEqual(a["metrics"]["metric_sales"], b["metrics"]["metric_sales"])
+        self.assertEqual(
+            a["deptMetrics"]["drivers"]["metric_opt_trips"],
+            b["deptMetrics"]["drivers"]["metric_opt_trips"],
+        )
+        self.assertEqual(a["headcountFte"]["shop"]["2026-11-18"], b["headcountFte"]["shop"]["2026-11-18"])
+        self.assertEqual(
+            a["headcountFte"]["drivers"]["2026-11-18"],
+            b["headcountFte"]["drivers"]["2026-11-18"],
+        )
+        self.assertEqual(a["headcountFte"][""]["2026-11-18"], b["headcountFte"][""]["2026-11-18"])
+        self.assertNotIn("shopMetrics", wt_api.filter_state_payload(payload, drv_user))
+        self.assertNotIn("deptMetrics", wt_api.filter_state_payload(payload, shop_user))
+
+    def test_ops_shop_still_cannot_write_drivers_metrics(self):
+        user = {
+            "user_id": "u_larisa",
+            "role": "user",
+            "is_active": True,
+            "departments": ["shop", "spu"],
+            "permissions": {
+                "managementIndicators": "view",
+                "metrics": "edit",
+                "metricsInput": "edit",
+            },
+        }
+        path = "deptMetrics.drivers.facts.2026-11.e_d1.12.metric_opt_trips"
+        self.assertFalse(wt_api.ops_path_allowed(user, path))
+
+    def test_client_markers_and_harness(self):
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function spuWorktimeProjectionRoot(", src)
+        self.assertIn("function spuWorktimeCollectMetricSeries(", src)
+        self.assertIn("function spuWorktimeHeadcountFte(", src)
+        self.assertIn("spuWorktimeOverallByDay", src)
+        self.assertIn("headcountFte", src)
+        self.assertIn("finishOverall(", src)
+        hc_fn = src[
+            src.find("function mgmtTimesheetHeadcountEquivalent(")
+            : src.find("function mgmtTimesheetFact(")
+        ]
+        self.assertIn("spuWorktimeHeadcountFte(", hc_fn)
+        api = Path(__file__).resolve().parent.joinpath("wt_api.py").read_text(encoding="utf-8")
+        self.assertIn("def spu_worktime_overall_by_day(", api)
+        self.assertIn("user_can_receive_spu_read_model", api)
+        self.assertIn('"spuWorktimeOverallByDay"', api)
+        self.assertIn("headcountFte", api)
+        self.assertIn("def _spu_build_headcount_fte_by_week(", api)
+        harness = Path(__file__).resolve().parent.joinpath("wt_spu_worktime_overall_harness.js")
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для worktime overall harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_worktime_overall_harness: OK", proc.stdout)
+
+
 class WtSpuFinrecAdminGetStateTests(unittest.TestCase):
     """handle_get_state: админ получает spuFrTerritoryRevenueByDay (обход filter)."""
 

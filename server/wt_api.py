@@ -5284,6 +5284,807 @@ def _fr_money(value: Any) -> float:
     return round(n * 100.0) / 100.0
 
 
+def user_can_receive_spu_read_model(user: dict | None) -> bool:
+    """Круг зрителей GET-проекций СПУ: management* или вход в раздел spu."""
+    if user_can_open_management(user):
+        return True
+    if not user:
+        return False
+    return "spu" in user_dept_codes(user)
+
+
+# Алиасы полей кассы/категорий → canonical metric_id (зеркало METRIC_ID_ALIASES клиента).
+_SPU_METRIC_FIELD_ALIASES = {
+    "sales": "metric_sales",
+    "receipts": "metric_checks",
+    "visitors": "store_metric_visitors",
+    "early730": "metric_arrival_730",
+    "display": "metric_display_positions",
+    "recount": "metric_recount",
+    "invoices": "metric_assembly",
+    "sugar": "metric_sugar_packing",
+    "walks": "metric_aisles",
+    "receiving": "metric_receiving",
+    "revision": "metric_revision",
+    "avgCheck": "metric_average_check",
+    "cashierErrors": "metric_cashier_errors",
+    "shelfLabels": "metric_shelf_labels_ok",
+    "supplierOrders": "metric_supplier_orders",
+    "orderPositions": "metric_order_positions",
+    "receiptsPosted": "metric_receipts_posted",
+    "writeoffLosses": "metric_writeoff_losses",
+}
+
+_SPU_BUILTIN_METRIC_IDS = frozenset(
+    {
+        "metric_sales",
+        "metric_checks",
+        "store_metric_visitors",
+        "store_metric_inventory_result",
+        "warehouse_metric_inventory_result",
+    }
+)
+
+_SPU_CHANNEL_IDS = frozenset({"self_checkout", "extra_checkout"})
+_SPU_TIMESHEET_STATUSES = {
+    "Я": "ya",
+    "О": "late",
+    "П": "skip",
+    "Б": "sick",
+    "ОТ": "vacation",
+    "В": "weekend",
+    "Л": "personal",
+}
+
+
+def _spu_canonical_metric_id(raw: Any) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if s.endswith("Mark"):
+        s = s[: -len("Mark")]
+    if "::" in s:
+        s = s.split("::", 1)[0]
+    return _SPU_METRIC_FIELD_ALIASES.get(s, s)
+
+
+def _spu_day_iso(month: str, day: Any) -> str | None:
+    m = str(month or "").strip()
+    if not re.match(r"^\d{4}-\d{2}$", m):
+        return None
+    try:
+        d = int(str(day).strip())
+    except (TypeError, ValueError):
+        return None
+    if d < 1 or d > 31:
+        return None
+    return f"{m}-{d:02d}"
+
+
+def _spu_money(value: Any) -> float:
+    return _fr_money(value)
+
+
+def _spu_add_metric_day(
+    bucket: dict[str, dict[str, float]],
+    metric_id: str,
+    iso: str,
+    value: Any,
+    *,
+    present: bool = True,
+) -> None:
+    mid = _spu_canonical_metric_id(metric_id)
+    if not mid or not iso or not present:
+        return
+    row = bucket.setdefault(mid, {})
+    row[iso] = _spu_money(float(row.get(iso, 0.0)) + _spu_money(value))
+
+
+def _spu_collect_indicator_metric_ids(payload: dict) -> set[str]:
+    ids: set[str] = set(_SPU_BUILTIN_METRIC_IDS)
+    catalog = payload.get("shopMetricCatalog")
+    items = None
+    if isinstance(catalog, dict):
+        items = catalog.get("items")
+    elif isinstance(catalog, list):
+        items = catalog
+    if isinstance(items, list):
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if it.get("use_in_spu") is True:
+                mid = _spu_canonical_metric_id(it.get("id") or it.get("metric_id"))
+                if mid:
+                    ids.add(mid)
+    mgmt = payload.get("management")
+    indicators = mgmt.get("indicators") if isinstance(mgmt, dict) else None
+    if not isinstance(indicators, list):
+        return ids
+
+    def take_src(src: Any) -> None:
+        if not isinstance(src, dict):
+            return
+        st = str(src.get("source_type") or "")
+        if st in ("worktime_metric", "METRIC", "metric", ""):
+            mid = _spu_canonical_metric_id(src.get("source_metric_id") or src.get("metric_id"))
+            if mid:
+                ids.add(mid)
+
+    for it in indicators:
+        if not isinstance(it, dict):
+            continue
+        take_src(it)
+        mid = _spu_canonical_metric_id(it.get("source_metric_id"))
+        if mid and str(it.get("source_type") or "") in (
+            "worktime_metric",
+            "METRIC",
+            "metric",
+            "",
+        ):
+            ids.add(mid)
+        sources = it.get("sources")
+        if isinstance(sources, list):
+            for src in sources:
+                take_src(src)
+    return ids
+
+
+def _spu_sum_day_rec_metrics(
+    rec: dict,
+    iso: str,
+    bucket: dict[str, dict[str, float]],
+    wanted: set[str] | None,
+) -> None:
+    """Суммирует числовые ключи факта и Mark done/fail → 1/0."""
+    if not isinstance(rec, dict) or not iso:
+        return
+    seen_marks: set[str] = set()
+    for key, raw in rec.items():
+        if not isinstance(key, str):
+            continue
+        if key.endswith("Mark"):
+            base = key[: -len("Mark")]
+            mid = _spu_canonical_metric_id(base)
+            if wanted is not None and mid not in wanted:
+                continue
+            if mid in seen_marks:
+                continue
+            if raw in ("done", "fail"):
+                # Числовое поле того же ключа важнее Mark.
+                num = rec.get(base)
+                if num is not None and num != "":
+                    continue
+                _spu_add_metric_day(bucket, mid, iso, 1.0 if raw == "done" else 0.0)
+                seen_marks.add(mid)
+            continue
+        if key in (
+            "source",
+            "updated_at",
+            "updated_by_user_id",
+            "store_id",
+            "store_metric_id",
+            "external_1c_document_id",
+            "conducted_by_employee_id",
+            "employee_id",
+            "history",
+            "posting_filled",
+            "writeoff_filled",
+            "posting",
+            "writeoff",
+            "surplus",
+            "write_off",
+            "result",
+        ):
+            continue
+        mid = _spu_canonical_metric_id(key)
+        if not mid:
+            continue
+        if wanted is not None and mid not in wanted:
+            continue
+        if raw is None or raw == "":
+            continue
+        try:
+            n = float(str(raw).replace(" ", "").replace(",", ".") or 0)
+        except (TypeError, ValueError):
+            continue
+        if n != n:
+            continue
+        _spu_add_metric_day(bucket, mid, iso, n)
+        seen_marks.add(mid)
+
+
+def _spu_sum_emp_day_maps(
+    month_map: Any,
+    month: str,
+    bucket: dict[str, dict[str, float]],
+    wanted: set[str] | None,
+    *,
+    skip_channel_ids: bool = True,
+) -> None:
+    if not isinstance(month_map, dict):
+        return
+    for emp_id, days in month_map.items():
+        eid = str(emp_id or "")
+        if skip_channel_ids and eid in _SPU_CHANNEL_IDS:
+            continue
+        if not isinstance(days, dict):
+            continue
+        for day, rec in days.items():
+            iso = _spu_day_iso(month, day)
+            if not iso or not isinstance(rec, dict):
+                continue
+            _spu_sum_day_rec_metrics(rec, iso, bucket, wanted)
+
+
+def _spu_sum_shop_cashiers_and_channels(
+    shop: dict,
+    metrics_out: dict[str, dict[str, float]],
+) -> None:
+    """overall cashiers_shop: сотрудники кассы + КСО/доп.касса."""
+    cashiers = shop.get("cashiers")
+    if isinstance(cashiers, dict):
+        for month, emps in cashiers.items():
+            if not isinstance(emps, dict):
+                continue
+            for emp_id, days in emps.items():
+                if str(emp_id or "") in _SPU_CHANNEL_IDS:
+                    continue
+                if not isinstance(days, dict):
+                    continue
+                for day, rec in days.items():
+                    iso = _spu_day_iso(str(month), day)
+                    if not iso or not isinstance(rec, dict):
+                        continue
+                    if rec.get("sales") is not None and rec.get("sales") != "":
+                        _spu_add_metric_day(metrics_out, "metric_sales", iso, rec.get("sales"))
+                    if rec.get("receipts") is not None and rec.get("receipts") != "":
+                        _spu_add_metric_day(metrics_out, "metric_checks", iso, rec.get("receipts"))
+    channel_values = shop.get("channelValues")
+    if isinstance(channel_values, dict):
+        for month, channels in channel_values.items():
+            if not isinstance(channels, dict):
+                continue
+            for ch_id, days in channels.items():
+                if str(ch_id or "") not in _SPU_CHANNEL_IDS:
+                    continue
+                if not isinstance(days, dict):
+                    continue
+                for day, rec in days.items():
+                    iso = _spu_day_iso(str(month), day)
+                    if not iso or not isinstance(rec, dict):
+                        continue
+                    if rec.get("sales") is not None and rec.get("sales") != "":
+                        _spu_add_metric_day(metrics_out, "metric_sales", iso, rec.get("sales"))
+                    if rec.get("receipts") is not None and rec.get("receipts") != "":
+                        _spu_add_metric_day(metrics_out, "metric_checks", iso, rec.get("receipts"))
+
+
+def _spu_sum_store_visitors(shop: dict, metrics_out: dict[str, dict[str, float]]) -> None:
+    store = shop.get("store")
+    if not isinstance(store, dict):
+        return
+    for month, days in store.items():
+        if not isinstance(days, dict):
+            continue
+        for day, rec in days.items():
+            iso = _spu_day_iso(str(month), day)
+            if not iso or not isinstance(rec, dict):
+                continue
+            if rec.get("visitors") is None or rec.get("visitors") == "":
+                continue
+            _spu_add_metric_day(metrics_out, "store_metric_visitors", iso, rec.get("visitors"))
+
+
+def _spu_sum_inventory_results(
+    root: Any,
+    metric_id: str,
+    metrics_out: dict[str, dict[str, float]],
+) -> None:
+    if not isinstance(root, dict):
+        return
+    inv = root.get("inventoryResults")
+    if not isinstance(inv, dict):
+        return
+    for month, days in inv.items():
+        if not isinstance(days, dict):
+            continue
+        for day, rec in days.items():
+            iso = _spu_day_iso(str(month), day)
+            if not iso or not isinstance(rec, dict):
+                continue
+            has = (
+                rec.get("posting_filled") is True
+                or rec.get("writeoff_filled") is True
+                or rec.get("posting") not in (None, "", 0, 0.0)
+                or rec.get("writeoff") not in (None, "", 0, 0.0)
+                or rec.get("surplus") not in (None, "", 0, 0.0)
+                or rec.get("write_off") not in (None, "", 0, 0.0)
+                or rec.get("result") not in (None, "")
+            )
+            if not has:
+                continue
+            if rec.get("result") is not None and rec.get("result") != "":
+                result = _spu_money(rec.get("result"))
+            else:
+                posting = abs(_spu_money(rec.get("posting") or rec.get("surplus") or 0))
+                writeoff = abs(
+                    _spu_money(rec.get("writeoff") or rec.get("write_off") or 0)
+                )
+                result = _spu_money(posting - writeoff)
+            _spu_add_metric_day(metrics_out, metric_id, iso, result)
+
+
+def _spu_sum_category_stores(
+    shop: dict,
+    metrics_out: dict[str, dict[str, float]],
+    wanted: set[str] | None,
+) -> None:
+    for cat in ("pickers", "cashiers", "managers"):
+        block = shop.get(cat)
+        if not isinstance(block, dict):
+            continue
+        for month, emps in block.items():
+            _spu_sum_emp_day_maps(
+                emps, str(month), metrics_out, wanted, skip_channel_ids=True
+            )
+
+
+def _spu_build_timesheet_day_aggs(payload: dict) -> dict[str, dict[str, dict[str, float]]]:
+    """dept → iso → {ya,hours,late,skip,sick,vacation,weekend,personal}."""
+    out: dict[str, dict[str, dict[str, float]]] = {}
+    workspaces = payload.get("workspaces")
+    if not isinstance(workspaces, list):
+        return out
+    for ws in workspaces:
+        if not isinstance(ws, dict):
+            continue
+        code = str(ws.get("code") or "").strip()
+        if code not in PAYROLL_DEPT_CODES:
+            continue
+        ts = ws.get("timesheet")
+        if not isinstance(ts, dict):
+            continue
+        dept_bucket = out.setdefault(code, {})
+        for month, emps in ts.items():
+            if not isinstance(emps, dict):
+                continue
+            for emp_id, days in emps.items():
+                if str(emp_id or "") in _SPU_CHANNEL_IDS:
+                    continue
+                if not isinstance(days, dict):
+                    continue
+                for day, rec in days.items():
+                    iso = _spu_day_iso(str(month), day)
+                    if not iso or not isinstance(rec, dict):
+                        continue
+                    st = str(rec.get("status") or "").strip()
+                    row = dept_bucket.setdefault(
+                        iso,
+                        {
+                            "ya": 0.0,
+                            "hours": 0.0,
+                            "late": 0.0,
+                            "skip": 0.0,
+                            "sick": 0.0,
+                            "vacation": 0.0,
+                            "weekend": 0.0,
+                            "personal": 0.0,
+                        },
+                    )
+                    if st in ("Я", "О"):
+                        row["ya"] = _spu_money(row["ya"] + 1.0)
+                        row["hours"] = _spu_money(
+                            row["hours"] + _spu_money(rec.get("hours") or 0)
+                        )
+                        if st == "О":
+                            row["late"] = _spu_money(row["late"] + 1.0)
+                    key = _SPU_TIMESHEET_STATUSES.get(st)
+                    if key and key not in ("ya", "late"):
+                        row[key] = _spu_money(row[key] + 1.0)
+    return out
+
+
+def _spu_employee_active_on(emp: dict, as_of: str) -> bool:
+    eid = str(emp.get("id") or "").strip()
+    if not eid or eid in _SPU_CHANNEL_IDS:
+        return False
+    fo = str(emp.get("fired_on") or "").strip()[:10]
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", fo) and re.match(r"^\d{4}-\d{2}-\d{2}$", as_of):
+        return fo > as_of
+    return str(emp.get("jobStatus") or "working") != "fired"
+
+
+def _spu_build_staff_directory_by_day(
+    payload: dict, as_of_dates: set[str]
+) -> dict[str, dict[str, float]]:
+    """dept → iso → headcount (уникальный employee_id, как справочник СПУ)."""
+    out: dict[str, dict[str, float]] = {}
+    if not as_of_dates:
+        return out
+    workspaces = payload.get("workspaces")
+    if not isinstance(workspaces, list):
+        return out
+    # emp_id → (home_codes set via appearance in workspaces)
+    by_dept: dict[str, list[dict]] = {}
+    for ws in workspaces:
+        if not isinstance(ws, dict):
+            continue
+        code = str(ws.get("code") or "").strip()
+        if code not in PAYROLL_DEPT_CODES:
+            continue
+        emps = ws.get("employees")
+        if not isinstance(emps, list):
+            continue
+        bucket = by_dept.setdefault(code, [])
+        for emp in emps:
+            if isinstance(emp, dict):
+                bucket.append(emp)
+    for code, emps in by_dept.items():
+        dept_row = out.setdefault(code, {})
+        for as_of in as_of_dates:
+            seen: set[str] = set()
+            n = 0
+            for emp in emps:
+                eid = str(emp.get("id") or "").strip()
+                if not eid or eid in seen:
+                    continue
+                if not _spu_employee_active_on(emp, as_of):
+                    continue
+                seen.add(eid)
+                n += 1
+            dept_row[as_of] = float(n)
+    return out
+
+
+def _spu_parse_iso_date(iso: str) -> datetime | None:
+    s = str(iso or "").strip()[:10]
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return None
+    try:
+        return datetime(int(s[0:4]), int(s[5:7]), int(s[8:10]), 12, 0, 0)
+    except ValueError:
+        return None
+
+
+def _spu_week_day_infos(week_end_iso: str) -> list[dict[str, Any]]:
+    """Отчётная неделя СПУ: чт…ср, заканчиваясь week_end (среда)."""
+    end = _spu_parse_iso_date(week_end_iso)
+    if not end:
+        return []
+    out: list[dict[str, Any]] = []
+    for i in range(6, -1, -1):
+        d = end - timedelta(days=i)
+        iso = d.strftime("%Y-%m-%d")
+        out.append(
+            {
+                "iso": iso,
+                "month": iso[:7],
+                "day": d.day,
+                "weekday": d.weekday(),  # Mon=0 … Sun=6; JS getDay Sun=0
+            }
+        )
+    return out
+
+
+def _spu_js_weekday(day_info: dict[str, Any]) -> int:
+    """JS Date#getDay: Sun=0 … Sat=6."""
+    dt = _spu_parse_iso_date(str(day_info.get("iso") or ""))
+    if not dt:
+        return -1
+    # Python: Mon=0..Sun=6 → JS: Sun=0..Sat=6
+    return (dt.weekday() + 1) % 7
+
+
+def _spu_is_schedule_weekend(dept_code: str, day_info: dict[str, Any], status: str) -> bool:
+    st = str(status or "")
+    if st == "В":
+        return True
+    if dept_code in TERRITORY_CODES and _spu_js_weekday(day_info) == 0:
+        return True
+    return False
+
+
+def _spu_peek_timesheet_status(ws: dict, emp_id: str, day_info: dict[str, Any]) -> str:
+    ts = ws.get("timesheet")
+    if not isinstance(ts, dict):
+        return ""
+    month = str(day_info.get("month") or "")
+    emps = ts.get(month)
+    if not isinstance(emps, dict):
+        return ""
+    days = emps.get(emp_id)
+    if not isinstance(days, dict):
+        return ""
+    rec = days.get(str(day_info.get("day")))
+    if not isinstance(rec, dict):
+        # allow int keys already normalized to str in JSON; try raw
+        rec = days.get(day_info.get("day"))  # type: ignore[arg-type]
+    if not isinstance(rec, dict):
+        return ""
+    return str(rec.get("status") or "").strip()
+
+
+def _spu_fte_share(
+    ws: dict, emp: dict, dept_code: str, day_infos: list[dict[str, Any]]
+) -> float | None:
+    fo = str(emp.get("fired_on") or "").strip()[:10]
+    if fo and not re.match(r"^\d{4}-\d{2}-\d{2}$", fo):
+        fo = ""
+    sched = 0
+    worked = 0
+    for d in day_infos:
+        iso = str(d.get("iso") or "")[:10]
+        if fo and iso and iso >= fo:
+            continue
+        st = _spu_peek_timesheet_status(ws, str(emp.get("id") or ""), d)
+        if _spu_is_schedule_weekend(dept_code, d, st):
+            continue
+        sched += 1
+        if st in ("Я", "О"):
+            worked += 1
+    if sched <= 0:
+        return None
+    return worked / float(sched)
+
+
+def _spu_fte_has_staff_marks(
+    ws: dict, emp_id: str, day_infos: list[dict[str, Any]]
+) -> bool:
+    for d in day_infos:
+        st = _spu_peek_timesheet_status(ws, emp_id, d)
+        if st in ("Я", "О", "ОТ", "Б", "Л", "П"):
+            return True
+    return False
+
+
+def _spu_collect_timesheet_months(payload: dict) -> set[str]:
+    months: set[str] = set()
+    workspaces = payload.get("workspaces")
+    if not isinstance(workspaces, list):
+        return months
+    for ws in workspaces:
+        if not isinstance(ws, dict):
+            continue
+        ts = ws.get("timesheet")
+        if not isinstance(ts, dict):
+            continue
+        for month in ts.keys():
+            m = str(month or "").strip()
+            if re.match(r"^\d{4}-\d{2}$", m):
+                months.add(m)
+    return months
+
+
+def _spu_expand_month_neighbors(months: set[str]) -> set[str]:
+    """±1 месяц: недели чт–ср на границе месяцев."""
+    out: set[str] = set()
+    for month in months:
+        m = str(month or "").strip()
+        if not re.match(r"^\d{4}-\d{2}$", m):
+            continue
+        out.add(m)
+        y = int(m[0:4])
+        mo = int(m[5:7])
+        if mo == 1:
+            out.add(f"{y - 1:04d}-12")
+        else:
+            out.add(f"{y:04d}-{mo - 1:02d}")
+        if mo == 12:
+            out.add(f"{y + 1:04d}-01")
+        else:
+            out.add(f"{y:04d}-{mo + 1:02d}")
+    return out
+
+
+def _spu_reporting_week_end(iso: str) -> str | None:
+    """Среда отчётной недели СПУ (чт…ср), содержащей iso."""
+    dt = _spu_parse_iso_date(iso)
+    if not dt:
+        return None
+    js = (dt.weekday() + 1) % 7  # Sun=0 … Sat=6
+    end = dt + timedelta(days=(3 - js) % 7)
+    return end.strftime("%Y-%m-%d")
+
+
+def _spu_week_ends_for_months(months: set[str]) -> list[str]:
+    """Среды внутри месяцев (±соседи) — концы отчётных недель СПУ."""
+    ends: list[str] = []
+    seen: set[str] = set()
+    for month in sorted(_spu_expand_month_neighbors(months)):
+        try:
+            y = int(month[0:4])
+            mo = int(month[5:7])
+        except ValueError:
+            continue
+        day = 1
+        while True:
+            try:
+                dt = datetime(y, mo, day, 12, 0, 0)
+            except ValueError:
+                break
+            if (dt.weekday() + 1) % 7 == 3:  # JS Wednesday
+                iso = dt.strftime("%Y-%m-%d")
+                if iso not in seen:
+                    seen.add(iso)
+                    ends.append(iso)
+            day += 1
+    return ends
+
+
+def _spu_build_headcount_fte_by_week(
+    payload: dict, week_ends: list[str]
+) -> dict[str, dict[str, float]]:
+    """
+    Зеркало mgmtTimesheetHeadcountEquivalent: сумма долей FTE (без Math.round).
+    Ключи: код подразделения + "" (все PAYROLL_DEPT_CODES с общим seen).
+    Без передачи персональных табелей — только агрегат на конец недели.
+    """
+    out: dict[str, dict[str, float]] = {}
+    if not week_ends:
+        return out
+    workspaces = payload.get("workspaces")
+    if not isinstance(workspaces, list):
+        return out
+    by_code: dict[str, dict] = {}
+    for ws in workspaces:
+        if not isinstance(ws, dict):
+            continue
+        code = str(ws.get("code") or "").strip()
+        if code in PAYROLL_DEPT_CODES:
+            by_code[code] = ws
+
+    def compute(codes: list[str], day_infos: list[dict[str, Any]], week_end: str) -> float:
+        seen: set[str] = set()
+        total = 0.0
+        for code in codes:
+            ws = by_code.get(code)
+            if not ws:
+                continue
+            territory = code in TERRITORY_CODES
+            emps = ws.get("employees")
+            if not isinstance(emps, list):
+                continue
+            for emp in emps:
+                if not isinstance(emp, dict):
+                    continue
+                eid = str(emp.get("id") or "").strip()
+                if not eid or eid in seen or eid in _SPU_CHANNEL_IDS:
+                    continue
+                seen.add(eid)
+                outsrc = emp.get("outsourcing") is True
+                has_marks = _spu_fte_has_staff_marks(ws, eid, day_infos)
+                if outsrc and territory and not has_marks:
+                    if _spu_employee_active_on(emp, week_end):
+                        total += 1.0
+                    continue
+                share = _spu_fte_share(ws, emp, code, day_infos)
+                if share is not None:
+                    total += float(share)
+        return total
+
+    all_codes = [c for c in ("shop", "office", "warehouse", "drivers") if c in by_code]
+    for week_end in week_ends:
+        day_infos = _spu_week_day_infos(week_end)
+        if not day_infos:
+            continue
+        for code in all_codes:
+            val = compute([code], day_infos, week_end)
+            out.setdefault(code, {})[week_end] = val
+        if all_codes:
+            out.setdefault("", {})[week_end] = compute(all_codes, day_infos, week_end)
+    return out
+
+
+def spu_worktime_overall_by_day(payload: dict) -> dict | None:
+    """
+    GET-only проекция дневных агрегатов WorkTime для План–факта СПУ.
+    Без сырых employee-day ячеек, без чужих shopMetrics/deptMetrics целиком.
+    Не для SoftSync/OPS.
+    Структура:
+      metrics: metric_id → {YYYY-MM-DD: number}   # магазин / builtins overall
+      deptMetrics: dept → metric_id → {YYYY-MM-DD: number}
+      timesheet: dept → {YYYY-MM-DD: {ya,hours,...}}
+      staffDirectory: dept → {YYYY-MM-DD: count}
+      headcountFte: dept|"" → {weekEndIso: shareSum}  # зеркало FTE, без round
+    """
+    if not isinstance(payload, dict):
+        return None
+    wanted = _spu_collect_indicator_metric_ids(payload)
+    metrics_out: dict[str, dict[str, float]] = {}
+    dept_out: dict[str, dict[str, dict[str, float]]] = {}
+
+    shop = payload.get("shopMetrics")
+    if isinstance(shop, dict):
+        # sales/checks — только cashiers + каналы (как cashiers_shop overall), без двойного учёта facts.
+        _spu_sum_shop_cashiers_and_channels(shop, metrics_out)
+        _spu_sum_store_visitors(shop, metrics_out)
+        _spu_sum_inventory_results(shop, "store_metric_inventory_result", metrics_out)
+        wanted_other = set(wanted) - {"metric_sales", "metric_checks", "store_metric_visitors"}
+        facts = shop.get("facts")
+        if isinstance(facts, dict):
+            for month, emps in facts.items():
+                _spu_sum_emp_day_maps(emps, str(month), metrics_out, wanted_other)
+        _spu_sum_category_stores(shop, metrics_out, wanted_other)
+
+    dept_metrics = payload.get("deptMetrics")
+    if isinstance(dept_metrics, dict):
+        for dept_code, branch in dept_metrics.items():
+            code = str(dept_code or "").strip()
+            if code not in TERRITORY_CODES or not isinstance(branch, dict):
+                continue
+            bucket: dict[str, dict[str, float]] = {}
+            facts = branch.get("facts")
+            if isinstance(facts, dict):
+                for month, emps in facts.items():
+                    _spu_sum_emp_day_maps(emps, str(month), bucket, wanted)
+            entries_root = branch.get("entries")
+            if isinstance(entries_root, dict):
+                for month, entries in entries_root.items():
+                    if not isinstance(entries, list):
+                        continue
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        iso = _spu_day_iso(str(month), entry.get("day"))
+                        vals = entry.get("values")
+                        if not iso or not isinstance(vals, dict):
+                            continue
+                        for mk, mv in vals.items():
+                            mid = _spu_canonical_metric_id(mk)
+                            if wanted is not None and mid not in wanted:
+                                continue
+                            if mv is None or mv == "":
+                                continue
+                            _spu_add_metric_day(bucket, mid, iso, mv)
+            if code == "warehouse":
+                # Инвентаризация склада — builtin overall id.
+                inv_bucket: dict[str, dict[str, float]] = {}
+                _spu_sum_inventory_results(
+                    branch, "warehouse_metric_inventory_result", inv_bucket
+                )
+                for mid, days in inv_bucket.items():
+                    metrics_out.setdefault(mid, {})
+                    for iso, val in days.items():
+                        metrics_out[mid][iso] = _spu_money(
+                            float(metrics_out[mid].get(iso, 0.0)) + float(val)
+                        )
+            if bucket:
+                dept_out[code] = bucket
+
+    timesheet = _spu_build_timesheet_day_aggs(payload)
+    as_of_dates: set[str] = set()
+    for mid_map in metrics_out.values():
+        as_of_dates.update(mid_map.keys())
+    for dept_map in dept_out.values():
+        for mid_map in dept_map.values():
+            as_of_dates.update(mid_map.keys())
+    for dept_map in timesheet.values():
+        as_of_dates.update(dept_map.keys())
+    # Среды отчётных недель: для численности достаточно всех дат с фактами.
+    staff = _spu_build_staff_directory_by_day(payload, as_of_dates)
+    ts_months = _spu_collect_timesheet_months(payload)
+    for iso in as_of_dates:
+        if len(iso) >= 7:
+            ts_months.add(iso[:7])
+    week_ends = _spu_week_ends_for_months(ts_months)
+    # Любая дата факта → среда её отчётной недели (чт…ср).
+    for iso in as_of_dates:
+        wed = _spu_reporting_week_end(iso)
+        if wed and wed not in week_ends:
+            week_ends.append(wed)
+    headcount_fte = _spu_build_headcount_fte_by_week(payload, week_ends)
+
+    if not metrics_out and not dept_out and not timesheet and not staff and not headcount_fte:
+        return None
+    return {
+        "metrics": metrics_out,
+        "deptMetrics": dept_out,
+        "timesheet": timesheet,
+        "staffDirectory": staff,
+        "headcountFte": headcount_fte,
+    }
+
+
 def spu_fr_territory_revenue_by_day(payload: dict) -> dict | None:
     """
     Узкий GET-only срез для зрителей СПУ без financeRec:view.
@@ -6086,6 +6887,15 @@ def filter_state_payload(payload: dict, user: dict) -> dict:
         fr_rev = spu_fr_territory_revenue_by_day(payload)
         if fr_rev:
             out["spuFrTerritoryRevenueByDay"] = fr_rev
+    # GET-only проекция дневных итогов WorkTime для План–факта СПУ (без чужих raw metrics).
+    if user_can_receive_spu_read_model(user):
+        if "shopMetricCatalog" not in out and "shopMetricCatalog" in payload:
+            out["shopMetricCatalog"] = drop_closed_fields(
+                payload.get("shopMetricCatalog"), allow_salary, allow_finance
+            )
+        wt_proj = spu_worktime_overall_by_day(payload)
+        if wt_proj:
+            out["spuWorktimeOverallByDay"] = wt_proj
     if user_has_perm(user, "orgStructure", "view") and "orgStructure" in payload:
         out["orgStructure"] = drop_closed_fields(payload.get("orgStructure"), allow_salary, allow_finance)
     if user_has_perm(user, "customerReturns", "view") and "customerReturns" in payload:
@@ -6923,7 +7733,7 @@ def handle_get_state(environ):
         safe["payload"] = strip_secrets(payload)
     else:
         safe["payload"] = filter_state_payload(payload, user)
-    # Админ обходит filter_state_payload — GET-only срез для СПУ иначе не попадает в ответ.
+    # Админ обходит filter_state_payload — GET-only срезы для СПУ иначе не попадают в ответ.
     # Если filter уже положил ключ (non-admin), повторно не считаем.
     out_payload = safe.get("payload")
     if (
@@ -6934,6 +7744,14 @@ def handle_get_state(environ):
         fr_rev = spu_fr_territory_revenue_by_day(payload)
         if fr_rev:
             out_payload["spuFrTerritoryRevenueByDay"] = fr_rev
+    if (
+        isinstance(out_payload, dict)
+        and user_can_receive_spu_read_model(user)
+        and "spuWorktimeOverallByDay" not in out_payload
+    ):
+        wt_proj = spu_worktime_overall_by_day(payload)
+        if wt_proj:
+            out_payload["spuWorktimeOverallByDay"] = wt_proj
     return json_bytes(safe)
 
 

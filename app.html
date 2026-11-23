@@ -53067,6 +53067,27 @@ function mgmtTimesheetHeadcountEquivalent(deptCode, days) {
     const weekEndIso = list.length && list[list.length - 1].iso
         ? String(list[list.length - 1].iso).slice(0, 10)
         : "";
+    let missing = 0;
+    codes.forEach(function (code) {
+        if (typeof findWorkspaceByCode !== "function" || !findWorkspaceByCode(code)) missing += 1;
+    });
+    /* Чужие workspace срезаны на GET — тот же FTE из проекции headcountFte (без сырого табеля). */
+    if (missing > 0 && typeof spuWorktimeHeadcountFte === "function" && weekEndIso) {
+        const scopeKey = deptCode ? String(deptCode) : "";
+        const proj = spuWorktimeHeadcountFte(scopeKey, weekEndIso);
+        if (proj != null) return Math.round(Number(proj));
+        if (!deptCode && codes.length) {
+            let acc = 0;
+            let any = false;
+            codes.forEach(function (code) {
+                const p = spuWorktimeHeadcountFte(code, weekEndIso);
+                if (p == null) return;
+                acc += Number(p);
+                any = true;
+            });
+            if (any) return Math.round(acc);
+        }
+    }
     const seen = {};
     let sum = 0;
     codes.forEach(function (code) {
@@ -53107,6 +53128,7 @@ function mgmtTimesheetFact(deptCode, agg, days) {
     let vacation = 0;
     let weekend = 0;
     let personal = 0;
+    let localAny = false;
     codes.forEach(function (code) {
         const w = findWorkspaceByCode(code);
         if (!w) return;
@@ -53121,15 +53143,33 @@ function mgmtTimesheetFact(deptCode, agg, days) {
                     ya += 1;
                     hours += Number(rec.hours || 0);
                     if (st === "О") late += 1;
+                    localAny = true;
                 }
-                if (st === "П") skip += 1;
-                if (st === "Б") sick += 1;
-                if (st === "ОТ") vacation += 1;
-                if (st === "В") weekend += 1;
-                if (st === "Л") personal += 1;
+                if (st === "П") { skip += 1; localAny = true; }
+                if (st === "Б") { sick += 1; localAny = true; }
+                if (st === "ОТ") { vacation += 1; localAny = true; }
+                if (st === "В") { weekend += 1; localAny = true; }
+                if (st === "Л") { personal += 1; localAny = true; }
             });
         });
     });
+    if (!localAny && typeof spuWorktimeTimesheetDayAgg === "function") {
+        codes.forEach(function (code) {
+            (days || []).forEach(function (d) {
+                const iso = typeof spuWorktimeDayIso === "function" ? spuWorktimeDayIso(d) : "";
+                const cell = spuWorktimeTimesheetDayAgg(code, iso);
+                if (!cell) return;
+                ya += Number(cell.ya || 0);
+                hours += Number(cell.hours || 0);
+                late += Number(cell.late || 0);
+                skip += Number(cell.skip || 0);
+                sick += Number(cell.sick || 0);
+                vacation += Number(cell.vacation || 0);
+                weekend += Number(cell.weekend || 0);
+                personal += Number(cell.personal || 0);
+            });
+        });
+    }
     if (agg === "hours") return hours;
     if (agg === "ya") return ya;
     if (agg === "days") return ya;
@@ -53155,9 +53195,11 @@ function mgmtStaffDirectoryFact(deptCode, asOfIso) {
             : ((typeof DEPT_DEFAULTS !== "undefined" ? DEPT_DEFAULTS : []).map(function (d) { return d.code; })));
     const seen = {};
     let n = 0;
+    let localCodes = 0;
     codes.forEach(function (code) {
         const w = typeof findWorkspaceByCode === "function" ? findWorkspaceByCode(code) : null;
         if (!w) return;
+        localCodes += 1;
         (w.employees || []).forEach(function (e) {
             if (!e || !e.id || seen[e.id]) return;
             if (!employeeCountsInStaffDirectoryOnDate(e, asOfIso)) return;
@@ -53165,6 +53207,16 @@ function mgmtStaffDirectoryFact(deptCode, asOfIso) {
             n += 1;
         });
     });
+    if (localCodes >= codes.length) return n;
+    /* Недостающие подразделения (срезанный GET) — численность из проекции на asOf. */
+    if (typeof spuWorktimeStaffDirectoryCount === "function") {
+        codes.forEach(function (code) {
+            if (typeof findWorkspaceByCode === "function" && findWorkspaceByCode(code)) return;
+            const pn = spuWorktimeStaffDirectoryCount(code, asOfIso);
+            if (pn == null) return;
+            n += Number(pn);
+        });
+    }
     return n;
 }
 
@@ -53594,6 +53646,104 @@ function autoCalcPeoplePeriodTotal(people, metricId, days) {
 }
 
 /**
+ * GET-only проекция дневных итогов WorkTime для СПУ (сервер: spuWorktimeOverallByDay).
+ * Без сырых чужих shopMetrics/deptMetrics. Только чтение фактов План–факта.
+ */
+function spuWorktimeProjectionRoot() {
+    return (appData && appData.spuWorktimeOverallByDay
+        && typeof appData.spuWorktimeOverallByDay === "object")
+        ? appData.spuWorktimeOverallByDay
+        : null;
+}
+
+function spuWorktimeDayIso(d) {
+    if (!d) return "";
+    if (d.iso) return String(d.iso).slice(0, 10);
+    const month = String(d.month || (typeof selectedMonth !== "undefined" ? selectedMonth : "") || "");
+    const day = Number(d.day);
+    if (!/^\d{4}-\d{2}$/.test(month) || !Number.isFinite(day) || day < 1) return "";
+    return month + "-" + ("0" + day).slice(-2);
+}
+
+/**
+ * Дневной агрегат метрики из проекции.
+ * deptCode пустой/"shop"/builtin → metrics; иначе deptMetrics[dept].
+ */
+function spuWorktimeMetricDayValue(metricId, iso, deptCode) {
+    const root = spuWorktimeProjectionRoot();
+    const mid = typeof canonicalMetricId === "function" ? canonicalMetricId(metricId) : String(metricId || "");
+    const day = String(iso || "").slice(0, 10);
+    if (!root || !mid || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    const dept = String(deptCode || "").trim();
+    let cell = null;
+    if (dept && dept !== "shop") {
+        const branch = root.deptMetrics && root.deptMetrics[dept];
+        cell = branch && branch[mid];
+        if ((!cell || !Object.prototype.hasOwnProperty.call(cell, day))
+            && root.metrics && root.metrics[mid]
+            && Object.prototype.hasOwnProperty.call(root.metrics[mid], day)) {
+            cell = root.metrics[mid];
+        }
+    } else {
+        cell = root.metrics && root.metrics[mid];
+    }
+    if (!cell || typeof cell !== "object" || !Object.prototype.hasOwnProperty.call(cell, day)) {
+        return null;
+    }
+    const n = Number(cell[day]);
+    return Number.isFinite(n) ? n : null;
+}
+
+function spuWorktimeCollectMetricSeries(metricId, days, deptCode) {
+    const out = { present: false, series: [], mode: "spu_projection" };
+    (days || []).forEach(function (d) {
+        const iso = spuWorktimeDayIso(d);
+        if (!iso) return;
+        const n = spuWorktimeMetricDayValue(metricId, iso, deptCode);
+        if (n == null) return;
+        out.series.push(n);
+    });
+    out.present = out.series.length > 0;
+    return out;
+}
+
+function spuWorktimeTimesheetDayAgg(deptCode, iso) {
+    const root = spuWorktimeProjectionRoot();
+    const code = String(deptCode || "").trim();
+    const day = String(iso || "").slice(0, 10);
+    if (!root || !code || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    const branch = root.timesheet && root.timesheet[code];
+    const cell = branch && branch[day];
+    return (cell && typeof cell === "object") ? cell : null;
+}
+
+function spuWorktimeStaffDirectoryCount(deptCode, asOfIso) {
+    const root = spuWorktimeProjectionRoot();
+    const code = String(deptCode || "").trim();
+    const day = String(asOfIso || "").slice(0, 10);
+    if (!root || !code || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    const branch = root.staffDirectory && root.staffDirectory[code];
+    if (!branch || !Object.prototype.hasOwnProperty.call(branch, day)) return null;
+    const n = Number(branch[day]);
+    return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * FTE-численность из GET-проекции (доля-сумма до Math.round).
+ * deptCode "" → ключ "" (все подразделения, как co_headcount).
+ */
+function spuWorktimeHeadcountFte(deptCode, weekEndIso) {
+    const root = spuWorktimeProjectionRoot();
+    const day = String(weekEndIso || "").slice(0, 10);
+    if (!root || !root.headcountFte || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    const key = deptCode == null || deptCode === "" ? "" : String(deptCode);
+    const branch = root.headcountFte[key];
+    if (!branch || !Object.prototype.hasOwnProperty.call(branch, day)) return null;
+    const n = Number(branch[day]);
+    return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Общий итог метрики за дни СПУ по всем участникам таблицы WT.
  * Режим source_result = metric_overall (новый; legacy metric_total не трогаем).
  * Shop/territory: presence-aware через shopCatalogOperandSnapshot / dept present;
@@ -53628,6 +53778,20 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
         const m = d.month || selectedMonth;
         if (monthList.indexOf(m) === -1) monthList.push(m);
     });
+    const projDept = (item && typeof metricDepartmentId === "function")
+        ? String(metricDepartmentId(item) || "")
+        : "";
+    /* Локальный store пуст (чужой dept срезан на GET) → дневные итоги из spuWorktimeOverallByDay. */
+    const finishOverall = function (result) {
+        if (result && result.present) return result;
+        let proj = spuWorktimeCollectMetricSeries(mid, days, projDept);
+        if (proj.present) return proj;
+        if (projDept && projDept !== "shop") {
+            proj = spuWorktimeCollectMetricSeries(mid, days, "shop");
+            if (proj.present) return proj;
+        }
+        return result || out;
+    };
     /* Store-level: один итог на день магазина, не per-employee. */
     if (mid === STORE_METRIC_VISITORS || mid === "store_metric_visitors") {
         out.mode = "store";
@@ -53642,7 +53806,7 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
             out.series.push(n);
         });
         out.present = out.series.length > 0;
-        return out;
+        return finishOverall(out);
     }
     /* Итог инвентаризации магазина: shopInventoryDayResult, знак сохраняется; пустая неделя → null. */
     if (mid === STORE_METRIC_INVENTORY_RESULT || mid === "store_metric_inventory_result") {
@@ -53655,7 +53819,7 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
             out.series.push(Number(v));
         });
         out.present = out.series.length > 0;
-        return out;
+        return finishOverall(out);
     }
     /* Итог инвентаризации склада: один день — один итог warehouse; не смешивать с магазином. */
     if (mid === WAREHOUSE_METRIC_INVENTORY_RESULT || mid === "warehouse_metric_inventory_result") {
@@ -53671,7 +53835,7 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
             out.series.push(n);
         });
         out.present = out.series.length > 0;
-        return out;
+        return finishOverall(out);
     }
     /* Деньги Финконтроля (Территория): GET-срез spuFrTerritoryRevenueByDay, не raw financeRec. */
     if (mid === FINREC_METRIC_OPT_TOTAL || mid === "finrec_metric_opt_total"
@@ -53734,13 +53898,13 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
             if (any) out.series.push(daySum);
         });
         out.present = out.series.length > 0;
-        return out;
+        return finishOverall(out);
     }
     const people = mgmtMetricOverallPeople(item, monthList);
     if (item.fill_type === "auto_calc") {
         out.mode = "auto_calc";
         const v = autoCalcPeoplePeriodTotal(people, mid, days);
-        if (v == null || !Number.isFinite(Number(v))) return out;
+        if (v == null || !Number.isFinite(Number(v))) return finishOverall(out);
         out.present = true;
         out.value = Number(v);
         out.series = [Number(v)];
@@ -53763,7 +53927,7 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
     });
     out.present = out.series.length > 0;
     out.mode = "day_facts";
-    return out;
+    return finishOverall(out);
 }
 
 /**
@@ -53847,7 +54011,13 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
         if (!rollupPilot && srcResult === "group_total" && workTab) {
             const host = String(deptCode || (catalogItem && metricDepartmentId(catalogItem)) || "");
             const collected = mgmtCollectAssignedWorktimeMetricSeries(host, mid, subId, dayList, workTab);
-            if (!collected.present) return null;
+            if (!collected.present) {
+                const proj = typeof spuWorktimeCollectMetricSeries === "function"
+                    ? spuWorktimeCollectMetricSeries(mid, dayList, host)
+                    : { present: false, series: [] };
+                if (proj.present) return aggregateMetricNumbers(proj.series, agg);
+                return null;
+            }
             return aggregateMetricNumbers(collected.series, agg);
         }
         if (rollupPilot) {
@@ -53905,6 +54075,18 @@ function mgmtMetricFact(deptCode, metricId, subId, days, indicator) {
             }
             Array.prototype.push.apply(series, collectDeptMetricPeriodSeries(code, mid, subId, dayList, null));
         });
+        if (series.length) return aggregateMetricNumbers(series, agg);
+        /* Нет локальных day-facts (срезанный GET) — дневные итоги из проекции СПУ. */
+        let projSeries = [];
+        codes.forEach(function (code) {
+            const proj = spuWorktimeCollectMetricSeries(mid, dayList, code);
+            if (proj && proj.present) Array.prototype.push.apply(projSeries, proj.series);
+        });
+        if (!projSeries.length) {
+            const proj = spuWorktimeCollectMetricSeries(mid, dayList, "");
+            if (proj && proj.present) projSeries = proj.series;
+        }
+        if (projSeries.length) return aggregateMetricNumbers(projSeries, agg);
         return aggregateMetricNumbers(series, agg);
     } catch (err) {
         console.error(err);
