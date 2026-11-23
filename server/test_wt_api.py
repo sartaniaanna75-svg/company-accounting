@@ -12777,6 +12777,7 @@ class WtSpuMetricOverallMarkerTests(unittest.TestCase):
         self.assertIn('mode = "cashiers_shop"', overall_fn)
         self.assertIn("shopChannelOperandSnapshot(", overall_fn)
         self.assertIn("SHOP_SELF_CHECKOUT_ID", overall_fn)
+        self.assertIn("SHOP_EXTRA_CHECKOUT_ID", overall_fn)
         self.assertNotIn("shopMetricStoredFact(", overall_fn)
         self.assertIn("function shopCashierOverallSlotPeople(", src)
         self.assertIn("function shopChannelOperandSnapshot(", src)
@@ -15221,6 +15222,49 @@ class WtSpuHeadcountDisplayNameMarkerTests(unittest.TestCase):
             : src.find("function ensureSpuDefaultIndicators(")
         ]
         self.assertIn("SPU_DAYS_DISPLAY_NAMES[spec.spu_code]", adopt)
+
+    def test_shop_recount_and_extra_checkout_markers_and_harness(self):
+        root = Path(__file__).resolve().parents[1]
+        src = (root / "app.html").read_text(encoding="utf-8")
+        self.assertIn("SHOP_EXTRA_CHECKOUT_ID", src)
+        self.assertIn('extra_checkout', src)
+        self.assertIn("function shopEmployeeIsRecountResponsibleCandidate(", src)
+        self.assertIn("function shopCashierChannelPersons(", src)
+        self.assertIn("function getShopChannelOperatorId(", src)
+        self.assertIn("function setShopChannelOperator(", src)
+        self.assertIn("operator_employee_id", src)
+        pool_fn = src[
+            src.find("function shopRecountResponsiblePoolIds(")
+            : src.find("function shopRecountResponsibleCandidates(")
+        ]
+        self.assertIn("shopEmployeeIsRecountResponsibleCandidate", pool_fn)
+        self.assertIn("recountResponsiblePool", pool_fn)
+        day_tot = src[
+            src.find("function shopCashierShopDayTotals(")
+            : src.find("function shopCashierShopTotals(")
+        ]
+        self.assertIn("shopCashierChannelPersons(", day_tot)
+        attr = src[
+            src.find("function shopCashierAttributedMonthTotals(")
+            : src.find("function shopCashierExecutorSummaryRows(")
+        ]
+        self.assertIn("SHOP_EXTRA_CHECKOUT_ID", attr)
+        self.assertIn("getShopChannelOperatorId(", attr)
+        harness = root / "server" / "wt_shop_extra_checkout_harness.js"
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для extra checkout harness")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_shop_extra_checkout_harness: OK", proc.stdout)
 
     def test_formula_period_confirm_markers_and_harness(self):
         root = Path(__file__).resolve().parents[1]

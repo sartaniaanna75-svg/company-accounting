@@ -6876,6 +6876,22 @@ const SHOP_SELF_CHECKOUT = {
     name: "Касса самообслуживания",
     isSalesChannel: true
 };
+const SHOP_EXTRA_CHECKOUT_ID = "extra_checkout";
+const SHOP_EXTRA_CHECKOUT = {
+    id: SHOP_EXTRA_CHECKOUT_ID,
+    salesChannelId: "sales_channel_extra_checkout",
+    name: "Дополнительная касса",
+    isSalesChannel: true,
+    needsOperator: true
+};
+
+function isShopSalesChannelId(id) {
+    return id === SHOP_SELF_CHECKOUT_ID || id === SHOP_EXTRA_CHECKOUT_ID;
+}
+
+function shopCashierChannelPersons() {
+    return [SHOP_SELF_CHECKOUT, SHOP_EXTRA_CHECKOUT];
+}
 const STORE_METRIC_VISITORS = "store_metric_visitors";
 /** Встроенные store-level итоги инвентаризации для СПУ (не assignable). */
 const STORE_METRIC_INVENTORY_RESULT = "store_metric_inventory_result";
@@ -11652,6 +11668,12 @@ function migrateStableIds(data) {
             ch.salesChannelId = SHOP_SELF_CHECKOUT.salesChannelId;
             ch.sales_channel_id = SHOP_SELF_CHECKOUT.salesChannelId;
             ch.type = "sales_channel";
+        }
+        const chExtra = data.shopMetrics.channels[SHOP_EXTRA_CHECKOUT_ID];
+        if (chExtra) {
+            chExtra.salesChannelId = SHOP_EXTRA_CHECKOUT.salesChannelId;
+            chExtra.sales_channel_id = SHOP_EXTRA_CHECKOUT.salesChannelId;
+            chExtra.type = "sales_channel";
         }
     }
     const rev = data.shopRevision;
@@ -19985,6 +20007,23 @@ function ensureShopMetrics() {
         root.channels[SHOP_SELF_CHECKOUT_ID].sales_channel_id = SHOP_SELF_CHECKOUT.salesChannelId;
         root.channels[SHOP_SELF_CHECKOUT_ID].type = "sales_channel";
     }
+    if (!root.channels[SHOP_EXTRA_CHECKOUT_ID]) {
+        root.channels[SHOP_EXTRA_CHECKOUT_ID] = {
+            id: SHOP_EXTRA_CHECKOUT_ID,
+            salesChannelId: SHOP_EXTRA_CHECKOUT.salesChannelId,
+            sales_channel_id: SHOP_EXTRA_CHECKOUT.salesChannelId,
+            type: "sales_channel",
+            name: "Дополнительная касса",
+            code: "extra_checkout"
+        };
+    } else {
+        root.channels[SHOP_EXTRA_CHECKOUT_ID].salesChannelId = SHOP_EXTRA_CHECKOUT.salesChannelId;
+        root.channels[SHOP_EXTRA_CHECKOUT_ID].sales_channel_id = SHOP_EXTRA_CHECKOUT.salesChannelId;
+        root.channels[SHOP_EXTRA_CHECKOUT_ID].type = "sales_channel";
+        if (!root.channels[SHOP_EXTRA_CHECKOUT_ID].name) {
+            root.channels[SHOP_EXTRA_CHECKOUT_ID].name = "Дополнительная касса";
+        }
+    }
     migrateCashiersVisitorsToStore(root);
     if (!root.extraAccess || typeof root.extraAccess !== "object") root.extraAccess = {};
     if (!root.facts || typeof root.facts !== "object") root.facts = {};
@@ -23692,6 +23731,31 @@ function setShopChannelValue(channelId, day, field, raw) {
     wtSaveMetricValue(path, n ? stored : null);
 }
 
+function getShopChannelOperatorId(channelId, day, month) {
+    if (!isShopSalesChannelId(channelId)) return "";
+    const rec = shopChannelMonth(channelId, month || selectedMonth)[String(day)];
+    return rec && rec.operator_employee_id ? String(rec.operator_employee_id) : "";
+}
+
+function setShopChannelOperator(channelId, day, employeeId) {
+    if (!canSaveShopMetricFactsFor()) return;
+    if (channelId !== SHOP_EXTRA_CHECKOUT_ID) return;
+    const store = shopChannelMonth(channelId, selectedMonth);
+    const dayKey = String(day);
+    if (!store[dayKey] || typeof store[dayKey] !== "object") store[dayKey] = { source: "manual" };
+    const next = String(employeeId || "");
+    if (!next) {
+        metricMarkCleared(store[dayKey], "operator_employee_id");
+        metricDayMapPrune(store, dayKey);
+    } else {
+        store[dayKey].operator_employee_id = next;
+        store[dayKey].source = "manual";
+    }
+    const path = wtShopChannelLeafPath(selectedMonth, channelId, day, "operator_employee_id");
+    wtSaveMetricValue(path, next || null);
+    renderShopCashierMetrics();
+}
+
 function shopChannelMonthTotals(channelId, month) {
     const days = daysInMonthValue(month || selectedMonth);
     const totals = { sales: 0, receipts: 0 };
@@ -24477,15 +24541,24 @@ function getShopRecountResponsibleId(day, month) {
     return rec && rec.employee_id ? rec.employee_id : "";
 }
 
+/** Кандидат в «Ответственный за пересчёт»: managers по вкладке/home, группе или должности. */
+function shopEmployeeIsRecountResponsibleCandidate(employee) {
+    if (!employee || !employee.id || isShopSalesChannelId(employee.id)) return false;
+    if (shopEmployeeIsShopManagersGroup(employee)) return true;
+    const groupIds = employeeWorkGroupIds(employee, "shop");
+    if (groupIds.indexOf("managers") !== -1) return true;
+    const managersCat = shopMetricCategoryById("managers");
+    return !!(managersCat && employeeMatchesMetricCategory(employee, managersCat));
+}
+
 function shopRecountResponsiblePoolIds() {
     const root = ensureShopMetrics();
     if (Array.isArray(root.recountResponsiblePool) && root.recountResponsiblePool.length) {
         return root.recountResponsiblePool.filter(Boolean);
     }
     const w = findWorkspaceByCode("shop");
-    return ((w && w.employees) || []).filter(function (e) {
-        return e && e.id && shopEmployeeHomeCategoryId(e) === "managers";
-    }).map(function (e) { return e.id; });
+    return ((w && w.employees) || []).filter(shopEmployeeIsRecountResponsibleCandidate)
+        .map(function (e) { return e.id; });
 }
 
 function shopRecountResponsibleCandidates() {
@@ -25804,7 +25877,7 @@ function shopMetricDayRecHasKeepable(rec) {
 
 function setShopMetricValue(categoryId, employeeId, day, field, raw) {
     if (!canSaveShopMetricFactsFor(employeeId)) return;
-    if (employeeId === SHOP_SELF_CHECKOUT_ID) {
+    if (isShopSalesChannelId(employeeId)) {
         setShopChannelValue(employeeId, day, field, raw);
         return;
     }
@@ -26051,7 +26124,7 @@ function shopMetricColumnPeople(category, field, employees) {
 }
 
 function shopCashierSlotActualId(slotId, day, month) {
-    if (!slotId || slotId === SHOP_SELF_CHECKOUT_ID) return "";
+    if (!slotId || isShopSalesChannelId(slotId)) return "";
     const m = month || selectedMonth;
     if (!shopTimesheetLockLabel(slotId, day, m)) return slotId;
     const rec = shopMetricDayRecord("cashiers", slotId, day, m);
@@ -26062,7 +26135,7 @@ function shopCashierSlotActualId(slotId, day, month) {
 }
 
 function shopCashierSlotCanEdit(slotId, day, month) {
-    if (!slotId || slotId === SHOP_SELF_CHECKOUT_ID) return true;
+    if (!slotId || isShopSalesChannelId(slotId)) return true;
     const m = month || selectedMonth;
     if (!shopTimesheetLockLabel(slotId, day, m)) return true;
     return !!shopCashierSlotActualId(slotId, day, m);
@@ -26080,7 +26153,7 @@ function shopCashierPeopleForActual(slotId, day) {
     const seen = {};
     const list = [];
     function add(e, allowOrphan) {
-        if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID || seen[e.id]) return;
+        if (!e || !e.id || isShopSalesChannelId(e.id) || seen[e.id]) return;
         if (!allowOrphan) {
             if (employeeHomeDeptCode(e.id) !== "shop") return;
             if (isTerritoryEmployee(e)) return;
@@ -26089,7 +26162,9 @@ function shopCashierPeopleForActual(slotId, day) {
         list.push(e);
     }
     departmentEmployeePool("shop").forEach(function (e) { add(e, false); });
-    const actualId = shopCashierSlotActualId(slotId, day);
+    const actualId = isShopSalesChannelId(slotId)
+        ? getShopChannelOperatorId(slotId, day)
+        : shopCashierSlotActualId(slotId, day);
     if (actualId) {
         const actual = getEmployee(actualId);
         if (actual) add(actual, false);
@@ -26140,7 +26215,7 @@ function syncShopCashierSlotDayRole(slotId, day, actualId) {
 
 function setShopCashierActual(slotId, day, actualId) {
     if (!canSaveShopMetricFactsFor(slotId)) return;
-    if (!slotId || slotId === SHOP_SELF_CHECKOUT_ID) return;
+    if (!slotId || isShopSalesChannelId(slotId)) return;
     const store = shopMetricMonthStore("cashiers", selectedMonth);
     if (!store[slotId] || typeof store[slotId] !== "object") store[slotId] = {};
     const dayKey = String(day);
@@ -26171,13 +26246,18 @@ function shopCashierAttributedMonthTotals(employeeId, month) {
     const store = shopMetricMonthStore("cashiers", m);
     const days = daysInMonthValue(m);
     Object.keys(store).forEach(function (slotId) {
-        if (!slotId || slotId === SHOP_SELF_CHECKOUT_ID) return;
+        if (!slotId || isShopSalesChannelId(slotId)) return;
         for (let day = 1; day <= days; day++) {
             if (shopCashierSlotActualId(slotId, day, m) !== employeeId) continue;
             sales += Number(getShopMetricValue("cashiers", slotId, day, "sales") || 0);
             receipts += Number(getShopMetricValue("cashiers", slotId, day, "receipts") || 0);
         }
     });
+    for (let day = 1; day <= days; day++) {
+        if (getShopChannelOperatorId(SHOP_EXTRA_CHECKOUT_ID, day, m) !== employeeId) continue;
+        sales += Number(getShopChannelValue(SHOP_EXTRA_CHECKOUT_ID, day, "sales", m) || 0);
+        receipts += Number(getShopChannelValue(SHOP_EXTRA_CHECKOUT_ID, day, "receipts", m) || 0);
+    }
     selectedMonth = keep;
     return {
         sales: sales,
@@ -26201,6 +26281,15 @@ function shopCashierExecutorSummaryRows() {
             map[actualId].receipts += receipts;
         }
     });
+    for (let day = 1; day <= days; day++) {
+        const opId = getShopChannelOperatorId(SHOP_EXTRA_CHECKOUT_ID, day);
+        if (!opId) continue;
+        const sales = Number(getShopChannelValue(SHOP_EXTRA_CHECKOUT_ID, day, "sales") || 0);
+        const receipts = Number(getShopChannelValue(SHOP_EXTRA_CHECKOUT_ID, day, "receipts") || 0);
+        if (!map[opId]) map[opId] = { id: opId, sales: 0, receipts: 0 };
+        map[opId].sales += sales;
+        map[opId].receipts += receipts;
+    }
     return Object.keys(map).map(function (id) {
         const row = map[id];
         row.avgCheck = shopMetricAvgCheck(row.sales, row.receipts);
@@ -26217,8 +26306,36 @@ function shopCashierCoreFields(person) {
     const sales = { key: "sales", label: "Продажи", type: "money" };
     const receipts = { key: "receipts", label: "Чеки", type: "number" };
     const avg = { key: "avgCheck", label: "Ср. чек", type: "avgCheck" };
-    if (person && person.isSalesChannel) return [sales, receipts, avg];
+    if (person && person.isSalesChannel) {
+        if (person.needsOperator) {
+            return [{ key: "_channelOperator", label: "Кто работал", type: "actual" }, sales, receipts, avg];
+        }
+        return [sales, receipts, avg];
+    }
     return [{ key: "_actualCashier", label: "Кто работал", type: "actual" }, sales, receipts, avg];
+}
+
+function shopChannelOperatorHtml(channelId, day) {
+    const opId = getShopChannelOperatorId(channelId, day);
+    const sales = Number(getShopChannelValue(channelId, day, "sales") || 0);
+    const receipts = Number(getShopChannelValue(channelId, day, "receipts") || 0);
+    const needHint = !opId && (sales || receipts);
+    let html = '<select class="metrics-actual-select' + (needHint ? " metrics-operator-missing" : "") + '"'
+        + ' title="' + escapeAttribute(needHint
+            ? "Оператор не выбран: продажи и чеки входят в итог магазина, но не относятся к сотруднику"
+            : "Сотрудник, работавший на дополнительной кассе в этот день") + '"'
+        + " onchange=\"setShopChannelOperator('" + channelId + "'," + day + ',this.value)">';
+    html += '<option value="">—</option>';
+    shopCashierPeopleForActual(channelId, day).forEach(function (emp) {
+        html += '<option value="' + escapeAttribute(emp.id) + '"'
+            + (emp.id === opId ? " selected" : "") + ">"
+            + escapeHtml(shopMetricEmployeeCaption(emp)) + "</option>";
+    });
+    html += "</select>";
+    if (needHint) {
+        html += '<div class="note metrics-sales-actor-hint">Оператор не выбран</div>';
+    }
+    return html;
 }
 
 function shopCashierActualHtml(slotId, day) {
@@ -26301,7 +26418,7 @@ function shopCashierFieldPeople(field, employees, persons) {
 }
 
 function shopCashierPersons() {
-    return shopMetricEmployees(shopMetricCategoryById("cashiers")).concat([SHOP_SELF_CHECKOUT]);
+    return shopMetricEmployees(shopMetricCategoryById("cashiers")).concat(shopCashierChannelPersons());
 }
 
 function shopCashierDayValues(person, day) {
@@ -26359,10 +26476,10 @@ function shopCashierOverallSlotPeople(month) {
     }
 }
 
-/** Дневные итоги магазина: все кассовые места таблицы + самообслуживание (без двойного учёта). */
+/** Дневные итоги магазина: кассовые слоты + каналы (КСО и доп. касса), без двойного учёта. */
 function shopCashierShopDayTotals(day) {
     const category = shopMetricCategoryById("cashiers");
-    const persons = shopMetricEmployees(category).concat([SHOP_SELF_CHECKOUT]);
+    const persons = shopMetricEmployees(category).concat(shopCashierChannelPersons());
     let sales = 0;
     let receipts = 0;
     persons.forEach(function (person) {
@@ -26381,9 +26498,13 @@ function shopCashierShopTotals() {
     const category = shopMetricCategoryById("cashiers");
     const employees = shopMetricEmployees(category);
     const emp = shopMetricGrandTotals(category, employees);
-    const channel = shopChannelMonthTotals(SHOP_SELF_CHECKOUT_ID, selectedMonth);
-    const sales = Number(emp.sales || 0) + Number(channel.sales || 0);
-    const receipts = Number(emp.receipts || 0) + Number(channel.receipts || 0);
+    let sales = Number(emp.sales || 0);
+    let receipts = Number(emp.receipts || 0);
+    shopCashierChannelPersons().forEach(function (ch) {
+        const channel = shopChannelMonthTotals(ch.id, selectedMonth);
+        sales += Number(channel.sales || 0);
+        receipts += Number(channel.receipts || 0);
+    });
     const visitors = shopStoreVisitorsTotal(selectedMonth);
     return {
         sales: sales,
@@ -26827,6 +26948,9 @@ function renderShopSalesPlan() {
 }
 
 function shopCashierInputHtml(person, day, field, value) {
+    if (field && field.key === "_channelOperator") {
+        return shopChannelOperatorHtml(person.id, day);
+    }
     if (field && field.key === "_actualCashier") {
         return shopCashierActualHtml(person.id, day);
     }
@@ -26880,7 +27004,7 @@ function renderShopCashierMetrics() {
     restoreShopMetricChrome();
     const category = shopMetricCategoryById("cashiers");
     const employees = shopMetricEmployees(category);
-    const persons = employees.concat([SHOP_SELF_CHECKOUT]);
+    const persons = employees.concat(shopCashierChannelPersons());
     const wrap = document.getElementById("metricsWrap");
     const scrollLeft = wrap ? wrap.scrollLeft : 0;
     const scrollTop = wrap ? wrap.scrollTop : 0;
@@ -26909,10 +27033,11 @@ function renderShopCashierMetrics() {
     if (monthNote) {
         monthNote.textContent = monthLabel(selectedMonth)
             + ". Продажи и чеки пишутся на кассовое место. «Кто работал» — фактический исполнитель. "
+            + "Дополнительная касса — отдельный канал с выбором сотрудника на день. "
             + "Табель штатного кассира не меняется. Приёмка и поставление поступлений — во вкладке Руководители.";
     }
     const pageTitle = document.getElementById("metricsPageTitle");
-    if (pageTitle) pageTitle.textContent = "Кассиры и касса самообслуживания";
+    if (pageTitle) pageTitle.textContent = "Кассиры, КСО и дополнительная касса";
 
     function slotCellClass(person, field, gi, day) {
         const wide = field.type === "money" || field.type === "avgCheck";
@@ -27029,7 +27154,7 @@ function renderShopCashierMetrics() {
     let html = "";
     if (!employees.length && !checklistOnly) {
         html += '<tr><td class="metrics-date-col"></td><td class="metrics-visitors-col" colspan="8"><div class="note" style="padding:8px 4px">'
-            + "Кассиров с должностью «Кассир» пока нет. Касса самообслуживания — не сотрудник, её можно заполнять отдельно."
+            + "Кассиров с должностью «Кассир» пока нет. КСО и дополнительную кассу можно заполнять отдельно."
             + "</div></td></tr>";
     }
     if (checklistOnly && !extraFields.length) {
@@ -27182,7 +27307,7 @@ function renderShopCashierMetrics() {
 function renderShopCashierSummary(employees, grand) {
     const box = document.getElementById("metricsGrandBox");
     if (!box) return;
-    const persons = (employees || []).concat([SHOP_SELF_CHECKOUT]);
+    const persons = (employees || []).concat(shopCashierChannelPersons());
     let html = '<div class="card-title" style="margin-bottom:10px">Итого магазин</div>'
         + '<div class="table-wrapper" style="max-height:none"><table class="cashier-summary-table"><thead><tr>'
         + "<th>Кассир / касса</th><th>Сумма продаж</th><th>Количество чеков</th><th>Средний чек</th>"
@@ -27203,7 +27328,7 @@ function renderShopCashierSummary(employees, grand) {
         + "<td>" + money(grand.avgCheck) + "</td></tr></tbody></table></div>"
         + '<div class="note" style="margin-top:10px">Первая таблица — кассовые места (без двойного счёта). '
         + "Общий средний чек = общая сумма продаж / общее количество чеков. "
-        + "Касса самообслуживания не сотрудник и не попадает в зарплату. "
+        + "КСО и дополнительная касса — каналы, не сотрудники; без оператора доп. касса не идёт в персональный итог. "
         + "Количество покупателей — отдельно, не по кассирам."
         + (grand.visitors ? " Конверсия (чеки / покупатели) можно будет добавить позже: сейчас "
             + (Math.round(grand.conversion * 10) / 10) + "%." : "")
@@ -27219,7 +27344,7 @@ function renderShopCashierSummary(employees, grand) {
                 + Number(row.receipts || 0).toLocaleString("ru-RU") + "</td><td>" + money(row.avgCheck) + "</td></tr>";
         });
         html += "</tbody></table></div>"
-            + '<div class="note" style="margin-top:8px">Эти суммы берутся с кассовых мест, где сотрудник выбран как «Кто работал». '
+            + '<div class="note" style="margin-top:8px">Суммы с кассовых мест и дополнительной кассы, где сотрудник выбран как «Кто работал». '
             + "Одна и та же продажа не дублируется. Основная должность при этом не меняется.</div>";
     }
     box.innerHTML = html;
@@ -28324,7 +28449,7 @@ function refreshShopMetricSummary() {
 function refreshShopCashierSummary() {
     const category = shopMetricCategoryById("cashiers");
     const employees = shopMetricEmployees(category);
-    const persons = employees.concat([SHOP_SELF_CHECKOUT]);
+    const persons = employees.concat(shopCashierChannelPersons());
     const grand = shopCashierShopTotals();
     renderShopMetricCards(category, grand);
     renderShopCashierSummary(employees, grand);
@@ -42780,6 +42905,7 @@ function wtEmployeeLinkedHistoryLabels(employeeId) {
             "conducted_by_employee_id",
             "assigned_cashier_employee_id",
             "actual_cashier_employee_id",
+            "operator_employee_id",
             "replaced_employee_id"
         ];
         if (fields.some(function (f) { return String(cell[f] || "") === eid; })) return true;
@@ -53334,7 +53460,7 @@ function mgmtMetricOverallPeople(catalogItem, months) {
             monthList.forEach(function (m) {
                 (shopCashierOverallSlotPeople(m) || []).forEach(function (e) {
                     if (!e || !e.id || seen[e.id]) return;
-                    if (e.id === SHOP_SELF_CHECKOUT_ID) return;
+                    if (isShopSalesChannelId(e.id)) return;
                     seen[e.id] = true;
                     list.push(e);
                 });
@@ -53531,7 +53657,7 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
         out.present = out.series.length > 0;
         return out;
     }
-    /* Кассиры: слоты как shopCashierShopDayTotals + КСО один раз; пустая неделя → null. */
+    /* Кассиры: слоты как shopCashierShopDayTotals + каналы (КСО, доп. касса); пустая неделя → null. */
     if (mid === "metric_sales" || mid === "metric_checks") {
         out.mode = "cashiers_shop";
         const fieldKey = mid === "metric_sales" ? "sales" : "receipts";
@@ -53544,7 +53670,7 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
                 ? (shopCashierOverallSlotPeople(month) || [])
                 : [];
             slots.forEach(function (e) {
-                if (!e || !e.id || e.id === SHOP_SELF_CHECKOUT_ID) return;
+                if (!e || !e.id || isShopSalesChannelId(e.id)) return;
                 const snap = typeof shopCatalogOperandSnapshot === "function"
                     ? shopCatalogOperandSnapshot(e.id, dayNum, mid, month, null, subId)
                     : { present: false, value: null };
@@ -53554,16 +53680,18 @@ function mgmtCollectMetricOverallSeries(metricId, subId, days) {
                 daySum += n;
                 any = true;
             });
-            const ch = typeof shopChannelOperandSnapshot === "function"
-                ? shopChannelOperandSnapshot(SHOP_SELF_CHECKOUT_ID, dayNum, fieldKey, month)
-                : { present: false, value: null };
-            if (ch && ch.present && ch.value != null) {
-                const cn = Number(ch.value);
-                if (Number.isFinite(cn)) {
-                    daySum += cn;
-                    any = true;
+            [SHOP_SELF_CHECKOUT_ID, SHOP_EXTRA_CHECKOUT_ID].forEach(function (chId) {
+                const ch = typeof shopChannelOperandSnapshot === "function"
+                    ? shopChannelOperandSnapshot(chId, dayNum, fieldKey, month)
+                    : { present: false, value: null };
+                if (ch && ch.present && ch.value != null) {
+                    const cn = Number(ch.value);
+                    if (Number.isFinite(cn)) {
+                        daySum += cn;
+                        any = true;
+                    }
                 }
-            }
+            });
             if (any) out.series.push(daySum);
         });
         out.present = out.series.length > 0;

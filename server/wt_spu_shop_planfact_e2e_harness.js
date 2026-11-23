@@ -160,7 +160,7 @@ function mgmtCollectMetricOverallSeries(opts) {
       let daySum = 0;
       let any = false;
       slots.forEach(function (e) {
-        if (!e || !e.id || e.id === "self_checkout") return;
+        if (!e || !e.id || e.id === "self_checkout" || e.id === "extra_checkout") return;
         const snap = shopCatalogOperandSnapshot({
           cashiers: opts.cashiers, employeeId: e.id, day: d.day, month: d.month, metricId: mid
         });
@@ -168,13 +168,15 @@ function mgmtCollectMetricOverallSeries(opts) {
         daySum += Number(snap.value);
         any = true;
       });
-      const chRec = opts.channelValues
-        && opts.channelValues[d.month]
-        && opts.channelValues[d.month].self_checkout
-        && opts.channelValues[d.month].self_checkout[String(d.day)];
-      if (chRec && chRec[fieldKey] != null && chRec[fieldKey] !== "") {
-        daySum += Number(chRec[fieldKey] || 0);
-        any = true;
+      const monthCh = opts.channelValues && opts.channelValues[d.month];
+      if (monthCh && typeof monthCh === "object") {
+        Object.keys(monthCh).forEach(function (chId) {
+          const chRec = monthCh[chId] && monthCh[chId][String(d.day)];
+          if (chRec && chRec[fieldKey] != null && chRec[fieldKey] !== "") {
+            daySum += Number(chRec[fieldKey] || 0);
+            any = true;
+          }
+        });
       }
       if (any) out.series.push(daySum);
     });

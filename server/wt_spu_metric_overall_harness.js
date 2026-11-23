@@ -123,7 +123,7 @@ function mgmtCollectMetricOverallSeries(opts) {
     return out;
   }
 
-  /* Cashiers shop total: slots (peopleByMetric as slot ids) + channel self_checkout once. */
+  /* Cashiers shop total: slots + sales channels (self_checkout, extra_checkout, …). */
   if (mid === "metric_sales" || mid === "metric_checks") {
     out.mode = "cashiers_shop";
     const fieldKey = mid === "metric_sales" ? "sales" : "receipts";
@@ -132,7 +132,7 @@ function mgmtCollectMetricOverallSeries(opts) {
       let daySum = 0;
       let any = false;
       slots.forEach(function (e) {
-        if (!e || !e.id || e.id === "self_checkout") return;
+        if (!e || !e.id || e.id === "self_checkout" || e.id === "extra_checkout") return;
         const snap = shopCatalogOperandSnapshot(Object.assign({}, opts, {
           employeeId: e.id, day: d.day, month: d.month, metricId: mid
         }));
@@ -140,13 +140,15 @@ function mgmtCollectMetricOverallSeries(opts) {
         daySum += Number(snap.value);
         any = true;
       });
-      const chRec = opts.channelValues
-        && opts.channelValues[d.month]
-        && opts.channelValues[d.month].self_checkout
-        && opts.channelValues[d.month].self_checkout[String(d.day)];
-      if (chRec && chRec[fieldKey] != null && chRec[fieldKey] !== "") {
-        daySum += Number(chRec[fieldKey] || 0);
-        any = true;
+      const monthCh = opts.channelValues && opts.channelValues[d.month];
+      if (monthCh && typeof monthCh === "object") {
+        Object.keys(monthCh).forEach(function (chId) {
+          const chRec = monthCh[chId] && monthCh[chId][String(d.day)];
+          if (chRec && chRec[fieldKey] != null && chRec[fieldKey] !== "") {
+            daySum += Number(chRec[fieldKey] || 0);
+            any = true;
+          }
+        });
       }
       if (any) out.series.push(daySum);
     });
@@ -442,6 +444,25 @@ const days0511 = daysBetween("2026-11-05", "2026-11-11");
     peopleByMetric: Object.assign({}, peopleByMetric, { metric_sales: [] })
   }));
   assert(ksoOnly === 200, "4: KSO alone once got " + ksoOnly);
+}
+
+// 4b) Extra checkout channel included once in shop overall
+{
+  const withExtra = Object.assign({}, base, {
+    metricId: "metric_sales",
+    days: [{ day: 20, month: NOV }],
+    channelValues: {
+      [NOV]: {
+        self_checkout: { "20": { sales: 200, receipts: 5 } },
+        extra_checkout: { "20": { sales: 300, receipts: 3, operator_employee_id: "c1" } }
+      }
+    }
+  });
+  /* slots 1000+500 + KSO 200 + extra 300 = 2000 */
+  const v = overall(withExtra);
+  assert(v === 2000, "4b: slots+KSO+extra sales got " + v);
+  const checks = overall(Object.assign({}, withExtra, { metricId: "metric_checks" }));
+  assert(checks === 8 + 2 + 5 + 3, "4b: slots+KSO+extra checks got " + checks);
 }
 
 // 5) Visitors store
