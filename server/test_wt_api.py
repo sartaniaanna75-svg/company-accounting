@@ -1320,6 +1320,68 @@ class StoreApiTests(unittest.TestCase):
         self.assertIn("extra_employee_ids", people)
         self.assertNotIn("metricFactDeptForEmployee", people)
 
+    def test_client_territory_warehouse_hub_uses_work_groups(self):
+        """Хаб «Склад»: группы dwork + deptMetricFields; остальные хабы без изменений."""
+        src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+        self.assertIn("function currentTerritoryWarehouseWorkTab(", src)
+        self.assertIn("function setTerritoryWarehouseWorkTab(", src)
+        self.assertIn("function renderTerritoryWarehouseWorkTabs(", src)
+        self.assertIn('id="territoryWarehouseWorkTabs"', src)
+        self.assertIn("territoryWarehouseWorkTab", src)
+        hub = src[
+            src.find("function renderTerritoryMetrics(")
+            : src.find("function renderDeptWorkMetrics(")
+        ]
+        # Ветка склада: поля как dwork, без territoryHubFields/People.
+        self.assertIn('spec.id === "warehouse"', hub)
+        self.assertIn('deptMetricFields("warehouse", warehouseTab)', hub)
+        wh_start = hub.find('if (spec.id === "warehouse")')
+        other_start = hub.find('fillDeptWorkTable(spec.departmentId || "office"')
+        self.assertGreater(wh_start, 0)
+        self.assertGreater(other_start, wh_start)
+        wh_branch = hub[wh_start:other_start]
+        self.assertIn('fillDeptWorkTable("warehouse", warehouseTab', wh_branch)
+        self.assertNotIn("territoryHubFields(", wh_branch)
+        self.assertNotIn("territoryHubPeople(", wh_branch)
+        # Default peopleFn → workMetricPeopleForTab (явный peopleFn не задан в ветке склада).
+        self.assertNotIn("peopleFn:", wh_branch)
+        self.assertIn('metricFactDeptForEmployee(employeeId, "warehouse")', wh_branch)
+        # Дубль верхних хаб-вкладок скрыт только на складе.
+        hub_tabs = src[
+            src.find("function renderTerritoryMetricsHubTabs(")
+            : src.find("function currentTerritoryWarehouseWorkTab(")
+        ]
+        self.assertIn('current.id === "warehouse"', hub_tabs)
+        self.assertIn('host.style.display = "none"', hub_tabs)
+        # Прочие хабы по-прежнему через territoryHubFields + territoryHubPeople.
+        other = hub[other_start:]
+        self.assertIn("territoryHubFields(spec)", other)
+        self.assertIn("territoryHubPeople(spec, metricId)", other)
+        # Рабочий dwork не переписан под хаб.
+        dwork = src[
+            src.find("function renderDeptWorkMetrics(")
+            : src.find("function fillDeptWorkTable(")
+        ]
+        self.assertNotIn("territoryWarehouseWorkTab", dwork)
+        self.assertNotIn("territoryHubFields", dwork)
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_territory_warehouse_hub_groups_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness склада хаба")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_territory_warehouse_hub_groups_harness: OK", proc.stdout)
+
     def test_client_shop_territory_assignment_isolation(self):
         """Магазин Володарского и Территория не смешиваются в назначениях и пулах сотрудников."""
         src = Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")

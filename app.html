@@ -5261,6 +5261,7 @@
                         </div>
                         <div class="toolbar" style="flex-direction:column;align-items:flex-start;gap:8px">
                             <div class="metrics-tabs" id="territoryMetricsHubTabs"></div>
+                            <div class="metrics-tabs" id="territoryWarehouseWorkTabs" style="display:none"></div>
                             <div class="metrics-tabs metrics-fill-tabs" id="territoryMetricsFillTabs"></div>
                         </div>
                     </div>
@@ -6730,6 +6731,7 @@ let loginPinByDept = {};
 let shopMetricCategory = "pickers";
 let deptMetricTab = "";
 let territoryMetricsHubId = "";
+let territoryWarehouseWorkTab = "";
 let metricCatalogExpanded = {};
 let metricCatalogFilter = { tab: "", active: "active", structure: "", kind: "", dept: "", position_id: "", employee_id: "", search: "" };
 let timesheetWorkTabFilterByDept = {};
@@ -9477,6 +9479,7 @@ function loadServerStateThenEnter(entryCode, errorCode, saved) {
         if (saved && saved.customNavItemId) currentCustomNavItemId = saved.customNavItemId;
         if (saved && saved.section) pendingOpenSection = saved.section;
         if (saved && saved.territoryMetricsHubId) territoryMetricsHubId = saved.territoryMetricsHubId;
+        if (saved && saved.territoryWarehouseWorkTab) territoryWarehouseWorkTab = saved.territoryWarehouseWorkTab;
         currentEntry = code;
         const tUi = wtSaveNow();
         if (!enterAsUser(wtServerUser, code)) {
@@ -18447,6 +18450,7 @@ function saveSession() {
             deptRole: currentDeptRole,
             userId: currentUserId,
             territoryMetricsHubId: territoryMetricsHubId,
+            territoryWarehouseWorkTab: territoryWarehouseWorkTab,
             entry: currentEntry,
             serverAuth: !!wtServerMode
         }));
@@ -18536,6 +18540,7 @@ function tryRestoreSession() {
             if (saved.deptRole) currentDeptRole = saved.deptRole;
             if (saved.userId) currentUserId = saved.userId;
             if (saved.territoryMetricsHubId) territoryMetricsHubId = saved.territoryMetricsHubId;
+            if (saved.territoryWarehouseWorkTab) territoryWarehouseWorkTab = saved.territoryWarehouseWorkTab;
             if (saved.entry) currentEntry = saved.entry;
             if (saved.index !== undefined && !id && !code) {
                 currentWorkspaceIndex = Number(saved.index);
@@ -41021,12 +41026,53 @@ function renderTerritoryMetricsHubTabs() {
         host.style.display = "none";
         return;
     }
-    host.style.display = "";
     const current = currentTerritoryMetricsHub();
+    // Склад хаба: группы склада вместо дубля левого меню хабов.
+    if (current && current.id === "warehouse") {
+        host.innerHTML = "";
+        host.style.display = "none";
+        return;
+    }
+    host.style.display = "";
     host.innerHTML = TERRITORY_METRICS_HUB.map(function (spec) {
         return '<button type="button" class="metrics-tab' + (spec.id === current.id ? " active" : "")
             + '" data-hub="' + spec.id + '" onclick="setTerritoryMetricsHub(\'' + spec.id + '\')">'
             + escapeHtml(spec.label) + "</button>";
+    }).join("");
+}
+
+function currentTerritoryWarehouseWorkTab() {
+    const tabs = metricTabsForDept("warehouse");
+    if (!tabs.some(function (t) { return t.id === territoryWarehouseWorkTab; })) {
+        territoryWarehouseWorkTab = defaultMetricTabId("warehouse");
+    }
+    return territoryWarehouseWorkTab || "loaders";
+}
+
+function setTerritoryWarehouseWorkTab(id) {
+    const tabs = metricTabsForDept("warehouse");
+    if (!tabs.some(function (t) { return t.id === id; })) return;
+    territoryWarehouseWorkTab = id;
+    saveSession();
+    if (isTerritoryMetricsMode() && currentTerritoryMetricsHub().id === "warehouse") {
+        renderTerritoryMetrics();
+    }
+}
+
+function renderTerritoryWarehouseWorkTabs(spec) {
+    const host = document.getElementById("territoryWarehouseWorkTabs");
+    if (!host) return;
+    if (!spec || spec.id !== "warehouse" || !isTerritoryMetricsMode()) {
+        host.innerHTML = "";
+        host.style.display = "none";
+        return;
+    }
+    const current = currentTerritoryWarehouseWorkTab();
+    host.style.display = "";
+    host.innerHTML = metricTabsForDept("warehouse").map(function (t) {
+        return '<button type="button" class="metrics-tab' + (t.id === current ? " active" : "")
+            + '" data-work-tab="' + t.id + '" onclick="setTerritoryWarehouseWorkTab(\'' + t.id + '\')">'
+            + escapeHtml(t.label) + "</button>";
     }).join("");
 }
 
@@ -41045,6 +41091,7 @@ function renderTerritoryMetrics() {
     if (spec.departmentId) ensureDeptMetrics(spec.departmentId);
     else TERRITORY_DEPT_CODES.forEach(function (code) { ensureDeptMetrics(code); });
     renderTerritoryMetricsHubTabs();
+    renderTerritoryWarehouseWorkTabs(spec);
     const title = document.getElementById("territoryMetricsPageTitle");
     if (title) title.textContent = "Метрики — " + spec.label;
     const pageTitle = document.getElementById("pageTitle");
@@ -41052,6 +41099,7 @@ function renderTerritoryMetrics() {
         pageTitle.textContent = "Метрики — " + spec.label;
     }
     const bar = document.getElementById("territoryMetricsCatalogBar");
+    const warehouseTab = spec.id === "warehouse" ? currentTerritoryWarehouseWorkTab() : "";
     if (bar) {
         let html = "";
         if (canEditStaff()) {
@@ -41064,6 +41112,10 @@ function renderTerritoryMetrics() {
         if (spec.id === "drivers") {
             html += '<button type="button" class="btn btn-secondary" onclick="openFleetVehiclesAdmin()">Автопарк</button>';
             html += '<span class="note" style="margin-left:8px">Таблица: даты → водители. Метрика типа «Автомобиль» — выбор машины на дату. Остальные показатели — отдельные metric_id.</span>';
+        } else if (spec.id === "warehouse") {
+            html += '<span class="note" style="margin-left:8px">Рабочая группа «'
+                + escapeHtml(metricTabLabel("warehouse", warehouseTab))
+                + "». Колонки и сотрудники как в рабочем Складе. Значения те же.</span>";
         } else {
             html += '<span class="note" style="margin-left:8px">Категория «' + escapeHtml(spec.label)
                 + "». Метрики назначаются в Справочнике метрик. Значения те же, что в рабочих разделах.</span>";
@@ -41071,7 +41123,7 @@ function renderTerritoryMetrics() {
         bar.innerHTML = html;
     }
     hideDriverStatementHost();
-    fillDeptWorkTable(spec.departmentId || "office", territoryHubTabIds(spec)[0] || "main", {
+    const territoryDomIds = {
         wrap: "territoryMetricsWrap",
         table: "territoryMetricsTable",
         head: "territoryMetricsHead",
@@ -41079,7 +41131,20 @@ function renderTerritoryMetrics() {
         title: "territoryMetricsPageTitle",
         note: "territoryMetricsMonthNote",
         fillTabs: "territoryMetricsFillTabs"
-    }, {
+    };
+    // Склад хаба: зеркало dwork (группы + deptMetricFields), без territoryHubFields/People.
+    if (spec.id === "warehouse") {
+        fillDeptWorkTable("warehouse", warehouseTab, territoryDomIds, {
+            fields: deptMetricFields("warehouse", warehouseTab),
+            fillViewTab: warehouseTab,
+            tabLabel: metricTabLabel("warehouse", warehouseTab),
+            factDeptFn: function (employeeId) {
+                return metricFactDeptForEmployee(employeeId, "warehouse");
+            }
+        });
+        return;
+    }
+    fillDeptWorkTable(spec.departmentId || "office", territoryHubTabIds(spec)[0] || "main", territoryDomIds, {
         fields: territoryHubFields(spec),
         peopleFn: function (metricId) { return territoryHubPeople(spec, metricId); },
         fillViewTab: territoryHubFillViewTab(spec),
