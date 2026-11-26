@@ -47492,6 +47492,28 @@ function spuEvalFormula(it, tokens, stack, asPlan) {
     return Number(out);
 }
 
+/** Узел статического графа deps: id|plan|woff или id|fact|woff (паритет с runtime kind, woff = week_offset). */
+function spuDepNodeKey(indicatorId, kind, weekOffset) {
+    const k = String(kind || "fact") === "plan" ? "plan" : "fact";
+    let off = Number(weekOffset);
+    if (!Number.isFinite(off)) off = 0;
+    off = Math.trunc(off);
+    return String(indicatorId || "") + "|" + k + "|" + String(off);
+}
+
+function spuDepParseNodeKey(nodeKey) {
+    const parts = String(nodeKey || "").split("|");
+    return {
+        id: parts[0] || "",
+        kind: parts[1] === "plan" ? "plan" : "fact",
+        woff: Number(parts[2]) || 0
+    };
+}
+
+/**
+ * Голые id зависимостей (union plan+fact) — для dependents/удаления.
+ * Не использовать для cycle-check (см. spuWouldCycle).
+ */
 function spuIndicatorDepIds(it, cfg) {
     const ids = [];
     const add = function (id) { if (id && ids.indexOf(id) === -1) ids.push(id); };
@@ -47499,39 +47521,154 @@ function spuIndicatorDepIds(it, cfg) {
         if (!s) return;
         if (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual") add(s.source_indicator_id);
     });
-    ((cfg && cfg.formula_expr) || it.formula_expr || []).forEach(function (tok) {
+    ((cfg && cfg.formula_expr) || (it && it.formula_expr) || []).forEach(function (tok) {
         if (tok && tok.t === "ind") add(tok.id);
     });
-    ((cfg && cfg.plan_formula_expr) || it.plan_formula_expr || []).forEach(function (tok) {
+    ((cfg && cfg.plan_formula_expr) || (it && it.plan_formula_expr) || []).forEach(function (tok) {
         if (tok && tok.t === "ind") add(tok.id);
     });
-    if (it.calc_left_id) add(it.calc_left_id);
-    if (it.calc_right_id) add(it.calc_right_id);
+    if (it && it.calc_left_id) add(it.calc_left_id);
+    if (it && it.calc_right_id) add(it.calc_right_id);
     return ids;
 }
 
-function spuWouldCycle(indicatorId, nextCfg) {
-    if (!indicatorId) return false;
-    const list = (appData.management && appData.management.indicators) || [];
-    const map = {};
-    list.forEach(function (x) {
-        if (!x || !x.indicator_id) return;
-        map[x.indicator_id] = spuIndicatorDepIds(x, x.indicator_id === indicatorId ? nextCfg : spuActiveConfig(x));
-    });
-    map[indicatorId] = spuIndicatorDepIds({ indicator_id: indicatorId, calc_left_id: nextCfg.calc_left_id, calc_right_id: nextCfg.calc_right_id, formula_expr: nextCfg.formula_expr }, nextCfg);
-    const seen = {};
-    function walk(id, trail) {
-        if (!id) return false;
-        if (trail.indexOf(id) !== -1) return true;
-        if (seen[id]) return false;
-        seen[id] = true;
-        const next = map[id] || [];
-        for (let i = 0; i < next.length; i++) {
-            if (walk(next[i], trail.concat([id]))) return true;
+function spuCfgPlanFormulaActive(cfg, it) {
+    const mode = (cfg && cfg.plan_calc_mode) || (it && it.plan_calc_mode);
+    const expr = (cfg && cfg.plan_formula_expr) || (it && it.plan_formula_expr) || [];
+    return mode === "formula" && Array.isArray(expr) && expr.length > 0;
+}
+
+/**
+ * Рёбра из узла id|kind|baseOff → список ключей-потомков.
+ * Plan и fact разделены; week_offset учитывается сдвигом baseOff.
+ */
+function spuDepEdgesFromNode(nodeKey, resolveIt, resolveCfg) {
+    const parsed = spuDepParseNodeKey(nodeKey);
+    if (!parsed.id) return [];
+    const maxOff = typeof SPU_FORMULA_EVAL_MAX_DEPTH === "number" ? SPU_FORMULA_EVAL_MAX_DEPTH : 16;
+    if (Math.abs(parsed.woff) > maxOff) return [];
+    const it = typeof resolveIt === "function" ? resolveIt(parsed.id) : null;
+    const cfg = typeof resolveCfg === "function" ? resolveCfg(parsed.id, it, parsed.woff) : null;
+    const out = [];
+    const pushTok = function (tok, defaultKind) {
+        if (!tok || tok.t !== "ind" || !tok.id) return;
+        const n = typeof spuFormulaIndTokenNormalize === "function"
+            ? spuFormulaIndTokenNormalize(tok)
+            : {
+                id: String(tok.id || ""),
+                value_kind: String(tok.value_kind || defaultKind) === "plan" ? "plan" : "fact",
+                week_offset: Number(tok.week_offset) || 0
+            };
+        const toOff = parsed.woff + (Number(n.week_offset) || 0);
+        if (Math.abs(toOff) > maxOff) return;
+        out.push(spuDepNodeKey(n.id, n.value_kind || defaultKind, toOff));
+    };
+    if (parsed.kind === "plan") {
+        if (!spuCfgPlanFormulaActive(cfg, it)) return out;
+        const expr = (cfg && cfg.plan_formula_expr) || (it && it.plan_formula_expr) || [];
+        expr.forEach(function (tok) { pushTok(tok, "plan"); });
+        return out;
+    }
+    /* fact */
+    const fexpr = (cfg && cfg.formula_expr) || (it && it.formula_expr) || [];
+    fexpr.forEach(function (tok) { pushTok(tok, "fact"); });
+    ((cfg && cfg.sources) || (it && it.sources) || []).forEach(function (s) {
+        if (!s) return;
+        if (s.source_type === "spu_indicator" || s.source_type === "finance" || s.source_type === "manual") {
+            if (s.source_indicator_id) {
+                out.push(spuDepNodeKey(s.source_indicator_id, "fact", parsed.woff));
+            }
         }
+    });
+    if (it && it.calc_left_id) out.push(spuDepNodeKey(it.calc_left_id, "fact", parsed.woff));
+    if (it && it.calc_right_id) out.push(spuDepNodeKey(it.calc_right_id, "fact", parsed.woff));
+    return out;
+}
+
+/**
+ * Проверка цикла. side: "plan" | "fact" | "both" (по умолчанию both).
+ * Граф размечен plan/fact и week_offset — как runtime id|kind|week.
+ * Версии формул берутся на дату опорной недели + week_offset (паритет с spuVersionAt).
+ */
+function spuWouldCycle(indicatorId, nextCfg, side) {
+    if (!indicatorId) return false;
+    const mode = side === "plan" || side === "fact" || side === "both" ? side : "both";
+    const list = (appData.management && appData.management.indicators) || [];
+    const byId = {};
+    list.forEach(function (x) {
+        if (x && x.indicator_id) byId[x.indicator_id] = x;
+    });
+    let anchorDay = "";
+    try {
+        if (typeof mgmtPeriodRange === "function") {
+            const r = mgmtPeriodRange();
+            anchorDay = (r && (r.from || r.to)) || "";
+        }
+    } catch (eAnchor) {}
+    if (!anchorDay && typeof todayIsoDate === "function") {
+        try { anchorDay = todayIsoDate(); } catch (eToday) { anchorDay = ""; }
+    }
+    const resolveIt = function (id) {
+        if (String(id) === String(indicatorId) && nextCfg && nextCfg._draftIt) return nextCfg._draftIt;
+        return byId[id] || (String(id) === String(indicatorId)
+            ? {
+                indicator_id: indicatorId,
+                calc_left_id: nextCfg && nextCfg.calc_left_id,
+                calc_right_id: nextCfg && nextCfg.calc_right_id,
+                formula_expr: nextCfg && nextCfg.formula_expr,
+                plan_formula_expr: nextCfg && nextCfg.plan_formula_expr,
+                plan_calc_mode: nextCfg && nextCfg.plan_calc_mode,
+                sources: nextCfg && nextCfg.sources
+            }
+            : null);
+    };
+    const resolveCfg = function (id, it, woff) {
+        const off = Number(woff) || 0;
+        /* Черновик сохранения — только для текущей недели редактируемого показателя. */
+        if (String(id) === String(indicatorId) && nextCfg && off === 0) return nextCfg;
+        let day = anchorDay;
+        if (off && day && typeof isoAddDays === "function") {
+            day = isoAddDays(day, off * 7);
+        }
+        if (it && day && typeof spuVersionAt === "function") {
+            const v = spuVersionAt(it, day);
+            if (v && typeof spuConfigRecordFromVersion === "function") {
+                return spuConfigRecordFromVersion(it, v);
+            }
+        }
+        if (off === 0 && typeof spuActiveConfig === "function" && it) {
+            return spuActiveConfig(it);
+        }
+        return {
+            sources: (it && it.sources) || [],
+            formula_expr: (it && it.formula_expr) || [],
+            plan_formula_expr: (it && it.plan_formula_expr) || [],
+            plan_calc_mode: (it && it.plan_calc_mode) || "manual"
+        };
+    };
+    const maxDepth = typeof SPU_FORMULA_EVAL_MAX_DEPTH === "number" ? SPU_FORMULA_EVAL_MAX_DEPTH : 16;
+    /* 0 white / 1 gray (в стеке) / 2 black (закрыт) — иначе глобальный seen пропускает циклы. */
+    const color = {};
+    function walk(node, depth) {
+        if (!node) return false;
+        if (color[node] === 1) return true;
+        if (color[node] === 2) return false;
+        if (depth > maxDepth) return false;
+        color[node] = 1;
+        const next = spuDepEdgesFromNode(node, resolveIt, resolveCfg);
+        for (let i = 0; i < next.length; i++) {
+            if (walk(next[i], depth + 1)) return true;
+        }
+        color[node] = 2;
         return false;
     }
-    return walk(indicatorId, []);
+    const starts = [];
+    if (mode === "plan" || mode === "both") starts.push(spuDepNodeKey(indicatorId, "plan", 0));
+    if (mode === "fact" || mode === "both") starts.push(spuDepNodeKey(indicatorId, "fact", 0));
+    for (let s = 0; s < starts.length; s++) {
+        if (walk(starts[s], 0)) return true;
+    }
+    return false;
 }
 
 /**
@@ -50556,13 +50693,15 @@ function saveSpuOrgIndicator(opts) {
         }
         sources = spuFormulaSourcesFromExpr(tokens);
         spuIndFormSources = sources;
+        if (typeof spuIndSyncPlanCalcOnFromDom === "function") spuIndSyncPlanCalcOnFromDom();
         if (spuWouldCycle(editId || "mind_new", {
             sources: sources,
             formula_expr: tokens,
             plan_formula_expr: spuIndFormPlanFormula || [],
+            plan_calc_mode: spuIndFormPlanCalcOn ? "formula" : "manual",
             aggregation_type: "formula",
             calc_mode: "formula"
-        })) {
+        }, "both")) {
             toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
@@ -50617,9 +50756,10 @@ function saveSpuOrgIndicator(opts) {
             sources: sources,
             formula_expr: spuIndFormFormula,
             plan_formula_expr: spuIndFormPlanFormula || [],
+            plan_calc_mode: spuIndFormPlanCalcOn ? "formula" : "manual",
             aggregation_type: calc,
             calc_mode: calc
-        })) {
+        }, "both")) {
             toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
@@ -50729,9 +50869,10 @@ function saveSpuOrgIndicator(opts) {
             sources: [],
             formula_expr: [],
             plan_formula_expr: spuIndFormPlanFormula || [],
+            plan_calc_mode: spuIndFormPlanCalcOn ? "formula" : "manual",
             aggregation_type: "none",
             calc_mode: "none"
-        })) {
+        }, spuIndFormPlanCalcOn ? "plan" : "both")) {
             toast("Нельзя сохранить формулу: обнаружена циклическая зависимость.", "error");
             return;
         }
