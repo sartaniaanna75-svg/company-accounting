@@ -12493,6 +12493,61 @@ class WtSpuFormulaPlanFactWeekMarkerTests(unittest.TestCase):
         self.assertIn("wt_spu_plan_formula_chip_default_harness: OK", proc.stdout)
 
 
+class WtSpuPlanFormulaChainMarkerTests(unittest.TestCase):
+    """Этап 1: вложенные formulа-планы — ключ id|kind|weekStartIso, без ложного цикла."""
+
+    def _src(self):
+        return Path(__file__).resolve().parents[1].joinpath("app.html").read_text(encoding="utf-8")
+
+    def test_client_stack_key_and_single_push(self):
+        src = self._src()
+        self.assertIn("function spuFormulaEvalNodeKey(", src)
+        self.assertIn("function spuFormulaEvalWeekStartIso(", src)
+        self.assertIn("function spuFormulaEvalTrailDepth(", src)
+        self.assertIn("SPU_FORMULA_EVAL_MAX_DEPTH", src)
+        read_fn = src[
+            src.find("function spuReadFormulaIndOperand(")
+            : src.find("function setSpuStructureTab(")
+        ]
+        self.assertIn("spuFormulaEvalNodeKey(id, kind, targetFrom)", read_fn)
+        # Plan: без пред-push — mgmtIndicatorPlan(other, trail)
+        self.assertIn("mgmtIndicatorPlan(other, trail)", read_fn)
+        self.assertNotIn("mgmtIndicatorPlan(other, nextStack)", read_fn)
+        plan_fn = src[
+            src.find("function mgmtIndicatorPlan(")
+            : src.find("function mgmtSpuOrgOptionsHtml(")
+        ]
+        self.assertIn('spuFormulaEvalNodeKey(it.indicator_id, "plan", weekIso)', plan_fn)
+        self.assertIn("SPU_FORMULA_EVAL_MAX_DEPTH", plan_fn)
+        self.assertNotIn('"|plan|0"', plan_fn)
+        self.assertNotIn("setMgmtPlanValue(", plan_fn)
+        check_fn = src[
+            src.find("function spuIndFormulaCheckForPeriod(")
+            : src.find("function spuIndExtraNodesCheckboxesHtml(")
+        ]
+        self.assertIn("spuFormulaEvalMemo = {}", check_fn)
+
+    def test_harness_plan_formula_chain(self):
+        harness = Path(__file__).resolve().parent.joinpath(
+            "wt_spu_plan_formula_chain_harness.js"
+        )
+        self.assertTrue(harness.is_file(), harness)
+        node = os.environ.get("WT_NODE") or "node"
+        try:
+            proc = subprocess.run(
+                [node, str(harness)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except FileNotFoundError:
+            self.skipTest("node недоступен для harness plan formula chain")
+        self.assertEqual(proc.returncode, 0, proc.stdout + "\n" + proc.stderr)
+        self.assertIn("wt_spu_plan_formula_chain_harness: OK", proc.stdout)
+        self.assertIn("3119705", proc.stdout)
+
+
 class WtSalesCallActorsMarkerTests(unittest.TestCase):
     """Маркеры замещения ОПТ: store вне facts, узкий OPS, select на всех money sales_opt, unlock при cover."""
 
@@ -13150,9 +13205,9 @@ class WtSpuWorktimePlanFormulaMarkerTests(unittest.TestCase):
             "Формула рассчитывает только план. Факт поступает из метрики WorkTime",
             src,
         )
-        start = src.find("function saveSpuOrgIndicator()")
+        start = src.find("function saveSpuOrgIndicator(")
         self.assertGreaterEqual(start, 0)
-        save_fn = src[start : start + 22000]
+        save_fn = src[start : start + 45000]
         self.assertIn('kind === "worktime"', save_fn)
         self.assertIn("allowPlanFormula", save_fn)
         self.assertIn("planFormula: it.plan_formula_expr || []", save_fn)
@@ -13279,10 +13334,9 @@ class WtSpuFormulaEffectiveFromMarkerTests(unittest.TestCase):
         self.assertIn("spuIndFormOpenedCfg", open_fn)
         # Не хардкодить только 2026-11-05 как единственный дефолт open
         self.assertIn("spuIndDefaultEffectiveFromIso", open_fn)
-        save_fn = src[
-            src.find("function saveSpuOrgIndicator()")
-            : src.find("function saveSpuOrgIndicator()") + 28000
-        ]
+        _save_at = src.find("function saveSpuOrgIndicator(")
+        self.assertGreaterEqual(_save_at, 0)
+        save_fn = src[_save_at : _save_at + 45000]
         self.assertIn("spuIndAskLaterVersionsAction(", save_fn)
         self.assertIn("spuIndPreflightPropagateSideToLater(", save_fn)
         self.assertIn("spuIndPreflightPropagatePlanToLater(", save_fn)

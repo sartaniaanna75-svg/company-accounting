@@ -44618,8 +44618,10 @@ let spuIndFormFormulaEffectiveFrom = "";
 let spuIndFormCheckWeekFrom = "";
 /** Снимок активной config при open (fact/plan) — для factDirty/planDirty. */
 let spuIndFormOpenedCfg = null;
-/** Memo одного прохода План–факт: ключ → число|null. */
+/** Memo одного прохода План–факт / проверки формулы: ключ id|kind|weekStartIso → число|null. */
 let spuFormulaEvalMemo = null;
+/** Макс. глубина вложенных plan/fact-резолвов (защита от бесконечного prev-week). */
+const SPU_FORMULA_EVAL_MAX_DEPTH = 16;
 let spuIndListTab = "all";
 let spuIndListFilter = { q: "", dept: "", kind: "" };
 let spuIndSelected = {};
@@ -45925,6 +45927,37 @@ function spuFormulaOperandWeekFrom(anchorFrom, weekOffset) {
     return isoAddDays(from, off * 7);
 }
 
+/** Абсолютный старт плановой недели (чт) для ключа цикла/memo. */
+function spuFormulaEvalWeekStartIso(weekOffset) {
+    let anchorFrom = "";
+    try {
+        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
+        anchorFrom = (r && r.from) || "";
+    } catch (errA) { anchorFrom = ""; }
+    const targetFrom = spuFormulaOperandWeekFrom(anchorFrom, weekOffset || 0);
+    if (!targetFrom) return "";
+    if (typeof mgmtSpuReportingWeek === "function") {
+        try {
+            const w = mgmtSpuReportingWeek(targetFrom);
+            if (w && w.start_date) return String(w.start_date);
+        } catch (errW) {}
+    }
+    return String(targetFrom);
+}
+
+/** Ключ узла графа формулы: id|kind|weekStartIso (kind = plan|fact). */
+function spuFormulaEvalNodeKey(indicatorId, kind, weekStartIso) {
+    return String(indicatorId || "") + "|" + String(kind || "fact") + "|" + String(weekStartIso || "");
+}
+
+function spuFormulaEvalTrailDepth(trail) {
+    let n = 0;
+    (trail || []).forEach(function (k) {
+        if (typeof k === "string" && k.indexOf("|") !== -1) n += 1;
+    });
+    return n;
+}
+
 function spuFormulaEvalMemoGet(key) {
     if (!spuFormulaEvalMemo || typeof spuFormulaEvalMemo !== "object") return undefined;
     return Object.prototype.hasOwnProperty.call(spuFormulaEvalMemo, key) ? spuFormulaEvalMemo[key] : undefined;
@@ -45938,6 +45971,7 @@ function spuFormulaEvalMemoSet(key, val) {
 /**
  * Чтение операнда ind с value_kind / week_offset относительно текущего якоря UI.
  * asPlanDefault — для токенов без kind при старом вызове asPlan.
+ * Plan: ключ в stack добавляет mgmtIndicatorPlan (без двойного push).
  */
 function spuReadFormulaIndOperand(selfIt, tok, stack, asPlanDefault) {
     const n = spuFormulaIndTokenNormalize(tok);
@@ -45951,28 +45985,28 @@ function spuReadFormulaIndOperand(selfIt, tok, stack, asPlanDefault) {
     let kind = n.value_kind;
     if (tok && tok.value_kind == null && tok.week_offset == null && asPlanDefault) kind = "plan";
     const off = n.week_offset;
-    const stackKey = id + "|" + kind + "|" + off;
     const trail = stack || [];
-    if (trail.indexOf(stackKey) !== -1 || trail.indexOf(id) !== -1 && kind === "fact" && off === 0) {
-        return null;
-    }
-    const nextStack = trail.concat([stackKey]);
-    let anchorFrom = "";
-    try {
-        const r = typeof mgmtPeriodRange === "function" ? mgmtPeriodRange() : {};
-        anchorFrom = (r && r.from) || "";
-    } catch (errA) { anchorFrom = ""; }
-    const targetFrom = spuFormulaOperandWeekFrom(anchorFrom, off);
-    const memoKey = stackKey + "|" + targetFrom;
+    if (spuFormulaEvalTrailDepth(trail) >= SPU_FORMULA_EVAL_MAX_DEPTH) return null;
+    // Legacy: голый id в trail при fact текущей недели (mgmtReadIndicator).
+    if (kind === "fact" && off === 0 && trail.indexOf(id) !== -1) return null;
+
+    const targetFrom = spuFormulaEvalWeekStartIso(off);
+    const stackKey = spuFormulaEvalNodeKey(id, kind, targetFrom);
+    if (trail.indexOf(stackKey) !== -1) return null;
+
+    const memoKey = stackKey;
     const hit = spuFormulaEvalMemoGet(memoKey);
     if (hit !== undefined) return hit;
 
     function readInWeek() {
         if (kind === "plan") {
-            const p = typeof mgmtIndicatorPlan === "function" ? mgmtIndicatorPlan(other, nextStack) : null;
+            // Не пушим stackKey здесь — mgmtIndicatorPlan добавит id|plan|weekStartIso один раз.
+            const p = typeof mgmtIndicatorPlan === "function" ? mgmtIndicatorPlan(other, trail) : null;
             return p == null || !Number.isFinite(Number(p)) ? null : Number(p);
         }
-        const read = mgmtReadIndicator(other, nextStack);
+        // Fact: фиксируем узел в trail + голый id для совместимости с mgmtReadIndicator.
+        const factTrail = trail.concat([stackKey, id]);
+        const read = mgmtReadIndicator(other, factTrail);
         return read && read.value != null && Number.isFinite(Number(read.value)) ? Number(read.value) : null;
     }
 
@@ -47901,7 +47935,16 @@ function mgmtIndicatorPlan(it, stack) {
     // Формульный план: только отображение, store не пишем и не чистим.
     if (planMode === "formula" && Array.isArray(planExpr) && planExpr.length) {
         const trail = stack || [];
-        const selfKey = String(it.indicator_id || "") + "|plan|0";
+        if (typeof spuFormulaEvalTrailDepth === "function"
+            && spuFormulaEvalTrailDepth(trail) >= SPU_FORMULA_EVAL_MAX_DEPTH) {
+            return null;
+        }
+        const weekIso = typeof spuFormulaEvalWeekStartIso === "function"
+            ? spuFormulaEvalWeekStartIso(0)
+            : "";
+        const selfKey = typeof spuFormulaEvalNodeKey === "function"
+            ? spuFormulaEvalNodeKey(it.indicator_id, "plan", weekIso)
+            : (String(it.indicator_id || "") + "|plan|" + weekIso);
         if (trail.indexOf(selfKey) !== -1) return null;
         const value = spuEvalFormula(it, planExpr, trail.concat([selfKey]), true);
         if (value != null && Number.isFinite(Number(value))) return Number(value);
@@ -49662,6 +49705,19 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom, asPlan) {
     const rows = [];
     let missing = false;
     const usePlan = !!asPlan;
+    let draftWeekIso = "";
+    try {
+        const dw = mgmtSpuReportingWeek(weekFrom);
+        draftWeekIso = (dw && dw.start_date) || String(weekFrom || "");
+    } catch (errDW) { draftWeekIso = String(weekFrom || ""); }
+    const startTrail = [];
+    if (draft && draft.indicator_id) {
+        if (usePlan && typeof spuFormulaEvalNodeKey === "function") {
+            startTrail.push(spuFormulaEvalNodeKey(draft.indicator_id, "plan", draftWeekIso));
+        } else {
+            startTrail.push(draft.indicator_id);
+        }
+    }
     (tokens || []).forEach(function (tok) {
         if (!tok) return;
         if (tok.t === "op" || tok.t === "lp" || tok.t === "rp") {
@@ -49680,6 +49736,7 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom, asPlan) {
             const srcWeekFrom = spuFormulaOperandWeekFrom(weekFrom, weekOff);
             let srcWeek = null;
             try { srcWeek = mgmtSpuReportingWeek(srcWeekFrom); } catch (errSW) { srcWeek = null; }
+            const srcWeekIso = (srcWeek && srcWeek.start_date) || String(srcWeekFrom || "");
             const srcWeekLabel = srcWeek
                 ? ((typeof mgmtFmtRu === "function"
                     ? (mgmtFmtRu(srcWeek.start_date) + "–" + mgmtFmtRu(srcWeek.end_date))
@@ -49715,7 +49772,21 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom, asPlan) {
                 });
                 return;
             }
-            const val = spuReadFormulaIndOperand(draft, tok, [draft && draft.indicator_id].filter(Boolean), usePlan);
+            const nodeKey = typeof spuFormulaEvalNodeKey === "function"
+                ? spuFormulaEvalNodeKey(id, valueKind, srcWeekIso)
+                : (id + "|" + valueKind + "|" + srcWeekIso);
+            if (startTrail.indexOf(nodeKey) !== -1) {
+                missing = true;
+                rows.push({
+                    kind: "ind", id: id, name: other.name || id, value: null,
+                    value_kind: valueKind, week_offset: weekOff, week_label: srcWeekLabel,
+                    reason: valueKind === "plan"
+                        ? "Цикл зависимостей плана."
+                        : "Цикл зависимостей факта."
+                });
+                return;
+            }
+            const val = spuReadFormulaIndOperand(draft, tok, startTrail, usePlan);
             let reason = "";
             if (val == null) {
                 missing = true;
@@ -49735,7 +49806,7 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom, asPlan) {
             });
         }
     });
-    const result = spuEvalFormula(draft, tokens, [], usePlan);
+    const result = spuEvalFormula(draft, tokens, startTrail.slice(), usePlan);
     let week = null;
     try { week = mgmtSpuReportingWeek(weekFrom); } catch (errW) { week = null; }
     return {
@@ -49842,6 +49913,7 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom, which) {
     const weekEl = document.getElementById("spuIndFormulaCheckWeek");
     const weekFrom = String(forcedWeekFrom || (weekEl && weekEl.value) || spuIndFormCheckWeekFrom || "2026-11-05");
     spuIndFormCheckWeekFrom = weekFrom;
+    spuFormulaEvalMemo = {};
     const effEl = document.getElementById("spuIndFormulaEffectiveFrom");
     if (effEl && effEl.value) spuIndFormFormulaEffectiveFrom = effEl.value;
     if (typeof spuIndSyncPlanCalcOnFromDom === "function") spuIndSyncPlanCalcOnFromDom();
