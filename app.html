@@ -838,14 +838,31 @@
         }
         .pf-dept .pf-toggle { font-size: 12px; }
         .pf-in {
-            width: 68px;
+            width: 88px;
             max-width: 100%;
             padding: 1px 4px;
             font-size: 11px;
             text-align: right;
             border: 1px solid #dadce0;
             background: #fff;
+            box-sizing: border-box;
         }
+        .pf-view {
+            display: block;
+            width: 100%;
+            min-height: 18px;
+            padding: 1px 4px;
+            font-size: 11px;
+            text-align: right;
+            border: 1px solid transparent;
+            background: transparent;
+            cursor: text;
+            color: inherit;
+            font-family: inherit;
+            box-sizing: border-box;
+        }
+        .pf-view:hover { border-color: #dadce0; background: #fff; }
+        .pf-view.pf-na { color: #94a3b8; }
         .pf-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #64748b; margin: 8px 0 0; }
         .pf-legend i { display: inline-block; width: 12px; height: 12px; border: 1px solid #94a3b8; vertical-align: -2px; margin-right: 4px; }
         /* Блоки недель: мягкий фон шапки + чёткая левая граница */
@@ -53175,6 +53192,108 @@ function mgmtFormatValue(it, value, status) {
     return mgmtFormatDisplayNumber(n, 2);
 }
 
+/** Raw string for PF edit (full precision from source data; not display-rounded). */
+function mgmtPfRawEditString(val) {
+    if (val == null || val === "") return "";
+    return String(val);
+}
+
+/**
+ * Parse PF / related cell input. Does NOT strip the minus sign.
+ * Unicode minus → ASCII "-". Empty ≠ zero. Rejects NaN/Infinity/junk.
+ * Returns: { ok, empty, num, raw } or { ok:false, error }.
+ */
+function mgmtParsePfCellInput(str) {
+    if (str == null) return { ok: true, empty: true, num: null, raw: "" };
+    let s = String(str).trim();
+    if (s === "") return { ok: true, empty: true, num: null, raw: "" };
+    s = s.replace(/\u2212/g, "-").replace(/\u2013/g, "-").replace(/\u2014/g, "-");
+    s = s.replace(/[\u00A0\u202F\u2007\s]/g, "");
+    s = s.replace(/\u20BD/g, "").replace(/₽/g, "").replace(/%/g, "");
+    s = s.replace(/руб\.?/gi, "");
+    if (!s || s === "-" || s === "+" || s === "." || s === ",") {
+        return { ok: false, error: "Некорректное число" };
+    }
+    const lastComma = s.lastIndexOf(",");
+    const lastDot = s.lastIndexOf(".");
+    if (lastComma !== -1 && lastDot !== -1) {
+        if (lastComma > lastDot) {
+            s = s.replace(/\./g, "").replace(",", ".");
+        } else {
+            s = s.replace(/,/g, "");
+        }
+    } else if (lastComma !== -1) {
+        s = s.replace(",", ".");
+    }
+    if (!/^[+-]?\d+(\.\d+)?$/.test(s)) {
+        return { ok: false, error: "Некорректное число" };
+    }
+    const n = Number(s);
+    if (!Number.isFinite(n)) {
+        return { ok: false, error: "Некорректное число" };
+    }
+    return { ok: true, empty: false, num: n, raw: s };
+}
+
+/** Exact equality of PF cell values (empty≠0; no float epsilon). */
+function mgmtPfCellValuesEqual(origVal, parsed) {
+    const origEmpty = origVal == null || origVal === "";
+    if (!parsed || !parsed.ok) return false;
+    if (parsed.empty) return origEmpty;
+    if (origEmpty) return false;
+    const o = Number(origVal);
+    if (!Number.isFinite(o)) return false;
+    return o === parsed.num;
+}
+
+/** Unit for PF breakdown source — never inherit parent unit blindly. */
+function mgmtPfUnitForSource(src, parent) {
+    if (!src) return "number";
+    const st = String(src.source_type || "");
+    if (st === "finance" || st === "spu_indicator" || st === "manual") {
+        const oid = src.source_indicator_id;
+        if (!oid) return "number";
+        const other = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === oid;
+        });
+        if (other && other.unit) return String(other.unit);
+        return "number";
+    }
+    if (st === "timesheet") {
+        return src.source_timesheet_agg === "days" ? "days" : "people";
+    }
+    if (st === "sales_plan") {
+        return src.source_sales_plan_field === "rate" ? "percent" : "money";
+    }
+    if (st === "worktime_metric") {
+        const mid = typeof canonicalMetricId === "function"
+            ? canonicalMetricId(src.source_metric_id)
+            : String(src.source_metric_id || "");
+        if (mid) {
+            let found = "";
+            ((appData.management && appData.management.indicators) || []).forEach(function (x) {
+                if (found || !x || !x.unit) return;
+                if (x.indicator_id === (parent && parent.indicator_id)) return;
+                const xMid = typeof canonicalMetricId === "function"
+                    ? canonicalMetricId(x.source_metric_id)
+                    : String(x.source_metric_id || "");
+                if (xMid === mid && x.source_type === "worktime_metric") found = String(x.unit);
+            });
+            if (found) return found;
+            try {
+                if (typeof shopMetricCatalogById === "function") {
+                    const m = shopMetricCatalogById(mid);
+                    if (m && m.fill_type === "money") return "money";
+                    if (m && (m.fill_type === "number" || m.fill_type === "count")) return "number";
+                }
+            } catch (errU) {}
+        }
+        return "number";
+    }
+    if (st === "staff_directory") return "people";
+    return "number";
+}
+
 function peekTimesheetDay(w, employeeId, day, month) {
     const rec = w && w.timesheet && w.timesheet[month]
         && w.timesheet[month][employeeId]
@@ -58815,6 +58934,8 @@ function mgmtDeltaIsGood(it, delta) {
     return delta > 0;
 }
 
+var mgmtPfEditState = null;
+
 function mgmtPfNumCell(it, weekFrom, kind, pack, canEdit, edgeCls) {
     const auto = it.source_type !== "manual" && it.source_type !== "one_c_future";
     const canPlan = canEdit && kind === "plan";
@@ -58822,16 +58943,178 @@ function mgmtPfNumCell(it, weekFrom, kind, pack, canEdit, edgeCls) {
     const val = kind === "plan" ? pack.plan : pack.fact;
     const title = auto && kind === "fact" ? ("Источник: " + mgmtSourcePath(it)) : "";
     const edge = edgeCls ? (" " + edgeCls) : "";
-    if (canPlan || canFact) {
-        const fn = kind === "plan" ? "setMgmtPfPlan" : "setMgmtPfFact";
-        return '<td class="pf-n' + edge + '"><input class="pf-in" value="' + escapeAttribute(val == null ? "" : String(val)) + '"'
-            + ' onchange="' + fn + "('" + it.indicator_id + "','" + weekFrom + "',this.value)\""
-            + " onclick=\"event.stopPropagation()\"></td>";
-    }
     const empty = val == null || val === "";
+    const display = empty ? "—" : mgmtFormatValue(it, val, pack.read && pack.read.status);
+    if (canPlan || canFact) {
+        const saveKind = kind === "plan" ? "plan" : "fact";
+        return '<td class="pf-n' + edge + '">'
+            + '<button type="button" class="pf-view' + (empty ? " pf-na" : "") + '"'
+            + ' data-pf-id="' + escapeAttribute(it.indicator_id) + '"'
+            + ' data-pf-week="' + escapeAttribute(weekFrom) + '"'
+            + ' data-pf-kind="' + escapeAttribute(saveKind) + '"'
+            + ' data-pf-raw="' + escapeAttribute(mgmtPfRawEditString(val)) + '"'
+            + ' title="' + escapeAttribute(title || "Редактировать") + '"'
+            + ' onclick="event.stopPropagation();mgmtPfBeginEdit(this)">'
+            + escapeHtml(display)
+            + "</button></td>";
+    }
     return '<td class="pf-n' + (empty ? " pf-na" : "") + edge + '"' + (title ? ' title="' + escapeAttribute(title) + '"' : "") + ">"
-        + escapeHtml(empty ? "—" : mgmtFormatValue(it, val, pack.read && pack.read.status))
+        + escapeHtml(display)
         + "</td>";
+}
+
+function mgmtPfBeginEdit(btn) {
+    if (!btn || mgmtPfEditState) return;
+    if (!canEditMgmtIndicators()) return;
+    const td = btn.parentNode;
+    if (!td) return;
+    const id = btn.getAttribute("data-pf-id") || "";
+    const week = btn.getAttribute("data-pf-week") || "";
+    const kind = btn.getAttribute("data-pf-kind") || "plan";
+    const raw = btn.getAttribute("data-pf-raw");
+    const origRaw = raw == null ? "" : String(raw);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "pf-in";
+    input.value = origRaw;
+    input.setAttribute("data-pf-id", id);
+    input.setAttribute("data-pf-week", week);
+    input.setAttribute("data-pf-kind", kind);
+    input.setAttribute("data-pf-orig", origRaw);
+    const inputTab = btn.getAttribute("data-pf-input-tab") === "1";
+    if (inputTab) input.setAttribute("data-pf-input-tab", "1");
+    mgmtPfEditState = {
+        input: input,
+        btn: btn,
+        td: td,
+        id: id,
+        week: week,
+        kind: kind,
+        origRaw: origRaw,
+        inputTab: inputTab,
+        done: false,
+        saving: false
+    };
+    td.replaceChild(input, btn);
+    input.addEventListener("keydown", mgmtPfEditKeydown);
+    input.addEventListener("blur", mgmtPfEditBlur);
+    try { input.focus(); input.select(); } catch (errF) {}
+}
+
+function mgmtPfEditKeydown(ev) {
+    if (!ev || !mgmtPfEditState) return;
+    if (ev.key === "Escape" || ev.keyCode === 27) {
+        ev.preventDefault();
+        mgmtPfCancelEdit();
+        return;
+    }
+    if (ev.key === "Enter" || ev.keyCode === 13) {
+        ev.preventDefault();
+        mgmtPfCommitEdit({ fromEnter: true });
+    }
+}
+
+function mgmtPfEditBlur() {
+    if (!mgmtPfEditState || mgmtPfEditState.done) return;
+    mgmtPfCommitEdit({ fromBlur: true });
+}
+
+function mgmtPfRestoreView(displayText, empty, origRaw) {
+    const st = mgmtPfEditState;
+    if (!st || !st.td) return;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "pf-view" + (empty ? " pf-na" : "");
+    btn.setAttribute("data-pf-id", st.id);
+    btn.setAttribute("data-pf-week", st.week);
+    btn.setAttribute("data-pf-kind", st.kind);
+    btn.setAttribute("data-pf-raw", origRaw == null ? "" : String(origRaw));
+    if (st.inputTab) btn.setAttribute("data-pf-input-tab", "1");
+    btn.title = "Редактировать";
+    btn.onclick = function (e) {
+        if (e) e.stopPropagation();
+        mgmtPfBeginEdit(btn);
+    };
+    btn.textContent = displayText;
+    if (st.input && st.input.parentNode === st.td) st.td.replaceChild(btn, st.input);
+    else {
+        st.td.innerHTML = "";
+        st.td.appendChild(btn);
+    }
+}
+
+function mgmtPfCancelEdit() {
+    const st = mgmtPfEditState;
+    if (!st || st.done) return;
+    st.done = true;
+    const it = ((appData.management && appData.management.indicators) || []).find(function (x) {
+        return x && x.indicator_id === st.id;
+    });
+    const origEmpty = st.origRaw === "";
+    let display = "—";
+    if (!origEmpty && it) {
+        display = mgmtFormatValue(it, st.origRaw === "" ? null : st.origRaw, "");
+    } else if (!origEmpty) {
+        display = st.origRaw;
+    }
+    mgmtPfRestoreView(display, origEmpty, st.origRaw);
+    mgmtPfEditState = null;
+}
+
+function mgmtPfCommitEdit(opts) {
+    opts = opts || {};
+    const st = mgmtPfEditState;
+    if (!st || st.done || st.saving) return;
+    const input = st.input;
+    const typed = input ? input.value : "";
+    const parsed = mgmtParsePfCellInput(typed);
+    if (!parsed.ok) {
+        st.done = true;
+        if (typeof toast === "function") toast(parsed.error || "Некорректное число", "error");
+        const itBad = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === st.id;
+        });
+        const origEmpty = st.origRaw === "";
+        let display = "—";
+        if (!origEmpty && itBad) display = mgmtFormatValue(itBad, st.origRaw, "");
+        else if (!origEmpty) display = st.origRaw;
+        mgmtPfRestoreView(display, origEmpty, st.origRaw);
+        mgmtPfEditState = null;
+        return;
+    }
+    const origVal = st.origRaw === "" ? null : st.origRaw;
+    if (mgmtPfCellValuesEqual(origVal, parsed)) {
+        st.done = true;
+        const itSame = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === st.id;
+        });
+        const origEmpty = st.origRaw === "";
+        let display = "—";
+        if (!origEmpty && itSame) display = mgmtFormatValue(itSame, st.origRaw, "");
+        else if (!origEmpty) display = st.origRaw;
+        mgmtPfRestoreView(display, origEmpty, st.origRaw);
+        mgmtPfEditState = null;
+        return;
+    }
+    st.done = true;
+    st.saving = true;
+    const saveRaw = parsed.empty ? "" : parsed.raw;
+    const id = st.id;
+    const week = st.week;
+    const kind = st.kind;
+    const itSave = ((appData.management && appData.management.indicators) || []).find(function (x) {
+        return x && x.indicator_id === id;
+    });
+    const disp = parsed.empty ? "—" : (itSave ? mgmtFormatValue(itSave, parsed.num, "") : saveRaw);
+    const inputTab = !!st.inputTab;
+    mgmtPfRestoreView(disp, parsed.empty, saveRaw);
+    mgmtPfEditState = null;
+    if (inputTab) {
+        setMgmtManualFact(id, saveRaw, { paint: function () { renderManagement(); } });
+        return;
+    }
+    if (kind === "plan") setMgmtPfPlan(id, week, saveRaw);
+    else setMgmtPfFact(id, week, saveRaw);
 }
 
 function setMgmtPfPlan(indicatorId, fromIso, value) {
@@ -58977,8 +59260,8 @@ function renderMgmtPlanFactHtml() {
                 html += '<tr class="pf-break-row">'
                     + '<td class="pf-left pf-sticky-0"></td><td class="pf-left pf-sticky-1"></td>'
                     + '<td class="pf-left pf-sticky-2 wrap pf-break-name">' + escapeHtml(spuSourceShortLabel(s)) + "</td>"
-                    + '<td class="pf-edge-w1"></td><td class="pf-n">' + escapeHtml(mgmtFormatValue(it, fa && fa.value, fa && fa.status)) + "</td><td></td>"
-                    + '<td class="pf-edge-w2"></td><td class="pf-n">' + escapeHtml(mgmtFormatValue(it, fb && fb.value, fb && fb.status)) + "</td><td></td>"
+                    + '<td class="pf-edge-w1"></td><td class="pf-n">' + escapeHtml(mgmtFormatValue({ unit: mgmtPfUnitForSource(s, it) }, fa && fa.value, fa && fa.status)) + "</td><td></td>"
+                    + '<td class="pf-edge-w2"></td><td class="pf-n">' + escapeHtml(mgmtFormatValue({ unit: mgmtPfUnitForSource(s, it) }, fb && fb.value, fb && fb.status)) + "</td><td></td>"
                     + '<td class="pf-edge-cmp"></td><td></td><td></td></tr>';
             });
         }
@@ -59081,17 +59364,29 @@ function openMgmtPlanFactCell(indicatorId, fromIso) {
         const pct = mgmtCompletionPct(it, fact, plan);
         return { read: read, plan: plan, fact: fact, pct: pct };
     });
+    const planRaw = mgmtPfRawEditString(pack.plan);
+    const factRaw = mgmtPfRawEditString(pack.fact);
     const html = "<h3>" + escapeHtml(it.name) + "</h3>"
         + '<div class="mgmt-src">' + escapeHtml(week ? (mgmtFmtRu(week.from) + " – " + mgmtFmtRu(week.to)) : fromIso) + "</div>"
         + '<div class="mgmt-src">' + escapeHtml(mgmtSourcePath(it)) + "</div>"
         + '<div class="form-group"><label>План</label>'
         + (canPlan
-            ? '<input id="pfCellPlan" class="mgmt-manual" style="width:100%" value="' + escapeAttribute(pack.plan == null ? "" : String(pack.plan)) + '">'
+            ? '<input id="pfCellPlan" class="mgmt-manual" style="width:100%"'
+                + ' data-pf-orig="' + escapeAttribute(planRaw) + '"'
+                + ' data-pf-unit="' + escapeAttribute(it.unit || "number") + '"'
+                + ' value="' + escapeAttribute(pack.plan == null || pack.plan === "" ? "" : mgmtFormatValue(it, pack.plan)) + '"'
+                + ' onfocus="mgmtPfModalFocusRaw(this)"'
+                + ' onkeydown="mgmtPfModalKeydown(event,this)">'
             : "<div>" + escapeHtml(pack.plan == null ? "—" : mgmtFormatValue(it, pack.plan)) + "</div>")
         + "</div>"
         + '<div class="form-group"><label>Факт</label>'
         + (canManual
-            ? '<input id="pfCellFact" class="mgmt-manual" style="width:100%" value="' + escapeAttribute(pack.fact == null ? "" : String(pack.fact)) + '">'
+            ? '<input id="pfCellFact" class="mgmt-manual" style="width:100%"'
+                + ' data-pf-orig="' + escapeAttribute(factRaw) + '"'
+                + ' data-pf-unit="' + escapeAttribute(it.unit || "number") + '"'
+                + ' value="' + escapeAttribute(pack.fact == null || pack.fact === "" ? "" : mgmtFormatValue(it, pack.fact, pack.read.status)) + '"'
+                + ' onfocus="mgmtPfModalFocusRaw(this)"'
+                + ' onkeydown="mgmtPfModalKeydown(event,this)">'
             : "<div>" + escapeHtml(mgmtFormatValue(it, pack.fact, pack.read.status)) + "</div>")
         + "</div>"
         + "<div>Выполнение: <strong>" + escapeHtml(mgmtFormatPct(pack.pct)) + "</strong></div>"
@@ -59103,6 +59398,27 @@ function openMgmtPlanFactCell(indicatorId, fromIso) {
     openMgmtModal(html);
 }
 
+function mgmtPfModalFocusRaw(el) {
+    if (!el || el.getAttribute("data-pf-editing") === "1") return;
+    el.setAttribute("data-pf-editing", "1");
+    const orig = el.getAttribute("data-pf-orig");
+    el.value = orig == null ? "" : String(orig);
+    try { el.select(); } catch (errS) {}
+}
+
+function mgmtPfModalKeydown(ev, el) {
+    if (!ev || !el) return;
+    if (ev.key === "Escape" || ev.keyCode === 27) {
+        ev.preventDefault();
+        const orig = el.getAttribute("data-pf-orig");
+        const unit = el.getAttribute("data-pf-unit") || "number";
+        el.setAttribute("data-pf-editing", "0");
+        if (orig == null || orig === "") el.value = "";
+        else el.value = mgmtFormatValue({ unit: unit }, orig, "");
+        try { el.blur(); } catch (errB) {}
+    }
+}
+
 function saveMgmtPlanFactCell(indicatorId, fromIso) {
     mgmtRunInThuWeek(fromIso, function () {
         const planEl = document.getElementById("pfCellPlan");
@@ -59110,20 +59426,48 @@ function saveMgmtPlanFactCell(indicatorId, fromIso) {
         let persistIndicators = false;
         let didPlan = false;
         let didFact = false;
+        let planSaveRaw = null;
+        let factSaveRaw = null;
+        const it = ((appData.management && appData.management.indicators) || []).find(function (x) {
+            return x && x.indicator_id === indicatorId;
+        });
         if (planEl && canEditMgmtIndicators()) {
-            const it = ((appData.management && appData.management.indicators) || []).find(function (x) {
-                return x && x.indicator_id === indicatorId;
-            });
-            if (it && String(planEl.value || "").trim()) {
-                if (it.plan_mode !== "spu") persistIndicators = true;
-                it.plan_mode = "spu";
+            if (planEl.getAttribute("data-pf-editing") !== "1") {
+                mgmtPfModalFocusRaw(planEl);
             }
-            setMgmtPlanValue(indicatorId, planEl.value, null, { persist: false });
-            didPlan = true;
+            const parsedPlan = mgmtParsePfCellInput(planEl.value);
+            if (!parsedPlan.ok) {
+                if (typeof toast === "function") toast(parsedPlan.error || "Некорректный план", "error");
+                return;
+            }
+            const origPlan = planEl.getAttribute("data-pf-orig");
+            const origPlanVal = origPlan === "" || origPlan == null ? null : origPlan;
+            if (!mgmtPfCellValuesEqual(origPlanVal, parsedPlan)) {
+                planSaveRaw = parsedPlan.empty ? "" : parsedPlan.raw;
+                if (it && planSaveRaw) {
+                    if (it.plan_mode !== "spu") persistIndicators = true;
+                    it.plan_mode = "spu";
+                }
+                setMgmtPlanValue(indicatorId, planSaveRaw, null, { persist: false });
+                didPlan = true;
+            }
         }
         if (factEl && canEditMgmtIndicators()) {
-            setMgmtManualFact(indicatorId, factEl.value, { persist: false });
-            didFact = true;
+            if (factEl.getAttribute("data-pf-editing") !== "1") {
+                mgmtPfModalFocusRaw(factEl);
+            }
+            const parsedFact = mgmtParsePfCellInput(factEl.value);
+            if (!parsedFact.ok) {
+                if (typeof toast === "function") toast(parsedFact.error || "Некорректный факт", "error");
+                return;
+            }
+            const origFact = factEl.getAttribute("data-pf-orig");
+            const origFactVal = origFact === "" || origFact == null ? null : origFact;
+            if (!mgmtPfCellValuesEqual(origFactVal, parsedFact)) {
+                factSaveRaw = parsedFact.empty ? "" : parsedFact.raw;
+                setMgmtManualFact(indicatorId, factSaveRaw, { persist: false });
+                didFact = true;
+            }
         }
         closeMgmtModal();
         const paint = function () { renderManagement(); };
@@ -59131,17 +59475,16 @@ function saveMgmtPlanFactCell(indicatorId, fromIso) {
             paint();
             return;
         }
-        const iid = indicatorId;
         let chain = Promise.resolve(true);
         if (didPlan) {
-            chain = setMgmtPlanValue(indicatorId, planEl.value, null, {
+            chain = setMgmtPlanValue(indicatorId, planSaveRaw, null, {
                 persistIndicators: persistIndicators
             });
         }
         if (didFact) {
             chain = Promise.resolve(chain).then(function (ok) {
                 if (didPlan && ok !== true) return false;
-                return setMgmtManualFact(indicatorId, factEl.value);
+                return setMgmtManualFact(indicatorId, factSaveRaw);
             });
         }
         return Promise.resolve(chain).then(function (ok) {
@@ -59412,8 +59755,17 @@ function renderMgmtIndicatorInputHtml() {
                 : "")
             + "</td><td>";
         if (editable) {
-            html += '<input class="mgmt-manual" value="' + escapeAttribute(val == null ? "" : String(val))
-                + '" onchange="setMgmtManualFact(\'' + it.indicator_id + "',this.value);renderManagement()\">";
+            const rawIn = mgmtPfRawEditString(val);
+            const emptyIn = val == null || val === "";
+            html += '<button type="button" class="pf-view' + (emptyIn ? " pf-na" : "") + '"'
+                + ' data-pf-id="' + escapeAttribute(it.indicator_id) + '"'
+                + ' data-pf-week=""'
+                + ' data-pf-kind="fact"'
+                + ' data-pf-raw="' + escapeAttribute(rawIn) + '"'
+                + ' data-pf-input-tab="1"'
+                + ' onclick="mgmtPfBeginEdit(this)">'
+                + escapeHtml(emptyIn ? "—" : mgmtFormatValue(it, val))
+                + "</button>";
         } else {
             html += '<span class="spu-input-ro">'
                 + escapeHtml(val == null || val === "" ? "—" : mgmtFormatValue(it, val))

@@ -40,15 +40,13 @@ $explSlice = $app.Substring($explIdx, [Math]::Min(9000, $app.Length - $explIdx))
 Ok ($explSlice -match "unit:\s*other\.unit") "explain rows carry operand unit"
 
 $pfIdx = $app.IndexOf("function mgmtPfNumCell(")
-$pfSlice = $app.Substring($pfIdx, [Math]::Min(1200, $app.Length - $pfIdx))
-Ok ($pfSlice -match 'class="pf-in"') "pf-in input present"
-Ok ($pfSlice -match 'String\(val\)') "pf-in still raw String(val)"
-Ok ($pfSlice -match "onchange") "pf-in still onchange save"
-$emptyIdx = $pfSlice.IndexOf("const empty")
-Ok ($emptyIdx -gt 0) "pf-in edit/readonly split"
-$editBranch = $pfSlice.Substring(0, $emptyIdx)
-Ok ($editBranch -match 'String\(val\)') "edit branch uses String(val)"
-Ok ($editBranch -notmatch "mgmtFormatValue") "edit branch does not format into input"
+$pfSlice = $app.Substring($pfIdx, [Math]::Min(2200, $app.Length - $pfIdx))
+Ok ($pfSlice -match 'class="pf-view') "pf dual-mode view button"
+Ok ($pfSlice -match "data-pf-raw") "edit raw stored in data-pf-raw"
+Ok ($pfSlice -match "mgmtPfBeginEdit") "edit starts via beginEdit"
+Ok ($pfSlice -match "mgmtFormatValue") "view state uses formatters"
+Ok ($app -match "function mgmtParsePfCellInput") "PF parse helper present"
+Ok ($app -match "function mgmtPfCellValuesEqual") "PF equal helper present"
 
 Ok ($app -match "function setMgmtPlanValue") "plan save kept"
 Ok ($app -match "function mgmtCompletionPct") "completion calc kept"
