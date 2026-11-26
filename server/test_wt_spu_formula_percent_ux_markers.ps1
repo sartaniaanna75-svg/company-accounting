@@ -17,19 +17,18 @@ Ok ($app -match "spuFormulaPercentUxHints") "hints used"
 
 $chkIdx = $app.IndexOf("function spuIndFormulaCheck(")
 Ok ($chkIdx -ge 0) "formula check present"
-$chkSlice = $app.Substring($chkIdx, [Math]::Min(3500, $app.Length - $chkIdx))
+$chkSlice = $app.Substring($chkIdx, [Math]::Min(9000, $app.Length - $chkIdx))
 Ok ($chkSlice -match "spuFormulaPercentUxHints") "check shows percent hints"
 
 Ok ($app -match "onSpuIndUnitChange") "unit change handler"
 Ok ($app -match "spuIndUnitPercentNote") "percent unit note"
 
 $fmtIdx = $app.IndexOf("function mgmtFormatValue(")
-$fmtSlice = $app.Substring($fmtIdx, [Math]::Min(800, $app.Length - $fmtIdx))
+$fmtSlice = $app.Substring($fmtIdx, [Math]::Min(1200, $app.Length - $fmtIdx))
 Ok ($fmtSlice -match 'unit === "percent"') "percent format kept"
-$pctIdx = $fmtSlice.IndexOf('unit === "percent"')
-Ok ($pctIdx -ge 0) "percent branch index"
-$pctLine = $fmtSlice.Substring($pctIdx, [Math]::Min(160, $fmtSlice.Length - $pctIdx))
-Ok ($pctLine -match "Math\.round\(n \* 10\)") "percent rounds to 1 digit"
-Ok ($pctLine -notmatch "n \* 100") "percent branch has no n*100 scale"
+Ok ($fmtSlice -match "mgmtFormatDisplayNumber\(n, 2\)") "percent display up to 2 digits"
+Ok ($fmtSlice -notmatch "Math\.round\(n \* 10\)") "percent not forced to 1 digit"
+Ok ($fmtSlice -notmatch "n \* 100") "percent branch has no n*100 scale"
+Ok ($app -match "function mgmtRoundDisplay") "display round helper present"
 
 Write-Host "OK test_wt_spu_formula_percent_ux_markers"

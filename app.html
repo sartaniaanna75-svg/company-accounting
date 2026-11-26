@@ -49315,10 +49315,13 @@ function spuFormulaSourcesFromExpr(tokens) {
 
 function spuFormatFormulaOperand(tok, value, unitHint) {
     if (tok && tok.t === "num") {
-        return Number(tok.v).toLocaleString("ru-RU");
+        const n = Number(tok.v);
+        if (!Number.isFinite(n)) return String(tok.v);
+        return typeof mgmtFormatDisplayNumber === "function"
+            ? mgmtFormatDisplayNumber(n, 6)
+            : n.toLocaleString("ru-RU");
     }
     if (value == null || !Number.isFinite(Number(value))) return "нет данных";
-    const n = Number(value);
     let unit = unitHint || "number";
     if (tok && tok.t === "ind") {
         const o = ((appData.management && appData.management.indicators) || []).find(function (x) {
@@ -49326,8 +49329,12 @@ function spuFormatFormulaOperand(tok, value, unitHint) {
         });
         if (o && o.unit) unit = o.unit;
     }
-    if (unit === "money") return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
-    if (unit === "percent") return (Math.round(n * 10) / 10).toLocaleString("ru-RU") + "%";
+    if (typeof mgmtFormatValue === "function") {
+        return mgmtFormatValue({ unit: unit }, value, "auto");
+    }
+    const n = Number(value);
+    if (unit === "money") return n.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽";
+    if (unit === "percent") return (Math.round(n * 100) / 100).toLocaleString("ru-RU") + "%";
     return (Math.round(n * 100) / 100).toLocaleString("ru-RU");
 }
 
@@ -49799,6 +49806,7 @@ function spuIndFormulaDraftExplainHtml(draft, tokens, weekFrom, asPlan) {
                 id: id,
                 name: other.name || id,
                 value: val,
+                unit: other.unit || "number",
                 reason: reason,
                 value_kind: valueKind,
                 week_offset: weekOff,
@@ -49992,7 +50000,7 @@ function spuIndFormulaCheckForPeriod(forcedWeekFrom, which) {
             }
             const valTxt = row.value == null
                 ? "нет данных"
-                : mgmtFormatValue({ unit: unit }, row.value, "auto");
+                : mgmtFormatValue({ unit: row.unit || "number" }, row.value, "auto");
             const typeTxt = row.value_kind === "plan" ? "План" : "Факт";
             html += "<tr>"
                 + "<td>" + escapeHtml(row.name || "—") + "</td>"
@@ -53099,9 +53107,43 @@ function mgmtPctClass(it, pct) {
     return "mgmt-bad";
 }
 
+/** Display-only round: commercial half-up via abs+eps (JS float-safe). Does not mutate source. */
+function mgmtRoundDisplay(n, maxFrac) {
+    const x = Number(n);
+    if (!Number.isFinite(x)) return NaN;
+    const f = Math.pow(10, maxFrac == null ? 2 : maxFrac);
+    const s = x < 0 ? -1 : 1;
+    let r = s * Math.round(Math.abs(x) * f + 1e-10) / f;
+    if (r === 0) r = 0;
+    return r;
+}
+
+function mgmtFormatDisplayNumber(n, maxFrac) {
+    const r = mgmtRoundDisplay(n, maxFrac);
+    if (!Number.isFinite(r)) return "—";
+    let s = r.toLocaleString("ru-RU", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: maxFrac == null ? 2 : maxFrac
+    });
+    if (s.charAt(0) === "-") s = "\u2212" + s.slice(1);
+    return s;
+}
+
+function mgmtFormatMoneyDisplay(n) {
+    const r = mgmtRoundDisplay(n, 2);
+    if (!Number.isFinite(r)) return "—";
+    const isInt = Math.abs(r - Math.round(r)) < 1e-9;
+    let s = r.toLocaleString("ru-RU", {
+        minimumFractionDigits: isInt ? 0 : 2,
+        maximumFractionDigits: isInt ? 0 : 2
+    });
+    if (s.charAt(0) === "-") s = "\u2212" + s.slice(1);
+    return s + " \u20BD";
+}
+
 function mgmtFormatPct(pct) {
     if (pct == null || !Number.isFinite(Number(pct))) return "—";
-    return (Math.round(Number(pct) * 10) / 10).toLocaleString("ru-RU") + "%";
+    return mgmtFormatDisplayNumber(pct, 2) + "%";
 }
 
 function mgmtSourceLabel(type) {
@@ -53124,11 +53166,13 @@ function mgmtFormatValue(it, value, status) {
     const n = Number(value);
     if (!Number.isFinite(n)) return "—";
     const unit = it && it.unit;
-    if (unit === "money") return n.toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
-    if (unit === "percent") return (Math.round(n * 10) / 10).toLocaleString("ru-RU") + "%";
-    if (unit === "people") return String(Math.round(n));
-    if (unit === "days") return (Math.round(n * 10) / 10).toLocaleString("ru-RU");
-    return (Math.round(n * 100) / 100).toLocaleString("ru-RU");
+    if (unit === "money") return mgmtFormatMoneyDisplay(n);
+    if (unit === "percent") return mgmtFormatDisplayNumber(n, 2) + "%";
+    if (unit === "people" || unit === "number" || unit === "count" || unit === "hours") {
+        return mgmtFormatDisplayNumber(n, 2);
+    }
+    if (unit === "days") return mgmtFormatDisplayNumber(n, 2);
+    return mgmtFormatDisplayNumber(n, 2);
 }
 
 function peekTimesheetDay(w, employeeId, day, month) {
@@ -56980,7 +57024,7 @@ function mgmtDeltaHtml(curr, prev) {
     const pct = ((Number(curr) - Number(prev)) / Math.abs(Number(prev))) * 100;
     const cls = pct >= 0 ? "mgmt-delta-up" : "mgmt-delta-down";
     const arrow = pct >= 0 ? "↑" : "↓";
-    return '<span class="' + cls + '">' + arrow + " " + (Math.round(Math.abs(pct) * 10) / 10).toLocaleString("ru-RU") + "%</span>";
+    return '<span class="' + cls + '">' + arrow + " " + mgmtFormatDisplayNumber(Math.abs(pct), 2) + "%</span>";
 }
 
 function mgmtKpiTableHtml(items) {
@@ -57004,7 +57048,7 @@ function mgmtKpiTableHtml(items) {
             + "<td>" + escapeHtml(plan == null ? "—" : mgmtFormatValue(it, plan)) + "</td>"
             + "<td><strong>" + escapeHtml(mgmtFormatValue(it, fact, read.status)) + "</strong></td>"
             + "<td>" + (diff == null ? "—" : escapeHtml(mgmtFormatValue(it, diff))) + "</td>"
-            + "<td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</td>"
+            + "<td>" + (pct == null ? "—" : escapeHtml(mgmtFormatPct(pct))) + "</td>"
             + "<td>" + mgmtDeltaHtml(fact, prev) + "</td>"
             + "<td>" + escapeHtml(emp ? emp.name : "—") + "</td>"
             + "<td>" + escapeHtml(st.label) + "</td></tr>";
@@ -57031,7 +57075,7 @@ function openMgmtIndicatorDetail(indicatorId) {
         + "<tr><td>План</td><td>" + escapeHtml(plan == null ? "—" : mgmtFormatValue(it, plan)) + "</td></tr>"
         + "<tr><td>Факт</td><td>" + escapeHtml(mgmtFormatValue(it, fact, read.status)) + "</td></tr>"
         + "<tr><td>Отклонение</td><td>" + (diff == null ? "—" : escapeHtml(mgmtFormatValue(it, diff))) + "</td></tr>"
-        + "<tr><td>Выполнение</td><td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</td></tr>"
+        + "<tr><td>Выполнение</td><td>" + (pct == null ? "—" : escapeHtml(mgmtFormatPct(pct))) + "</td></tr>"
         + "<tr><td>Ответственный</td><td>" + escapeHtml(emp ? emp.name : "—") + "</td></tr>"
         + "<tr><td>Статус</td><td>" + escapeHtml(st.label) + "</td></tr>"
         + "</tbody></table>"
@@ -57186,11 +57230,11 @@ function mgmtDashDeltaHtml(it, curr, prev) {
     const arrow = delta > 0 ? "↑" : (delta < 0 ? "↓" : "→");
     let abs = "";
     if (it && it.unit === "percent") {
-        abs = (delta > 0 ? "+" : "") + (Math.round(delta * 10) / 10).toLocaleString("ru-RU") + " п.п.";
+        abs = mgmtFormatPp(delta);
     } else if (it && it.unit === "money") {
-        abs = (delta > 0 ? "+" : "") + Math.round(delta).toLocaleString("ru-RU");
+        abs = delta > 0 ? ("+" + mgmtFormatMoneyDisplay(delta)) : mgmtFormatMoneyDisplay(delta);
     } else {
-        abs = (delta > 0 ? "+" : "") + (Math.round(delta * 10) / 10).toLocaleString("ru-RU");
+        abs = (delta > 0 ? "+" : (delta < 0 ? "\u2212" : "")) + mgmtFormatDisplayNumber(Math.abs(delta), 2);
     }
     return '<span class="k-d ' + cls + '">' + arrow + " " + abs + "</span>";
 }
@@ -57217,11 +57261,11 @@ function mgmtDashPrev(code, fromIso) {
 function mgmtChartCompact(n, unit) {
     if (n == null || !Number.isFinite(Number(n))) return "";
     const v = Number(n);
-    if (unit === "percent") return (Math.round(v * 10) / 10) + "%";
+    if (unit === "percent") return mgmtFormatDisplayNumber(v, 2) + "%";
     const a = Math.abs(v);
-    if (a >= 1000000) return (v / 1000000).toFixed(1).replace(".", ",") + " млн";
-    if (a >= 1000) return Math.round(v).toLocaleString("ru-RU");
-    return (Math.round(v * 10) / 10).toLocaleString("ru-RU");
+    if (a >= 1000000) return mgmtFormatDisplayNumber(v / 1000000, 1) + " млн";
+    if (a >= 1000) return mgmtFormatDisplayNumber(Math.round(v), 0);
+    return mgmtFormatDisplayNumber(v, 2);
 }
 
 function mgmtSvgComboChart(weeks, barCodes, lineCode) {
@@ -57791,17 +57835,14 @@ function mgmtPanelCompletionPct(fact, plan) {
 function mgmtPanelFormatAbsChange(it, delta) {
     const d = Number(delta);
     if (!Number.isFinite(d)) return "—";
-    const sign = d > 0 ? "+" : "";
-    if (it && it.unit === "percent") {
-        return sign + (Math.round(d * 10) / 10).toLocaleString("ru-RU") + " п.п.";
-    }
+    if (it && it.unit === "percent") return mgmtFormatPp(d);
     if (it && it.unit === "money") {
-        return sign + Math.round(d).toLocaleString("ru-RU") + " ₽";
+        return d > 0 ? ("+" + mgmtFormatMoneyDisplay(d)) : mgmtFormatMoneyDisplay(d);
     }
     if (it && it.unit === "people") {
-        return sign + Math.round(d).toLocaleString("ru-RU");
+        return (d > 0 ? "+" : (d < 0 ? "\u2212" : "")) + mgmtFormatDisplayNumber(Math.abs(d), 2);
     }
-    return sign + (Math.round(d * 10) / 10).toLocaleString("ru-RU");
+    return (d > 0 ? "+" : (d < 0 ? "\u2212" : "")) + mgmtFormatDisplayNumber(Math.abs(d), 2);
 }
 
 function mgmtPanelFormatPctChange(curr, prev) {
@@ -57811,8 +57852,10 @@ function mgmtPanelFormatPctChange(curr, prev) {
     if (Math.abs(p) < 1e-12) return null;
     const pct = ((c - p) / Math.abs(p)) * 100;
     if (!Number.isFinite(pct)) return null;
-    const rounded = Math.round(pct * 10) / 10;
-    return (rounded > 0 ? "+" : "") + String(rounded).replace(".", ",") + "%";
+    const body = mgmtFormatDisplayNumber(Math.abs(pct), 2);
+    if (pct > 0) return "+" + body + "%";
+    if (pct < 0) return "\u2212" + body + "%";
+    return "0%";
 }
 
 /**
@@ -58454,7 +58497,7 @@ function renderMgmtCustomKpiCardHtml(item, weekFrom) {
     }
     if (row.show_completion) {
         const pct = mgmtPanelCompletionPct(pack.value, plan);
-        meta += "<div>Выполнение: " + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</div>";
+        meta += "<div>Выполнение: " + (pct == null ? "—" : escapeHtml(mgmtFormatPct(pct))) + "</div>";
     }
     if (meta) html += '<div class="k-meta">' + meta + "</div>";
     if (row.show_dynamics) {
@@ -58493,7 +58536,7 @@ function renderMgmtCustomTableHtml(block, weekFrom) {
         }
         if (showComp) {
             const pct = row.show_completion ? mgmtPanelCompletionPct(pack.value, plan) : null;
-            html += "<td>" + (pct == null ? "—" : escapeHtml((Math.round(pct * 10) / 10).toLocaleString("ru-RU") + "%")) + "</td>";
+            html += "<td>" + (pct == null ? "—" : escapeHtml(mgmtFormatPct(pct))) + "</td>";
         }
         if (showDyn) {
             html += "<td>" + (row.show_dynamics ? mgmtPanelDynamicsHtml(pack.it, pack.value, prev && prev.value, true, "abs") : "—") + "</td>";
@@ -58758,8 +58801,12 @@ function mgmtPfRead(it, fromIso) {
 
 function mgmtFormatPp(delta) {
     if (delta == null || !Number.isFinite(Number(delta))) return "—";
-    const r = Math.round(Number(delta) * 10) / 10;
-    return (r > 0 ? "+" : "") + r.toLocaleString("ru-RU") + " п.п.";
+    const r = mgmtRoundDisplay(delta, 2);
+    if (!Number.isFinite(r)) return "—";
+    const body = mgmtFormatDisplayNumber(Math.abs(r), 2);
+    if (r > 0) return "+" + body + " п.п.";
+    if (r < 0) return "\u2212" + body + " п.п.";
+    return "0 п.п.";
 }
 
 function mgmtDeltaIsGood(it, delta) {

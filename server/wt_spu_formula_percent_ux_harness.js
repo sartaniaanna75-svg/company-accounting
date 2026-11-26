@@ -48,8 +48,20 @@ function spuEvalFormula(tokens, resolve) {
   return (out == null || !Number.isFinite(Number(out))) ? null : Number(out);
 }
 
+function mgmtRoundDisplay(n, maxFrac) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return NaN;
+  const f = Math.pow(10, maxFrac == null ? 2 : maxFrac);
+  const s = x < 0 ? -1 : 1;
+  let r = s * Math.round(Math.abs(x) * f + 1e-10) / f;
+  if (r === 0) r = 0;
+  return r;
+}
 function mgmtFormatPercent(n) {
-  return (Math.round(n * 10) / 10).toLocaleString("ru-RU") + "%";
+  const r = mgmtRoundDisplay(n, 2);
+  let s = r.toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  if (s.charAt(0) === "-") s = "\u2212" + s.slice(1);
+  return s + "%";
 }
 
 function spuFormulaTokIsLp(tok) { return !!(tok && (tok.t === "lp" || tok.v === "(")); }
